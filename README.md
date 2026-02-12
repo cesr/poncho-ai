@@ -10,6 +10,12 @@ cd my-agent
 agentl dev
 ```
 
+## Current Implementation Notes
+
+- MCP support is intentionally **remote-only** (`agentl mcp add --url ...`).
+- `agentl init` scaffolds starter `skills/` and `tests/` directories with templates.
+- Model providers currently supported by runtime: `anthropic` and `openai`.
+
 ## What is AgentL?
 
 AgentL lets you build AI agents that can use tools, browse the web, execute code, and more. You define your agent in a single `AGENT.md` file, develop locally, then deploy to any cloud platform.
@@ -38,10 +44,17 @@ my-agent/
 ├── package.json       # Dependencies (skills)
 ├── agentl.config.js   # Configuration (optional)
 ├── .env.example       # Environment variables template
+├── tests/
+│   └── basic.yaml     # Starter test suite
+├── skills/
+│   └── starter/
+│       ├── SKILL.md
+│       └── tools/
+│           └── starter-echo.ts
 └── .gitignore
 ```
 
-**package.json** includes the runtime and a starter skill:
+**package.json** includes the runtime:
 
 ```json
 {
@@ -49,14 +62,13 @@ my-agent/
   "private": true,
   "type": "module",
   "dependencies": {
-    "@agentl/harness": "^1.0.0",
-    "@agentl/file-system": "^1.0.0"
+    "@agentl/harness": "^0.1.0"
   }
 }
 ```
 
-- `@agentl/harness` is the agent runtime - it handles the conversation loop, tool execution, and streaming
-- `@agentl/file-system` provides file tools (read, write, glob, grep)
+- `@agentl/harness` is the agent runtime - it handles the conversation loop, tool execution, and streaming.
+- A local starter skill scaffold is generated under `skills/starter/`.
 
 ### 2. Configure your API key
 
@@ -89,7 +101,8 @@ curl -X POST http://localhost:3000/run \
 ```bash
 # Build for Vercel
 agentl build vercel
-vercel deploy
+cd .agentl-build/vercel
+vercel deploy --prod
 
 # Or build for Docker
 agentl build docker
@@ -289,10 +302,6 @@ MCP (Model Context Protocol) is a standard for connecting AI agents to external 
 ### Add an MCP server
 
 ```bash
-# Local server (agent runs it)
-agentl mcp add @modelcontextprotocol/server-filesystem \
-  --config '{"allowedDirectories": ["/workspace"]}'
-
 # Remote server (connect via URL)
 agentl mcp add --url wss://mcp.example.com/github \
   --env GITHUB_TOKEN
@@ -303,11 +312,6 @@ agentl mcp add --url wss://mcp.example.com/github \
 ```javascript
 export default {
   mcp: [
-    {
-      // Local: agent spawns this server
-      package: '@modelcontextprotocol/server-filesystem',
-      config: { allowedDirectories: ['/workspace'] }
-    },
     {
       // Remote: connect to external server
       url: 'wss://mcp.example.com/slack',
@@ -327,8 +331,6 @@ agentl dev
 
 Options:
 - `--port 8080` - Change port (default: 3000)
-- `--verbose` - Detailed logging
-- `--quiet` - Minimal output
 
 ### See available tools
 
@@ -429,7 +431,8 @@ tests:
 ```bash
 # Vercel (serverless)
 agentl build vercel
-vercel deploy
+cd .agentl-build/vercel
+vercel deploy --prod
 
 # Docker
 agentl build docker
@@ -668,7 +671,8 @@ For a pre-built dashboard with cost tracking:
 
 ```bash
 LATITUDE_API_KEY=lat_xxx
-LATITUDE_TELEMETRY=true
+LATITUDE_PROJECT_ID=123
+LATITUDE_PATH=agents/my-agent/run
 ```
 
 ## Configuration Reference
@@ -680,10 +684,8 @@ export default {
   // Custom harness (default: @agentl/harness)
   harness: '@agentl/harness',  // or './my-harness.js'
 
-  // MCP servers (local or remote)
+  // MCP servers (remote)
   mcp: [
-    // Local: AgentL spawns this server
-    { package: '@modelcontextprotocol/server-filesystem', config: { paths: ['/workspace'] } },
     // Remote: Connect to external server
     { url: 'wss://mcp.example.com/github', env: ['GITHUB_TOKEN'] }
   ],
@@ -725,7 +727,12 @@ export default {
     enabled: true,
     otlp: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
     // Or use Latitude
-    latitude: { apiKey: process.env.LATITUDE_API_KEY },
+    latitude: {
+      apiKey: process.env.LATITUDE_API_KEY,
+      projectId: process.env.LATITUDE_PROJECT_ID,
+      path: process.env.LATITUDE_PATH, // Prompt path in Latitude
+      // documentPath is also supported as a legacy alias
+    },
   },
 
   // Build settings per platform
@@ -755,6 +762,8 @@ export default {
 | `AGENT_API_KEY` | No | Secret key to protect your endpoint |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | Telemetry destination |
 | `LATITUDE_API_KEY` | No | Latitude dashboard integration |
+| `LATITUDE_PROJECT_ID` | No | Latitude project identifier for capture traces |
+| `LATITUDE_PATH` | No | Latitude prompt path for grouping traces |
 | `UPSTASH_REDIS_URL` | No | For Upstash state storage |
 | `UPSTASH_REDIS_TOKEN` | No | For Upstash state storage |
 | `REDIS_URL` | No | For Redis state storage |

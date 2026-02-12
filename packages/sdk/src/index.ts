@@ -1,0 +1,105 @@
+export type JsonSchema = {
+  type?: string;
+  description?: string;
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  items?: JsonSchema;
+  enum?: Array<string | number | boolean | null>;
+  additionalProperties?: boolean | JsonSchema;
+  [key: string]: unknown;
+};
+
+export type Role = "system" | "user" | "assistant" | "tool";
+
+export interface Message {
+  role: Role;
+  content: string;
+  metadata?: {
+    id?: string;
+    timestamp?: number;
+    tokenCount?: number;
+    step?: number;
+  };
+}
+
+export interface ToolContext {
+  runId: string;
+  agentId: string;
+  step: number;
+  workingDir: string;
+  parameters: Record<string, unknown>;
+}
+
+export type ToolHandler<TInput extends Record<string, unknown>, TOutput> = (
+  input: TInput,
+  context: ToolContext,
+) => Promise<TOutput> | TOutput;
+
+export interface ToolDefinition<
+  TInput extends Record<string, unknown> = Record<string, unknown>,
+  TOutput = unknown,
+> {
+  name: string;
+  description: string;
+  inputSchema: JsonSchema;
+  outputSchema?: JsonSchema;
+  timeout?: number;
+  retries?: number;
+  isolated?: boolean;
+  requiresApproval?: boolean;
+  handler: ToolHandler<TInput, TOutput>;
+}
+
+export const defineTool = <
+  TInput extends Record<string, unknown>,
+  TOutput = unknown,
+>(
+  definition: ToolDefinition<TInput, TOutput>,
+): ToolDefinition<TInput, TOutput> => definition;
+
+export interface RunInput {
+  task: string;
+  parameters?: Record<string, unknown>;
+  messages?: Message[];
+}
+
+export interface TokenUsage {
+  input: number;
+  output: number;
+  cached: number;
+}
+
+export interface RunResult {
+  status: "completed" | "error" | "cancelled";
+  response?: string;
+  steps: number;
+  tokens: TokenUsage;
+  duration: number;
+}
+
+export interface AgentFailure {
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export type AgentEvent =
+  | { type: "run:started"; runId: string; agentId: string }
+  | { type: "run:completed"; runId: string; result: RunResult }
+  | { type: "run:error"; runId: string; error: AgentFailure }
+  | { type: "step:started"; step: number }
+  | { type: "step:completed"; step: number; duration: number }
+  | { type: "model:request"; tokens: number }
+  | { type: "model:chunk"; content: string }
+  | { type: "model:response"; usage: TokenUsage }
+  | { type: "tool:started"; tool: string; input: unknown }
+  | { type: "tool:completed"; tool: string; output: unknown; duration: number }
+  | { type: "tool:error"; tool: string; error: string; recoverable: boolean }
+  | {
+      type: "tool:approval:required";
+      tool: string;
+      input: unknown;
+      approvalId: string;
+    }
+  | { type: "tool:approval:granted"; approvalId: string }
+  | { type: "tool:approval:denied"; approvalId: string; reason?: string };

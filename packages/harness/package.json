@@ -12,21 +12,35 @@
     }
   },
   "scripts": {
-    "build": "tsup",
-    "dev": "tsup --watch",
+    "build": "tsup src/index.ts --format esm --dts",
+    "dev": "tsup src/index.ts --format esm --dts --watch",
     "test": "vitest",
     "lint": "eslint src/"
   },
   "dependencies": {
     "@agentl/sdk": "workspace:*",
-    "@anthropic-ai/sdk": "^0.24.0",
+    "@anthropic-ai/sdk": "^0.74.0",
+    "@aws-sdk/client-dynamodb": "^3.988.0",
+    "@latitude-data/telemetry": "^2.0.2",
+    "@vercel/kv": "^3.0.0",
+    "jiti": "^2.6.1",
     "mustache": "^4.2.0",
+    "openai": "^6.3.0",
+    "redis": "^5.10.0",
+    "ws": "^8.18.0",
     "yaml": "^2.4.0"
   },
   "devDependencies": {
+    "@types/mustache": "^4.2.6",
+    "@types/ws": "^8.18.1",
     "tsup": "^8.0.0",
     "vitest": "^1.4.0"
   },
-  "keywords": ["ai", "agent", "harness", "runtime"],
+  "keywords": [
+    "ai",
+    "agent",
+    "harness",
+    "runtime"
+  ],
   "license": "MIT"
 }

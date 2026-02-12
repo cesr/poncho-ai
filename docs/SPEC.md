@@ -7,6 +7,8 @@
 **Authors**: Latitude Team
 **Last Updated**: 2025-02-11
 
+> Implementation note: the current runtime intentionally uses remote-only MCP servers (no local MCP server execution path), and currently supports Anthropic + OpenAI model providers.
+
 ---
 
 ## Table of Contents
@@ -918,14 +920,11 @@ Run the agent locally for development:
 agentl dev
 
 # Starts local server at http://localhost:3000
-# Hot-reloads on AGENT.md changes
 # Loads .env for API keys
 ```
 
 Options:
 - `--port <port>` - Server port (default: 3000)
-- `--no-stream` - Disable streaming output
-- `--harness <path>` - Use a custom harness implementation
 
 #### `agentl run`
 
@@ -1043,12 +1042,9 @@ The build output is self-contained - includes the harness, your AGENT.md, and al
 
 #### `agentl mcp`
 
-Connect MCP servers (local or remote):
+Connect MCP servers (remote):
 
 ```bash
-# Add a local MCP server (agent runs it)
-agentl mcp add @modelcontextprotocol/server-filesystem --config '{"paths": ["/workspace"]}'
-
 # Add a remote MCP server (connect via URL)
 agentl mcp add --url wss://mcp.example.com/github --env GITHUB_TOKEN
 
@@ -1058,8 +1054,6 @@ agentl mcp list
 # Remove
 agentl mcp remove filesystem
 ```
-
-**Local MCP servers**: The agent spawns and manages the server process. Works in dev and production.
 
 **Remote MCP servers**: The agent connects to an external MCP server via WebSocket. You host the server separately.
 
@@ -1392,7 +1386,7 @@ agentl dev
 # [run:abc123] Completed (3 steps, 2340 tokens)
 ```
 
-Use `--verbose` for detailed output, `--quiet` to suppress.
+By default, dev telemetry events are logged to console output.
 
 ---
 
@@ -1629,7 +1623,7 @@ Authorization: Bearer your-secret-key
 | **Pricing** | Open source framework. You pay your cloud provider. |
 | **Skills** | Open ecosystem - npm, GitHub, local |
 | **PromptL interop** | None - clean break |
-| **MCP support** | Full MCP support (local + remote servers) |
+| **MCP support** | Remote MCP support (WebSocket servers) |
 | **Deployment model** | `agentl build` → deploy anywhere |
 | **Code execution** | Runs on deployment platform (Vercel sandbox, Lambda, etc.) |
 
@@ -1639,7 +1633,7 @@ Authorization: Bearer your-secret-key
 |----------|---------|-------|
 | **State store interface** | Redis, Upstash, Vercel KV, DynamoDB | Which to support first? |
 | **Skill versioning** | Lock file? package.json? | How to pin skill versions |
-| **Local MCP server lifecycle** | Spawn per-request vs persistent | Performance vs resource usage |
+| **Remote MCP session lifecycle** | Reconnect/backoff/heartbeat policies | Reliability vs complexity |
 
 ### 13.3 Check Latitude Repo for Reusable Code
 
