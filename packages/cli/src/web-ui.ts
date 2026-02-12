@@ -251,7 +251,12 @@ export const parseCookies = (request: IncomingMessage): Record<string, string> =
     }
     const key = pair.slice(0, index);
     const value = pair.slice(index + 1);
-    cookies[key] = decodeURIComponent(value);
+    try {
+      cookies[key] = decodeURIComponent(value);
+    } catch {
+      // Ignore malformed cookie encoding instead of throwing.
+      cookies[key] = value;
+    }
   }
   return cookies;
 };
@@ -306,13 +311,8 @@ export const verifyPassphrase = (provided: string, expected: string): boolean =>
 };
 
 export const getRequestIp = (request: IncomingMessage): string => {
-  const forwarded = request.headers["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.trim().length > 0) {
-    return forwarded.split(",")[0]?.trim() ?? "unknown";
-  }
-  if (Array.isArray(forwarded) && forwarded[0]) {
-    return forwarded[0];
-  }
+  // Trust direct socket peer by default to avoid spoofable forwarded headers.
+  // Reverse-proxy deployments can map trusted client IPs before this layer.
   return request.socket.remoteAddress ?? "unknown";
 };
 
