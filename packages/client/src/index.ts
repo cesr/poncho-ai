@@ -18,6 +18,21 @@ export interface ContinueInput {
   parameters?: Record<string, unknown>;
 }
 
+export interface ConversationSummary {
+  conversationId: string;
+  title: string;
+  runtimeRunId?: string;
+  ownerId: string;
+  tenantId: string | null;
+  createdAt: number;
+  updatedAt: number;
+  messageCount: number;
+}
+
+export interface ConversationRecord extends Omit<ConversationSummary, "messageCount"> {
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+}
+
 const trimTrailingSlash = (value: string): string => value.replace(/\/+$/, "");
 
 export class AgentClient {
@@ -41,32 +56,140 @@ export class AgentClient {
     return headers;
   }
 
-  async run(input: RunInput): Promise<SyncRunResponse> {
-    const response = await this.fetchImpl(`${this.baseUrl}/run/sync`, {
+  private async parseSse(response: Response): Promise<AgentEvent[]> {
+    if (!response.body) {
+      throw new Error("Missing response body");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const events: AgentEvent[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() ?? "";
+      for (const frame of frames) {
+        const lines = frame
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+        const dataLine = lines.find((line) => line.startsWith("data:"));
+        if (!dataLine) {
+          continue;
+        }
+        const payload = JSON.parse(dataLine.slice("data:".length).trim()) as AgentEvent;
+        events.push(payload);
+      }
+    }
+    return events;
+  }
+
+  async listConversations(): Promise<ConversationSummary[]> {
+    const response = await this.fetchImpl(`${this.baseUrl}/api/conversations`, {
+      method: "GET",
+      headers: this.headers(),
+    });
+    if (!response.ok) {
+      throw new Error(`List conversations failed: HTTP ${response.status}`);
+    }
+    const payload = (await response.json()) as { conversations: ConversationSummary[] };
+    return payload.conversations;
+  }
+
+  async createConversation(input?: { title?: string }): Promise<ConversationRecord> {
+    const response = await this.fetchImpl(`${this.baseUrl}/api/conversations`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify(input),
+      body: JSON.stringify(input ?? {}),
     });
-
     if (!response.ok) {
-      throw new Error(`Agent request failed: HTTP ${response.status}`);
+      throw new Error(`Create conversation failed: HTTP ${response.status}`);
     }
+    const payload = (await response.json()) as { conversation: ConversationRecord };
+    return payload.conversation;
+  }
 
-    return (await response.json()) as SyncRunResponse;
+  async getConversation(conversationId: string): Promise<ConversationRecord> {
+    const response = await this.fetchImpl(
+      `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}`,
+      {
+        method: "GET",
+        headers: this.headers(),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`Get conversation failed: HTTP ${response.status}`);
+    }
+    const payload = (await response.json()) as { conversation: ConversationRecord };
+    return payload.conversation;
+  }
+
+  async deleteConversation(conversationId: string): Promise<void> {
+    const response = await this.fetchImpl(
+      `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}`,
+      {
+        method: "DELETE",
+        headers: this.headers(),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`Delete conversation failed: HTTP ${response.status}`);
+    }
+  }
+
+  async sendMessage(
+    conversationId: string,
+    message: string,
+    parameters?: Record<string, unknown>,
+  ): Promise<SyncRunResponse> {
+    const response = await this.fetchImpl(
+      `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+      {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ message, parameters }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`Send message failed: HTTP ${response.status}`);
+    }
+    const events = await this.parseSse(response);
+    const runStarted = events.find(
+      (event): event is Extract<AgentEvent, { type: "run:started" }> =>
+        event.type === "run:started",
+    );
+    const completed = events.find(
+      (event): event is Extract<AgentEvent, { type: "run:completed" }> =>
+        event.type === "run:completed",
+    );
+    if (!completed) {
+      throw new Error("Send message failed: missing run:completed event");
+    }
+    return {
+      runId: runStarted?.runId ?? completed.runId,
+      status: completed.result.status,
+      result: completed.result,
+    };
+  }
+
+  async run(input: RunInput): Promise<SyncRunResponse> {
+    if ((input.messages?.length ?? 0) > 0) {
+      throw new Error(
+        "run() with pre-seeded messages is no longer supported. Use createConversation/sendMessage.",
+      );
+    }
+    const conversation = await this.createConversation({
+      title: input.task,
+    });
+    return await this.sendMessage(conversation.conversationId, input.task, input.parameters);
   }
 
   async continue(input: ContinueInput): Promise<SyncRunResponse> {
-    const response = await this.fetchImpl(`${this.baseUrl}/continue`, {
-      method: "POST",
-      headers: this.headers(),
-      body: JSON.stringify(input),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Continue request failed: HTTP ${response.status}`);
-    }
-
-    return (await response.json()) as SyncRunResponse;
+    return await this.sendMessage(input.runId, input.message, input.parameters);
   }
 
   conversation(initialRunId?: string): {
@@ -76,22 +199,34 @@ export class AgentClient {
     return {
       send: async (message: string, parameters?: Record<string, unknown>) => {
         if (!runId) {
-          const initial = await this.run({ task: message, parameters });
-          runId = initial.runId;
+          const initialConversation = await this.createConversation({ title: message });
+          const initial = await this.sendMessage(
+            initialConversation.conversationId,
+            message,
+            parameters,
+          );
+          runId = initialConversation.conversationId;
           return initial;
         }
         const next = await this.continue({ runId, message, parameters });
-        runId = next.runId;
         return next;
       },
     };
   }
 
   async *stream(input: RunInput): AsyncGenerator<AgentEvent> {
-    const response = await this.fetchImpl(`${this.baseUrl}/run`, {
+    if ((input.messages?.length ?? 0) > 0) {
+      throw new Error(
+        "stream() with pre-seeded messages is no longer supported. Use conversation APIs directly.",
+      );
+    }
+    const conversation = await this.createConversation({ title: input.task });
+    const response = await this.fetchImpl(
+      `${this.baseUrl}/api/conversations/${encodeURIComponent(conversation.conversationId)}/messages`,
+      {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify(input),
+      body: JSON.stringify({ message: input.task, parameters: input.parameters }),
     });
 
     if (!response.ok || !response.body) {

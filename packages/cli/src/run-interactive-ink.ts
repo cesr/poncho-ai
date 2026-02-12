@@ -7,9 +7,12 @@
  * produces reliable output with native scroll and text selection.
  */
 import * as readline from "node:readline";
-import { resolve } from "node:path";
 import { parseAgentFile, type AgentHarness } from "@agentl/harness";
 import type { AgentEvent, Message, TokenUsage } from "@agentl/sdk";
+import {
+  type FileConversationStore,
+  inferConversationTitle,
+} from "./web-ui.js";
 
 // Re-export types that index.ts references
 export type ApprovalRequest = {
@@ -116,21 +119,160 @@ const ask = (
 // Slash commands
 // ---------------------------------------------------------------------------
 
-const handleSlash = (command: string): void => {
-  const norm = command.trim().toLowerCase();
+const OWNER_ID = "local-owner";
+
+type InteractiveState = {
+  messages: Message[];
+  turn: number;
+  activeConversationId: string | null;
+};
+
+const computeTurn = (messages: Message[]): number =>
+  Math.max(1, Math.floor(messages.length / 2) + 1);
+
+const formatDate = (value: number): string => {
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return String(value);
+  }
+};
+
+const handleSlash = async (
+  command: string,
+  state: InteractiveState,
+  conversationStore: FileConversationStore,
+): Promise<{ shouldExit: boolean }> => {
+  const [rawCommand, ...args] = command.trim().split(/\s+/);
+  const norm = rawCommand.toLowerCase();
   if (norm === "/help") {
-    console.log(gray("commands> /help /clear /exit"));
-    return;
+    console.log(
+      gray(
+        "commands> /help /clear /exit /tools /list /open <id> /new [title] /delete [id] /continue /reset [all]",
+      ),
+    );
+    return { shouldExit: false };
   }
   if (norm === "/clear") {
     process.stdout.write("\x1b[2J\x1b[H"); // clear screen
-    return;
+    return { shouldExit: false };
   }
   if (norm === "/exit") {
-    // handled in main loop
-    return;
+    return { shouldExit: true };
+  }
+  if (norm === "/list") {
+    const conversations = await conversationStore.list(OWNER_ID);
+    if (conversations.length === 0) {
+      console.log(gray("conversations> none"));
+      return { shouldExit: false };
+    }
+    console.log(gray("conversations>"));
+    for (const conversation of conversations) {
+      const activeMarker =
+        state.activeConversationId === conversation.conversationId ? "*" : " ";
+      console.log(
+        gray(
+          `${activeMarker} ${conversation.conversationId} | ${conversation.title} | ${formatDate(conversation.updatedAt)}`,
+        ),
+      );
+    }
+    return { shouldExit: false };
+  }
+  if (norm === "/open") {
+    const conversationId = args[0];
+    if (!conversationId) {
+      console.log(yellow("usage> /open <conversationId>"));
+      return { shouldExit: false };
+    }
+    const conversation = await conversationStore.get(conversationId);
+    if (!conversation) {
+      console.log(yellow(`conversations> not found: ${conversationId}`));
+      return { shouldExit: false };
+    }
+    state.activeConversationId = conversation.conversationId;
+    state.messages = [...conversation.messages];
+    state.turn = computeTurn(state.messages);
+    console.log(gray(`conversations> opened ${conversation.conversationId}`));
+    return { shouldExit: false };
+  }
+  if (norm === "/new") {
+    const title = args.join(" ").trim();
+    const conversation = await conversationStore.create(OWNER_ID, title || undefined);
+    state.activeConversationId = conversation.conversationId;
+    state.messages = [];
+    state.turn = 1;
+    console.log(gray(`conversations> new ${conversation.conversationId}`));
+    return { shouldExit: false };
+  }
+  if (norm === "/delete") {
+    const targetConversationId = args[0] ?? state.activeConversationId ?? "";
+    if (!targetConversationId) {
+      console.log(yellow("usage> /delete <conversationId>"));
+      return { shouldExit: false };
+    }
+    const removed = await conversationStore.delete(targetConversationId);
+    if (!removed) {
+      console.log(yellow(`conversations> not found: ${targetConversationId}`));
+      return { shouldExit: false };
+    }
+    if (state.activeConversationId === targetConversationId) {
+      state.activeConversationId = null;
+      state.messages = [];
+      state.turn = 1;
+    }
+    console.log(gray(`conversations> deleted ${targetConversationId}`));
+    return { shouldExit: false };
+  }
+  if (norm === "/continue") {
+    const conversations = await conversationStore.list(OWNER_ID);
+    const latest = conversations[0];
+    if (!latest) {
+      console.log(yellow("conversations> no conversations to continue"));
+      return { shouldExit: false };
+    }
+    state.activeConversationId = latest.conversationId;
+    state.messages = [...latest.messages];
+    state.turn = computeTurn(state.messages);
+    console.log(gray(`conversations> continued ${latest.conversationId}`));
+    return { shouldExit: false };
+  }
+  if (norm === "/reset") {
+    if (args[0]?.toLowerCase() === "all") {
+      const conversations = await conversationStore.list(OWNER_ID);
+      for (const conversation of conversations) {
+        await conversationStore.delete(conversation.conversationId);
+      }
+      state.activeConversationId = null;
+      state.messages = [];
+      state.turn = 1;
+      console.log(gray("conversations> reset all"));
+      return { shouldExit: false };
+    }
+    if (!state.activeConversationId) {
+      state.messages = [];
+      state.turn = 1;
+      console.log(gray("conversations> current session reset"));
+      return { shouldExit: false };
+    }
+    const conversation = await conversationStore.get(state.activeConversationId);
+    if (!conversation) {
+      state.activeConversationId = null;
+      state.messages = [];
+      state.turn = 1;
+      console.log(yellow("conversations> active conversation no longer exists"));
+      return { shouldExit: false };
+    }
+    await conversationStore.update({
+      ...conversation,
+      messages: [],
+    });
+    state.messages = [];
+    state.turn = 1;
+    console.log(gray(`conversations> reset ${conversation.conversationId}`));
+    return { shouldExit: false };
   }
   console.log(yellow(`Unknown command: ${command}`));
+  return { shouldExit: false };
 };
 
 // ---------------------------------------------------------------------------
@@ -141,11 +283,13 @@ export const runInteractiveInk = async ({
   harness,
   params,
   workingDir,
+  conversationStore,
   onSetApprovalCallback,
 }: {
   harness: AgentHarness;
   params: Record<string, string>;
   workingDir: string;
+  conversationStore: FileConversationStore;
   onSetApprovalCallback?: (cb: (req: ApprovalRequest) => void) => void;
 }): Promise<void> => {
   const metadata = await loadMetadata(workingDir);
@@ -189,12 +333,16 @@ export const runInteractiveInk = async ({
       `\n${metadata.agentName} | ${metadata.provider}/${metadata.model} | ${metadata.environment}`,
     ),
   );
-  console.log(gray('Type "exit" to quit, "/help" for commands\n'));
+  console.log(gray('Type "exit" to quit, "/help" for commands'));
+  console.log(
+    gray("Conversation controls: /list /open <id> /new [title] /delete [id] /continue /reset [all]\n"),
+  );
 
   // --- State -----------------------------------------------------------------
 
-  const messages: Message[] = [];
+  let messages: Message[] = [];
   let turn = 1;
+  let activeConversationId: string | null = null;
   let showToolPayloads = false;
 
   // --- Main loop -------------------------------------------------------------
@@ -223,7 +371,22 @@ export const runInteractiveInk = async ({
         console.log(gray(`tool payloads: ${showToolPayloads ? "on" : "off"}`));
         continue;
       }
-      handleSlash(trimmed);
+      const interactiveState: InteractiveState = {
+        messages,
+        turn,
+        activeConversationId,
+      };
+      const slashResult = await handleSlash(
+        trimmed,
+        interactiveState,
+        conversationStore,
+      );
+      if (slashResult.shouldExit) {
+        break;
+      }
+      messages = interactiveState.messages;
+      turn = interactiveState.turn;
+      activeConversationId = interactiveState.activeConversationId;
       continue;
     }
 
@@ -249,6 +412,7 @@ export const runInteractiveInk = async ({
     let toolEvents = 0;
     let runFailed = false;
     let usage: TokenUsage | undefined;
+    let latestRunId = "";
     const startedAt = Date.now();
 
     try {
@@ -257,6 +421,9 @@ export const runInteractiveInk = async ({
         parameters: params,
         messages,
       })) {
+        if (event.type === "run:started") {
+          latestRunId = event.runId;
+        }
         if (event.type === "model:chunk") {
           sawChunk = true;
           responseText += event.content;
@@ -372,9 +539,32 @@ export const runInteractiveInk = async ({
       gray(`meta> ${formatDuration(durationMs)} | tools: ${toolEvents}\n`),
     );
 
+    if (!activeConversationId) {
+      const created = await conversationStore.create(
+        OWNER_ID,
+        inferConversationTitle(trimmed),
+      );
+      activeConversationId = created.conversationId;
+    }
+
     messages.push({ role: "user", content: trimmed });
     messages.push({ role: "assistant", content: responseText });
-    turn += 1;
+    turn = computeTurn(messages);
+
+    const conversation = await conversationStore.get(activeConversationId);
+    if (conversation) {
+      const maybeTitle =
+        conversation.messages.length === 0 &&
+        (conversation.title === "New conversation" || conversation.title.trim().length === 0)
+          ? inferConversationTitle(trimmed)
+          : conversation.title;
+      await conversationStore.update({
+        ...conversation,
+        title: maybeTitle,
+        messages: [...messages],
+        runtimeRunId: latestRunId || conversation.runtimeRunId,
+      });
+    }
   }
 
   rl.close();

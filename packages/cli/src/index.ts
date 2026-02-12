@@ -12,7 +12,6 @@ import { fileURLToPath } from "node:url";
 import {
   AgentHarness,
   TelemetryEmitter,
-  createStateStore,
   loadAgentlConfig,
   type AgentlConfig,
 } from "@agentl/harness";
@@ -20,6 +19,17 @@ import type { AgentEvent, Message, RunInput } from "@agentl/sdk";
 import { Command } from "commander";
 import dotenv from "dotenv";
 import YAML from "yaml";
+import {
+  FileConversationStore,
+  LoginRateLimiter,
+  SessionStore,
+  getRequestIp,
+  inferConversationTitle,
+  parseCookies,
+  renderWebUiHtml,
+  setCookie,
+  verifyPassphrase,
+} from "./web-ui.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -27,6 +37,11 @@ const require = createRequire(import.meta.url);
 const writeJson = (response: ServerResponse, statusCode: number, payload: unknown) => {
   response.writeHead(statusCode, { "Content-Type": "application/json" });
   response.end(JSON.stringify(payload));
+};
+
+const writeHtml = (response: ServerResponse, statusCode: number, payload: string) => {
+  response.writeHead(statusCode, { "Content-Type": "text/html; charset=utf-8" });
+  response.end(payload);
 };
 
 const readRequestBody = async (request: IncomingMessage): Promise<unknown> => {
@@ -56,6 +71,11 @@ const listenOnAvailablePort = async (
     const tryListen = (): void => {
       const onListening = (): void => {
         server.off("error", onError);
+        const address = server.address();
+        if (address && typeof address === "object" && typeof address.port === "number") {
+          resolveListen(address.port);
+          return;
+        }
         resolveListen(currentPort);
       };
 
@@ -363,41 +383,6 @@ const writeConfigFile = async (workingDir: string, config: AgentlConfig): Promis
   await writeFile(resolve(workingDir, "agentl.config.js"), serialized, "utf8");
 };
 
-const extractToken = (
-  request: IncomingMessage,
-  authConfig: NonNullable<AgentlConfig["auth"]>,
-): string => {
-  if (authConfig.type === "header") {
-    const headerName = (authConfig.headerName ?? "x-agent-api-key").toLowerCase();
-    const raw = request.headers[headerName];
-    return Array.isArray(raw) ? raw[0] ?? "" : raw ?? "";
-  }
-
-  const authHeader = request.headers.authorization ?? "";
-  if (authHeader.toLowerCase().startsWith("bearer ")) {
-    return authHeader.slice(7).trim();
-  }
-  return "";
-};
-
-const authorizeRequest = async (
-  request: IncomingMessage,
-  config: AgentlConfig | undefined,
-): Promise<boolean> => {
-  const authConfig = config?.auth;
-  if (!authConfig?.required) {
-    return true;
-  }
-  const token = extractToken(request, authConfig);
-  if (!token) {
-    return false;
-  }
-  if (authConfig.validate) {
-    return await authConfig.validate(token, request);
-  }
-  return token === (process.env.AGENT_API_KEY ?? "");
-};
-
 export const initProject = async (
   projectName: string,
   options?: { workingDir?: string },
@@ -452,7 +437,16 @@ export const startDevServer = async (
   const harness = new AgentHarness({ workingDir });
   await harness.initialize();
   const telemetry = new TelemetryEmitter(config?.telemetry);
-  const stateStore = createStateStore(config?.state);
+  const conversationStore = new FileConversationStore(workingDir);
+  const sessionStore = new SessionStore();
+  const loginRateLimiter = new LoginRateLimiter();
+  const passphrase = process.env.AGENT_UI_PASSPHRASE ?? "";
+  const isProduction = resolveHarnessEnvironment() === "production";
+  if (isProduction && passphrase.length === 0) {
+    throw new Error("AGENT_UI_PASSPHRASE is required when AGENTL_ENV/NODE_ENV is production.");
+  }
+  const requireUiAuth = passphrase.length > 0;
+  const secureCookies = isProduction;
 
   const server = createServer(async (request, response) => {
     if (!request.url || !request.method) {
@@ -461,82 +455,250 @@ export const startDevServer = async (
     }
     const [pathname] = request.url.split("?");
 
+    if (pathname === "/" && request.method === "GET") {
+      writeHtml(response, 200, renderWebUiHtml());
+      return;
+    }
+
     if (pathname === "/health" && request.method === "GET") {
       writeJson(response, 200, { status: "ok" });
       return;
     }
 
-    if (!(await authorizeRequest(request, config))) {
-      writeJson(response, 401, {
-        code: "AUTH_ERROR",
-        message: "Authentication failed",
+    const cookies = parseCookies(request);
+    const sessionId = cookies.agentl_session;
+    const session = sessionId ? sessionStore.get(sessionId) : undefined;
+    const ownerId = session?.ownerId ?? "local-owner";
+    const requiresCsrfValidation =
+      request.method !== "GET" && request.method !== "HEAD" && request.method !== "OPTIONS";
+
+    if (pathname === "/api/auth/session" && request.method === "GET") {
+      if (!requireUiAuth) {
+        writeJson(response, 200, { authenticated: true, csrfToken: "" });
+        return;
+      }
+      if (!session) {
+        writeJson(response, 200, { authenticated: false });
+        return;
+      }
+      writeJson(response, 200, {
+        authenticated: true,
+        sessionId: session.sessionId,
+        ownerId: session.ownerId,
+        csrfToken: session.csrfToken,
       });
       return;
     }
 
-    if (pathname === "/run/sync" && request.method === "POST") {
-      try {
-        const input = (await readRequestBody(request)) as RunInput;
-        const output = await harness.runToCompletion(input);
-        await stateStore.set({
-          runId: output.runId,
-          messages: output.messages,
-          updatedAt: Date.now(),
-        });
-        for (const event of output.events) {
-          await telemetry.emit(event);
-        }
-        writeJson(response, 200, {
-          runId: output.runId,
-          status: output.result.status,
-          result: output.result,
-        });
-      } catch (error) {
-        writeJson(response, 500, {
-          code: "RUN_ERROR",
-          message: error instanceof Error ? error.message : "Unknown error",
-        });
+    if (pathname === "/api/auth/login" && request.method === "POST") {
+      if (!requireUiAuth) {
+        writeJson(response, 200, { authenticated: true, csrfToken: "" });
+        return;
       }
+      const ip = getRequestIp(request);
+      const canAttempt = loginRateLimiter.canAttempt(ip);
+      if (!canAttempt.allowed) {
+        writeJson(response, 429, {
+          code: "AUTH_RATE_LIMIT",
+          message: "Too many failed login attempts. Try again later.",
+          retryAfterSeconds: canAttempt.retryAfterSeconds,
+        });
+        return;
+      }
+      const body = (await readRequestBody(request)) as { passphrase?: string };
+      const provided = body.passphrase ?? "";
+      if (!verifyPassphrase(provided, passphrase)) {
+        const failure = loginRateLimiter.registerFailure(ip);
+        writeJson(response, 401, {
+          code: "AUTH_ERROR",
+          message: "Invalid passphrase",
+          retryAfterSeconds: failure.retryAfterSeconds,
+        });
+        return;
+      }
+      loginRateLimiter.registerSuccess(ip);
+      const createdSession = sessionStore.create(ownerId);
+      setCookie(response, "agentl_session", createdSession.sessionId, {
+        httpOnly: true,
+        secure: secureCookies,
+        sameSite: "Lax",
+        path: "/",
+        maxAge: 60 * 60 * 8,
+      });
+      writeJson(response, 200, {
+        authenticated: true,
+        csrfToken: createdSession.csrfToken,
+      });
       return;
     }
 
-    if (pathname === "/run" && request.method === "POST") {
+    if (pathname === "/api/auth/logout" && request.method === "POST") {
+      if (session?.sessionId) {
+        sessionStore.delete(session.sessionId);
+      }
+      setCookie(response, "agentl_session", "", {
+        httpOnly: true,
+        secure: secureCookies,
+        sameSite: "Lax",
+        path: "/",
+        maxAge: 0,
+      });
+      writeJson(response, 200, { ok: true });
+      return;
+    }
+
+    if (pathname.startsWith("/api/")) {
+      if (requireUiAuth && !session) {
+        writeJson(response, 401, {
+          code: "AUTH_ERROR",
+          message: "Authentication required",
+        });
+        return;
+      }
+      if (
+        requireUiAuth &&
+        requiresCsrfValidation &&
+        pathname !== "/api/auth/login" &&
+        request.headers["x-csrf-token"] !== session?.csrfToken
+      ) {
+        writeJson(response, 403, {
+          code: "CSRF_ERROR",
+          message: "Invalid CSRF token",
+        });
+        return;
+      }
+    }
+
+    if (pathname === "/api/conversations" && request.method === "GET") {
+      const conversations = await conversationStore.list(ownerId);
+      writeJson(response, 200, {
+        conversations: conversations.map((conversation) => ({
+          conversationId: conversation.conversationId,
+          title: conversation.title,
+          runtimeRunId: conversation.runtimeRunId,
+          ownerId: conversation.ownerId,
+          tenantId: conversation.tenantId,
+          createdAt: conversation.createdAt,
+          updatedAt: conversation.updatedAt,
+          messageCount: conversation.messages.length,
+        })),
+      });
+      return;
+    }
+
+    if (pathname === "/api/conversations" && request.method === "POST") {
+      const body = (await readRequestBody(request)) as { title?: string };
+      const conversation = await conversationStore.create(ownerId, body.title);
+      writeJson(response, 201, { conversation });
+      return;
+    }
+
+    const conversationPathMatch = pathname.match(/^\/api\/conversations\/([^/]+)$/);
+    if (conversationPathMatch) {
+      const conversationId = decodeURIComponent(conversationPathMatch[1] ?? "");
+      const conversation = await conversationStore.get(conversationId);
+      if (!conversation || conversation.ownerId !== ownerId) {
+        writeJson(response, 404, {
+          code: "CONVERSATION_NOT_FOUND",
+          message: "Conversation not found",
+        });
+        return;
+      }
+      if (request.method === "GET") {
+        writeJson(response, 200, { conversation });
+        return;
+      }
+      if (request.method === "PATCH") {
+        const body = (await readRequestBody(request)) as { title?: string };
+        if (!body.title || body.title.trim().length === 0) {
+          writeJson(response, 400, {
+            code: "VALIDATION_ERROR",
+            message: "title is required",
+          });
+          return;
+        }
+        const updated = await conversationStore.rename(conversationId, body.title);
+        writeJson(response, 200, { conversation: updated });
+        return;
+      }
+      if (request.method === "DELETE") {
+        await conversationStore.delete(conversationId);
+        writeJson(response, 200, { ok: true });
+        return;
+      }
+    }
+
+    const conversationMessageMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
+    if (conversationMessageMatch && request.method === "POST") {
+      const conversationId = decodeURIComponent(conversationMessageMatch[1] ?? "");
+      const conversation = await conversationStore.get(conversationId);
+      if (!conversation || conversation.ownerId !== ownerId) {
+        writeJson(response, 404, {
+          code: "CONVERSATION_NOT_FOUND",
+          message: "Conversation not found",
+        });
+        return;
+      }
+      const body = (await readRequestBody(request)) as {
+        message?: string;
+        parameters?: Record<string, unknown>;
+      };
+      const messageText = body.message?.trim() ?? "";
+      if (!messageText) {
+        writeJson(response, 400, {
+          code: "VALIDATION_ERROR",
+          message: "message is required",
+        });
+        return;
+      }
+      if (
+        conversation.messages.length === 0 &&
+        (conversation.title === "New conversation" || conversation.title.trim().length === 0)
+      ) {
+        conversation.title = inferConversationTitle(messageText);
+      }
       response.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       });
-
+      let latestRunId = conversation.runtimeRunId ?? "";
+      let assistantResponse = "";
       try {
-        const input = (await readRequestBody(request)) as RunInput;
-        let runId = "";
-        let finalResponse = "";
-        const baseMessages: Message[] = [
-          ...(input.messages ?? []),
-          { role: "user", content: input.task },
-        ];
-        for await (const event of harness.run(input)) {
+        for await (const event of harness.run({
+          task: messageText,
+          parameters: body.parameters,
+          messages: conversation.messages,
+        })) {
           if (event.type === "run:started") {
-            runId = event.runId;
+            latestRunId = event.runId;
           }
-          if (event.type === "run:completed") {
-            finalResponse = event.result.response ?? "";
+          if (event.type === "model:chunk") {
+            assistantResponse += event.content;
+          }
+          if (
+            event.type === "run:completed" &&
+            assistantResponse.length === 0 &&
+            event.result.response
+          ) {
+            assistantResponse = event.result.response;
           }
           await telemetry.emit(event);
           response.write(formatSseEvent(event));
         }
-        if (runId) {
-          await stateStore.set({
-            runId,
-            messages: [...baseMessages, { role: "assistant", content: finalResponse }],
-            updatedAt: Date.now(),
-          });
-        }
+        conversation.messages = [
+          ...conversation.messages,
+          { role: "user", content: messageText },
+          { role: "assistant", content: assistantResponse },
+        ];
+        conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
+        conversation.updatedAt = Date.now();
+        await conversationStore.update(conversation);
       } catch (error) {
         response.write(
           formatSseEvent({
             type: "run:error",
-            runId: "run_unknown",
+            runId: latestRunId || "run_unknown",
             error: {
               code: "RUN_ERROR",
               message: error instanceof Error ? error.message : "Unknown error",
@@ -545,57 +707,6 @@ export const startDevServer = async (
         );
       } finally {
         response.end();
-      }
-      return;
-    }
-
-    if (pathname === "/continue" && request.method === "POST") {
-      try {
-        const body = (await readRequestBody(request)) as {
-          runId?: string;
-          message?: string;
-          parameters?: Record<string, unknown>;
-        };
-        if (!body.runId || !body.message) {
-          writeJson(response, 400, {
-            code: "VALIDATION_ERROR",
-            message: "Both runId and message are required",
-          });
-          return;
-        }
-
-        const state = await stateStore.get(body.runId);
-        if (!state) {
-          writeJson(response, 404, {
-            code: "RUN_NOT_FOUND",
-            message: `No conversation found for runId ${body.runId}`,
-          });
-          return;
-        }
-
-        const output = await harness.runToCompletion({
-          task: body.message,
-          parameters: body.parameters,
-          messages: state.messages,
-        });
-        await stateStore.set({
-          runId: output.runId,
-          messages: output.messages,
-          updatedAt: Date.now(),
-        });
-        for (const event of output.events) {
-          await telemetry.emit(event);
-        }
-        writeJson(response, 200, {
-          runId: output.runId,
-          status: output.result.status,
-          result: output.result,
-        });
-      } catch (error) {
-        writeJson(response, 500, {
-          code: "CONTINUE_ERROR",
-          message: error instanceof Error ? error.message : "Unknown error",
-        });
       }
       return;
     }
@@ -711,10 +822,19 @@ export const runInteractive = async (
   await harness.initialize();
   try {
     const { runInteractiveInk } = await import("./run-interactive-ink.js");
-    await runInteractiveInk({
+    await (
+      runInteractiveInk as (input: {
+        harness: AgentHarness;
+        params: Record<string, string>;
+        workingDir: string;
+        conversationStore: FileConversationStore;
+        onSetApprovalCallback?: (cb: (req: ApprovalRequest) => void) => void;
+      }) => Promise<void>
+    )({
       harness,
       params,
       workingDir,
+      conversationStore: new FileConversationStore(workingDir),
       onSetApprovalCallback: (cb: (req: ApprovalRequest) => void) => {
         onApprovalRequest = cb;
         // If there's already a pending request, fire it immediately

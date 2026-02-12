@@ -94,9 +94,9 @@ agentl dev
 Opens a local server at `http://localhost:3000`. Try it:
 
 ```bash
-curl -X POST http://localhost:3000/run \
+curl -X POST http://localhost:3000/api/conversations \
   -H "Content-Type: application/json" \
-  -d '{"task": "What is 2 + 2?"}'
+  -d '{"title": "Quick start"}'
 ```
 
 ### 4. Deploy
@@ -197,10 +197,16 @@ Environment: {{runtime.environment}}
 Pass parameters when calling the agent:
 
 ```bash
-curl -X POST http://localhost:3000/run \
+# Create a conversation
+CONVERSATION_ID=$(curl -s -X POST http://localhost:3000/api/conversations \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Project review"}' | jq -r '.conversation.conversationId')
+
+# Send a message with parameters
+curl -X POST "http://localhost:3000/api/conversations/$CONVERSATION_ID/messages" \
   -H "Content-Type: application/json" \
   -d '{
-    "task": "Review the code",
+    "message": "Review the code",
     "parameters": {
       "projectName": "my-app",
       "customInstructions": "Focus on security issues"
@@ -501,67 +507,28 @@ Your deployed agent exposes these endpoints:
 
 | Endpoint | Use case |
 |----------|----------|
-| `POST /run` | Streaming responses - best for chat UIs, real-time feedback |
-| `POST /run/sync` | Wait for completion - best for scripts, webhooks, simple integrations |
-| `POST /continue` | Continue a multi-turn conversation |
 | `GET /health` | Health checks for load balancers |
+| `GET /api/auth/session` | Session status + CSRF token for browser clients |
+| `POST /api/auth/login` | Passphrase login for browser sessions |
+| `POST /api/auth/logout` | End browser session |
+| `GET /api/conversations` | List stored conversations |
+| `POST /api/conversations` | Create conversation |
+| `GET /api/conversations/:conversationId` | Get conversation transcript |
+| `PATCH /api/conversations/:conversationId` | Rename conversation |
+| `DELETE /api/conversations/:conversationId` | Delete conversation |
+| `POST /api/conversations/:conversationId/messages` | Stream a new assistant response |
 
-### POST /run (streaming)
+> Legacy runtime routes (`/run`, `/run/sync`, `/continue`) were removed in favor of the conversation-centric `/api/conversations/*` surface.
 
-```bash
-curl -X POST https://my-agent.vercel.app/run \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-api-key" \
-  -d '{"task": "Write a hello world function"}'
-```
-
-> **Note:** The `Authorization` header is only required if you've enabled auth in `agentl.config.js`. See [Security](#security).
-
-Response: Server-Sent Events
-
-```
-event: run:started
-data: {"runId": "run_abc123"}
-
-event: model:chunk
-data: {"content": "Here's a hello world function..."}
-
-event: tool:started
-data: {"tool": "write-file", "input": {...}}
-
-event: run:completed
-data: {"runId": "run_abc123", "result": {...}}
-```
-
-### POST /run/sync (wait for completion)
+### POST /api/conversations/:conversationId/messages (streaming)
 
 ```bash
-curl -X POST https://my-agent.vercel.app/run/sync \
+curl -N -X POST https://my-agent.vercel.app/api/conversations/<conversation-id>/messages \
   -H "Content-Type: application/json" \
-  -d '{"task": "What is 2 + 2?"}'
+  -d '{"message": "Write a hello world function"}'
 ```
 
-Response:
-
-```json
-{
-  "runId": "run_abc123",
-  "status": "completed",
-  "result": {
-    "response": "2 + 2 equals 4.",
-    "steps": 1,
-    "tokens": { "input": 150, "output": 12 }
-  }
-}
-```
-
-### POST /continue (multi-turn)
-
-```bash
-curl -X POST https://my-agent.vercel.app/continue \
-  -H "Content-Type: application/json" \
-  -d '{"runId": "run_abc123", "message": "Now multiply by 10"}'
-```
+Response: Server-Sent Events (`run:started`, `model:chunk`, `tool:*`, `run:completed`).
 
 ### TypeScript/JavaScript Client
 
@@ -579,68 +546,21 @@ const agent = new AgentClient({
   apiKey: 'your-api-key'  // Optional, if auth enabled
 })
 
-// Simple request
-const result = await agent.run({ task: 'What is 2 + 2?' })
-console.log(result.response)
-
-// Streaming
-for await (const event of agent.stream({ task: 'Write a poem' })) {
-  if (event.type === 'model:chunk') {
-    process.stdout.write(event.content)
-  }
-}
-
-// Multi-turn conversation
-const conversation = agent.conversation()
-await conversation.send('Create a React component')
-await conversation.send('Now add TypeScript types')
-const result = await conversation.end()
+const created = await agent.createConversation({ title: 'Session' })
+const response = await agent.sendMessage(created.conversationId, 'What is 2 + 2?')
+console.log(response.result.response)
 ```
 
 ## Multi-turn Conversations
 
-### Option 1: Client manages history
+Conversations are persisted and keyed by `conversationId`.
 
-Send the full conversation with each request:
+Typical flow:
 
-```bash
-curl -X POST https://my-agent.vercel.app/run \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "Create a React component"},
-      {"role": "assistant", "content": "Here is a React component..."},
-      {"role": "user", "content": "Now add TypeScript types"}
-    ]
-  }'
-```
-
-### Option 2: Server-side state
-
-Configure a state store:
-
-```javascript
-// agentl.config.js
-export default {
-  state: {
-    provider: 'upstash',  // or 'redis', 'vercel-kv'
-    url: process.env.UPSTASH_REDIS_URL,
-    token: process.env.UPSTASH_REDIS_TOKEN,
-    ttl: 3600  // Conversations expire after 1 hour
-  }
-}
-```
-
-Then use `runId` to continue:
-
-```bash
-# First message
-curl -X POST .../run/sync -d '{"task": "Create a component"}'
-# Response: {"runId": "run_abc123", ...}
-
-# Continue the conversation
-curl -X POST .../continue -d '{"runId": "run_abc123", "message": "Add types"}'
-```
+1. `POST /api/conversations`
+2. `POST /api/conversations/:conversationId/messages`
+3. Repeat step 2 for follow-up turns
+4. `GET /api/conversations/:conversationId` to fetch full transcript
 
 ## Observability
 

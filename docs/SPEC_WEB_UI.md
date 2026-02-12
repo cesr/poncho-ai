@@ -146,17 +146,16 @@ flowchart LR
 
 ### 5.1 Runtime endpoints consumed
 
-- `POST /run` (SSE streaming)
-- `POST /continue` (multi-turn)
+- `POST /api/conversations/:conversationId/messages` (SSE streaming)
 - `GET /health` (readiness)
 
 ### 5.2 Interaction model
 
 - New conversation:
-  - UI invokes server route that maps to `POST /run`
+  - UI invokes `POST /api/conversations`
   - Server stores conversation + first message metadata
 - Continued conversation:
-  - UI invokes server route mapped to `POST /continue`
+  - UI invokes server route mapped to `POST /api/conversations/:conversationId/messages`
   - Server appends messages and updates `updatedAt`
 - Streaming:
   - Preserve low-latency token/chunk rendering in UI
@@ -164,8 +163,8 @@ flowchart LR
 
 ### 5.3 Backward compatibility
 
-- No breaking changes to current agent runtime public endpoints
-- Existing `Authorization`-based API auth remains valid for direct API clients
+- Web and terminal surfaces now use the same conversation-centric API model
+- Existing direct clients should migrate from `/run`/`/continue` to `/api/conversations/*`
 - Web UI auth is additive and browser-specific
 
 ---

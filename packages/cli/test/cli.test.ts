@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEvent, Message } from "@agentl/sdk";
+import { FileConversationStore } from "../src/web-ui.js";
 
 vi.mock("@agentl/harness", () => ({
   AgentHarness: class MockHarness {
@@ -143,7 +144,7 @@ describe("cli", () => {
     expect(basicTest).toContain('name: "Basic sanity"');
   });
 
-  it("supports smoke flow init -> dev -> run endpoint", async () => {
+  it("supports smoke flow init -> dev -> api conversation endpoint", async () => {
     await initProject("smoke-agent", { workingDir: tempDir });
     const projectDir = join(tempDir, "smoke-agent");
 
@@ -153,31 +154,48 @@ describe("cli", () => {
     const health = await fetch(`http://localhost:${port}/health`);
     expect(health.status).toBe(200);
 
-    const runSync = await fetch(`http://localhost:${port}/run/sync`, {
+    const createdConversation = await fetch(`http://localhost:${port}/api/conversations`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task: "hello" }),
+      body: JSON.stringify({ title: "smoke" }),
     });
-    expect(runSync.status).toBe(200);
-    const payload = (await runSync.json()) as {
-      status: string;
-      result: { response: string };
+    expect(createdConversation.status).toBe(201);
+    const createdConversationPayload = (await createdConversation.json()) as {
+      conversation: { conversationId: string };
     };
-    expect(payload.status).toBe("completed");
-    expect(payload.result.response).toBe("hello");
+    const conversationId = createdConversationPayload.conversation.conversationId;
 
-    const continueResponse = await fetch(`http://localhost:${port}/continue`, {
+    const streamResponse = await fetch(
+      `http://localhost:${port}/api/conversations/${conversationId}/messages`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "hello" }),
+      },
+    );
+    expect(streamResponse.status).toBe(200);
+    const streamPayload = await streamResponse.text();
+    expect(streamPayload).toContain("event: model:chunk");
+
+    const getConversation = await fetch(`http://localhost:${port}/api/conversations/${conversationId}`);
+    expect(getConversation.status).toBe(200);
+    const payload = (await getConversation.json()) as {
+      conversation: { messages: Message[] };
+    };
+    expect(payload.conversation.messages.at(-1)?.content).toBe("hello");
+
+    const legacyRunSync = await fetch(`http://localhost:${port}/run/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task: "legacy" }),
+    });
+    expect(legacyRunSync.status).toBe(404);
+    const legacyContinue = await fetch(`http://localhost:${port}/continue`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ runId: "run_test", message: "next" }),
     });
-    expect(continueResponse.status).toBe(200);
-    const continuePayload = (await continueResponse.json()) as {
-      status: string;
-      result: { response: string };
-    };
-    expect(continuePayload.status).toBe("completed");
-    expect(continuePayload.result.response).toBe("next");
+    expect(legacyContinue.status).toBe(404);
 
     await new Promise<void>((resolveClose, rejectClose) => {
       server.close((error) => {
@@ -188,6 +206,145 @@ describe("cli", () => {
         resolveClose();
       });
     });
+  });
+
+  it("supports web ui auth and conversation routes", async () => {
+    await initProject("webui-agent", { workingDir: tempDir });
+    const projectDir = join(tempDir, "webui-agent");
+    process.env.AGENT_UI_PASSPHRASE = "very-secret-passphrase";
+
+    const port = 44000 + Math.floor(Math.random() * 1000);
+    const server = await startDevServer(port, { workingDir: projectDir });
+    try {
+      const sessionState = await fetch(`http://localhost:${port}/api/auth/session`);
+      const sessionPayload = (await sessionState.json()) as { authenticated: boolean };
+      expect(sessionPayload.authenticated).toBe(false);
+
+      const login = await fetch(`http://localhost:${port}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passphrase: "very-secret-passphrase" }),
+      });
+      expect(login.status).toBe(200);
+      const loginPayload = (await login.json()) as { csrfToken: string };
+      const setCookieHeader = login.headers.get("set-cookie");
+      expect(setCookieHeader).toContain("agentl_session=");
+      const cookie = (setCookieHeader ?? "").split(";")[0] ?? "";
+
+      const conversationCreate = await fetch(`http://localhost:${port}/api/conversations`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: cookie,
+          "x-csrf-token": loginPayload.csrfToken,
+        },
+        body: JSON.stringify({ title: "My test conversation" }),
+      });
+      expect(conversationCreate.status).toBe(201);
+      const createdPayload = (await conversationCreate.json()) as {
+        conversation: { conversationId: string };
+      };
+      const conversationId = createdPayload.conversation.conversationId;
+
+      const streamResponse = await fetch(
+        `http://localhost:${port}/api/conversations/${conversationId}/messages`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Cookie: cookie,
+            "x-csrf-token": loginPayload.csrfToken,
+          },
+          body: JSON.stringify({ message: "hello from web ui" }),
+        },
+      );
+      expect(streamResponse.status).toBe(200);
+      const streamText = await streamResponse.text();
+      expect(streamText).toContain("event: model:chunk");
+
+      const conversationRead = await fetch(
+        `http://localhost:${port}/api/conversations/${conversationId}`,
+        {
+          headers: {
+            Cookie: cookie,
+          },
+        },
+      );
+      expect(conversationRead.status).toBe(200);
+      const conversationPayload = (await conversationRead.json()) as {
+        conversation: { messages: Message[] };
+      };
+      expect(conversationPayload.conversation.messages.length).toBeGreaterThan(0);
+    } finally {
+      delete process.env.AGENT_UI_PASSPHRASE;
+      await new Promise<void>((resolveClose, rejectClose) => {
+        server.close((error) => {
+          if (error) {
+            rejectClose(error);
+            return;
+          }
+          resolveClose();
+        });
+      });
+    }
+  });
+
+  it("persists conversation data in shared user store", async () => {
+    const projectDir = join(tempDir, "store-agent");
+    await mkdir(projectDir, { recursive: true });
+    const store = new FileConversationStore(projectDir);
+
+    const created = await store.create("local-owner", "store test");
+    expect(created.messages).toHaveLength(0);
+
+    created.messages = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+    ];
+    await store.update(created);
+
+    const listed = await store.list("local-owner");
+    expect(listed.length).toBeGreaterThan(0);
+    expect(listed[0]?.conversationId).toBe(created.conversationId);
+
+    const opened = await store.get(created.conversationId);
+    expect(opened?.messages.length).toBe(2);
+
+    const removed = await store.delete(created.conversationId);
+    expect(removed).toBe(true);
+  });
+
+  it("supports web ui passphrase auth in production mode", async () => {
+    await initProject("webui-prod-agent", { workingDir: tempDir });
+    const projectDir = join(tempDir, "webui-prod-agent");
+    process.env.AGENT_UI_PASSPHRASE = "prod-secret-passphrase";
+    process.env.NODE_ENV = "production";
+
+    const port = 45000 + Math.floor(Math.random() * 1000);
+    const server = await startDevServer(port, { workingDir: projectDir });
+    try {
+      const login = await fetch(`http://localhost:${port}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passphrase: "prod-secret-passphrase" }),
+      });
+      expect(login.status).toBe(200);
+      const setCookieHeader = login.headers.get("set-cookie") ?? "";
+      expect(setCookieHeader).toContain("agentl_session=");
+      expect(setCookieHeader).toContain("Secure");
+    } finally {
+      delete process.env.AGENT_UI_PASSPHRASE;
+      delete process.env.NODE_ENV;
+      await new Promise<void>((resolveClose, rejectClose) => {
+        server.close((error) => {
+          if (error) {
+            rejectClose(error);
+            return;
+          }
+          resolveClose();
+        });
+      });
+    }
   });
 
   it("supports auxiliary commands and config updates", async () => {
