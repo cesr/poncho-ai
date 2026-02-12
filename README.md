@@ -1,6 +1,8 @@
 # AgentL
 
-An open framework for building and deploying AI agents. Develop locally, deploy anywhere.
+A git-native framework for isolated AI agents you can deploy to the cloud.
+
+Program them by talking to them locally, then run them safely via API or web UI, with your own skills/tools and a traceable, eval-compatible runtime.
 
 ```bash
 npm install -g agentl
@@ -18,14 +20,15 @@ agentl dev
 
 ## What is AgentL?
 
-AgentL lets you build AI agents that can use tools, browse the web, execute code, and more. You define your agent in a single `AGENT.md` file, develop locally, then deploy to any cloud platform.
+AgentL is a framework for building custom AI agents that are version-controlled in git, developed locally, and deployed in isolated cloud environments. You define behavior in `AGENT.md`, iterate by chatting with the agent on your machine, and expose the same agent safely through a UI/API in production. In production, agents can only act through the skills and tools you configure.
 
 **Key features:**
 
-- **Simple**: One markdown file defines your agent
-- **Portable**: Build once, deploy to Vercel, AWS, Fly.io, or anywhere
-- **Extensible**: Add skills from npm or connect MCP servers for tools
-- **Observable**: OpenTelemetry events for debugging and monitoring
+- **Git-native**: Agent behavior, skills, and tests are version-controlled in your repository
+- **Isolated deployment**: Build once and run safely on Vercel, AWS, Fly.io, Docker, or other runtimes
+- **Programmable by conversation**: Develop by talking to the agent locally, then reuse the same config anywhere
+- **Tool/skill-driven runtime**: Deployed agents act through configured skills, MCP servers, and tools
+- **Fully traceable and eval-ready**: OpenTelemetry traces + built-in `agentl test` workflows
 
 ## Quick Start
 
@@ -219,16 +222,17 @@ agentl add ./my-skills/custom-tool
 
 > **Note:** You can use `npm install` directly, but `agentl add` will warn you if the package isn't a valid skill.
 
-### Available skills
+### Available capabilities
 
-| Package | Tools | Description |
-|---------|-------|-------------|
-| `@agentl/file-system` | read-file, write-file, glob, grep | File operations |
-| `@agentl/code-execution` | run-code | Execute JS/TS/Python |
-| `@agentl/web-fetch` | fetch-url, fetch-json | HTTP requests |
-| `@agentl/web-search` | search | Web search |
-| `@agentl/git` | git-status, git-diff, git-commit | Git operations |
-| `@agentl/shell` | run-command | Shell commands (restricted) |
+By default, AgentL includes built-in filesystem tools from the harness:
+
+| Tool | Description |
+|------|-------------|
+| `list_directory` | List files and folders at a path |
+| `read_file` | Read UTF-8 text file contents |
+| `write_file` | Write UTF-8 text file contents (create or overwrite; gated by environment/policy) |
+
+Additional skills can be installed via `agentl add <package-or-path>`.
 
 ### How skill discovery works
 
