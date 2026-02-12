@@ -457,6 +457,7 @@ export const InteractiveInkApp = ({
 
       let responseText = "";
       let streamedText = "";
+      let committedText = false; // true if streaming text was already flushed to lines mid-turn
       let sawChunk = false;
       let toolEvents = 0;
       let runFailed = false;
@@ -497,6 +498,19 @@ export const InteractiveInkApp = ({
             event.type === "tool:approval:granted" ||
             event.type === "tool:approval:denied"
           ) {
+            // Flush any accumulated streaming text into lines before the tool
+            // event, so tool logs appear AFTER the assistant text, not above it.
+            if (streamedText.length > 0) {
+              if (streamFlushRef.current) {
+                clearTimeout(streamFlushRef.current);
+                streamFlushRef.current = undefined;
+              }
+              appendLine("assistant", `assistant> ${streamedText}`, turn);
+              committedText = true;
+              streamedText = "";
+              streamBufferRef.current = "";
+              setStreamingText("");
+            }
             toolEvents += handleToolEvent(event, turn);
           } else if (event.type === "run:error") {
             runFailed = true;
@@ -532,14 +546,18 @@ export const InteractiveInkApp = ({
           streamFlushRef.current = undefined;
         }
         appendLine("meta", "", turn);
-        if (streamedText.length > 0 || responseText.length > 0) {
-          appendLine("assistant", `assistant> ${streamedText || responseText}`, turn);
-        } else {
+        // Only append final assistant text if there's new content not yet committed
+        if (streamedText.length > 0) {
+          appendLine("assistant", `assistant> ${streamedText}`, turn);
+        } else if (!committedText && responseText.length > 0) {
+          appendLine("assistant", `assistant> ${responseText}`, turn);
+        } else if (!committedText) {
           appendLine("assistant", "assistant> (no response)", turn);
         }
         appendLine("meta", "", turn);
 
-        if (!runFailed && toolEvents === 0 && FAUX_TOOL_LOG_PATTERN.test(streamedText || responseText)) {
+        const fullResponse = responseText || streamedText;
+        if (!runFailed && toolEvents === 0 && FAUX_TOOL_LOG_PATTERN.test(fullResponse)) {
           appendLine(
             "warning",
             "warning> assistant described tool execution but no real tool events occurred.",
@@ -571,7 +589,7 @@ export const InteractiveInkApp = ({
         messagesRef.current = [
           ...messagesRef.current,
           { role: "user", content: task },
-          { role: "assistant", content: streamedText || responseText },
+          { role: "assistant", content: responseText },
         ];
         setStreamingText("");
         streamBufferRef.current = "";
