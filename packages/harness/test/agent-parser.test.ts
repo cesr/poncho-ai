@@ -8,7 +8,7 @@ name: test-agent
 description: test description
 model:
   provider: anthropic
-  name: claude-sonnet-4-20250514
+  name: claude-opus-4-5
 ---
 
 # Hello

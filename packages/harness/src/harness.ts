@@ -192,7 +192,7 @@ export class AgentHarness {
       yield pushEvent({ type: "model:request", tokens: 0 });
 
       const modelCallInput = {
-        modelName: agent.frontmatter.model?.name ?? "claude-sonnet-4-20250514",
+        modelName: agent.frontmatter.model?.name ?? "claude-opus-4-5",
         temperature: agent.frontmatter.model?.temperature,
         maxTokens: agent.frontmatter.model?.maxTokens,
         systemPrompt: integrityPrompt,

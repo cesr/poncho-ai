@@ -14,7 +14,7 @@ describe("agent harness", () => {
 name: default-tools-agent
 model:
   provider: anthropic
-  name: claude-sonnet-4-20250514
+  name: claude-opus-4-5
 ---
 
 # Default Tools Agent
@@ -39,7 +39,7 @@ model:
 name: prod-tools-agent
 model:
   provider: anthropic
-  name: claude-sonnet-4-20250514
+  name: claude-opus-4-5
 ---
 
 # Prod Tools Agent
@@ -64,7 +64,7 @@ model:
 name: local-tools-agent
 model:
   provider: anthropic
-  name: claude-sonnet-4-20250514
+  name: claude-opus-4-5
 ---
 
 # Local Tools Agent
@@ -109,7 +109,7 @@ export default defineTool({
 name: skill-context-agent
 model:
   provider: anthropic
-  name: claude-sonnet-4-20250514
+  name: claude-opus-4-5
 ---
 
 # Skill Context Agent
@@ -167,7 +167,7 @@ When users ask for summarization, prefer calling summarize_text.
 name: test-agent
 model:
   provider: anthropic
-  name: claude-sonnet-4-20250514
+  name: claude-opus-4-5
 ---
 
 # Test Agent
@@ -228,7 +228,7 @@ model:
 name: approval-agent
 model:
   provider: anthropic
-  name: claude-sonnet-4-20250514
+  name: claude-opus-4-5
 ---
 
 # Approval Agent
@@ -300,7 +300,7 @@ model:
 name: approval-agent-ok
 model:
   provider: anthropic
-  name: claude-sonnet-4-20250514
+  name: claude-opus-4-5
 ---
 
 # Approval Agent OK

@@ -107,6 +107,27 @@ This document tracks implementation progress against `docs/SPEC.md` after comple
 - [x] Vercel production deploy path validated end-to-end (health + live `/run/sync` conversation).
 - [ ] Production-grade deploy bundles and runtime bootstrap parity for Docker/Lambda/Fly.
 
+### Web UI Stream (`docs/SPEC_WEB_UI.md`)
+
+#### Phase 1 (MVP)
+
+- [ ] ChatGPT-style web shell (sidebar + chat pane).
+- [ ] Streaming chat wired to `/run` and continuation wired to `/continue`.
+- [ ] Conversation CRUD (create/list/open/rename/delete) with persistence.
+- [ ] Hardened passphrase login + secure session cookie baseline.
+
+#### Phase 2 (Usability + Security Hardening)
+
+- [ ] Conversation search and improved connection/retry UX.
+- [ ] Session rotation/expiry UX and stronger session lifecycle controls.
+- [ ] Accessibility and empty/error/loading state polish.
+
+#### Phase 3 (Tenant-Aware Expansion)
+
+- [ ] Tenant-aware authorization model implementation.
+- [ ] Optional enterprise auth adapters / stricter deployment profiles.
+- [ ] Migration and compatibility validation from single-user defaults.
+
 ## Notes
 
 - This tracker now reflects post-MVP expansion and highlights remaining parity gaps.

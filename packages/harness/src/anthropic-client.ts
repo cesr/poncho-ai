@@ -64,7 +64,7 @@ export class AnthropicModelClient implements ModelClient {
       const maybeStatus = (error as { status?: number }).status;
       if (maybeStatus === 404) {
         throw new Error(
-          `Anthropic model not found: ${input.modelName}. Update AGENT.md frontmatter model.name to a valid model (for example: claude-sonnet-4-20250514).`,
+          `Anthropic model not found: ${input.modelName}. Update AGENT.md frontmatter model.name to a valid model (for example: claude-opus-4-5).`,
         );
       }
       throw error;

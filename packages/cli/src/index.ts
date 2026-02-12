@@ -140,7 +140,7 @@ name: my-agent
 description: A helpful AgentL assistant
 model:
   provider: anthropic
-  name: claude-sonnet-4-20250514
+  name: claude-opus-4-5
   temperature: 0.2
 limits:
   maxSteps: 50
@@ -160,6 +160,14 @@ Environment: {{runtime.environment}}
 - Explain your reasoning clearly
 - Ask clarifying questions when requirements are ambiguous
 - Never claim a file/tool change unless the corresponding tool call actually succeeded
+
+## Default Capabilities in a Fresh Project
+
+- Built-in tools: \`list_directory\` and \`read_file\`
+- \`write_file\` is available in development, and disabled by default in production
+- A starter local skill is included (\`starter-echo\`)
+- Bash/shell commands are **not** available unless you install and enable a shell tool/skill
+- Git operations are only available if a git-capable tool/skill is configured
 
 ${AGENT_SKILL_GUIDANCE}
 `;

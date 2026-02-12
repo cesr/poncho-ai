@@ -81,7 +81,7 @@ export const parseAgentMarkdown = (content: string): ParsedAgent => {
             name:
               typeof modelValue.name === "string"
                 ? modelValue.name
-                : "claude-sonnet-4-20250514",
+                : "claude-opus-4-5",
             temperature: asNumberOrUndefined(modelValue.temperature),
             maxTokens: asNumberOrUndefined(modelValue.maxTokens),
           }

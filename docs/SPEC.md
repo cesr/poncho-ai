@@ -25,7 +25,8 @@
 10. [Observability & Telemetry](#10-observability--telemetry)
 11. [Security Considerations](#11-security-considerations)
 12. [Deployed Agent HTTP API](#12-deployed-agent-http-api)
-13. [Open Questions](#13-open-questions)
+13. [Web UI Specification](#13-web-ui-specification)
+14. [Open Questions](#14-open-questions)
 
 ---
 
@@ -159,7 +160,7 @@ name: code-assistant
 description: A software development assistant
 model:
   provider: anthropic
-  name: claude-sonnet-4
+  name: claude-opus-4-5
   temperature: 0.7
 ---
 
@@ -193,7 +194,7 @@ description: string       # Human-readable description
 
 model:                    # Model configuration
   provider: string        # anthropic, openai, etc.
-  name: string            # claude-sonnet-4, gpt-4, etc.
+  name: string            # claude-opus-4-5, gpt-4, etc.
   temperature: number     # 0.0 - 1.0
   maxTokens: number       # Max response tokens
 
@@ -1614,9 +1615,27 @@ Authorization: Bearer your-secret-key
 
 ---
 
-## 13. Open Questions
+## 13. Web UI Specification
 
-### 13.1 Decisions Made
+A dedicated Web UI specification is maintained in:
+
+- [`docs/SPEC_WEB_UI.md`](./SPEC_WEB_UI.md)
+
+This document defines a ChatGPT-like interface (conversation sidebar + streaming chat pane) for local and deployed usage, including:
+
+- UX and interaction model
+- runtime endpoint integration (`/run`, `/continue`, `/health`)
+- conversation/session data model
+- default hardened passphrase security profile for browser access
+- phased rollout plan and acceptance criteria
+
+The Web UI auth/session model is additive and does not replace direct API auth for existing clients.
+
+---
+
+## 14. Open Questions
+
+### 14.1 Decisions Made
 
 | Question | Decision |
 |----------|----------|
@@ -1627,7 +1646,7 @@ Authorization: Bearer your-secret-key
 | **Deployment model** | `agentl build` → deploy anywhere |
 | **Code execution** | Runs on deployment platform (Vercel sandbox, Lambda, etc.) |
 
-### 13.2 Technical Decisions Needed
+### 14.2 Technical Decisions Needed
 
 | Question | Options | Notes |
 |----------|---------|-------|
@@ -1635,7 +1654,7 @@ Authorization: Bearer your-secret-key
 | **Skill versioning** | Lock file? package.json? | How to pin skill versions |
 | **Remote MCP session lifecycle** | Reconnect/backoff/heartbeat policies | Reliability vs complexity |
 
-### 13.3 Check Latitude Repo for Reusable Code
+### 14.3 Check Latitude Repo for Reusable Code
 
 Before implementation, evaluate these components from `latitude-llm` for potential reuse:
 
@@ -1653,7 +1672,7 @@ Before implementation, evaluate these components from `latitude-llm` for potenti
 - Platform deployment code (we build artifacts, user deploys)
 - Billing/auth/team management (platform concerns)
 
-### 13.4 Product Decisions Needed
+### 14.4 Product Decisions Needed
 
 | Question | Options | Notes |
 |----------|---------|-------|
@@ -1661,7 +1680,7 @@ Before implementation, evaluate these components from `latitude-llm` for potenti
 | **Agent templates** | Code assistant, support bot, etc. | Starter templates for common use cases |
 | **Documentation** | Standalone site or Latitude docs | Where does AgentL docs live? |
 
-### 13.5 Latitude Platform Integration
+### 14.5 Latitude Platform Integration
 
 When using Latitude (optional), you get additional features:
 

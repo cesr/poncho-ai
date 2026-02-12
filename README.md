@@ -114,34 +114,42 @@ docker build -t my-agent .
 
 ## The AGENT.md File
 
-Your agent is defined in a single `AGENT.md` file with YAML frontmatter:
+Your agent is defined in a single `AGENT.md` file with YAML frontmatter. This is the default scaffold from `agentl init`:
 
 ```markdown
 ---
-name: code-assistant
-description: A helpful coding assistant
+name: my-agent
+description: A helpful AgentL assistant
 model:
   provider: anthropic
-  name: claude-sonnet-4
+  name: claude-opus-4-5
+  temperature: 0.2
+limits:
+  maxSteps: 50
+  timeout: 300
 ---
 
-# Code Assistant
+# My Agent
 
-You are a helpful coding assistant. You help users write, debug, and understand code.
+You are a helpful assistant built with AgentL.
 
-## Guidelines
+Working directory: {{runtime.workingDir}}
+Environment: {{runtime.environment}}
 
-- Always read existing code before suggesting changes
+## Task Guidance
+
+- Use tools when needed
 - Explain your reasoning clearly
-- Write clean, maintainable code
-- Ask for clarification when requirements are unclear
+- Ask clarifying questions when requirements are ambiguous
+- Never claim a file/tool change unless the corresponding tool call actually succeeded
 
-## What you can do
+## Default Capabilities in a Fresh Project
 
-- Read and write files
-- Execute code to test solutions
-- Search the web for documentation
-- Use git for version control
+- Built-in tools: `list_directory` and `read_file`
+- `write_file` is available in development, and disabled by default in production
+- A starter local skill is included (`starter-echo`)
+- Bash/shell commands are **not** available unless you install and enable a shell tool/skill
+- Git operations are only available if a git-capable tool/skill is configured
 ```
 
 ### Frontmatter options
@@ -156,7 +164,7 @@ description: What this agent does
 
 model:
   provider: anthropic          # anthropic, openai
-  name: claude-sonnet-4        # Model to use
+  name: claude-opus-4-5        # Model to use
   temperature: 0.7             # 0.0 - 1.0
   maxTokens: 4096              # Max tokens in model response
 
@@ -825,7 +833,7 @@ export default {
 name: ops-assistant
 model:
   provider: anthropic
-  name: claude-sonnet-4
+  name: claude-opus-4-5
 ---
 
 # Operations Assistant
@@ -847,7 +855,7 @@ You help teams with operational workflows by using approved tools and skills.
 name: research-assistant
 model:
   provider: anthropic
-  name: claude-sonnet-4
+  name: claude-opus-4-5
 ---
 
 # Research Assistant
