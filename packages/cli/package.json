@@ -20,13 +20,23 @@
     "commander": "^12.0.0",
     "dotenv": "^16.4.0",
     "esbuild": "^0.25.9",
-    "ora": "^8.2.0",
+    "ink": "^6.7.0",
+    "ink-scroll-view": "^0.3.6",
+    "react": "^19.2.4",
+    "react-devtools-core": "^6.1.5",
     "yaml": "^2.8.1"
   },
   "devDependencies": {
+    "@types/react": "^19.2.14",
     "tsup": "^8.0.0",
     "vitest": "^1.4.0"
   },
-  "keywords": ["ai", "agent", "cli", "llm", "claude"],
+  "keywords": [
+    "ai",
+    "agent",
+    "cli",
+    "llm",
+    "claude"
+  ],
   "license": "MIT"
 }

@@ -8,7 +8,6 @@ import {
 } from "node:http";
 import { dirname, resolve } from "node:path";
 import { createRequire } from "node:module";
-import readline from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import {
   AgentHarness,
@@ -20,7 +19,6 @@ import {
 import type { AgentEvent, Message, RunInput } from "@agentl/sdk";
 import { Command } from "commander";
 import dotenv from "dotenv";
-import ora from "ora";
 import YAML from "yaml";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -39,29 +37,6 @@ const readRequestBody = async (request: IncomingMessage): Promise<unknown> => {
   const body = Buffer.concat(chunks).toString("utf8");
   return body.length > 0 ? (JSON.parse(body) as unknown) : {};
 };
-
-const sleep = async (ms: number): Promise<void> =>
-  await new Promise((resolveSleep) => {
-    setTimeout(resolveSleep, ms);
-  });
-
-const formatDuration = (ms: number): string => {
-  if (ms < 1000) {
-    return `${ms}ms`;
-  }
-  return `${(ms / 1000).toFixed(1)}s`;
-};
-
-const typeOut = async (text: string): Promise<void> => {
-  const tokens = text.split(/(\s+)/).filter((token) => token.length > 0);
-  for (const token of tokens) {
-    process.stdout.write(token);
-    await sleep(12);
-  }
-};
-
-const FAUX_TOOL_LOG_PATTERN =
-  /Tool Used:|Tool Result:|\blist_skills\b|\bcreate_skill\b|\bedit_skill\b/i;
 
 const resolveHarnessEnvironment = (): "development" | "staging" | "production" => {
   const value = (process.env.AGENTL_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
@@ -686,138 +661,17 @@ export const runInteractive = async (
   params: Record<string, string>,
 ): Promise<void> => {
   dotenv.config({ path: resolve(workingDir, ".env") });
-  const harness = new AgentHarness({ workingDir });
-  await harness.initialize();
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
+  const harness = new AgentHarness({
+    workingDir,
+    environment: resolveHarnessEnvironment(),
   });
-  const messages: Message[] = [];
-  let turn = 1;
-
-  process.stdout.write("AgentL Interactive\n");
-  process.stdout.write("Type 'exit' to quit.\n");
-  process.stdout.write("------------------------------------------------------------\n");
-  while (true) {
-    const task = await rl.question("you> ");
-    if (task.trim().toLowerCase() === "exit") {
-      break;
-    }
-    const turnStart = Date.now();
-    let responseText = "";
-    let toolEvents = 0;
-    let runFailed = false;
-    let sawChunk = false;
-    let assistantLineOpen = false;
-    let spinner:
-      | {
-          stop: () => void;
-        }
-      | undefined;
-    process.stdout.write(`\n--- turn ${turn} ---\n`);
-    for await (const event of harness.run({
-      task,
-      parameters: params,
-      messages,
-    })) {
-      if (event.type === "model:request" && !spinner) {
-        spinner = ora({
-          text: "assistant thinking...",
-          discardStdin: false,
-        }).start();
-      } else if (event.type === "model:chunk") {
-        if (spinner) {
-          spinner.stop();
-          spinner = undefined;
-        }
-        if (!sawChunk) {
-          sawChunk = true;
-          assistantLineOpen = true;
-          process.stdout.write("assistant> ");
-        }
-        responseText += event.content;
-        process.stdout.write(event.content);
-      } else if (event.type === "tool:started") {
-        if (spinner) {
-          spinner.stop();
-          spinner = undefined;
-        }
-        if (assistantLineOpen) {
-          process.stdout.write("\n");
-          assistantLineOpen = false;
-        }
-        toolEvents += 1;
-        process.stdout.write(`tools> start ${event.tool}\n`);
-      } else if (event.type === "tool:completed") {
-        if (spinner) {
-          spinner.stop();
-          spinner = undefined;
-        }
-        if (assistantLineOpen) {
-          process.stdout.write("\n");
-          assistantLineOpen = false;
-        }
-        process.stdout.write(`tools> done  ${event.tool}\n`);
-      } else if (event.type === "tool:error") {
-        if (spinner) {
-          spinner.stop();
-          spinner = undefined;
-        }
-        if (assistantLineOpen) {
-          process.stdout.write("\n");
-          assistantLineOpen = false;
-        }
-        process.stdout.write(`tools> error ${event.tool}: ${event.error}\n`);
-      } else if (event.type === "run:error") {
-        if (spinner) {
-          spinner.stop();
-          spinner = undefined;
-        }
-        if (assistantLineOpen) {
-          process.stdout.write("\n");
-          assistantLineOpen = false;
-        }
-        runFailed = true;
-        process.stdout.write(`error> ${event.error.message}\n`);
-      } else if (event.type === "run:completed" && !responseText) {
-        if (spinner) {
-          spinner.stop();
-          spinner = undefined;
-        }
-        responseText = event.result.response ?? "";
-        if (responseText.length > 0) {
-          if (!sawChunk) {
-            assistantLineOpen = true;
-            process.stdout.write("assistant> ");
-            await typeOut(responseText);
-          } else {
-            process.stdout.write(responseText);
-          }
-        }
-      }
-    }
-    if (spinner) {
-      spinner.stop();
-      spinner = undefined;
-    }
-    if (assistantLineOpen) {
-      process.stdout.write("\n");
-    }
-    if (!runFailed && toolEvents === 0 && FAUX_TOOL_LOG_PATTERN.test(responseText)) {
-      process.stdout.write(
-        "warning> assistant text described tool execution, but no real tool events occurred.\n",
-      );
-    }
-    process.stdout.write(
-      `meta> ${formatDuration(Date.now() - turnStart)} | tools: ${toolEvents}\n`,
-    );
-    process.stdout.write("------------------------------------------------------------\n");
-
-    messages.push({ role: "user", content: task });
-    messages.push({ role: "assistant", content: responseText });
-    turn += 1;
+  await harness.initialize();
+  try {
+    const { runInteractiveInk } = await import("./run-interactive-ink.js");
+    await runInteractiveInk({ harness, params, workingDir });
+  } finally {
+    await harness.shutdown();
   }
-  rl.close();
 };
 
 export const listTools = async (workingDir: string): Promise<void> => {
