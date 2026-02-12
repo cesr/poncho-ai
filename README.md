@@ -342,22 +342,15 @@ Options:
 agentl tools
 ```
 
-Shows all tools available to your agent:
+Shows all currently registered tools:
 
 ```
-Skills:
-  @agentl/file-system
-    - read-file: Read contents of a file
-    - write-file: Write content to a file
-    - glob: Find files matching a pattern
-    - grep: Search file contents
-
-  ./skills/my-skill
-    - my-tool: Does something useful
-
-MCP Servers:
-  @modelcontextprotocol/server-filesystem
-    - read_file, write_file, list_directory
+Available tools:
+- list_directory: List files and folders at a path
+- read_file: Read UTF-8 text file contents
+- write_file: Write UTF-8 text file contents (may be disabled by environment/policy)
+- my_tool: Example custom tool loaded from a local skill (if present)
+- remote_tool: Example tool discovered from a configured remote MCP server (if connected)
 ```
 
 ### Test your agent
@@ -648,10 +641,10 @@ curl -X POST .../continue -d '{"runId": "run_abc123", "message": "Add types"}'
 Logs print to console:
 
 ```
-[run:abc123] Started
-[run:abc123] Step 1: model request (1500 tokens)
-[run:abc123] Step 1: tool "read-file" (45ms)
-[run:abc123] Completed (3 steps, 2340 tokens)
+[event] run:started {"type":"run:started","runId":"run_abc123","agentId":"my-agent"}
+[event] tool:started {"type":"tool:started","tool":"read_file","input":{"path":"README.md"}}
+[event] tool:completed {"type":"tool:completed","tool":"read_file","duration":45,"output":{"path":"README.md","content":"..."}}
+[event] run:completed {"type":"run:completed","runId":"run_abc123","result":{"status":"completed","response":"...","steps":3,"tokens":{"input":1500,"output":840}}}
 ```
 
 ### Production telemetry
@@ -744,7 +737,6 @@ export default {
       apiKey: process.env.LATITUDE_API_KEY,
       projectId: process.env.LATITUDE_PROJECT_ID,
       path: process.env.LATITUDE_PATH, // Prompt path in Latitude
-      // documentPath is also supported as a legacy alias
     },
   },
 
@@ -826,26 +818,26 @@ export default {
 
 ## Examples
 
-### Code Assistant
+### Operations Assistant
 
 ```markdown
 ---
-name: code-assistant
+name: ops-assistant
 model:
   provider: anthropic
   name: claude-sonnet-4
 ---
 
-# Code Assistant
+# Operations Assistant
 
-You are an expert software engineer. Help users write, debug, and improve code.
+You help teams with operational workflows by using approved tools and skills.
 
 ## Guidelines
 
-- Read existing code before making changes
-- Write clean, well-documented code
-- Suggest tests for new functionality
-- Explain your reasoning
+- Use available tools only when needed
+- Ask clarifying questions when requests are ambiguous
+- Keep responses concise and action-oriented
+- Return structured, auditable outputs
 ```
 
 ### Research Assistant
@@ -966,18 +958,22 @@ echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
 
 ### "Tool not found: xyz"
 
-Install the skill that provides the tool:
+Add or create a skill that provides the tool:
 
 ```bash
-agentl add @agentl/file-system
+# Install from npm/git/path
+agentl add <package-or-path>
+
+# Or create a local skill in ./skills/<skill-name>/ with SKILL.md and tools/
 ```
 
 ### "MCP server failed to connect"
 
 Check that:
-1. The server package is installed
-2. Required environment variables are set
-3. For remote servers, the URL is accessible
+1. A remote MCP server is configured (`agentl mcp list`)
+2. The MCP URL is correct and reachable (`ws://` for local dev, `wss://` for production)
+3. Required environment variables/secrets are set
+4. Any required auth headers/tokens expected by the remote server are configured
 
 ### Agent keeps running forever
 
