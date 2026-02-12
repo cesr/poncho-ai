@@ -366,6 +366,15 @@ agentl run "Explain this code" --file ./src/index.ts
 agentl run --interactive
 ```
 
+Interactive mode uses native terminal I/O (readline + stdout), so it behaves like a standard CLI:
+
+- Native terminal scrollback and text selection (mouse wheel, copy, paste).
+- Streaming assistant output is printed directly to stdout.
+- Tool events are printed inline during the turn (`tools> start`, `tools> done`, `tools> error`).
+- Approval-gated tools prompt for `y/n` confirmation when approval is required.
+- Input is line-based (`Enter` sends the prompt).
+- Built-in commands: `/help`, `/clear`, `/tools`, `/exit`.
+
 ### Hot reload
 
 The dev server watches for changes to:
