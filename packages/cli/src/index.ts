@@ -661,14 +661,60 @@ export const runInteractive = async (
   params: Record<string, string>,
 ): Promise<void> => {
   dotenv.config({ path: resolve(workingDir, ".env") });
+
+  // Approval bridge: the harness calls this handler which creates a pending
+  // promise. The Ink UI picks up the pending request and shows a Y/N prompt.
+  // The user's response resolves the promise.
+  type ApprovalRequest = {
+    tool: string;
+    input: Record<string, unknown>;
+    approvalId: string;
+    resolve: (approved: boolean) => void;
+  };
+  let pendingApproval: ApprovalRequest | null = null;
+  let onApprovalRequest: ((req: ApprovalRequest) => void) | null = null;
+
+  const approvalHandler = async (request: {
+    tool: string;
+    input: Record<string, unknown>;
+    runId: string;
+    step: number;
+    approvalId: string;
+  }): Promise<boolean> => {
+    return new Promise<boolean>((resolveApproval) => {
+      const req: ApprovalRequest = {
+        tool: request.tool,
+        input: request.input,
+        approvalId: request.approvalId,
+        resolve: resolveApproval,
+      };
+      pendingApproval = req;
+      if (onApprovalRequest) {
+        onApprovalRequest(req);
+      }
+    });
+  };
+
   const harness = new AgentHarness({
     workingDir,
     environment: resolveHarnessEnvironment(),
+    approvalHandler,
   });
   await harness.initialize();
   try {
     const { runInteractiveInk } = await import("./run-interactive-ink.js");
-    await runInteractiveInk({ harness, params, workingDir });
+    await runInteractiveInk({
+      harness,
+      params,
+      workingDir,
+      onSetApprovalCallback: (cb: (req: ApprovalRequest) => void) => {
+        onApprovalRequest = cb;
+        // If there's already a pending request, fire it immediately
+        if (pendingApproval) {
+          cb(pendingApproval);
+        }
+      },
+    });
   } finally {
     await harness.shutdown();
   }

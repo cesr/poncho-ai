@@ -41,9 +41,6 @@ importers:
       ink:
         specifier: ^6.7.0
         version: 6.7.0(@types/react@19.2.14)(react-devtools-core@6.1.5)(react@19.2.4)
-      ink-scroll-view:
-        specifier: ^0.3.6
-        version: 0.3.6(ink@6.7.0(@types/react@19.2.14)(react-devtools-core@6.1.5)(react@19.2.4))(react@19.2.4)
       react:
         specifier: ^19.2.4
         version: 19.2.4
@@ -1777,12 +1774,6 @@ packages:
 
   inherits@2.0.4:
     resolution: {integrity: sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ==}
-
-  ink-scroll-view@0.3.6:
-    resolution: {integrity: sha512-XqLkmFFCA5Ow2lVyvv7q0aVHzB78XojIM8gZMQ3//lvy8ZDpJsXWtTRwsCEsdQHnwvMCDCnKCzgF4xkkzoN8mQ==}
-    peerDependencies:
-      ink: ^5 || ^6
-      react: ^18 || ^19
 
   ink@6.7.0:
     resolution: {integrity: sha512-dhB16KfdTO8yYwF2K0E4wPXpL88tdrjjB6w44AZ0ljSktYoUQQcxccq9KL1vpRhk8JIa0A7B7zvjajHqI42teA==}
@@ -4480,11 +4471,6 @@ snapshots:
   indent-string@5.0.0: {}
 
   inherits@2.0.4: {}
-
-  ink-scroll-view@0.3.6(ink@6.7.0(@types/react@19.2.14)(react-devtools-core@6.1.5)(react@19.2.4))(react@19.2.4):
-    dependencies:
-      ink: 6.7.0(@types/react@19.2.14)(react-devtools-core@6.1.5)(react@19.2.4)
-      react: 19.2.4
 
   ink@6.7.0(@types/react@19.2.14)(react-devtools-core@6.1.5)(react@19.2.4):
     dependencies:
