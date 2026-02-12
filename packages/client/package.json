@@ -1,0 +1,26 @@
+{
+  "name": "@agentl/client",
+  "version": "0.1.0",
+  "description": "TypeScript client for calling deployed AgentL agents",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest",
+    "lint": "eslint src/"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "vitest": "^1.4.0"
+  },
+  "keywords": ["ai", "agent", "client", "sdk"],
+  "license": "MIT"
+}

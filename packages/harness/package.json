@@ -1,0 +1,32 @@
+{
+  "name": "@agentl/harness",
+  "version": "0.1.0",
+  "description": "Agent execution runtime - conversation loop, tool dispatch, streaming",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "@agentl/sdk": "workspace:*",
+    "@anthropic-ai/sdk": "^0.24.0",
+    "mustache": "^4.2.0",
+    "yaml": "^2.4.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "vitest": "^1.4.0"
+  },
+  "keywords": ["ai", "agent", "harness", "runtime"],
+  "license": "MIT"
+}

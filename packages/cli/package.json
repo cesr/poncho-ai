@@ -1,0 +1,29 @@
+{
+  "name": "agentl",
+  "version": "0.1.0",
+  "description": "CLI for building and deploying AI agents",
+  "type": "module",
+  "bin": {
+    "agentl": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "@agentl/harness": "workspace:*",
+    "@agentl/sdk": "workspace:*",
+    "commander": "^12.0.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "vitest": "^1.4.0"
+  },
+  "keywords": ["ai", "agent", "cli", "llm", "claude"],
+  "license": "MIT"
+}
