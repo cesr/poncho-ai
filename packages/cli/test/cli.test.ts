@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEvent, Message } from "@agentl/sdk";
-import { FileConversationStore } from "../src/web-ui.js";
+import { FileConversationStore, getRequestIp, parseCookies } from "../src/web-ui.js";
 
 vi.mock("@agentl/harness", () => ({
   AgentHarness: class MockHarness {
@@ -312,6 +312,29 @@ describe("cli", () => {
 
     const removed = await store.delete(created.conversationId);
     expect(removed).toBe(true);
+  });
+
+  it("parses malformed cookies without throwing", () => {
+    const request = {
+      headers: {
+        cookie: "ok=value; bad=%E0%A4%A",
+      },
+    } as unknown as import("node:http").IncomingMessage;
+    const parsed = parseCookies(request);
+    expect(parsed.ok).toBe("value");
+    expect(parsed.bad).toBe("%E0%A4%A");
+  });
+
+  it("uses socket remote address for request ip", () => {
+    const request = {
+      headers: {
+        "x-forwarded-for": "1.2.3.4",
+      },
+      socket: {
+        remoteAddress: "127.0.0.1",
+      },
+    } as unknown as import("node:http").IncomingMessage;
+    expect(getRequestIp(request)).toBe("127.0.0.1");
   });
 
   it("supports web ui passphrase auth in production mode", async () => {
