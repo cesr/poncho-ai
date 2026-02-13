@@ -341,8 +341,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <title>AgentL</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inconsolata:400,700">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; }
@@ -564,24 +565,6 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       font-size: 18px;
     }
     .sidebar-toggle:hover { color: #ededed; }
-    .typing-indicator {
-      display: flex;
-      gap: 3px;
-      margin-left: 8px;
-    }
-    .typing-indicator span {
-      width: 5px;
-      height: 5px;
-      background: #ff4000;
-      border-radius: 50%;
-      animation: pulse 1.2s ease-in-out infinite;
-    }
-    .typing-indicator span:nth-child(2) { animation-delay: 0.15s; }
-    .typing-indicator span:nth-child(3) { animation-delay: 0.3s; }
-    @keyframes pulse {
-      0%, 100% { opacity: 0.3; transform: scale(0.85); }
-      50% { opacity: 1; transform: scale(1); }
-    }
 
     /* Messages */
     .messages { flex: 1; overflow-y: auto; padding: 24px 24px; }
@@ -679,15 +662,15 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       font-size: 14px;
       color: #555;
     }
-    .loading-spinner {
-      width: 18px;
-      height: 18px;
-      border: 2px solid rgba(255,255,255,0.08);
-      border-top-color: #ff4000;
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
+    .thinking-indicator {
+      display: inline-block;
+      font-family: Inconsolata, monospace;
+      font-size: 20px;
+      line-height: 1;
+      vertical-align: middle;
+      color: #ededed;
+      opacity: 0.5;
     }
-    @keyframes spin { to { transform: rotate(360deg); } }
 
     /* Composer */
     .composer {
@@ -781,7 +764,6 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       .shell:not(.sidebar-open) .sidebar-backdrop { display: none; }
       .messages { padding: 16px; }
       .composer { padding: 8px 16px 16px; }
-      .composer-input { font-size: 16px; }
     }
 
     /* Reduced motion */
@@ -822,7 +804,6 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       <div class="topbar">
         <button id="sidebar-toggle" class="sidebar-toggle">&#9776;</button>
         <div id="chat-title" class="topbar-title"></div>
-        <span id="connection-status" class="typing-indicator hidden"><span></span><span></span><span></span></span>
       </div>
       <div id="messages" class="messages">
         <div class="empty-state">
@@ -868,7 +849,6 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         composer: $("composer"),
         prompt: $("prompt"),
         send: $("send"),
-        connectionStatus: $("connection-status"),
         shell: $("app"),
         sidebarToggle: $("sidebar-toggle"),
         sidebarBackdrop: $("sidebar-backdrop")
@@ -1076,7 +1056,13 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             content.className = "assistant-content";
             const text = String(m.content || "");
             if (isStreaming && i === messages.length - 1 && !text) {
-              content.innerHTML = '<div class="loading-spinner"></div>';
+              const spinner = document.createElement("span");
+              spinner.className = "thinking-indicator";
+              const starFrames = ["✶","✸","✹","✺","✹","✷"];
+              let frame = 0;
+              spinner.textContent = starFrames[0];
+              spinner._interval = setInterval(() => { frame = (frame + 1) % starFrames.length; spinner.textContent = starFrames[frame]; }, 70);
+              content.appendChild(spinner);
             } else {
               content.innerHTML = renderAssistantMarkdown(text);
             }
@@ -1145,7 +1131,6 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       const setStreaming = (value) => {
         state.isStreaming = value;
         elements.send.disabled = value;
-        elements.connectionStatus.classList.toggle("hidden", !value);
       };
 
       const autoResizePrompt = () => {

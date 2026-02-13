@@ -743,6 +743,16 @@ export const startDevServer = async (
     process.stdout.write(`Port ${port} is in use, switched to ${actualPort}.\n`);
   }
   process.stdout.write(`AgentL dev server running at http://localhost:${actualPort}\n`);
+
+  const shutdown = () => {
+    server.close();
+    // Force-close any lingering connections so the port is freed immediately
+    server.closeAllConnections?.();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
   return server;
 };
 
