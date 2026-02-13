@@ -155,8 +155,8 @@ Skill file conventions:
   - \`inputSchema\`
   - \`handler\``;
 
-const AGENT_TEMPLATE = `---
-name: my-agent
+const AGENT_TEMPLATE = (name: string): string => `---
+name: ${name}
 description: A helpful AgentL assistant
 model:
   provider: anthropic
@@ -167,9 +167,9 @@ limits:
   timeout: 300
 ---
 
-# My Agent
+# {{name}}
 
-You are a helpful assistant built with AgentL.
+You are **{{name}}**, a helpful assistant built with AgentL.
 
 Working directory: {{runtime.workingDir}}
 Environment: {{runtime.environment}}
@@ -471,7 +471,7 @@ export const initProject = async (
   const projectDir = resolve(baseDir, projectName);
   await mkdir(projectDir, { recursive: true });
 
-  await ensureFile(resolve(projectDir, "AGENT.md"), AGENT_TEMPLATE);
+  await ensureFile(resolve(projectDir, "AGENT.md"), AGENT_TEMPLATE(projectName));
   await ensureFile(resolve(projectDir, "agentl.config.js"), CONFIG_TEMPLATE);
   await ensureFile(resolve(projectDir, "package.json"), PACKAGE_TEMPLATE(projectName));
   await ensureFile(resolve(projectDir, "README.md"), README_TEMPLATE(projectName));
