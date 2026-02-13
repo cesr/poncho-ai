@@ -472,7 +472,7 @@ export const createRequestHandler = async (options?: {
     }
     const [pathname] = request.url.split("?");
 
-    if (pathname === "/" && request.method === "GET") {
+    if (request.method === "GET" && (pathname === "/" || pathname.startsWith("/c/"))) {
       writeHtml(response, 200, renderWebUiHtml({ agentName }));
       return;
     }

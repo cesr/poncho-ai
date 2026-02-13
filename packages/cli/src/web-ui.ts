@@ -854,6 +854,25 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         sidebarBackdrop: $("sidebar-backdrop")
       };
 
+      const pushConversationUrl = (conversationId) => {
+        const target = conversationId ? "/c/" + encodeURIComponent(conversationId) : "/";
+        if (window.location.pathname !== target) {
+          history.pushState({ conversationId: conversationId || null }, "", target);
+        }
+      };
+
+      const replaceConversationUrl = (conversationId) => {
+        const target = conversationId ? "/c/" + encodeURIComponent(conversationId) : "/";
+        if (window.location.pathname !== target) {
+          history.replaceState({ conversationId: conversationId || null }, "", target);
+        }
+      };
+
+      const getConversationIdFromUrl = () => {
+        const match = window.location.pathname.match(/^\\/c\\/([^\\/]+)/);
+        return match ? decodeURIComponent(match[1]) : null;
+      };
+
       const mutatingMethods = new Set(["POST", "PATCH", "PUT", "DELETE"]);
 
       const api = async (path, options = {}) => {
@@ -1013,6 +1032,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             await api("/api/conversations/" + c.conversationId, { method: "DELETE" });
             if (state.activeConversationId === c.conversationId) {
               state.activeConversationId = null;
+              pushConversationUrl(null);
               elements.chatTitle.textContent = "";
               renderMessages([]);
             }
@@ -1028,6 +1048,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
               return;
             }
             state.activeConversationId = c.conversationId;
+            pushConversationUrl(c.conversationId);
             renderConversationList();
             await loadConversation(c.conversationId);
             if (isMobile()) setSidebarOpen(false);
@@ -1097,6 +1118,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         });
         state.activeConversationId = payload.conversation.conversationId;
         state.confirmDeleteId = null;
+        pushConversationUrl(state.activeConversationId);
         await loadConversations();
         await loadConversation(state.activeConversationId);
         return state.activeConversationId;
@@ -1228,9 +1250,18 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           elements.auth.classList.add("hidden");
           elements.app.classList.remove("hidden");
           await loadConversations();
-          if (state.conversations[0]) {
-            state.activeConversationId = state.conversations[0].conversationId;
-            await loadConversation(state.activeConversationId);
+          const urlConversationId = getConversationIdFromUrl();
+          if (urlConversationId) {
+            state.activeConversationId = urlConversationId;
+            renderConversationList();
+            try {
+              await loadConversation(urlConversationId);
+            } catch {
+              state.activeConversationId = null;
+              replaceConversationUrl(null);
+              renderMessages([]);
+              renderConversationList();
+            }
           }
         } catch (error) {
           elements.loginError.textContent = error.message || "Login failed";
@@ -1240,6 +1271,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       elements.newChat.addEventListener("click", () => {
         state.activeConversationId = null;
         state.confirmDeleteId = null;
+        pushConversationUrl(null);
         elements.chatTitle.textContent = "";
         renderMessages([]);
         renderConversationList();
@@ -1297,16 +1329,55 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         setSidebarOpen(false);
       });
 
+      const navigateToConversation = async (conversationId) => {
+        if (conversationId) {
+          state.activeConversationId = conversationId;
+          renderConversationList();
+          try {
+            await loadConversation(conversationId);
+          } catch {
+            // Conversation not found – fall back to empty state
+            state.activeConversationId = null;
+            replaceConversationUrl(null);
+            elements.chatTitle.textContent = "";
+            renderMessages([]);
+            renderConversationList();
+          }
+        } else {
+          state.activeConversationId = null;
+          elements.chatTitle.textContent = "";
+          renderMessages([]);
+          renderConversationList();
+        }
+      };
+
+      window.addEventListener("popstate", async () => {
+        if (state.isStreaming) return;
+        const conversationId = getConversationIdFromUrl();
+        await navigateToConversation(conversationId);
+      });
+
       (async () => {
         const authenticated = await requireAuth();
         if (!authenticated) {
           return;
         }
         await loadConversations();
-        if (state.conversations[0]) {
-          state.activeConversationId = state.conversations[0].conversationId;
-          await loadConversation(state.activeConversationId);
+        const urlConversationId = getConversationIdFromUrl();
+        if (urlConversationId) {
+          state.activeConversationId = urlConversationId;
+          replaceConversationUrl(urlConversationId);
           renderConversationList();
+          try {
+            await loadConversation(urlConversationId);
+          } catch {
+            // URL pointed to a conversation that no longer exists
+            state.activeConversationId = null;
+            replaceConversationUrl(null);
+            elements.chatTitle.textContent = "";
+            renderMessages([]);
+            renderConversationList();
+          }
         }
         autoResizePrompt();
       })();
