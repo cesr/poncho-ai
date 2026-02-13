@@ -899,7 +899,6 @@ cd my-agent
 
 Init modes:
 - `agentl init <name>` uses light onboarding defaults.
-- `agentl init <name> --configure` runs full declarative onboarding prompts.
 - `agentl init <name> --yes` skips prompts with deterministic defaults.
 
 **package.json:**

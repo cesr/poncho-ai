@@ -5,7 +5,6 @@ import {
   ONBOARDING_FIELDS,
   fieldsForScope,
   type OnboardingField,
-  type OnboardingScope,
 } from "@agentl/sdk";
 
 // ANSI style helpers
@@ -24,7 +23,6 @@ const INPUT_CARET = "»";
 type OnboardingAnswers = Record<string, string | number | boolean>;
 
 export type InitOnboardingOptions = {
-  mode: OnboardingScope;
   yes?: boolean;
   interactive?: boolean;
 };
@@ -230,19 +228,16 @@ const askTextInput = async (field: OnboardingField): Promise<string | undefined>
   return answer;
 };
 
-const buildDefaultAnswers = (mode: OnboardingScope): OnboardingAnswers => {
+const buildDefaultAnswers = (): OnboardingAnswers => {
   const answers: OnboardingAnswers = {};
-  for (const field of fieldsForScope(mode)) {
+  for (const field of fieldsForScope("light")) {
     answers[field.id] = field.defaultValue;
   }
   return answers;
 };
 
-const askOnboardingQuestions = async (
-  mode: OnboardingScope,
-  options: InitOnboardingOptions,
-): Promise<OnboardingAnswers> => {
-  const answers = buildDefaultAnswers(mode);
+const askOnboardingQuestions = async (options: InitOnboardingOptions): Promise<OnboardingAnswers> => {
+  const answers = buildDefaultAnswers();
   const interactive =
     options.yes === true
       ? false
@@ -252,9 +247,9 @@ const askOnboardingQuestions = async (
   }
 
   stdout.write("\n");
-  stdout.write(`  ${bold("AgentL")} ${dim(`· ${mode === "full" ? "full" : "quick"} setup`)}\n`);
+  stdout.write(`  ${bold("AgentL")} ${dim("· quick setup")}\n`);
   stdout.write("\n");
-  const fields = fieldsForScope(mode);
+  const fields = fieldsForScope("light");
   for (const field of fields) {
     if (!shouldAskField(field, answers)) {
       continue;
@@ -508,7 +503,7 @@ const collectEnvFileLines = (answers: OnboardingAnswers): string[] => {
 export const runInitOnboarding = async (
   options: InitOnboardingOptions,
 ): Promise<InitOnboardingResult> => {
-  const answers = await askOnboardingQuestions(options.mode, options);
+  const answers = await askOnboardingQuestions(options);
   const provider = String(answers["model.provider"] ?? "anthropic");
   const config = buildConfigFromOnboardingAnswers(answers);
   const envExampleLines = collectEnvVars(answers);

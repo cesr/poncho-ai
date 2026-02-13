@@ -162,9 +162,8 @@ describe("cli", () => {
     expect(basicTest).toContain('name: "Basic sanity"');
   });
 
-  it("builds onboarding config for full mode declaratively", async () => {
+  it("builds onboarding config with light defaults", async () => {
     const result = await runInitOnboarding({
-      mode: "full",
       yes: true,
       interactive: false,
     });
@@ -173,13 +172,13 @@ describe("cli", () => {
     expect(result.agentModel.provider).toBe("anthropic");
   });
 
-  it("supports full onboarding scaffold defaults via init options", async () => {
-    await initProject("full-agent", {
+  it("supports onboarding scaffold defaults via init options", async () => {
+    await initProject("default-agent", {
       workingDir: tempDir,
-      onboarding: { mode: "full", yes: true, interactive: false },
+      onboarding: { yes: true, interactive: false },
     });
     const configFile = await readFile(
-      join(tempDir, "full-agent", "agentl.config.js"),
+      join(tempDir, "default-agent", "agentl.config.js"),
       "utf8",
     );
     expect(configFile).toContain('"storage"');
@@ -216,7 +215,7 @@ describe("cli", () => {
   it("emits intro for interactive init even when config differs from defaults", async () => {
     await initProject("interactive-custom-agent", {
       workingDir: tempDir,
-      onboarding: { mode: "light", yes: false, interactive: false },
+      onboarding: { yes: false, interactive: false },
     });
     const projectDir = join(tempDir, "interactive-custom-agent");
     const intro = await consumeFirstRunIntro(projectDir, {

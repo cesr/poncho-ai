@@ -16,7 +16,6 @@ agentl dev
 
 - MCP support is intentionally **remote-only** (`agentl mcp add --url ...`).
 - `agentl init` scaffolds starter `skills/` and `tests/` directories with templates.
-- `agentl init --configure` enables full onboarding prompts; default init runs light onboarding.
 - Model providers currently supported by runtime: `anthropic` and `openai`.
 
 ## What is AgentL?
@@ -42,7 +41,6 @@ cd my-agent
 
 Init options:
 - `agentl init <name>`: light onboarding (recommended defaults)
-- `agentl init <name> --configure`: full declarative onboarding prompts
 - `agentl init <name> --yes`: deterministic non-interactive defaults
 
 This creates a ready-to-run project:

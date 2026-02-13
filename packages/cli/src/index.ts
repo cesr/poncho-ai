@@ -528,7 +528,6 @@ export const initProject = async (
   await mkdir(projectDir, { recursive: true });
 
   const onboardingOptions: InitOnboardingOptions = options?.onboarding ?? {
-    mode: "light",
     yes: true,
     interactive: false,
   };
@@ -1609,13 +1608,11 @@ export const buildCli = (): Command => {
   program
     .command("init")
     .argument("<name>", "project name")
-    .option("--configure", "run full onboarding setup", false)
     .option("--yes", "accept defaults and skip prompts", false)
     .description("Scaffold a new AgentL project")
-    .action(async (name: string, options: { configure: boolean; yes: boolean }) => {
+    .action(async (name: string, options: { yes: boolean }) => {
       await initProject(name, {
         onboarding: {
-          mode: options.configure ? "full" : "light",
           yes: options.yes,
           interactive:
             !options.yes && process.stdin.isTTY === true && process.stdout.isTTY === true,
