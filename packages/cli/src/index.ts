@@ -304,14 +304,22 @@ const buildVercelHandlerBundle = async (outDir: string): Promise<void> => {
   const tempEntry = resolve(outDir, "api", "_entry.js");
   await writeFile(
     tempEntry,
-    `import { startDevServer } from ${JSON.stringify(cliEntrypoint)};
-let serverPromise;
+    `import { createRequestHandler } from ${JSON.stringify(cliEntrypoint)};
+let handlerPromise;
 export default async function handler(req, res) {
-  if (!serverPromise) {
-    serverPromise = startDevServer(0, { workingDir: process.cwd() });
+  try {
+    if (!handlerPromise) {
+      handlerPromise = createRequestHandler({ workingDir: process.cwd() });
+    }
+    const requestHandler = await handlerPromise;
+    await requestHandler(req, res);
+  } catch (error) {
+    console.error("Handler error:", error);
+    if (!res.headersSent) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Internal server error", message: error?.message || "Unknown error" }));
+    }
   }
-  const server = await serverPromise;
-  server.emit("request", req, res);
 }
 `,
     "utf8",
@@ -427,10 +435,14 @@ export const updateAgentGuidance = async (workingDir: string): Promise<boolean> 
 const formatSseEvent = (event: AgentEvent): string =>
   `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 
-export const startDevServer = async (
-  port: number,
-  options?: { workingDir?: string },
-): Promise<Server> => {
+export type RequestHandler = (
+  request: IncomingMessage,
+  response: ServerResponse,
+) => Promise<void>;
+
+export const createRequestHandler = async (options?: {
+  workingDir?: string;
+}): Promise<RequestHandler> => {
   const workingDir = options?.workingDir ?? process.cwd();
   dotenv.config({ path: resolve(workingDir, ".env") });
   const config = await loadAgentlConfig(workingDir);
@@ -442,13 +454,10 @@ export const startDevServer = async (
   const loginRateLimiter = new LoginRateLimiter();
   const passphrase = process.env.AGENT_UI_PASSPHRASE ?? "";
   const isProduction = resolveHarnessEnvironment() === "production";
-  if (isProduction && passphrase.length === 0) {
-    throw new Error("AGENT_UI_PASSPHRASE is required when AGENTL_ENV/NODE_ENV is production.");
-  }
   const requireUiAuth = passphrase.length > 0;
   const secureCookies = isProduction;
 
-  const server = createServer(async (request, response) => {
+  return async (request: IncomingMessage, response: ServerResponse) => {
     if (!request.url || !request.method) {
       writeJson(response, 404, { error: "Not found" });
       return;
@@ -712,13 +721,18 @@ export const startDevServer = async (
     }
 
     writeJson(response, 404, { error: "Not found" });
-  });
+  };
+};
 
+export const startDevServer = async (
+  port: number,
+  options?: { workingDir?: string },
+): Promise<Server> => {
+  const handler = await createRequestHandler(options);
+  const server = createServer(handler);
   const actualPort = await listenOnAvailablePort(server, port);
   if (actualPort !== port) {
-    process.stdout.write(
-      `Port ${port} is in use, switched to ${actualPort}.\n`,
-    );
+    process.stdout.write(`Port ${port} is in use, switched to ${actualPort}.\n`);
   }
   process.stdout.write(`AgentL dev server running at http://localhost:${actualPort}\n`);
   return server;
@@ -1037,6 +1051,7 @@ await startDevServer(Number.isNaN(port) ? 3000 : port, { workingDir: process.cwd
                   "skills/**",
                   "tests/**",
                 ],
+                supportsResponseStreaming: true,
               },
             },
           ],
