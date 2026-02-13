@@ -334,7 +334,10 @@ export const inferConversationTitle = (text: string): string => {
   return normalized.length <= 48 ? normalized : `${normalized.slice(0, 48)}...`;
 };
 
-export const renderWebUiHtml = (): string => `<!doctype html>
+export const renderWebUiHtml = (options?: { agentName?: string }): string => {
+  const agentInitial = (options?.agentName ?? "A").charAt(0).toUpperCase();
+  const agentName = options?.agentName ?? "Agent";
+  return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -461,55 +464,52 @@ export const renderWebUiHtml = (): string => `<!doctype html>
     .conversation-item:hover { color: #999; }
     .conversation-item.active {
       color: #ededed;
-      background: rgba(255,255,255,0.04);
     }
-    .conversation-item .menu-btn {
+    .conversation-item .delete-btn {
       position: absolute;
-      right: 4px;
-      top: 50%;
-      transform: translateY(-50%);
+      right: 0;
+      top: 0;
+      bottom: 0;
       opacity: 0;
-      background: transparent;
+      background: #000;
       border: 0;
       color: #444;
-      width: 22px;
-      height: 22px;
-      border-radius: 4px;
+      padding: 0 8px;
+      border-radius: 0 4px 4px 0;
       cursor: pointer;
-      font-size: 14px;
+      font-size: 16px;
+      line-height: 1;
       display: grid;
       place-items: center;
       transition: opacity 0.15s, color 0.15s;
     }
-    .conversation-item:hover .menu-btn { opacity: 1; color: #666; }
-    .conversation-item .menu-btn:hover { color: #ededed; }
-    .conversation-menu {
+    .conversation-item:hover .delete-btn { opacity: 1; }
+    .conversation-item.active .delete-btn { background: rgba(0,0,0,1); }
+    .conversation-item .delete-btn::before {
+      content: "";
       position: absolute;
-      top: 100%;
-      right: 0;
-      background: #0a0a0a;
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 6px;
-      overflow: hidden;
-      z-index: 10;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.6);
-      min-width: 120px;
+      right: 100%;
+      top: 0;
+      bottom: 0;
+      width: 24px;
+      background: linear-gradient(to right, transparent, #000);
+      pointer-events: none;
     }
-    .conversation-menu button {
-      display: block;
-      width: 100%;
-      background: transparent;
-      border: 0;
-      color: #888;
-      padding: 7px 14px;
-      text-align: left;
-      cursor: pointer;
-      font-size: 13px;
-      transition: color 0.1s, background 0.1s;
+    .conversation-item.active .delete-btn::before {
+      background: linear-gradient(to right, transparent, rgba(0,0,0,1));
     }
-    .conversation-menu button:hover { color: #ededed; background: rgba(255,255,255,0.04); }
-    .conversation-menu button.danger { color: #ff4444; }
-    .conversation-menu button.danger:hover { color: #ff6666; background: rgba(255,68,68,0.06); }
+    .conversation-item .delete-btn:hover { color: #888; }
+    .conversation-item .delete-btn.confirming {
+      opacity: 1;
+      width: auto;
+      padding: 0 8px;
+      font-size: 11px;
+      color: #ff4444;
+      border-radius: 3px;
+    }
+    .conversation-item .delete-btn.confirming:hover {
+      color: #ff6666;
+    }
     .sidebar-footer {
       margin-top: auto;
       padding-top: 8px;
@@ -781,6 +781,7 @@ export const renderWebUiHtml = (): string => `<!doctype html>
       .shell:not(.sidebar-open) .sidebar-backdrop { display: none; }
       .messages { padding: 16px; }
       .composer { padding: 8px 16px 16px; }
+      .composer-input { font-size: 16px; }
     }
 
     /* Reduced motion */
@@ -792,7 +793,7 @@ export const renderWebUiHtml = (): string => `<!doctype html>
     }
   </style>
 </head>
-<body>
+<body data-agent-initial="${agentInitial}" data-agent-name="${agentName}">
   <div id="auth" class="auth hidden">
     <form id="login-form" class="auth-card">
       <div class="auth-brand">
@@ -825,7 +826,7 @@ export const renderWebUiHtml = (): string => `<!doctype html>
       </div>
       <div id="messages" class="messages">
         <div class="empty-state">
-          <div class="assistant-avatar">A</div>
+          <div class="assistant-avatar">${agentInitial}</div>
           <div class="empty-state-text">How can I help you today?</div>
         </div>
       </div>
@@ -848,9 +849,10 @@ export const renderWebUiHtml = (): string => `<!doctype html>
         conversations: [],
         activeConversationId: null,
         isStreaming: false,
-        openMenuConversationId: null
+        confirmDeleteId: null
       };
 
+      const agentInitial = document.body.dataset.agentInitial || "A";
       const $ = (id) => document.getElementById(id);
       const elements = {
         auth: $("auth"),
@@ -1010,11 +1012,6 @@ export const renderWebUiHtml = (): string => `<!doctype html>
         elements.shell.classList.toggle("sidebar-open", open);
       };
 
-      const closeConversationMenu = () => {
-        state.openMenuConversationId = null;
-        renderConversationList();
-      };
-
       const renderConversationList = () => {
         elements.list.innerHTML = "";
         for (const c of state.conversations) {
@@ -1022,56 +1019,40 @@ export const renderWebUiHtml = (): string => `<!doctype html>
           item.className = "conversation-item" + (c.conversationId === state.activeConversationId ? " active" : "");
           item.textContent = c.title;
 
-          const menuBtn = document.createElement("button");
-          menuBtn.className = "menu-btn";
-          menuBtn.textContent = "⋯";
-          menuBtn.onclick = (e) => {
+          const isConfirming = state.confirmDeleteId === c.conversationId;
+          const deleteBtn = document.createElement("button");
+          deleteBtn.className = "delete-btn" + (isConfirming ? " confirming" : "");
+          deleteBtn.textContent = isConfirming ? "sure?" : "\\u00d7";
+          deleteBtn.onclick = async (e) => {
             e.stopPropagation();
-            state.openMenuConversationId = state.openMenuConversationId === c.conversationId ? null : c.conversationId;
-            renderConversationList();
+            if (!isConfirming) {
+              state.confirmDeleteId = c.conversationId;
+              renderConversationList();
+              return;
+            }
+            await api("/api/conversations/" + c.conversationId, { method: "DELETE" });
+            if (state.activeConversationId === c.conversationId) {
+              state.activeConversationId = null;
+              elements.chatTitle.textContent = "";
+              renderMessages([]);
+            }
+            state.confirmDeleteId = null;
+            await loadConversations();
           };
-          item.appendChild(menuBtn);
+          item.appendChild(deleteBtn);
 
           item.onclick = async () => {
+            if (state.confirmDeleteId) {
+              state.confirmDeleteId = null;
+              renderConversationList();
+              return;
+            }
             state.activeConversationId = c.conversationId;
-            state.openMenuConversationId = null;
             renderConversationList();
             await loadConversation(c.conversationId);
             if (isMobile()) setSidebarOpen(false);
           };
 
-          if (state.openMenuConversationId === c.conversationId) {
-            const menu = document.createElement("div");
-            menu.className = "conversation-menu";
-            const renameBtn = document.createElement("button");
-            renameBtn.textContent = "Rename";
-            renameBtn.onclick = async (e) => {
-              e.stopPropagation();
-              const title = prompt("Rename", c.title);
-              if (title) {
-                await api("/api/conversations/" + c.conversationId, { method: "PATCH", body: JSON.stringify({ title }) });
-                state.openMenuConversationId = null;
-                await loadConversations();
-                if (state.activeConversationId === c.conversationId) await loadConversation(c.conversationId);
-              }
-            };
-            deleteBtn.onclick = async (e) => {
-              e.stopPropagation();
-              if (confirm("Delete?")) {
-                await api("/api/conversations/" + c.conversationId, { method: "DELETE" });
-                if (state.activeConversationId === c.conversationId) {
-                  state.activeConversationId = null;
-                  elements.chatTitle.textContent = "";
-                  renderMessages([]);
-                }
-                state.openMenuConversationId = null;
-                await loadConversations();
-              }
-            };
-            menu.appendChild(renameBtn);
-            menu.appendChild(deleteBtn);
-            item.appendChild(menu);
-          }
           elements.list.appendChild(item);
         }
       };
@@ -1079,7 +1060,7 @@ export const renderWebUiHtml = (): string => `<!doctype html>
       const renderMessages = (messages, isStreaming = false) => {
         elements.messages.innerHTML = "";
         if (!messages || !messages.length) {
-          elements.messages.innerHTML = '<div class="empty-state"><div class="assistant-avatar">A</div><div>How can I help you today?</div></div>';
+          elements.messages.innerHTML = '<div class="empty-state"><div class="assistant-avatar">' + agentInitial + '</div><div>How can I help you today?</div></div>';
           return;
         }
         const col = document.createElement("div");
@@ -1090,7 +1071,7 @@ export const renderWebUiHtml = (): string => `<!doctype html>
           if (m.role === "assistant") {
             const wrap = document.createElement("div");
             wrap.className = "assistant-wrap";
-            wrap.innerHTML = '<div class="assistant-avatar">A</div>';
+            wrap.innerHTML = '<div class="assistant-avatar">' + agentInitial + '</div>';
             const content = document.createElement("div");
             content.className = "assistant-content";
             const text = String(m.content || "");
@@ -1128,7 +1109,7 @@ export const renderWebUiHtml = (): string => `<!doctype html>
           body: JSON.stringify(title ? { title } : {})
         });
         state.activeConversationId = payload.conversation.conversationId;
-        state.openMenuConversationId = null;
+        state.confirmDeleteId = null;
         await loadConversations();
         await loadConversation(state.activeConversationId);
         return state.activeConversationId;
@@ -1297,7 +1278,7 @@ export const renderWebUiHtml = (): string => `<!doctype html>
       elements.logout.addEventListener("click", async () => {
         await api("/api/auth/logout", { method: "POST" });
         state.activeConversationId = null;
-        state.openMenuConversationId = null;
+        state.confirmDeleteId = null;
         state.conversations = [];
         state.csrfToken = "";
         await requireAuth();
@@ -1315,10 +1296,9 @@ export const renderWebUiHtml = (): string => `<!doctype html>
         if (!(event.target instanceof Node)) {
           return;
         }
-        if (!event.target.closest(".conversation-item")) {
-          if (state.openMenuConversationId) {
-            closeConversationMenu();
-          }
+        if (!event.target.closest(".conversation-item") && state.confirmDeleteId) {
+          state.confirmDeleteId = null;
+          renderConversationList();
         }
       });
 
@@ -1342,3 +1322,4 @@ export const renderWebUiHtml = (): string => `<!doctype html>
     </script>
   </body>
 </html>`;
+};

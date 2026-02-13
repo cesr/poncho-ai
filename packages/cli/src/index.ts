@@ -446,6 +446,14 @@ export const createRequestHandler = async (options?: {
   const workingDir = options?.workingDir ?? process.cwd();
   dotenv.config({ path: resolve(workingDir, ".env") });
   const config = await loadAgentlConfig(workingDir);
+  let agentName = "Agent";
+  try {
+    const agentMd = await readFile(resolve(workingDir, "AGENT.md"), "utf8");
+    const nameMatch = agentMd.match(/^name:\s*(.+)$/m);
+    if (nameMatch?.[1]) {
+      agentName = nameMatch[1].trim().replace(/^["']|["']$/g, "");
+    }
+  } catch {}
   const harness = new AgentHarness({ workingDir });
   await harness.initialize();
   const telemetry = new TelemetryEmitter(config?.telemetry);
@@ -465,7 +473,7 @@ export const createRequestHandler = async (options?: {
     const [pathname] = request.url.split("?");
 
     if (pathname === "/" && request.method === "GET") {
-      writeHtml(response, 200, renderWebUiHtml());
+      writeHtml(response, 200, renderWebUiHtml({ agentName }));
       return;
     }
 
