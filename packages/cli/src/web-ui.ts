@@ -342,7 +342,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-  <title>AgentL</title>
+  <title>${agentName}</title>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inconsolata:400,700">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -451,7 +451,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       gap: 2px;
     }
     .conversation-item {
-      padding: 7px 10px;
+      padding: 7px 28px 7px 10px;
       border-radius: 12px;
       cursor: pointer;
       font-size: 13px;
@@ -1087,6 +1087,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         const payload = await api("/api/conversations/" + encodeURIComponent(conversationId));
         elements.chatTitle.textContent = payload.conversation.title;
         renderMessages(payload.conversation.messages);
+        elements.prompt.focus();
       };
 
       const createConversation = async (title) => {
@@ -1236,8 +1237,13 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         }
       });
 
-      elements.newChat.addEventListener("click", async () => {
-        await createConversation();
+      elements.newChat.addEventListener("click", () => {
+        state.activeConversationId = null;
+        state.confirmDeleteId = null;
+        elements.chatTitle.textContent = "";
+        renderMessages([]);
+        renderConversationList();
+        elements.prompt.focus();
         if (isMobile()) {
           setSidebarOpen(false);
         }
