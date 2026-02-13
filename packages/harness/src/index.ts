@@ -9,6 +9,7 @@ export * from "./model-client.js";
 export * from "./model-factory.js";
 export * from "./openai-client.js";
 export * from "./skill-context.js";
+export * from "./skill-tools.js";
 export * from "./state.js";
 export * from "./telemetry.js";
 export * from "./tool-dispatcher.js";

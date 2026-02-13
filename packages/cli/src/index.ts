@@ -281,7 +281,7 @@ See the [AgentL docs](https://github.com/latitude-dev/agentl) for more.
 `;
 
 const ENV_TEMPLATE = "ANTHROPIC_API_KEY=sk-ant-...\n";
-const GITIGNORE_TEMPLATE = ".env\nnode_modules\ndist\n.agentl-build\n";
+const GITIGNORE_TEMPLATE = ".env\nnode_modules\ndist\n.agentl-build\n.agentl/\ninteractive-session.json\n";
 const VERCEL_RUNTIME_DEPENDENCIES: Record<string, string> = {
   "@anthropic-ai/sdk": "^0.74.0",
   "@aws-sdk/client-dynamodb": "^3.988.0",

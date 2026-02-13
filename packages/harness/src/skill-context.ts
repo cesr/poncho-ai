@@ -1,24 +1,41 @@
 import { readFile, readdir } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve, normalize } from "node:path";
 import YAML from "yaml";
 
-export interface SkillContextEntry {
+export interface SkillMetadata {
+  /** Unique skill name from frontmatter. */
   name: string;
-  description?: string;
+  /** What the skill does and when to use it. */
+  description: string;
+  /** Tool names declared in frontmatter (used for tool registration, not context). */
   tools: string[];
-  instructions: string;
+  /** Absolute path to the skill directory. */
+  skillDir: string;
+  /** Absolute path to the SKILL.md file. */
+  skillPath: string;
 }
 
+/**
+ * @deprecated Use {@link SkillMetadata} instead. Kept for backward compatibility.
+ */
+export type SkillContextEntry = SkillMetadata & {
+  instructions: string;
+};
+
 const FRONTMATTER_PATTERN = /^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/;
-const MAX_INSTRUCTIONS_PER_SKILL = 1200;
-const MAX_CONTEXT_SIZE = 7000;
 
 const asRecord = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null
     ? (value as Record<string, unknown>)
     : {};
 
-const parseSkillMarkdown = (content: string): SkillContextEntry | undefined => {
+// ---------------------------------------------------------------------------
+// Frontmatter parsing (metadata only — no body content)
+// ---------------------------------------------------------------------------
+
+const parseSkillFrontmatter = (
+  content: string,
+): { name: string; description: string; tools: string[] } | undefined => {
   const match = content.match(FRONTMATTER_PATTERN);
   if (!match) {
     return undefined;
@@ -31,25 +48,20 @@ const parseSkillMarkdown = (content: string): SkillContextEntry | undefined => {
     return undefined;
   }
 
+  const description =
+    typeof parsed.description === "string" ? parsed.description.trim() : "";
+
   const toolsValue = parsed.tools;
   const tools = Array.isArray(toolsValue)
     ? toolsValue.filter((tool): tool is string => typeof tool === "string")
     : [];
 
-  const body = match[2].trim();
-  const instructions =
-    body.length > MAX_INSTRUCTIONS_PER_SKILL
-      ? `${body.slice(0, MAX_INSTRUCTIONS_PER_SKILL)}...`
-      : body;
-
-  return {
-    name,
-    description:
-      typeof parsed.description === "string" ? parsed.description.trim() : undefined,
-    tools,
-    instructions,
-  };
+  return { name, description, tools };
 };
+
+// ---------------------------------------------------------------------------
+// Discovery — find all SKILL.md files recursively
+// ---------------------------------------------------------------------------
 
 const collectSkillManifests = async (directory: string): Promise<string[]> => {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -69,7 +81,13 @@ const collectSkillManifests = async (directory: string): Promise<string[]> => {
   return files;
 };
 
-export const loadSkillContext = async (workingDir: string): Promise<SkillContextEntry[]> => {
+// ---------------------------------------------------------------------------
+// Public: load only metadata at startup (name + description per skill)
+// ---------------------------------------------------------------------------
+
+export const loadSkillMetadata = async (
+  workingDir: string,
+): Promise<SkillMetadata[]> => {
   const skillsRoot = resolve(workingDir, "skills");
   let manifests: string[] = [];
   try {
@@ -78,45 +96,117 @@ export const loadSkillContext = async (workingDir: string): Promise<SkillContext
     return [];
   }
 
-  const contexts: SkillContextEntry[] = [];
+  const skills: SkillMetadata[] = [];
   for (const manifest of manifests) {
     try {
       const content = await readFile(manifest, "utf8");
-      const parsed = parseSkillMarkdown(content);
+      const parsed = parseSkillFrontmatter(content);
       if (parsed) {
-        contexts.push(parsed);
+        skills.push({
+          ...parsed,
+          skillDir: dirname(manifest),
+          skillPath: manifest,
+        });
       }
     } catch {
       // Ignore unreadable skill manifests.
     }
   }
-  return contexts;
+  return skills;
 };
 
-export const buildSkillContextWindow = (skills: SkillContextEntry[]): string => {
+// ---------------------------------------------------------------------------
+// Public: build the <available_skills> XML injected into the system prompt
+// ---------------------------------------------------------------------------
+
+export const buildSkillContextWindow = (skills: SkillMetadata[]): string => {
   if (skills.length === 0) {
     return "";
   }
 
-  const blocks: string[] = [];
-  for (const skill of skills) {
-    const toolsLine = skill.tools.length > 0 ? skill.tools.join(", ") : "none listed";
-    const descriptionLine = skill.description ? `Description: ${skill.description}` : "";
-    blocks.push(
-      [
-        `### Skill: ${skill.name}`,
-        descriptionLine,
-        `Tools: ${toolsLine}`,
-        "Instructions:",
-        skill.instructions || "(no instructions provided)",
-      ]
-        .filter((line) => line.length > 0)
-        .join("\n"),
-    );
-  }
+  const xmlSkills = skills
+    .map((skill) => {
+      const lines = [
+        "  <skill>",
+        `    <name>${escapeXml(skill.name)}</name>`,
+      ];
+      if (skill.description) {
+        lines.push(
+          `    <description>${escapeXml(skill.description)}</description>`,
+        );
+      }
+      lines.push("  </skill>");
+      return lines.join("\n");
+    })
+    .join("\n");
 
-  const body = blocks.join("\n\n");
-  const trimmedBody =
-    body.length > MAX_CONTEXT_SIZE ? `${body.slice(0, MAX_CONTEXT_SIZE)}...` : body;
-  return `## Agent Skills Context\n\nUse this skill guidance when selecting and composing tool calls.\n\n${trimmedBody}`;
+  return `<available_skills description="Skills the agent can use. Use the activate_skill tool to load full instructions for a skill when a user's request matches its description.">
+${xmlSkills}
+</available_skills>`;
+};
+
+const escapeXml = (value: string): string =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
+// ---------------------------------------------------------------------------
+// Public: on-demand activation — load the full SKILL.md body
+// ---------------------------------------------------------------------------
+
+export const loadSkillInstructions = async (
+  skill: SkillMetadata,
+): Promise<string> => {
+  const content = await readFile(skill.skillPath, "utf8");
+  const match = content.match(FRONTMATTER_PATTERN);
+  return match ? match[2].trim() : content.trim();
+};
+
+// ---------------------------------------------------------------------------
+// Public: on-demand resource reading from a skill directory
+// ---------------------------------------------------------------------------
+
+export const readSkillResource = async (
+  skill: SkillMetadata,
+  relativePath: string,
+): Promise<string> => {
+  const normalized = normalize(relativePath);
+  if (normalized.startsWith("..") || normalized.startsWith("/")) {
+    throw new Error("Path must be relative and within the skill directory");
+  }
+  const fullPath = resolve(skill.skillDir, normalized);
+  // Ensure the resolved path is still inside the skill directory
+  if (!fullPath.startsWith(skill.skillDir)) {
+    throw new Error("Path escapes the skill directory");
+  }
+  return await readFile(fullPath, "utf8");
+};
+
+// ---------------------------------------------------------------------------
+// Backward-compat: loadSkillContext (returns full entries with instructions)
+// ---------------------------------------------------------------------------
+
+const MAX_INSTRUCTIONS_PER_SKILL = 1200;
+
+export const loadSkillContext = async (
+  workingDir: string,
+): Promise<SkillContextEntry[]> => {
+  const metadata = await loadSkillMetadata(workingDir);
+  const entries: SkillContextEntry[] = [];
+  for (const skill of metadata) {
+    try {
+      const instructions = await loadSkillInstructions(skill);
+      const trimmed =
+        instructions.length > MAX_INSTRUCTIONS_PER_SKILL
+          ? `${instructions.slice(0, MAX_INSTRUCTIONS_PER_SKILL)}...`
+          : instructions;
+      entries.push({ ...skill, instructions: trimmed });
+    } catch {
+      entries.push({ ...skill, instructions: "" });
+    }
+  }
+  return entries;
 };

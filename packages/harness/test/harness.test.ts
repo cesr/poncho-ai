@@ -152,11 +152,16 @@ When users ask for summarization, prefer calling summarize_text.
     }
 
     const firstCall = mockedGenerate.mock.calls[0]?.[0] as
-      | { systemPrompt?: string }
+      | { systemPrompt?: string; tools?: Array<{ name: string }> }
       | undefined;
-    expect(firstCall?.systemPrompt).toContain("## Agent Skills Context");
-    expect(firstCall?.systemPrompt).toContain("Skill: summarize");
-    expect(firstCall?.systemPrompt).toContain("summarize_text");
+    // Skill metadata injected as XML <available_skills> block
+    expect(firstCall?.systemPrompt).toContain("<available_skills");
+    expect(firstCall?.systemPrompt).toContain("<name>summarize</name>");
+    expect(firstCall?.systemPrompt).toContain("Summarize long text into concise output");
+    // activate_skill tool should be registered
+    const toolNames = firstCall?.tools?.map((t) => t.name) ?? [];
+    expect(toolNames).toContain("activate_skill");
+    expect(toolNames).toContain("read_skill_resource");
   });
 
   it("runs a tool call loop and completes", async () => {

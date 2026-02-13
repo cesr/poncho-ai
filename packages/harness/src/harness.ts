@@ -15,7 +15,8 @@ import { loadLocalSkillTools } from "./local-tools.js";
 import { LocalMcpBridge } from "./mcp.js";
 import type { ModelClient, ModelResponse } from "./model-client.js";
 import { createModelClient } from "./model-factory.js";
-import { buildSkillContextWindow, loadSkillContext } from "./skill-context.js";
+import { buildSkillContextWindow, loadSkillMetadata } from "./skill-context.js";
+import { createSkillTools } from "./skill-tools.js";
 import { ToolDispatcher } from "./tool-dispatcher.js";
 
 export interface HarnessOptions {
@@ -103,9 +104,9 @@ export class AgentHarness {
     this.modelClient = createModelClient(provider, { latitudeCapture });
     const bridge = new LocalMcpBridge(config);
     this.mcpBridge = bridge;
-    this.skillContextWindow = buildSkillContextWindow(
-      await loadSkillContext(this.workingDir),
-    );
+    const skillMetadata = await loadSkillMetadata(this.workingDir);
+    this.skillContextWindow = buildSkillContextWindow(skillMetadata);
+    this.dispatcher.registerMany(createSkillTools(skillMetadata));
     this.dispatcher.registerMany(await loadLocalSkillTools(this.workingDir));
     await bridge.startLocalServers();
     this.dispatcher.registerMany(await bridge.loadTools());
