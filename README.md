@@ -562,6 +562,20 @@ Typical flow:
 3. Repeat step 2 for follow-up turns
 4. `GET /api/conversations/:conversationId` to fetch full transcript
 
+## Persistent Memory (MVP)
+
+When `memory.enabled` is true in `agentl.config.js`, the harness enables a simple memory model:
+
+- A single persistent main memory document is loaded at run start and interpolated into the system prompt under `## Persistent Memory`.
+- `memory_main_update` can replace or append to that document. The tool description instructs the model to proactively evaluate each turn whether durable memory should be updated.
+- `conversation_recall` can search recent prior conversations (keyword scoring) when historical context is relevant (`as we discussed`, `last time`, etc.).
+
+Available memory tools:
+
+- `memory_main_get`
+- `memory_main_update`
+- `conversation_recall`
+
 ## Observability
 
 ### Local development
@@ -651,12 +665,19 @@ export default {
     validate: async (token) => token === process.env.AGENT_API_KEY,
   },
 
-  // State store for multi-turn conversations
-  state: {
-    provider: 'upstash',         // 'memory' | 'redis' | 'upstash' | 'vercel-kv'
-    url: process.env.UPSTASH_REDIS_URL,
-    token: process.env.UPSTASH_REDIS_TOKEN,  // Required for Upstash
-    ttl: 3600,                   // Conversation expires after 1 hour (seconds)
+  // Unified storage (preferred). Replaces separate `state` and `memory` blocks.
+  storage: {
+    provider: 'upstash',         // 'local' | 'redis' | 'upstash' | 'dynamodb'
+    url: process.env.KV_REST_API_URL,        // or UPSTASH_REDIS_REST_URL
+    token: process.env.KV_REST_API_TOKEN,    // or UPSTASH_REDIS_REST_TOKEN
+    ttl: {
+      conversations: 3600,       // seconds
+      memory: 0,                 // 0/undefined means no expiration
+    },
+    memory: {
+      enabled: true,
+      maxRecallConversations: 20, // Bounds conversation_recall scan size
+    },
   },
 
   // Telemetry destination
@@ -689,6 +710,8 @@ export default {
 }
 ```
 
+`provider: 'local'` stores conversations and main memory as project-scoped JSON files under `~/.agentl/state` (or `/tmp/.agentl/state` on serverless runtimes).
+
 ### Environment variables
 
 | Variable | Required | Description |
@@ -700,8 +723,10 @@ export default {
 | `LATITUDE_API_KEY` | No | Latitude dashboard integration |
 | `LATITUDE_PROJECT_ID` | No | Latitude project identifier for capture traces |
 | `LATITUDE_PATH` | No | Latitude prompt path for grouping traces |
-| `UPSTASH_REDIS_URL` | No | For Upstash state storage |
-| `UPSTASH_REDIS_TOKEN` | No | For Upstash state storage |
+| `KV_REST_API_URL` | No | Upstash REST URL (Vercel Marketplace naming) |
+| `KV_REST_API_TOKEN` | No | Upstash REST write token (Vercel Marketplace naming) |
+| `UPSTASH_REDIS_REST_URL` | No | Upstash REST URL (direct Upstash naming) |
+| `UPSTASH_REDIS_REST_TOKEN` | No | Upstash REST write token (direct Upstash naming) |
 | `REDIS_URL` | No | For Redis state storage |
 
 *Required if using Anthropic models (default).

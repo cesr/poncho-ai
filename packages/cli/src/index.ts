@@ -13,15 +13,17 @@ import { fileURLToPath } from "node:url";
 import {
   AgentHarness,
   TelemetryEmitter,
+  createConversationStore,
   loadAgentlConfig,
+  resolveStateConfig,
   type AgentlConfig,
+  type ConversationStore,
 } from "@agentl/harness";
 import type { AgentEvent, Message, RunInput } from "@agentl/sdk";
 import { Command } from "commander";
 import dotenv from "dotenv";
 import YAML from "yaml";
 import {
-  FileConversationStore,
   LoginRateLimiter,
   SessionStore,
   getRequestIp,
@@ -199,7 +201,7 @@ ${AGENT_SKILL_GUIDANCE}
 const CONFIG_TEMPLATE = `export default {
   mcp: [],
   auth: { required: false },
-  state: { provider: 'memory', ttl: 3600 },
+  state: { provider: 'local', ttl: 3600 },
   telemetry: { enabled: true }
 }
 `;
@@ -321,12 +323,12 @@ See the [AgentL docs](https://github.com/latitude-dev/agentl) for more.
 `;
 
 const ENV_TEMPLATE = "ANTHROPIC_API_KEY=sk-ant-...\n";
-const GITIGNORE_TEMPLATE = ".env\nnode_modules\ndist\n.agentl-build\n.agentl/\ninteractive-session.json\n";
+const GITIGNORE_TEMPLATE =
+  ".env\nnode_modules\ndist\n.agentl-build\n.agentl/\ninteractive-session.json\n";
 const VERCEL_RUNTIME_DEPENDENCIES: Record<string, string> = {
   "@anthropic-ai/sdk": "^0.74.0",
   "@aws-sdk/client-dynamodb": "^3.988.0",
   "@latitude-data/telemetry": "^2.0.2",
-  "@vercel/kv": "^3.0.0",
   commander: "^12.0.0",
   dotenv: "^16.4.0",
   jiti: "^2.6.1",
@@ -584,7 +586,7 @@ export const createRequestHandler = async (options?: {
   const harness = new AgentHarness({ workingDir });
   await harness.initialize();
   const telemetry = new TelemetryEmitter(config?.telemetry);
-  const conversationStore = new FileConversationStore(workingDir);
+  const conversationStore = createConversationStore(resolveStateConfig(config), { workingDir });
   const sessionStore = new SessionStore();
   const loginRateLimiter = new LoginRateLimiter();
   const passphrase = process.env.AGENT_UI_PASSPHRASE ?? "";
@@ -836,10 +838,30 @@ export const createRequestHandler = async (options?: {
       });
       let latestRunId = conversation.runtimeRunId ?? "";
       let assistantResponse = "";
+      const toolTimeline: string[] = [];
       try {
+        const recallCorpus = (await conversationStore.list(ownerId))
+          .filter((item) => item.conversationId !== conversationId)
+          .slice(0, 20)
+          .map((item) => ({
+            conversationId: item.conversationId,
+            title: item.title,
+            updatedAt: item.updatedAt,
+            content: item.messages
+              .slice(-6)
+              .map((message) => `${message.role}: ${message.content}`)
+              .join("\n")
+              .slice(0, 2000),
+          }))
+          .filter((item) => item.content.length > 0);
+
         for await (const event of harness.run({
           task: messageText,
-          parameters: body.parameters,
+          parameters: {
+            ...(body.parameters ?? {}),
+            __conversationRecallCorpus: recallCorpus,
+            __activeConversationId: conversationId,
+          },
           messages: conversation.messages,
         })) {
           if (event.type === "run:started") {
@@ -847,6 +869,24 @@ export const createRequestHandler = async (options?: {
           }
           if (event.type === "model:chunk") {
             assistantResponse += event.content;
+          }
+          if (event.type === "tool:started") {
+            toolTimeline.push(`- start \`${event.tool}\``);
+          }
+          if (event.type === "tool:completed") {
+            toolTimeline.push(`- done \`${event.tool}\` (${event.duration}ms)`);
+          }
+          if (event.type === "tool:error") {
+            toolTimeline.push(`- error \`${event.tool}\`: ${event.error}`);
+          }
+          if (event.type === "tool:approval:required") {
+            toolTimeline.push(`- approval required \`${event.tool}\``);
+          }
+          if (event.type === "tool:approval:granted") {
+            toolTimeline.push(`- approval granted (${event.approvalId})`);
+          }
+          if (event.type === "tool:approval:denied") {
+            toolTimeline.push(`- approval denied (${event.approvalId})`);
           }
           if (
             event.type === "run:completed" &&
@@ -861,7 +901,14 @@ export const createRequestHandler = async (options?: {
         conversation.messages = [
           ...conversation.messages,
           { role: "user", content: messageText },
-          { role: "assistant", content: assistantResponse },
+          {
+            role: "assistant",
+            content: assistantResponse,
+            metadata:
+              toolTimeline.length > 0
+                ? ({ toolActivity: toolTimeline } as Message["metadata"])
+                : undefined,
+          },
         ];
         conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
         conversation.updatedAt = Date.now();
@@ -967,6 +1014,7 @@ export const runInteractive = async (
   params: Record<string, string>,
 ): Promise<void> => {
   dotenv.config({ path: resolve(workingDir, ".env") });
+  const config = await loadAgentlConfig(workingDir);
 
   // Approval bridge: the harness calls this handler which creates a pending
   // promise. The Ink UI picks up the pending request and shows a Y/N prompt.
@@ -1014,14 +1062,14 @@ export const runInteractive = async (
         harness: AgentHarness;
         params: Record<string, string>;
         workingDir: string;
-        conversationStore: FileConversationStore;
+        conversationStore: ConversationStore;
         onSetApprovalCallback?: (cb: (req: ApprovalRequest) => void) => void;
       }) => Promise<void>
     )({
       harness,
       params,
       workingDir,
-      conversationStore: new FileConversationStore(workingDir),
+      conversationStore: createConversationStore(resolveStateConfig(config), { workingDir }),
       onSetApprovalCallback: (cb: (req: ApprovalRequest) => void) => {
         onApprovalRequest = cb;
         // If there's already a pending request, fire it immediately

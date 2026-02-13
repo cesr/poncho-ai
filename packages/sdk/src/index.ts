@@ -19,6 +19,7 @@ export interface Message {
     timestamp?: number;
     tokenCount?: number;
     step?: number;
+    toolActivity?: string[];
   };
 }
 

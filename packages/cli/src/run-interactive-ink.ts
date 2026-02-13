@@ -7,12 +7,13 @@
  * produces reliable output with native scroll and text selection.
  */
 import * as readline from "node:readline";
-import { parseAgentFile, type AgentHarness } from "@agentl/harness";
-import type { AgentEvent, Message, TokenUsage } from "@agentl/sdk";
 import {
-  type FileConversationStore,
-  inferConversationTitle,
-} from "./web-ui.js";
+  parseAgentFile,
+  type AgentHarness,
+  type ConversationStore,
+} from "@agentl/harness";
+import type { AgentEvent, Message, TokenUsage } from "@agentl/sdk";
+import { inferConversationTitle } from "./web-ui.js";
 
 // Re-export types that index.ts references
 export type ApprovalRequest = {
@@ -141,7 +142,7 @@ const formatDate = (value: number): string => {
 const handleSlash = async (
   command: string,
   state: InteractiveState,
-  conversationStore: FileConversationStore,
+  conversationStore: ConversationStore,
 ): Promise<{ shouldExit: boolean }> => {
   const [rawCommand, ...args] = command.trim().split(/\s+/);
   const norm = rawCommand.toLowerCase();
@@ -289,7 +290,7 @@ export const runInteractiveInk = async ({
   harness: AgentHarness;
   params: Record<string, string>;
   workingDir: string;
-  conversationStore: FileConversationStore;
+  conversationStore: ConversationStore;
   onSetApprovalCallback?: (cb: (req: ApprovalRequest) => void) => void;
 }): Promise<void> => {
   const metadata = await loadMetadata(workingDir);
@@ -410,6 +411,7 @@ export const runInteractiveInk = async ({
     let committedText = false;
     let sawChunk = false;
     let toolEvents = 0;
+    const toolTimeline: string[] = [];
     let runFailed = false;
     let usage: TokenUsage | undefined;
     let latestRunId = "";
@@ -456,6 +458,7 @@ export const runInteractiveInk = async ({
               ? compactPreview(event.input, 400)
               : compactPreview(event.input, 100);
             console.log(yellow(`tools> start ${event.tool} input=${preview}`));
+            toolTimeline.push(`- start \`${event.tool}\``);
             toolEvents += 1;
           } else if (event.type === "tool:completed") {
             const preview = showToolPayloads
@@ -469,22 +472,29 @@ export const runInteractiveInk = async ({
             if (showToolPayloads) {
               console.log(yellow(`tools> output ${preview}`));
             }
+            toolTimeline.push(
+              `- done \`${event.tool}\` in ${formatDuration(event.duration)}`,
+            );
           } else if (event.type === "tool:error") {
             console.log(
               red(`tools> error ${event.tool}: ${event.error}`),
             );
+            toolTimeline.push(`- error \`${event.tool}\`: ${event.error}`);
           } else if (event.type === "tool:approval:required") {
             console.log(
               magenta(`tools> approval required for ${event.tool}`),
             );
+            toolTimeline.push(`- approval required \`${event.tool}\``);
           } else if (event.type === "tool:approval:granted") {
             console.log(
               gray(`tools> approval granted (${event.approvalId})`),
             );
+            toolTimeline.push(`- approval granted (${event.approvalId})`);
           } else if (event.type === "tool:approval:denied") {
             console.log(
               magenta(`tools> approval denied (${event.approvalId})`),
             );
+            toolTimeline.push(`- approval denied (${event.approvalId})`);
           }
         } else if (event.type === "run:error") {
           clearThinking();
@@ -548,7 +558,14 @@ export const runInteractiveInk = async ({
     }
 
     messages.push({ role: "user", content: trimmed });
-    messages.push({ role: "assistant", content: responseText });
+    messages.push({
+      role: "assistant",
+      content: responseText,
+      metadata:
+        toolTimeline.length > 0
+          ? ({ toolActivity: toolTimeline } as Message["metadata"])
+          : undefined,
+    });
     turn = computeTurn(messages);
 
     const conversation = await conversationStore.get(activeConversationId);

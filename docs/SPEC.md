@@ -786,7 +786,7 @@ Configure a KV store for conversation persistence:
 // agentl.config.js
 export default {
   state: {
-    provider: 'redis',  // or 'upstash', 'vercel-kv', 'dynamodb'
+    provider: 'redis',  // or 'upstash', 'dynamodb'
     url: process.env.REDIS_URL,
     ttl: 3600,  // Conversation expires after 1 hour
   },
@@ -1118,7 +1118,7 @@ export default {
 
   // State persistence for multi-turn conversations
   state: {
-    provider: 'memory',  // 'memory' | 'redis' | 'upstash' | 'vercel-kv'
+    provider: 'local',  // 'local' | 'redis' | 'upstash' | 'dynamodb'
     url: process.env.REDIS_URL,
     ttl: 3600,           // Conversation TTL in seconds
   },
@@ -1172,7 +1172,7 @@ interface AgentLConfig {
   }
 
   state?: {
-    provider: 'memory' | 'redis' | 'upstash' | 'vercel-kv' | 'dynamodb'
+    provider: 'local' | 'redis' | 'upstash' | 'dynamodb'
     url?: string
     token?: string
     ttl?: number

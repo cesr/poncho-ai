@@ -86,6 +86,7 @@ vi.mock("@agentl/harness", () => ({
     state: { provider: "memory", ttl: 3600 },
     telemetry: { enabled: false },
   }),
+  resolveStateConfig: (config: { state?: unknown }) => config.state,
   createStateStore: () => {
     const map = new Map<string, { runId: string; messages: Message[]; updatedAt: number }>();
     return {
@@ -96,6 +97,18 @@ vi.mock("@agentl/harness", () => ({
       delete: async (runId: string) => {
         map.delete(runId);
       },
+    };
+  },
+  createConversationStore: () => {
+    const store = new FileConversationStore(process.cwd());
+    return {
+      list: (ownerId?: string) => store.list(ownerId),
+      get: (conversationId: string) => store.get(conversationId),
+      create: (ownerId?: string, title?: string) => store.create(ownerId, title),
+      update: (conversation: Awaited<ReturnType<FileConversationStore["create"]>>) =>
+        store.update(conversation),
+      rename: (conversationId: string, title: string) => store.rename(conversationId, title),
+      delete: (conversationId: string) => store.delete(conversationId),
     };
   },
   InMemoryStateStore: class {},

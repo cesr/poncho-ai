@@ -723,6 +723,67 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       font-size: 13px;
       line-height: 1.5;
     }
+    .tool-activity {
+      margin-top: 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+      border-radius: 10px;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #bcbcbc;
+      max-width: 300px;
+    }
+    .tool-activity-disclosure {
+      display: block;
+    }
+    .tool-activity-summary {
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      padding: 10px 12px;
+      user-select: none;
+    }
+    .tool-activity-summary::-webkit-details-marker {
+      display: none;
+    }
+    .tool-activity-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #8a8a8a;
+      font-weight: 600;
+    }
+    .tool-activity-caret {
+      margin-left: auto;
+      color: #8a8a8a;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 120ms ease;
+      transform: rotate(0deg);
+    }
+    .tool-activity-caret svg {
+      width: 14px;
+      height: 14px;
+      display: block;
+    }
+    .tool-activity-disclosure[open] .tool-activity-caret {
+      transform: rotate(90deg);
+    }
+    .tool-activity-list {
+      display: grid;
+      gap: 6px;
+      padding: 0 12px 10px;
+    }
+    .tool-activity-item {
+      font-family: ui-monospace, "SF Mono", "Fira Code", monospace;
+      background: rgba(255,255,255,0.04);
+      border-radius: 6px;
+      padding: 4px 7px;
+      color: #d6d6d6;
+    }
     .user-bubble {
       background: #111;
       border: 1px solid rgba(255,255,255,0.08);
@@ -1068,6 +1129,49 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         return html || "<p></p>";
       };
 
+      const extractToolActivity = (value) => {
+        const source = String(value || "");
+        let markerIndex = source.lastIndexOf("\\n### Tool activity\\n");
+        if (markerIndex < 0 && source.startsWith("### Tool activity\\n")) {
+          markerIndex = 0;
+        }
+        if (markerIndex < 0) {
+          return { content: source, activities: [] };
+        }
+        const content = markerIndex === 0 ? "" : source.slice(0, markerIndex).trimEnd();
+        const rawSection = markerIndex === 0 ? source : source.slice(markerIndex + 1);
+        const afterHeading = rawSection.replace(/^### Tool activity\\s*\\n?/, "");
+        const activities = afterHeading
+          .split("\\n")
+          .map((line) => line.trim())
+          .filter((line) => line.startsWith("- "))
+          .map((line) => line.slice(2).trim())
+          .filter(Boolean);
+        return { content, activities };
+      };
+
+      const renderToolActivity = (items) => {
+        if (!items || !items.length) {
+          return "";
+        }
+        const chips = items
+          .map((item) => '<div class="tool-activity-item">' + escapeHtml(item) + "</div>")
+          .join("");
+        return (
+          '<div class="tool-activity">' +
+          '<details class="tool-activity-disclosure">' +
+          '<summary class="tool-activity-summary">' +
+          '<span class="tool-activity-label">Tool activity</span>' +
+          '<span class="tool-activity-caret" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none"><path d="M4.5 2.75L8 6L4.5 9.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></span>' +
+          "</summary>" +
+          '<div class="tool-activity-list">' +
+          chips +
+          "</div>" +
+          "</details>" +
+          "</div>"
+        );
+      };
+
       const formatDate = (epoch) => {
         try {
           const date = new Date(epoch);
@@ -1165,12 +1269,23 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             const content = document.createElement("div");
             content.className = "assistant-content";
             const text = String(m.content || "");
+            const parsed = extractToolActivity(text);
+            const metadataToolActivity =
+              m.metadata && Array.isArray(m.metadata.toolActivity)
+                ? m.metadata.toolActivity
+                : [];
+            const toolActivity =
+              Array.isArray(m._toolActivity) && m._toolActivity.length > 0
+                ? m._toolActivity
+                : metadataToolActivity.length > 0
+                  ? metadataToolActivity
+                  : parsed.activities;
             if (m._error) {
               const errorEl = document.createElement("div");
               errorEl.className = "message-error";
               errorEl.innerHTML = "<strong>Error</strong><br>" + escapeHtml(m._error);
               content.appendChild(errorEl);
-            } else if (isStreaming && i === messages.length - 1 && !text) {
+            } else if (isStreaming && i === messages.length - 1 && !parsed.content) {
               const spinner = document.createElement("span");
               spinner.className = "thinking-indicator";
               const starFrames = ["✶","✸","✹","✺","✹","✷"];
@@ -1179,7 +1294,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
               spinner._interval = setInterval(() => { frame = (frame + 1) % starFrames.length; spinner.textContent = starFrames[frame]; }, 70);
               content.appendChild(spinner);
             } else {
-              content.innerHTML = renderAssistantMarkdown(text);
+              content.innerHTML = renderAssistantMarkdown(parsed.content);
+            }
+            if (toolActivity.length > 0) {
+              content.insertAdjacentHTML("beforeend", renderToolActivity(toolActivity));
             }
             wrap.appendChild(content);
             row.appendChild(wrap);
@@ -1250,6 +1368,22 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         elements.send.disabled = value;
       };
 
+      const pushToolActivity = (assistantMessage, line) => {
+        if (!line) {
+          return;
+        }
+        if (
+          !assistantMessage.metadata ||
+          !Array.isArray(assistantMessage.metadata.toolActivity)
+        ) {
+          assistantMessage.metadata = {
+            ...(assistantMessage.metadata || {}),
+            toolActivity: [],
+          };
+        }
+        assistantMessage.metadata.toolActivity.push(line);
+      };
+
       const autoResizePrompt = () => {
         const el = elements.prompt;
         el.style.height = "auto";
@@ -1270,7 +1404,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         }
         const existingPayload = await api("/api/conversations/" + encodeURIComponent(conversationId));
         const localMessages = [...(existingPayload.conversation.messages || []), { role: "user", content: messageText }];
-        let assistantMessage = { role: "assistant", content: "" };
+        let assistantMessage = { role: "assistant", content: "", metadata: { toolActivity: [] } };
         localMessages.push(assistantMessage);
         renderMessages(localMessages, true);
         setStreaming(true);
@@ -1296,6 +1430,39 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             buffer = parseSseChunk(buffer, (eventName, payload) => {
               if (eventName === "model:chunk") {
                 assistantMessage.content += String(payload.content || "");
+                renderMessages(localMessages, true);
+              }
+              if (eventName === "tool:started") {
+                pushToolActivity(assistantMessage, "start " + (payload.tool || "tool"));
+                renderMessages(localMessages, true);
+              }
+              if (eventName === "tool:completed") {
+                const duration = typeof payload.duration === "number" ? payload.duration : null;
+                pushToolActivity(
+                  assistantMessage,
+                  "done " +
+                    (payload.tool || "tool") +
+                    (duration !== null ? " (" + duration + "ms)" : ""),
+                );
+                renderMessages(localMessages, true);
+              }
+              if (eventName === "tool:error") {
+                pushToolActivity(
+                  assistantMessage,
+                  "error " + (payload.tool || "tool") + ": " + (payload.error || "unknown error"),
+                );
+                renderMessages(localMessages, true);
+              }
+              if (eventName === "tool:approval:required") {
+                pushToolActivity(assistantMessage, "approval required for " + (payload.tool || "tool"));
+                renderMessages(localMessages, true);
+              }
+              if (eventName === "tool:approval:granted") {
+                pushToolActivity(assistantMessage, "approval granted");
+                renderMessages(localMessages, true);
+              }
+              if (eventName === "tool:approval:denied") {
+                pushToolActivity(assistantMessage, "approval denied");
                 renderMessages(localMessages, true);
               }
               if (eventName === "run:completed" && (!assistantMessage.content || assistantMessage.content.length === 0)) {

@@ -1,6 +1,26 @@
 import { access } from "node:fs/promises";
 import { resolve } from "node:path";
+import type { MemoryConfig } from "./memory.js";
 import type { McpConfig } from "./mcp.js";
+import type { StateConfig } from "./state.js";
+
+export interface StorageConfig {
+  provider?: "local" | "memory" | "redis" | "upstash" | "dynamodb";
+  url?: string;
+  token?: string;
+  table?: string;
+  region?: string;
+  ttl?:
+    | number
+    | {
+        conversations?: number;
+        memory?: number;
+      };
+  memory?: {
+    enabled?: boolean;
+    maxRecallConversations?: number;
+  };
+}
 
 export interface AgentlConfig extends McpConfig {
   harness?: string;
@@ -11,10 +31,12 @@ export interface AgentlConfig extends McpConfig {
     validate?: (token: string, req?: unknown) => Promise<boolean> | boolean;
   };
   state?: {
-    provider?: "memory" | "redis" | "upstash" | "vercel-kv" | "dynamodb";
+    provider?: "local" | "memory" | "redis" | "upstash" | "dynamodb";
     ttl?: number;
     [key: string]: unknown;
   };
+  memory?: MemoryConfig;
+  storage?: StorageConfig;
   telemetry?: {
     enabled?: boolean;
     otlp?: string;
@@ -37,6 +59,55 @@ export interface AgentlConfig extends McpConfig {
     fly?: Record<string, unknown>;
   };
 }
+
+const resolveTtl = (
+  ttl: StorageConfig["ttl"] | undefined,
+  key: "conversations" | "memory",
+): number | undefined => {
+  if (typeof ttl === "number") {
+    return ttl;
+  }
+  if (ttl && typeof ttl === "object" && typeof ttl[key] === "number") {
+    return ttl[key];
+  }
+  return undefined;
+};
+
+export const resolveStateConfig = (
+  config: AgentlConfig | undefined,
+): StateConfig | undefined => {
+  if (config?.storage) {
+    return {
+      provider: config.storage.provider,
+      url: config.storage.url,
+      token: config.storage.token,
+      table: config.storage.table,
+      region: config.storage.region,
+      ttl: resolveTtl(config.storage.ttl, "conversations"),
+    };
+  }
+  return config?.state as StateConfig | undefined;
+};
+
+export const resolveMemoryConfig = (
+  config: AgentlConfig | undefined,
+): MemoryConfig | undefined => {
+  if (config?.storage) {
+    return {
+      enabled: config.storage.memory?.enabled ?? config.memory?.enabled,
+      provider: config.storage.provider,
+      url: config.storage.url,
+      token: config.storage.token,
+      table: config.storage.table,
+      region: config.storage.region,
+      ttl: resolveTtl(config.storage.ttl, "memory"),
+      maxRecallConversations:
+        config.storage.memory?.maxRecallConversations ??
+        config.memory?.maxRecallConversations,
+    };
+  }
+  return config?.memory;
+};
 
 export const loadAgentlConfig = async (
   workingDir: string,

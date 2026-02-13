@@ -8,10 +8,15 @@ import type {
   ToolDefinition,
 } from "@agentl/sdk";
 import { parseAgentFile, renderAgentPrompt, type ParsedAgent } from "./agent-parser.js";
-import { loadAgentlConfig } from "./config.js";
+import { loadAgentlConfig, resolveMemoryConfig } from "./config.js";
 import { createDefaultTools, createWriteTool } from "./default-tools.js";
 import { LatitudeCapture } from "./latitude-capture.js";
 import { loadLocalSkillTools } from "./local-tools.js";
+import {
+  createMemoryStore,
+  createMemoryTools,
+  type MemoryStore,
+} from "./memory.js";
 import { LocalMcpBridge } from "./mcp.js";
 import type { ModelClient, ModelResponse } from "./model-client.js";
 import { createModelClient } from "./model-factory.js";
@@ -54,6 +59,7 @@ export class AgentHarness {
   private readonly dispatcher = new ToolDispatcher();
   private readonly approvalHandler?: HarnessOptions["approvalHandler"];
   private skillContextWindow = "";
+  private memoryStore?: MemoryStore;
 
   private parsedAgent?: ParsedAgent;
   private mcpBridge?: LocalMcpBridge;
@@ -88,6 +94,7 @@ export class AgentHarness {
     this.parsedAgent = await parseAgentFile(this.workingDir);
     const config = await loadAgentlConfig(this.workingDir);
     const provider = this.parsedAgent.frontmatter.model?.provider ?? "anthropic";
+    const memoryConfig = resolveMemoryConfig(config);
     const latitudeCapture = new LatitudeCapture({
       apiKey:
         config?.telemetry?.latitude?.apiKey ?? process.env.LATITUDE_API_KEY,
@@ -109,6 +116,18 @@ export class AgentHarness {
     this.skillContextWindow = buildSkillContextWindow(skillMetadata);
     this.dispatcher.registerMany(createSkillTools(skillMetadata));
     this.dispatcher.registerMany(await loadLocalSkillTools(this.workingDir, extraSkillPaths));
+    if (memoryConfig?.enabled) {
+      this.memoryStore = createMemoryStore(
+        this.parsedAgent.frontmatter.name,
+        memoryConfig,
+        { workingDir: this.workingDir },
+      );
+      this.dispatcher.registerMany(
+        createMemoryTools(this.memoryStore, {
+          maxRecallConversations: memoryConfig.maxRecallConversations,
+        }),
+      );
+    }
     await bridge.startLocalServers();
     this.dispatcher.registerMany(await bridge.loadTools());
   }
@@ -146,7 +165,21 @@ export class AgentHarness {
     const promptWithSkills = this.skillContextWindow
       ? `${systemPrompt}\n\n${this.skillContextWindow}`
       : systemPrompt;
-    const integrityPrompt = `${promptWithSkills}
+    const mainMemory = this.memoryStore
+      ? await this.memoryStore.getMainMemory()
+      : undefined;
+    const boundedMainMemory =
+      mainMemory && mainMemory.content.length > 4000
+        ? `${mainMemory.content.slice(0, 4000)}\n...[truncated]`
+        : mainMemory?.content;
+    const memoryContext =
+      boundedMainMemory && boundedMainMemory.trim().length > 0
+        ? `
+## Persistent Memory
+
+${boundedMainMemory.trim()}`
+        : "";
+    const integrityPrompt = `${promptWithSkills}${memoryContext}
 
 ## Execution Integrity
 
