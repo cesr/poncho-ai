@@ -215,8 +215,73 @@ const PACKAGE_TEMPLATE = (name: string): string =>
     2,
   );
 
+const README_TEMPLATE = (name: string): string => `# ${name}
+
+An AI agent built with [AgentL](https://github.com/latitude-dev/agentl).
+
+## Setup
+
+\`\`\`bash
+npm install
+cp .env.example .env
+# Edit .env and add your Anthropic API key
+\`\`\`
+
+## Development
+
+\`\`\`bash
+agentl dev
+\`\`\`
+
+Opens a local server at \`http://localhost:3000\` with a chat UI and API.
+
+## Usage
+
+\`\`\`bash
+# Run a one-off task
+agentl run "Your task here"
+
+# Interactive REPL
+agentl run --interactive
+
+# Run tests
+agentl test
+\`\`\`
+
+## Project Structure
+
+\`\`\`
+${name}/
+├── AGENT.md           # Agent definition and system prompt
+├── agentl.config.js   # Configuration (MCP servers, auth, etc.)
+├── package.json       # Dependencies
+├── .env.example       # Environment variables template
+├── tests/
+│   └── basic.yaml     # Test suite
+└── skills/
+    └── starter/
+        ├── SKILL.md
+        └── tools/
+            └── starter-echo.ts
+\`\`\`
+
+## Deployment
+
+\`\`\`bash
+# Build for Vercel
+agentl build vercel
+cd .agentl-build/vercel && vercel deploy --prod
+
+# Build for Docker
+agentl build docker
+docker build -t ${name} .
+\`\`\`
+
+See the [AgentL docs](https://github.com/latitude-dev/agentl) for more.
+`;
+
 const ENV_TEMPLATE = "ANTHROPIC_API_KEY=sk-ant-...\n";
-const GITIGNORE_TEMPLATE = ".env\nnode_modules\ndist\n";
+const GITIGNORE_TEMPLATE = ".env\nnode_modules\ndist\n.agentl-build\n";
 const VERCEL_RUNTIME_DEPENDENCIES: Record<string, string> = {
   "@anthropic-ai/sdk": "^0.74.0",
   "@aws-sdk/client-dynamodb": "^3.988.0",
@@ -391,6 +456,13 @@ const writeConfigFile = async (workingDir: string, config: AgentlConfig): Promis
   await writeFile(resolve(workingDir, "agentl.config.js"), serialized, "utf8");
 };
 
+const gitInit = (cwd: string): Promise<boolean> =>
+  new Promise((resolve) => {
+    const child = spawn("git", ["init"], { cwd, stdio: "ignore" });
+    child.on("error", () => resolve(false));
+    child.on("close", (code) => resolve(code === 0));
+  });
+
 export const initProject = async (
   projectName: string,
   options?: { workingDir?: string },
@@ -402,6 +474,7 @@ export const initProject = async (
   await ensureFile(resolve(projectDir, "AGENT.md"), AGENT_TEMPLATE);
   await ensureFile(resolve(projectDir, "agentl.config.js"), CONFIG_TEMPLATE);
   await ensureFile(resolve(projectDir, "package.json"), PACKAGE_TEMPLATE(projectName));
+  await ensureFile(resolve(projectDir, "README.md"), README_TEMPLATE(projectName));
   await ensureFile(resolve(projectDir, ".env.example"), ENV_TEMPLATE);
   await ensureFile(resolve(projectDir, ".gitignore"), GITIGNORE_TEMPLATE);
   await ensureFile(resolve(projectDir, "tests", "basic.yaml"), TEST_TEMPLATE);
@@ -410,6 +483,11 @@ export const initProject = async (
     resolve(projectDir, "skills", "starter", "tools", "starter-echo.ts"),
     SKILL_TOOL_TEMPLATE,
   );
+
+  const gitOk = await gitInit(projectDir);
+  if (gitOk) {
+    process.stdout.write(`Initialized git repository\n`);
+  }
 
   process.stdout.write(`Initialized AgentL project at ${projectDir}\n`);
 };
