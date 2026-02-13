@@ -7,13 +7,16 @@
  * produces reliable output with native scroll and text selection.
  */
 import * as readline from "node:readline";
+import { stdout } from "node:process";
 import {
   parseAgentFile,
+  type AgentlConfig,
   type AgentHarness,
   type ConversationStore,
 } from "@agentl/harness";
 import type { AgentEvent, Message, TokenUsage } from "@agentl/sdk";
 import { inferConversationTitle } from "./web-ui.js";
+import { consumeFirstRunIntro } from "./init-feature-context.js";
 
 // Re-export types that index.ts references
 export type ApprovalRequest = {
@@ -115,6 +118,20 @@ const ask = (
   new Promise((res) => {
     rl.question(prompt, (answer) => res(answer));
   });
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+const streamTextAsTokens = async (text: string): Promise<void> => {
+  const tokens = text.match(/\S+\s*|\n/g) ?? [text];
+  for (const token of tokens) {
+    stdout.write(token);
+    const trimmed = token.trim();
+    const delay = trimmed.length === 0 ? 0 : Math.max(4, Math.min(18, Math.floor(trimmed.length / 2)));
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(delay);
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Slash commands
@@ -284,12 +301,14 @@ export const runInteractiveInk = async ({
   harness,
   params,
   workingDir,
+  config,
   conversationStore,
   onSetApprovalCallback,
 }: {
   harness: AgentHarness;
   params: Record<string, string>;
   workingDir: string;
+  config?: AgentlConfig;
   conversationStore: ConversationStore;
   onSetApprovalCallback?: (cb: (req: ApprovalRequest) => void) => void;
 }): Promise<void> => {
@@ -338,6 +357,17 @@ export const runInteractiveInk = async ({
   console.log(
     gray("Conversation controls: /list /open <id> /new [title] /delete [id] /continue /reset [all]\n"),
   );
+  const intro = await consumeFirstRunIntro(workingDir, {
+    agentName: metadata.agentName,
+    provider: metadata.provider,
+    model: metadata.model,
+    config,
+  });
+  if (intro) {
+    console.log(green("assistant>"));
+    await streamTextAsTokens(intro);
+    stdout.write("\n\n");
+  }
 
   // --- State -----------------------------------------------------------------
 

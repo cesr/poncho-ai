@@ -36,6 +36,15 @@ import {
   setCookie,
   verifyPassphrase,
 } from "./web-ui.js";
+import {
+  runInitOnboarding,
+  type InitOnboardingOptions,
+} from "./init-onboarding.js";
+import {
+  buildOnboardingFeatureGuidance,
+  consumeFirstRunIntro,
+  initializeOnboardingMarker,
+} from "./init-feature-context.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -161,12 +170,15 @@ Skill file conventions:
   - \`inputSchema\`
   - \`handler\``;
 
-const AGENT_TEMPLATE = (name: string): string => `---
+const AGENT_TEMPLATE = (
+  name: string,
+  options: { modelProvider: "anthropic" | "openai"; modelName: string },
+): string => `---
 name: ${name}
 description: A helpful AgentL assistant
 model:
-  provider: anthropic
-  name: claude-opus-4-5
+  provider: ${options.modelProvider}
+  name: ${options.modelName}
   temperature: 0.2
 limits:
   maxSteps: 50
@@ -195,15 +207,9 @@ Environment: {{runtime.environment}}
 - Bash/shell commands are **not** available unless you install and enable a shell tool/skill
 - Git operations are only available if a git-capable tool/skill is configured
 
-${AGENT_SKILL_GUIDANCE}
-`;
+${buildOnboardingFeatureGuidance()}
 
-const CONFIG_TEMPLATE = `export default {
-  mcp: [],
-  auth: { required: false },
-  state: { provider: 'local', ttl: 3600 },
-  telemetry: { enabled: true }
-}
+${AGENT_SKILL_GUIDANCE}
 `;
 
 /**
@@ -265,8 +271,9 @@ An AI agent built with [AgentL](https://github.com/latitude-dev/agentl).
 
 \`\`\`bash
 npm install
+# If you didn't enter an API key during init:
 cp .env.example .env
-# Edit .env and add your Anthropic API key
+# Then edit .env and add your API key
 \`\`\`
 
 ## Development
@@ -493,8 +500,11 @@ export default async function handler(req, res) {
   });
 };
 
+const renderConfigFile = (config: AgentlConfig): string =>
+  `export default ${JSON.stringify(config, null, 2)}\n`;
+
 const writeConfigFile = async (workingDir: string, config: AgentlConfig): Promise<void> => {
-  const serialized = `export default ${JSON.stringify(config, null, 2)}\n`;
+  const serialized = renderConfigFile(config);
   await writeFile(resolve(workingDir, "agentl.config.js"), serialized, "utf8");
 };
 
@@ -507,40 +517,89 @@ const gitInit = (cwd: string): Promise<boolean> =>
 
 export const initProject = async (
   projectName: string,
-  options?: { workingDir?: string },
+  options?: {
+    workingDir?: string;
+    onboarding?: InitOnboardingOptions;
+    envExampleOverride?: string;
+  },
 ): Promise<void> => {
   const baseDir = options?.workingDir ?? process.cwd();
   const projectDir = resolve(baseDir, projectName);
   await mkdir(projectDir, { recursive: true });
 
-  await ensureFile(resolve(projectDir, "AGENT.md"), AGENT_TEMPLATE(projectName));
-  await ensureFile(resolve(projectDir, "agentl.config.js"), CONFIG_TEMPLATE);
-  await ensureFile(resolve(projectDir, "package.json"), PACKAGE_TEMPLATE(projectName, projectDir));
-  await ensureFile(resolve(projectDir, "README.md"), README_TEMPLATE(projectName));
-  await ensureFile(resolve(projectDir, ".env.example"), ENV_TEMPLATE);
-  await ensureFile(resolve(projectDir, ".gitignore"), GITIGNORE_TEMPLATE);
-  await ensureFile(resolve(projectDir, "tests", "basic.yaml"), TEST_TEMPLATE);
-  await ensureFile(resolve(projectDir, "skills", "starter", "SKILL.md"), SKILL_TEMPLATE);
-  await ensureFile(
-    resolve(projectDir, "skills", "starter", "tools", "starter-echo.ts"),
-    SKILL_TOOL_TEMPLATE,
-  );
+  const onboardingOptions: InitOnboardingOptions = options?.onboarding ?? {
+    mode: "light",
+    yes: true,
+    interactive: false,
+  };
+  const onboarding = await runInitOnboarding(onboardingOptions);
+
+  const G = "\x1b[32m";
+  const D = "\x1b[2m";
+  const B = "\x1b[1m";
+  const CY = "\x1b[36m";
+  const YW = "\x1b[33m";
+  const R = "\x1b[0m";
+
+  process.stdout.write("\n");
+
+  const scaffoldFiles: Array<{ path: string; content: string }> = [
+    { path: "AGENT.md", content: AGENT_TEMPLATE(projectName, { modelProvider: onboarding.agentModel.provider, modelName: onboarding.agentModel.name }) },
+    { path: "agentl.config.js", content: renderConfigFile(onboarding.config) },
+    { path: "package.json", content: PACKAGE_TEMPLATE(projectName, projectDir) },
+    { path: "README.md", content: README_TEMPLATE(projectName) },
+    { path: ".env.example", content: options?.envExampleOverride ?? onboarding.envExample ?? ENV_TEMPLATE },
+    { path: ".gitignore", content: GITIGNORE_TEMPLATE },
+    { path: "tests/basic.yaml", content: TEST_TEMPLATE },
+    { path: "skills/starter/SKILL.md", content: SKILL_TEMPLATE },
+    { path: "skills/starter/tools/starter-echo.ts", content: SKILL_TOOL_TEMPLATE },
+  ];
+  if (onboarding.envFile) {
+    scaffoldFiles.push({ path: ".env", content: onboarding.envFile });
+  }
+
+  for (const file of scaffoldFiles) {
+    await ensureFile(resolve(projectDir, file.path), file.content);
+    process.stdout.write(`  ${D}+${R} ${D}${file.path}${R}\n`);
+  }
+
+  await initializeOnboardingMarker(projectDir, {
+    allowIntro: !(onboardingOptions.yes ?? false),
+  });
+
+  process.stdout.write("\n");
 
   // Install dependencies so subsequent commands (e.g. `agentl add`) succeed.
   try {
     await runPnpmInstall(projectDir);
+    process.stdout.write(`  ${G}✓${R} ${D}Installed dependencies${R}\n`);
   } catch {
     process.stdout.write(
-      "Warning: could not install dependencies. Run `pnpm install` manually.\n",
+      `  ${YW}!${R} Could not install dependencies — run ${D}pnpm install${R} manually\n`,
     );
   }
 
   const gitOk = await gitInit(projectDir);
   if (gitOk) {
-    process.stdout.write(`Initialized git repository\n`);
+    process.stdout.write(`  ${G}✓${R} ${D}Initialized git${R}\n`);
   }
 
-  process.stdout.write(`Initialized AgentL project at ${projectDir}\n`);
+  process.stdout.write(`  ${G}✓${R} ${B}${projectName}${R} is ready\n`);
+  process.stdout.write("\n");
+  process.stdout.write(`  ${B}Get started${R}\n`);
+  process.stdout.write("\n");
+  process.stdout.write(`    ${D}$${R} cd ${projectName}\n`);
+  process.stdout.write("\n");
+  process.stdout.write(`    ${CY}Web UI${R}          ${D}$${R} agentl dev\n`);
+  process.stdout.write(`    ${CY}CLI interactive${R}  ${D}$${R} agentl run --interactive\n`);
+  process.stdout.write("\n");
+  if (onboarding.envNeedsUserInput) {
+    process.stdout.write(
+      `  ${YW}!${R} Make sure you add your keys to the ${B}.env${R} file.\n`,
+    );
+  }
+  process.stdout.write(`  ${D}The agent will introduce itself on your first session.${R}\n`);
+  process.stdout.write("\n");
 };
 
 export const updateAgentGuidance = async (workingDir: string): Promise<boolean> => {
@@ -576,11 +635,21 @@ export const createRequestHandler = async (options?: {
   dotenv.config({ path: resolve(workingDir, ".env") });
   const config = await loadAgentlConfig(workingDir);
   let agentName = "Agent";
+  let agentModelProvider = "anthropic";
+  let agentModelName = "claude-opus-4-5";
   try {
     const agentMd = await readFile(resolve(workingDir, "AGENT.md"), "utf8");
     const nameMatch = agentMd.match(/^name:\s*(.+)$/m);
+    const providerMatch = agentMd.match(/^\s{2}provider:\s*(.+)$/m);
+    const modelMatch = agentMd.match(/^\s{2}name:\s*(.+)$/m);
     if (nameMatch?.[1]) {
       agentName = nameMatch[1].trim().replace(/^["']|["']$/g, "");
+    }
+    if (providerMatch?.[1]) {
+      agentModelProvider = providerMatch[1].trim().replace(/^["']|["']$/g, "");
+    }
+    if (modelMatch?.[1]) {
+      agentModelName = modelMatch[1].trim().replace(/^["']|["']$/g, "");
     }
   } catch {}
   const harness = new AgentHarness({ workingDir });
@@ -763,6 +832,16 @@ export const createRequestHandler = async (options?: {
     if (pathname === "/api/conversations" && request.method === "POST") {
       const body = (await readRequestBody(request)) as { title?: string };
       const conversation = await conversationStore.create(ownerId, body.title);
+      const introMessage = await consumeFirstRunIntro(workingDir, {
+        agentName,
+        provider: agentModelProvider,
+        model: agentModelName,
+        config,
+      });
+      if (introMessage) {
+        conversation.messages = [{ role: "assistant", content: introMessage }];
+        await conversationStore.update(conversation);
+      }
       writeJson(response, 201, { conversation });
       return;
     }
@@ -1062,6 +1141,7 @@ export const runInteractive = async (
         harness: AgentHarness;
         params: Record<string, string>;
         workingDir: string;
+        config?: AgentlConfig;
         conversationStore: ConversationStore;
         onSetApprovalCallback?: (cb: (req: ApprovalRequest) => void) => void;
       }) => Promise<void>
@@ -1069,6 +1149,7 @@ export const runInteractive = async (
       harness,
       params,
       workingDir,
+      config,
       conversationStore: createConversationStore(resolveStateConfig(config), { workingDir }),
       onSetApprovalCallback: (cb: (req: ApprovalRequest) => void) => {
         onApprovalRequest = cb;
@@ -1528,9 +1609,18 @@ export const buildCli = (): Command => {
   program
     .command("init")
     .argument("<name>", "project name")
+    .option("--configure", "run full onboarding setup", false)
+    .option("--yes", "accept defaults and skip prompts", false)
     .description("Scaffold a new AgentL project")
-    .action(async (name: string) => {
-      await initProject(name);
+    .action(async (name: string, options: { configure: boolean; yes: boolean }) => {
+      await initProject(name, {
+        onboarding: {
+          mode: options.configure ? "full" : "light",
+          yes: options.yes,
+          interactive:
+            !options.yes && process.stdin.isTTY === true && process.stdout.isTTY === true,
+        },
+      });
     });
 
   program

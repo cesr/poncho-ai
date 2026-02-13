@@ -16,6 +16,7 @@ agentl dev
 
 - MCP support is intentionally **remote-only** (`agentl mcp add --url ...`).
 - `agentl init` scaffolds starter `skills/` and `tests/` directories with templates.
+- `agentl init --configure` enables full onboarding prompts; default init runs light onboarding.
 - Model providers currently supported by runtime: `anthropic` and `openai`.
 
 ## What is AgentL?
@@ -38,6 +39,11 @@ AgentL is a framework for building custom AI agents that are version-controlled 
 agentl init my-agent
 cd my-agent
 ```
+
+Init options:
+- `agentl init <name>`: light onboarding (recommended defaults)
+- `agentl init <name> --configure`: full declarative onboarding prompts
+- `agentl init <name> --yes`: deterministic non-interactive defaults
 
 This creates a ready-to-run project:
 
@@ -98,6 +104,8 @@ curl -X POST http://localhost:3000/api/conversations \
   -H "Content-Type: application/json" \
   -d '{"title": "Quick start"}'
 ```
+
+On the first interactive session (`agentl dev` chat UI or `agentl run --interactive`), the agent introduces available features and explains that you can configure settings by describing the outcome you want.
 
 ### 4. Deploy
 
@@ -376,6 +384,8 @@ agentl run "Explain this code" --file ./src/index.ts
 # Interactive mode
 agentl run --interactive
 ```
+
+On first interactive run, the agent proactively introduces configurable capabilities (model/provider, storage/memory, auth, telemetry, MCP) and suggests example requests.
 
 Interactive mode uses native terminal I/O (readline + stdout), so it behaves like a standard CLI:
 
@@ -667,7 +677,7 @@ export default {
 
   // Unified storage (preferred). Replaces separate `state` and `memory` blocks.
   storage: {
-    provider: 'upstash',         // 'local' | 'redis' | 'upstash' | 'dynamodb'
+    provider: 'upstash',         // 'local' | 'memory' | 'redis' | 'upstash' | 'dynamodb'
     url: process.env.KV_REST_API_URL,        // or UPSTASH_REDIS_REST_URL
     token: process.env.KV_REST_API_TOKEN,    // or UPSTASH_REDIS_REST_TOKEN
     ttl: {

@@ -58,6 +58,8 @@ export const defineTool = <
   definition: ToolDefinition<TInput, TOutput>,
 ): ToolDefinition<TInput, TOutput> => definition;
 
+export * from "./config-registry.js";
+
 export interface RunInput {
   task: string;
   parameters?: Record<string, unknown>;

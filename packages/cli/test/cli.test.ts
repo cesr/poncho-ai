@@ -4,6 +4,11 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEvent, Message } from "@agentl/sdk";
 import { FileConversationStore, getRequestIp, parseCookies } from "../src/web-ui.js";
+import { buildConfigFromOnboardingAnswers, runInitOnboarding } from "../src/init-onboarding.js";
+import {
+  consumeFirstRunIntro,
+  initializeOnboardingMarker,
+} from "../src/init-feature-context.js";
 
 vi.mock("@agentl/harness", () => ({
   AgentHarness: class MockHarness {
@@ -155,6 +160,96 @@ describe("cli", () => {
     expect(skillManifest).toContain("name: starter-skill");
     expect(skillTool).toContain('name: "starter-echo"');
     expect(basicTest).toContain('name: "Basic sanity"');
+  });
+
+  it("builds onboarding config for full mode declaratively", async () => {
+    const result = await runInitOnboarding({
+      mode: "full",
+      yes: true,
+      interactive: false,
+    });
+    expect(result.config.storage?.provider).toBe("local");
+    expect(result.config.telemetry?.enabled).toBe(true);
+    expect(result.agentModel.provider).toBe("anthropic");
+  });
+
+  it("supports full onboarding scaffold defaults via init options", async () => {
+    await initProject("full-agent", {
+      workingDir: tempDir,
+      onboarding: { mode: "full", yes: true, interactive: false },
+    });
+    const configFile = await readFile(
+      join(tempDir, "full-agent", "agentl.config.js"),
+      "utf8",
+    );
+    expect(configFile).toContain('"storage"');
+    expect(configFile).toContain('"memory"');
+    expect(configFile).toContain('"auth"');
+  });
+
+  it("creates onboarding marker and emits intro only once", async () => {
+    const projectDir = join(tempDir, "intro-agent");
+    await mkdir(projectDir, { recursive: true });
+    await initializeOnboardingMarker(projectDir);
+    const firstIntro = await consumeFirstRunIntro(projectDir, {
+      agentName: "IntroAgent",
+      provider: "anthropic",
+      model: "claude-opus-4-5",
+      config: buildConfigFromOnboardingAnswers({
+        "model.provider": "anthropic",
+        "storage.provider": "local",
+        "storage.memory.enabled": true,
+        "auth.required": false,
+        "telemetry.enabled": true,
+      }),
+    });
+    const secondIntro = await consumeFirstRunIntro(projectDir, {
+      agentName: "IntroAgent",
+      provider: "anthropic",
+      model: "claude-opus-4-5",
+      config: undefined,
+    });
+    expect(firstIntro).toContain("I can help configure this agent directly by chat");
+    expect(secondIntro).toBeUndefined();
+  });
+
+  it("emits intro for interactive init even when config differs from defaults", async () => {
+    await initProject("interactive-custom-agent", {
+      workingDir: tempDir,
+      onboarding: { mode: "light", yes: false, interactive: false },
+    });
+    const projectDir = join(tempDir, "interactive-custom-agent");
+    const intro = await consumeFirstRunIntro(projectDir, {
+      agentName: "InteractiveCustomAgent",
+      provider: "openai",
+      model: "gpt-4.1",
+      config: buildConfigFromOnboardingAnswers({
+        "model.provider": "openai",
+        "storage.provider": "memory",
+        "storage.memory.enabled": false,
+        "auth.required": true,
+        "telemetry.enabled": false,
+      }),
+    });
+    expect(intro).toContain("I can help configure this agent directly by chat");
+  });
+
+  it("does not emit intro for init defaults created with --yes behavior", async () => {
+    await initProject("no-intro-agent", { workingDir: tempDir });
+    const projectDir = join(tempDir, "no-intro-agent");
+    const intro = await consumeFirstRunIntro(projectDir, {
+      agentName: "NoIntroAgent",
+      provider: "anthropic",
+      model: "claude-opus-4-5",
+      config: buildConfigFromOnboardingAnswers({
+        "model.provider": "anthropic",
+        "storage.provider": "local",
+        "storage.memory.enabled": true,
+        "auth.required": false,
+        "telemetry.enabled": true,
+      }),
+    });
+    expect(intro).toBeUndefined();
   });
 
   it("supports smoke flow init -> dev -> api conversation endpoint", async () => {

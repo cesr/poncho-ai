@@ -897,6 +897,11 @@ cd my-agent
 # └── .gitignore
 ```
 
+Init modes:
+- `agentl init <name>` uses light onboarding defaults.
+- `agentl init <name> --configure` runs full declarative onboarding prompts.
+- `agentl init <name> --yes` skips prompts with deterministic defaults.
+
 **package.json:**
 
 ```json
@@ -943,6 +948,8 @@ agentl run --file ./src/index.ts "Explain this code"
 # Interactive REPL mode:
 agentl run --interactive
 ```
+
+On first interactive session (web UI or CLI interactive), the agent sends a one-time introduction describing available configurable features and how to request config changes in plain language.
 
 Options:
 - `--param key=value` - Pass parameters (can repeat)
