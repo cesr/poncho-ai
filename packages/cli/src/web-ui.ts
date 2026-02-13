@@ -334,6 +334,76 @@ export const inferConversationTitle = (text: string): string => {
   return normalized.length <= 48 ? normalized : `${normalized.slice(0, 48)}...`;
 };
 
+// ---------------------------------------------------------------------------
+// PWA assets
+// ---------------------------------------------------------------------------
+
+export const renderManifest = (options?: { agentName?: string }): string => {
+  const name = options?.agentName ?? "Agent";
+  return JSON.stringify({
+    name,
+    short_name: name,
+    description: `${name} — AI agent powered by AgentL`,
+    start_url: "/",
+    display: "standalone",
+    background_color: "#000000",
+    theme_color: "#000000",
+    icons: [
+      { src: "/icon.svg", sizes: "any", type: "image/svg+xml" },
+      { src: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { src: "/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+  });
+};
+
+export const renderIconSvg = (options?: { agentName?: string }): string => {
+  const letter = (options?.agentName ?? "A").charAt(0).toUpperCase();
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#000"/>
+  <text x="256" y="256" dy=".35em" text-anchor="middle"
+        font-family="-apple-system,BlinkMacSystemFont,sans-serif"
+        font-size="280" font-weight="700" fill="#fff">${letter}</text>
+</svg>`;
+};
+
+export const renderServiceWorker = (): string => `
+const CACHE_NAME = "agentl-shell-v1";
+const SHELL_URLS = ["/"];
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_URLS))
+  );
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+    )
+  );
+  self.clients.claim();
+});
+
+self.addEventListener("fetch", (event) => {
+  const url = new URL(event.request.url);
+  // Only cache GET requests for the app shell; let API calls pass through
+  if (event.request.method !== "GET" || url.pathname.startsWith("/api/")) {
+    return;
+  }
+  event.respondWith(
+    fetch(event.request)
+      .then((response) => {
+        const clone = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        return response;
+      })
+      .catch(() => caches.match(event.request))
+  );
+});
+`;
+
 export const renderWebUiHtml = (options?: { agentName?: string }): string => {
   const agentInitial = (options?.agentName ?? "A").charAt(0).toUpperCase();
   const agentName = options?.agentName ?? "Agent";
@@ -341,12 +411,19 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="${agentName}">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon-192.png">
   <title>${agentName}</title>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inconsolata:400,700">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; }
+    html, body { height: 100%; overflow: hidden; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Helvetica Neue", sans-serif;
       background: #000;
@@ -415,9 +492,20 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     }
     .auth-submit:hover { background: #fff; }
     .error { color: #ff4444; font-size: 13px; min-height: 16px; }
+    .message-error {
+      background: rgba(255,68,68,0.08);
+      border: 1px solid rgba(255,68,68,0.25);
+      border-radius: 10px;
+      color: #ff6b6b;
+      padding: 12px 16px;
+      font-size: 13px;
+      line-height: 1.5;
+      max-width: 600px;
+    }
+    .message-error strong { color: #ff4444; }
 
     /* Layout */
-    .shell { height: 100vh; height: 100dvh; display: flex; overflow: hidden; }
+    .shell { height: 100vh; height: 100dvh; height: var(--app-height, 100dvh); display: flex; overflow: hidden; }
     .sidebar {
       width: 260px;
       background: #000;
@@ -533,6 +621,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     .main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: #000; }
     .topbar {
       height: 52px;
+      padding-top: env(safe-area-inset-top, 0px);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -674,7 +763,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
 
     /* Composer */
     .composer {
-      padding: 12px 24px 24px;
+      padding: 12px 24px calc(24px + env(safe-area-inset-bottom, 0px));
       position: relative;
     }
     .composer::before {
@@ -1076,7 +1165,12 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             const content = document.createElement("div");
             content.className = "assistant-content";
             const text = String(m.content || "");
-            if (isStreaming && i === messages.length - 1 && !text) {
+            if (m._error) {
+              const errorEl = document.createElement("div");
+              errorEl.className = "message-error";
+              errorEl.innerHTML = "<strong>Error</strong><br>" + escapeHtml(m._error);
+              content.appendChild(errorEl);
+            } else if (isStreaming && i === messages.length - 1 && !text) {
               const spinner = document.createElement("span");
               spinner.className = "thinking-indicator";
               const starFrames = ["✶","✸","✹","✺","✹","✷"];
@@ -1206,6 +1300,12 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
               }
               if (eventName === "run:completed" && (!assistantMessage.content || assistantMessage.content.length === 0)) {
                 assistantMessage.content = String(payload.result?.response || "");
+                renderMessages(localMessages, false);
+              }
+              if (eventName === "run:error") {
+                const errMsg = payload.error?.message || "Something went wrong";
+                assistantMessage.content = "";
+                assistantMessage._error = errMsg;
                 renderMessages(localMessages, false);
               }
             });
@@ -1380,7 +1480,46 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           }
         }
         autoResizePrompt();
+        elements.prompt.focus();
       })();
+
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("/sw.js").catch(() => {});
+      }
+
+      // iOS keyboard: use visualViewport to set the real visible height
+      // and prevent the page from scrolling behind the keyboard.
+      (function() {
+        const setHeight = () => {
+          const h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+          document.documentElement.style.setProperty("--app-height", h + "px");
+        };
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener("resize", setHeight);
+        }
+        window.addEventListener("resize", setHeight);
+        setHeight();
+
+        // Prevent iOS from scrolling the page when the keyboard opens.
+        // Keep scroll pinned to 0 whenever an input is focused.
+        var inputFocused = false;
+        var pinScroll = function() { if (inputFocused && window.scrollY !== 0) window.scrollTo(0, 0); };
+        document.addEventListener("focusin", function(e) {
+          if (e.target && (e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT")) {
+            inputFocused = true;
+          }
+        });
+        document.addEventListener("focusout", function() {
+          inputFocused = false;
+          window.scrollTo(0, 0);
+        });
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener("scroll", pinScroll);
+          window.visualViewport.addEventListener("resize", pinScroll);
+        }
+        document.addEventListener("scroll", pinScroll);
+      })();
+
     </script>
   </body>
 </html>`;

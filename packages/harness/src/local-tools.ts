@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createJiti } from "jiti";
 import type { ToolDefinition } from "@agentl/sdk";
+import { resolveSkillDirs } from "./skill-context.js";
 
 const TOOL_FILE_PATTERN = /\.(?:[cm]?js|[cm]?ts)$/i;
 
@@ -71,17 +72,23 @@ const normalizeToolExports = (loaded: unknown): ToolDefinition[] => {
   return toolDefinitions;
 };
 
-export const loadLocalSkillTools = async (workingDir: string): Promise<ToolDefinition[]> => {
-  const root = resolve(workingDir, "skills");
-  let toolFiles: string[] = [];
-  try {
-    toolFiles = await collectToolFiles(root);
-  } catch {
-    return [];
+export const loadLocalSkillTools = async (
+  workingDir: string,
+  extraSkillPaths?: string[],
+): Promise<ToolDefinition[]> => {
+  const skillDirs = resolveSkillDirs(workingDir, extraSkillPaths);
+  const allToolFiles: string[] = [];
+
+  for (const dir of skillDirs) {
+    try {
+      allToolFiles.push(...(await collectToolFiles(dir)));
+    } catch {
+      // Directory doesn't exist or isn't readable — skip silently.
+    }
   }
 
   const tools: ToolDefinition[] = [];
-  for (const filePath of toolFiles) {
+  for (const filePath of allToolFiles) {
     try {
       const loaded = await loadToolModule(filePath);
       tools.push(...normalizeToolExports(loaded));

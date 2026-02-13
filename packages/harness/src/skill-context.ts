@@ -2,6 +2,35 @@ import { readFile, readdir } from "node:fs/promises";
 import { dirname, resolve, normalize } from "node:path";
 import YAML from "yaml";
 
+// ---------------------------------------------------------------------------
+// Skill directory scanning — default directories and ecosystem compatibility
+// ---------------------------------------------------------------------------
+
+/**
+ * Default directories to scan for skills, relative to the project root.
+ * Additional directories can be added via `skillPaths` in agentl.config.js.
+ */
+const DEFAULT_SKILL_DIRS: string[] = ["skills"];
+
+/**
+ * Resolve the full list of skill directories to scan.
+ * Merges the defaults with any extra paths provided via config.
+ */
+export const resolveSkillDirs = (
+  workingDir: string,
+  extraPaths?: string[],
+): string[] => {
+  const dirs = [...DEFAULT_SKILL_DIRS];
+  if (extraPaths) {
+    for (const p of extraPaths) {
+      if (!dirs.includes(p)) {
+        dirs.push(p);
+      }
+    }
+  }
+  return dirs.map((d) => resolve(workingDir, d));
+};
+
 export interface SkillMetadata {
   /** Unique skill name from frontmatter. */
   name: string;
@@ -87,21 +116,28 @@ const collectSkillManifests = async (directory: string): Promise<string[]> => {
 
 export const loadSkillMetadata = async (
   workingDir: string,
+  extraSkillPaths?: string[],
 ): Promise<SkillMetadata[]> => {
-  const skillsRoot = resolve(workingDir, "skills");
-  let manifests: string[] = [];
-  try {
-    manifests = await collectSkillManifests(skillsRoot);
-  } catch {
-    return [];
+  const skillDirs = resolveSkillDirs(workingDir, extraSkillPaths);
+  const allManifests: string[] = [];
+
+  for (const dir of skillDirs) {
+    try {
+      allManifests.push(...(await collectSkillManifests(dir)));
+    } catch {
+      // Directory doesn't exist or isn't readable — skip silently.
+    }
   }
 
   const skills: SkillMetadata[] = [];
-  for (const manifest of manifests) {
+  const seen = new Set<string>();
+
+  for (const manifest of allManifests) {
     try {
       const content = await readFile(manifest, "utf8");
       const parsed = parseSkillFrontmatter(content);
-      if (parsed) {
+      if (parsed && !seen.has(parsed.name)) {
+        seen.add(parsed.name);
         skills.push({
           ...parsed,
           skillDir: dirname(manifest),

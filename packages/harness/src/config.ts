@@ -27,6 +27,9 @@ export interface AgentlConfig extends McpConfig {
     handler?: (event: unknown) => Promise<void> | void;
   };
   skills?: Record<string, Record<string, unknown>>;
+  /** Extra directories (relative to project root) to scan for skills.
+   *  `skills/` and `.agentl/skills/` are always scanned. */
+  skillPaths?: string[];
   build?: {
     vercel?: Record<string, unknown>;
     docker?: Record<string, unknown>;

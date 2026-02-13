@@ -104,10 +104,11 @@ export class AgentHarness {
     this.modelClient = createModelClient(provider, { latitudeCapture });
     const bridge = new LocalMcpBridge(config);
     this.mcpBridge = bridge;
-    const skillMetadata = await loadSkillMetadata(this.workingDir);
+    const extraSkillPaths = config?.skillPaths;
+    const skillMetadata = await loadSkillMetadata(this.workingDir, extraSkillPaths);
     this.skillContextWindow = buildSkillContextWindow(skillMetadata);
     this.dispatcher.registerMany(createSkillTools(skillMetadata));
-    this.dispatcher.registerMany(await loadLocalSkillTools(this.workingDir));
+    this.dispatcher.registerMany(await loadLocalSkillTools(this.workingDir, extraSkillPaths));
     await bridge.startLocalServers();
     this.dispatcher.registerMany(await bridge.loadTools());
   }

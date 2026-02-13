@@ -216,25 +216,19 @@ curl -X POST "http://localhost:3000/api/conversations/$CONVERSATION_ID/messages"
 
 ## Adding Skills
 
-Skills are npm packages that give your agent new capabilities (tools).
+Skills give your agent new capabilities (tools). They live in your project's `skills/` directory as folders containing a `SKILL.md` file.
 
 ### Install a skill
 
 ```bash
-# From npm
-agentl add @agentl/web-fetch
-agentl add @agentl/code-execution
+# From a GitHub skill repo
+agentl add vercel-labs/agent-skills
 
-# From GitHub
-agentl add github:username/my-skill
-
-# Link a local skill during development
+# From a local path
 agentl add ./my-skills/custom-tool
 ```
 
-`agentl add` validates the package has a valid `SKILL.md`, adds it to `package.json`, and runs `npm install`.
-
-> **Note:** You can use `npm install` directly, but `agentl add` will warn you if the package isn't a valid skill.
+`agentl add` downloads the repo, finds all `SKILL.md` files, and copies them into `skills/`.
 
 ### Available capabilities
 
@@ -246,17 +240,23 @@ By default, AgentL includes built-in filesystem tools from the harness:
 | `read_file` | Read UTF-8 text file contents |
 | `write_file` | Write UTF-8 text file contents (create or overwrite; gated by environment/policy) |
 
-Additional skills can be installed via `agentl add <package-or-path>`.
+Additional skills can be installed via `agentl add <repo-or-path>`.
 
 ### How skill discovery works
 
-At startup, AgentL:
-1. Reads `package.json` dependencies
-2. Scans each package for a `SKILL.md` file
-3. Loads all tools from valid skills
-4. Also scans the local `./skills/` directory
+At startup, AgentL recursively scans the `skills/` directory for `SKILL.md` files. Each valid skill (with a `name` in its frontmatter) is registered and its tools are made available to the model.
 
-All discovered tools are available to the model.
+You can add extra directories to scan via `skillPaths` in `agentl.config.js`:
+
+```javascript
+export default {
+  skillPaths: ['.cursor/skills'],
+}
+```
+
+### Compatibility with `npx skills`
+
+AgentL skills use the same `SKILL.md` format as the [open agent skills ecosystem](https://github.com/vercel-labs/skills). You can install skills from any compatible repo with `agentl add`, or use `npx skills` and point `skillPaths` at the directory it installs to.
 
 ### Create a custom skill
 
@@ -623,6 +623,9 @@ export default {
     // Remote: Connect to external server
     { url: 'wss://mcp.example.com/github', env: ['GITHUB_TOKEN'] }
   ],
+
+  // Extra directories to scan for skills (skills/ is always scanned)
+  skillPaths: ['.cursor/skills'],
 
   // Skill-specific configuration
   skills: {

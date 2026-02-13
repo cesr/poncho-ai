@@ -1,12 +1,13 @@
 import { spawn } from "node:child_process";
 import { access, cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import {
   createServer,
   type IncomingMessage,
   type Server,
   type ServerResponse,
 } from "node:http";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
@@ -26,6 +27,9 @@ import {
   getRequestIp,
   inferConversationTitle,
   parseCookies,
+  renderIconSvg,
+  renderManifest,
+  renderServiceWorker,
   renderWebUiHtml,
   setCookie,
   verifyPassphrase,
@@ -200,20 +204,56 @@ const CONFIG_TEMPLATE = `export default {
 }
 `;
 
-const PACKAGE_TEMPLATE = (name: string): string =>
-  JSON.stringify(
+/**
+ * Resolve the monorepo packages root if we're running from a local dev build.
+ * Returns the absolute path to the `packages/` directory, or null when
+ * running from an npm-installed copy.
+ */
+const resolveLocalPackagesRoot = (): string | null => {
+  // __dirname is packages/cli/dist — the monorepo root is three levels up
+  const candidate = resolve(__dirname, "..", "..", "harness", "package.json");
+  if (existsSync(candidate)) {
+    return resolve(__dirname, "..", "..");
+  }
+  return null;
+};
+
+/**
+ * Build dependency specifiers for the scaffolded project.
+ * In dev mode we use `file:` paths so pnpm can resolve local packages;
+ * in production we point at the npm registry.
+ */
+const resolveCoreDeps = (
+  projectDir: string,
+): { harness: string; sdk: string } => {
+  const packagesRoot = resolveLocalPackagesRoot();
+  if (packagesRoot) {
+    const harnessAbs = resolve(packagesRoot, "harness");
+    const sdkAbs = resolve(packagesRoot, "sdk");
+    return {
+      harness: `link:${relative(projectDir, harnessAbs)}`,
+      sdk: `link:${relative(projectDir, sdkAbs)}`,
+    };
+  }
+  return { harness: "^0.1.0", sdk: "^0.1.0" };
+};
+
+const PACKAGE_TEMPLATE = (name: string, projectDir: string): string => {
+  const deps = resolveCoreDeps(projectDir);
+  return JSON.stringify(
     {
       name,
       private: true,
       type: "module",
       dependencies: {
-        "@agentl/harness": "^0.1.0",
-        "@agentl/sdk": "^0.1.0",
+        "@agentl/harness": deps.harness,
+        "@agentl/sdk": deps.sdk,
       },
     },
     null,
     2,
   );
+};
 
 const README_TEMPLATE = (name: string): string => `# ${name}
 
@@ -473,7 +513,7 @@ export const initProject = async (
 
   await ensureFile(resolve(projectDir, "AGENT.md"), AGENT_TEMPLATE(projectName));
   await ensureFile(resolve(projectDir, "agentl.config.js"), CONFIG_TEMPLATE);
-  await ensureFile(resolve(projectDir, "package.json"), PACKAGE_TEMPLATE(projectName));
+  await ensureFile(resolve(projectDir, "package.json"), PACKAGE_TEMPLATE(projectName, projectDir));
   await ensureFile(resolve(projectDir, "README.md"), README_TEMPLATE(projectName));
   await ensureFile(resolve(projectDir, ".env.example"), ENV_TEMPLATE);
   await ensureFile(resolve(projectDir, ".gitignore"), GITIGNORE_TEMPLATE);
@@ -483,6 +523,15 @@ export const initProject = async (
     resolve(projectDir, "skills", "starter", "tools", "starter-echo.ts"),
     SKILL_TOOL_TEMPLATE,
   );
+
+  // Install dependencies so subsequent commands (e.g. `agentl add`) succeed.
+  try {
+    await runPnpmInstall(projectDir);
+  } catch {
+    process.stdout.write(
+      "Warning: could not install dependencies. Run `pnpm install` manually.\n",
+    );
+  }
 
   const gitOk = await gitInit(projectDir);
   if (gitOk) {
@@ -552,6 +601,34 @@ export const createRequestHandler = async (options?: {
 
     if (request.method === "GET" && (pathname === "/" || pathname.startsWith("/c/"))) {
       writeHtml(response, 200, renderWebUiHtml({ agentName }));
+      return;
+    }
+
+    if (pathname === "/manifest.json" && request.method === "GET") {
+      response.writeHead(200, { "Content-Type": "application/manifest+json" });
+      response.end(renderManifest({ agentName }));
+      return;
+    }
+
+    if (pathname === "/sw.js" && request.method === "GET") {
+      response.writeHead(200, {
+        "Content-Type": "application/javascript",
+        "Service-Worker-Allowed": "/",
+      });
+      response.end(renderServiceWorker());
+      return;
+    }
+
+    if (pathname === "/icon.svg" && request.method === "GET") {
+      response.writeHead(200, { "Content-Type": "image/svg+xml" });
+      response.end(renderIconSvg({ agentName }));
+      return;
+    }
+
+    if ((pathname === "/icon-192.png" || pathname === "/icon-512.png") && request.method === "GET") {
+      // Redirect to SVG — browsers that support PWA icons will use the SVG
+      response.writeHead(302, { Location: "/icon.svg" });
+      response.end();
       return;
     }
 
@@ -975,6 +1052,22 @@ export const listTools = async (workingDir: string): Promise<void> => {
   }
 };
 
+const runPnpmInstall = async (workingDir: string): Promise<void> =>
+  await new Promise<void>((resolveInstall, rejectInstall) => {
+    const child = spawn("pnpm", ["install"], {
+      cwd: workingDir,
+      stdio: "inherit",
+      env: process.env,
+    });
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolveInstall();
+        return;
+      }
+      rejectInstall(new Error(`pnpm install failed with exit code ${code ?? -1}`));
+    });
+  });
+
 const runInstallCommand = async (
   workingDir: string,
   packageNameOrPath: string,
@@ -994,21 +1087,97 @@ const runInstallCommand = async (
     });
   });
 
+/**
+ * Resolve the installed npm package name from a package specifier.
+ * Handles local paths, scoped packages, and GitHub shorthand (e.g.
+ * "vercel-labs/agent-skills" installs as "agent-skills").
+ */
+const resolveInstalledPackageName = (packageNameOrPath: string): string | null => {
+  if (packageNameOrPath.startsWith(".") || packageNameOrPath.startsWith("/")) {
+    return null; // local path — handled separately
+  }
+  // Scoped package: @scope/name
+  if (packageNameOrPath.startsWith("@")) {
+    return packageNameOrPath;
+  }
+  // GitHub shorthand: owner/repo — npm installs as the repo name
+  if (packageNameOrPath.includes("/")) {
+    return packageNameOrPath.split("/").pop() ?? packageNameOrPath;
+  }
+  return packageNameOrPath;
+};
+
+/**
+ * Locate the root directory of an installed skill package.
+ * Handles local paths, normal npm packages, and GitHub repos (which may
+ * lack a root package.json).
+ */
+const resolveSkillRoot = (
+  workingDir: string,
+  packageNameOrPath: string,
+): string => {
+  // Local path
+  if (packageNameOrPath.startsWith(".") || packageNameOrPath.startsWith("/")) {
+    return resolve(workingDir, packageNameOrPath);
+  }
+
+  const moduleName =
+    resolveInstalledPackageName(packageNameOrPath) ?? packageNameOrPath;
+
+  // Try require.resolve first (works for packages with a package.json)
+  try {
+    const packageJsonPath = require.resolve(`${moduleName}/package.json`, {
+      paths: [workingDir],
+    });
+    return resolve(packageJsonPath, "..");
+  } catch {
+    // Fall back to looking in node_modules directly (GitHub repos may lack
+    // a root package.json)
+    const candidate = resolve(workingDir, "node_modules", moduleName);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+    throw new Error(
+      `Could not locate installed package "${moduleName}" in ${workingDir}`,
+    );
+  }
+};
+
+/**
+ * Recursively check whether a directory (or any immediate sub-directory
+ * tree) contains at least one SKILL.md file.
+ */
+const findSkillManifest = async (dir: string, depth = 2): Promise<boolean> => {
+  try {
+    await access(resolve(dir, "SKILL.md"));
+    return true;
+  } catch {
+    // Not found at this level — look one level deeper (e.g. skills/<name>/SKILL.md)
+  }
+  if (depth <= 0) return false;
+  try {
+    const { readdir } = await import("node:fs/promises");
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules") {
+        const found = await findSkillManifest(resolve(dir, entry.name), depth - 1);
+        if (found) return true;
+      }
+    }
+  } catch {
+    // ignore read errors
+  }
+  return false;
+};
+
 const validateSkillPackage = async (
   workingDir: string,
   packageNameOrPath: string,
 ): Promise<void> => {
-  const packageJsonPath = packageNameOrPath.startsWith(".") || packageNameOrPath.startsWith("/")
-    ? resolve(workingDir, packageNameOrPath, "package.json")
-    : require.resolve(`${packageNameOrPath}/package.json`, {
-        paths: [workingDir],
-      });
-  const skillRoot = resolve(packageJsonPath, "..");
-  const skillManifest = resolve(skillRoot, "SKILL.md");
-  try {
-    await access(skillManifest);
-  } catch {
-    throw new Error(`Skill validation failed: missing SKILL.md in ${skillRoot}`);
+  const skillRoot = resolveSkillRoot(workingDir, packageNameOrPath);
+  const hasSkill = await findSkillManifest(skillRoot);
+  if (!hasSkill) {
+    throw new Error(`Skill validation failed: no SKILL.md found in ${skillRoot}`);
   }
 };
 
