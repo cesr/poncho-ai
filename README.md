@@ -26,7 +26,7 @@ Poncho is a framework for building custom AI agents that are version-controlled 
    Chat with your agent via `poncho dev` (web UI + API) or `poncho run --interactive` (terminal UI), with tool calls streaming as they run.
 
 2. ### Same agent in dev and prod
-   What you build locally (`AGENT.md`, `skills/`, config, tests) is what you deploy—no separate rewrite.
+   What you build locally (`AGENT.md`, `skills/`, config, tests) is what you deploy, with your guardrails.
 
 3. ### Guardrails by configuration
    In production, agents only act through the tools/skills you enable (and risky tools can require approval).
