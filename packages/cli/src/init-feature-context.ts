@@ -102,7 +102,7 @@ export const consumeFirstRunIntro = async (
 
   const summary = summarizeConfig(input.config);
   return [
-    `Hi! I'm **${input.agentName}**. I can help configure this agent directly by chat.\n`,
+    `Hi! I'm **${input.agentName}**. I can configure myself directly by chat.\n`,
     `**Current config**`,
     `  Model: ${input.provider}/${input.model}`,
     `  \`\`\`${summary.join(" · ")}\`\`\``,
