@@ -23,10 +23,19 @@ type ConversationStoreFile = {
 const DEFAULT_OWNER = "local-owner";
 
 const getStateDirectory = (): string => {
+  const cwd = process.cwd();
+  const home = homedir();
   // On serverless platforms (Vercel, AWS Lambda), only /tmp is writable
   const isServerless =
     process.env.VERCEL === "1" ||
+    process.env.VERCEL_ENV !== undefined ||
+    process.env.VERCEL_URL !== undefined ||
     process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined ||
+    process.env.AWS_EXECUTION_ENV?.includes("AWS_Lambda") === true ||
+    process.env.LAMBDA_TASK_ROOT !== undefined ||
+    process.env.NOW_REGION !== undefined ||
+    cwd.startsWith("/var/task") ||
+    home.startsWith("/var/task") ||
     process.env.SERVERLESS === "1";
   if (isServerless) {
     return "/tmp/.agentl/state";

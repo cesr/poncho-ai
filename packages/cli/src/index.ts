@@ -1471,21 +1471,11 @@ await startDevServer(Number.isNaN(port) ? 3000 : port, { workingDir: process.cwd
       JSON.stringify(
         {
           version: 2,
-          builds: [
-            {
-              src: "api/index.js",
-              use: "@vercel/node@3.2.24",
-              config: {
-                includeFiles: [
-                  "AGENT.md",
-                  "agentl.config.js",
-                  "skills/**",
-                  "tests/**",
-                ],
-                supportsResponseStreaming: true,
-              },
+          functions: {
+            "api/index.js": {
+              includeFiles: "{AGENT.md,agentl.config.js,skills/**,tests/**}",
             },
-          ],
+          },
           routes: [{ src: "/(.*)", dest: "/api/index.js" }],
         },
         null,

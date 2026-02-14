@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
+import { homedir } from "node:os";
 import type { AgentlConfig } from "@agentl/harness";
 
 type IntroInput = {
@@ -18,7 +20,26 @@ type OnboardingMarkerState = {
 };
 
 const ONBOARDING_VERSION = 1;
-const ONBOARDING_MARKER_RELATIVE_PATH = ".agentl/state/onboarding.json";
+
+const getStateDirectory = (): string => {
+  const cwd = process.cwd();
+  const home = homedir();
+  const isServerless =
+    process.env.VERCEL === "1" ||
+    process.env.VERCEL_ENV !== undefined ||
+    process.env.VERCEL_URL !== undefined ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined ||
+    process.env.AWS_EXECUTION_ENV?.includes("AWS_Lambda") === true ||
+    process.env.LAMBDA_TASK_ROOT !== undefined ||
+    process.env.NOW_REGION !== undefined ||
+    cwd.startsWith("/var/task") ||
+    home.startsWith("/var/task") ||
+    process.env.SERVERLESS === "1";
+  if (isServerless) {
+    return "/tmp/.agentl/state";
+  }
+  return resolve(homedir(), ".agentl", "state");
+};
 
 const summarizeConfig = (config: AgentlConfig | undefined): string[] => {
   const provider = config?.storage?.provider ?? config?.state?.provider ?? "local";
@@ -34,7 +55,13 @@ const summarizeConfig = (config: AgentlConfig | undefined): string[] => {
 };
 
 const getOnboardingMarkerPath = (workingDir: string): string =>
-  resolve(workingDir, ONBOARDING_MARKER_RELATIVE_PATH);
+  resolve(
+    getStateDirectory(),
+    `${basename(workingDir).replace(/[^a-zA-Z0-9_-]+/g, "-") || "project"}-${createHash("sha256")
+      .update(workingDir)
+      .digest("hex")
+      .slice(0, 12)}-onboarding.json`,
+  );
 
 const readMarker = async (
   workingDir: string,
@@ -83,6 +110,11 @@ export const consumeFirstRunIntro = async (
   workingDir: string,
   input: IntroInput,
 ): Promise<string | undefined> => {
+  const runtimeEnv = (process.env.AGENTL_ENV ?? process.env.NODE_ENV ?? "").toLowerCase();
+  if (runtimeEnv === "production") {
+    return undefined;
+  }
+
   const marker = await readMarker(workingDir);
   if (marker?.allowIntro === false) {
     return undefined;

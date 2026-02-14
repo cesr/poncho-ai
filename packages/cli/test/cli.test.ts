@@ -506,7 +506,9 @@ describe("cli", () => {
       join(projectDir, ".agentl-build", "fly", "fly.toml"),
       "utf8",
     );
+    expect(vercelConfig).toContain('"functions"');
     expect(vercelConfig).toContain('"routes"');
+    expect(vercelConfig).not.toContain('"builds"');
     expect(dockerFile).toContain("CMD [\"node\",\"server.js\"]");
     expect(lambdaHandler).toContain("export const handler");
     expect(flyToml).toContain("internal_port = 3000");

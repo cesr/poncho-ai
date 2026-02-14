@@ -44,9 +44,18 @@ const DEFAULT_MAIN_MEMORY: MainMemory = {
 const LOCAL_MEMORY_FILE = "local-memory.json";
 
 const getStateDirectory = (): string => {
+  const cwd = process.cwd();
+  const home = homedir();
   const isServerless =
     process.env.VERCEL === "1" ||
+    process.env.VERCEL_ENV !== undefined ||
+    process.env.VERCEL_URL !== undefined ||
     process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined ||
+    process.env.AWS_EXECUTION_ENV?.includes("AWS_Lambda") === true ||
+    process.env.LAMBDA_TASK_ROOT !== undefined ||
+    process.env.NOW_REGION !== undefined ||
+    cwd.startsWith("/var/task") ||
+    home.startsWith("/var/task") ||
     process.env.SERVERLESS === "1";
   if (isServerless) {
     return "/tmp/.agentl/state";
