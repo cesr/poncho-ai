@@ -56,6 +56,90 @@ model:
     expect(names).not.toContain("write_file");
   });
 
+  it("allows disabling built-in tools via agentl.config.js", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-disable-default-tools-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: disable-default-tools-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Disable Default Tools Agent
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "agentl.config.js"),
+      `export default {
+  tools: {
+    defaults: {
+      read_file: false
+    }
+  }
+};
+`,
+      "utf8",
+    );
+
+    const harness = new AgentHarness({ workingDir: dir, environment: "production" });
+    await harness.initialize();
+    const names = harness.listTools().map((tool) => tool.name);
+    expect(names).toContain("list_directory");
+    expect(names).not.toContain("read_file");
+  });
+
+  it("supports per-environment tool overrides", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-env-tool-overrides-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: env-tool-overrides-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Env Tool Overrides Agent
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "agentl.config.js"),
+      `export default {
+  tools: {
+    defaults: {
+      read_file: false
+    },
+    byEnvironment: {
+      development: {
+        read_file: true
+      },
+      production: {
+        write_file: false
+      }
+    }
+  }
+};
+`,
+      "utf8",
+    );
+
+    const developmentHarness = new AgentHarness({ workingDir: dir, environment: "development" });
+    await developmentHarness.initialize();
+    const developmentTools = developmentHarness.listTools().map((tool) => tool.name);
+    expect(developmentTools).toContain("read_file");
+    expect(developmentTools).toContain("write_file");
+
+    const productionHarness = new AgentHarness({ workingDir: dir, environment: "production" });
+    await productionHarness.initialize();
+    const productionTools = productionHarness.listTools().map((tool) => tool.name);
+    expect(productionTools).not.toContain("read_file");
+    expect(productionTools).not.toContain("write_file");
+  });
+
   it("loads local skill tools from skills directory", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agentl-harness-local-tools-"));
     await writeFile(
@@ -162,6 +246,60 @@ When users ask for summarization, prefer calling summarize_text.
     const toolNames = firstCall?.tools?.map((t) => t.name) ?? [];
     expect(toolNames).toContain("activate_skill");
     expect(toolNames).toContain("read_skill_resource");
+  });
+
+  it("injects local authoring guidance only in development environment", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-dev-guidance-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: dev-guidance-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Dev Guidance Agent
+`,
+      "utf8",
+    );
+
+    const developmentHarness = new AgentHarness({ workingDir: dir, environment: "development" });
+    await developmentHarness.initialize();
+    const devGenerate = vi.fn().mockResolvedValueOnce({
+      text: "done",
+      toolCalls: [],
+      usage: { input: 5, output: 5 },
+      rawContent: [],
+    });
+    (developmentHarness as unknown as { modelClient: { generate: unknown } }).modelClient = {
+      generate: devGenerate,
+    };
+    for await (const _event of developmentHarness.run({ task: "hello" })) {
+      // consume events
+    }
+    const devCall = devGenerate.mock.calls[0]?.[0] as { systemPrompt?: string } | undefined;
+    expect(devCall?.systemPrompt).toContain("## Development Mode Context");
+    expect(devCall?.systemPrompt).toContain("agentl.config.js");
+    expect(devCall?.systemPrompt).toContain("skills/<skill-name>/SKILL.md");
+
+    const productionHarness = new AgentHarness({ workingDir: dir, environment: "production" });
+    await productionHarness.initialize();
+    const prodGenerate = vi.fn().mockResolvedValueOnce({
+      text: "done",
+      toolCalls: [],
+      usage: { input: 5, output: 5 },
+      rawContent: [],
+    });
+    (productionHarness as unknown as { modelClient: { generate: unknown } }).modelClient = {
+      generate: prodGenerate,
+    };
+    for await (const _event of productionHarness.run({ task: "hello" })) {
+      // consume events
+    }
+    const prodCall = prodGenerate.mock.calls[0]?.[0] as { systemPrompt?: string } | undefined;
+    expect(prodCall?.systemPrompt).not.toContain("## Development Mode Context");
+    expect(prodCall?.systemPrompt).not.toContain("skills/<skill-name>/SKILL.md");
   });
 
   it("runs a tool call loop and completes", async () => {

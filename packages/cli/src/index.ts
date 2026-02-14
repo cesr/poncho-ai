@@ -41,7 +41,6 @@ import {
   type InitOnboardingOptions,
 } from "./init-onboarding.js";
 import {
-  buildOnboardingFeatureGuidance,
   consumeFirstRunIntro,
   initializeOnboardingMarker,
 } from "./init-feature-context.js";
@@ -146,30 +145,6 @@ const parseParams = (values: string[]): Record<string, string> => {
   return params;
 };
 
-const AGENT_SKILL_GUIDANCE = `## Skill Authoring Guidance
-
-When asked to create or update a skill:
-
-1. Inspect current skills under \`skills/\` first (\`list_directory\`, \`read_file\`).
-2. Decide skill type before writing files:
-   - **Instruction skill (no tool code)** for summarization, rewriting, classification, translation, planning, and other pure language tasks.
-   - **Tool-backed skill** only when external I/O, deterministic transforms, side effects, or integrations are required.
-3. If creating a tool-backed skill, create/update:
-   - \`skills/<skill-name>/SKILL.md\`
-   - \`skills/<skill-name>/tools/<tool-name>.ts\`
-4. Keep tool names and schemas explicit and stable.
-5. Never create placeholder tool handlers for tasks the model can already do directly.
-6. After writing files, verify by listing/reading the created paths.
-7. Ask the user to run \`agentl tools\` to confirm the new tool is discovered (when tools were added).
-
-Skill file conventions:
-- \`SKILL.md\` frontmatter should include \`name\`, \`description\`, and \`tools\`.
-- Tool modules should export a default tool definition object with:
-  - \`name\`
-  - \`description\`
-  - \`inputSchema\`
-  - \`handler\``;
-
 const AGENT_TEMPLATE = (
   name: string,
   options: { modelProvider: "anthropic" | "openai"; modelName: string },
@@ -197,6 +172,8 @@ Environment: {{runtime.environment}}
 - Use tools when needed
 - Explain your reasoning clearly
 - Ask clarifying questions when requirements are ambiguous
+- For setup/configuration/skills/MCP questions, proactively read \`README.md\` with \`read_file\` before answering.
+- Prefer concrete commands and examples from \`README.md\` over assumptions.
 - Never claim a file/tool change unless the corresponding tool call actually succeeded
 
 ## Default Capabilities in a Fresh Project
@@ -206,10 +183,6 @@ Environment: {{runtime.environment}}
 - A starter local skill is included (\`starter-echo\`)
 - Bash/shell commands are **not** available unless you install and enable a shell tool/skill
 - Git operations are only available if a git-capable tool/skill is configured
-
-${buildOnboardingFeatureGuidance()}
-
-${AGENT_SKILL_GUIDANCE}
 `;
 
 /**
@@ -267,34 +240,114 @@ const README_TEMPLATE = (name: string): string => `# ${name}
 
 An AI agent built with [AgentL](https://github.com/latitude-dev/agentl).
 
-## Setup
+## Prerequisites
+
+- Node.js 20+
+- npm (or pnpm/yarn)
+- Anthropic or OpenAI API key
+
+## Quick Start
 
 \`\`\`bash
 npm install
 # If you didn't enter an API key during init:
 cp .env.example .env
 # Then edit .env and add your API key
-\`\`\`
-
-## Development
-
-\`\`\`bash
 agentl dev
 \`\`\`
 
-Opens a local server at \`http://localhost:3000\` with a chat UI and API.
+Open \`http://localhost:3000\` for the web UI.
 
-## Usage
+On your first interactive session, the agent introduces its configurable capabilities.
+
+## Common Commands
 
 \`\`\`bash
-# Run a one-off task
-agentl run "Your task here"
+# Local web UI + API server
+agentl dev
 
-# Interactive REPL
+# Local interactive CLI
 agentl run --interactive
+
+# One-off run
+agentl run "Your task here"
 
 # Run tests
 agentl test
+
+# List available tools
+agentl tools
+\`\`\`
+
+## Add Skills
+
+Install skills from a local path or remote repository, then verify discovery:
+
+\`\`\`bash
+# Install skills into ./skills
+agentl add <repo-or-path>
+
+# Verify loaded tools
+agentl tools
+\`\`\`
+
+After adding skills, run \`agentl dev\` or \`agentl run --interactive\` and ask the agent to use them.
+
+## Configure MCP Servers (Remote)
+
+Connect remote MCP servers and expose their tools to the agent:
+
+\`\`\`bash
+# Add remote MCP server
+agentl mcp add --url wss://mcp.example.com/github --name github --env GITHUB_TOKEN
+
+# List configured servers
+agentl mcp list
+
+# Remove a server
+agentl mcp remove github
+\`\`\`
+
+Set required secrets in \`.env\` (for example, \`GITHUB_TOKEN=...\`).
+
+## Configuration
+
+Core files:
+
+- \`AGENT.md\`: behavior, model selection, runtime guidance
+- \`agentl.config.js\`: runtime config (storage, auth, telemetry, MCP, tools)
+- \`.env\`: secrets and environment variables
+
+Example \`agentl.config.js\`:
+
+\`\`\`javascript
+export default {
+  storage: {
+    provider: "local", // local | memory | redis | upstash | dynamodb
+    memory: {
+      enabled: true,
+      maxRecallConversations: 20,
+    },
+  },
+  auth: {
+    required: false,
+  },
+  telemetry: {
+    enabled: true,
+  },
+  tools: {
+    defaults: {
+      list_directory: true,
+      read_file: true,
+      write_file: true, // still gated by environment/policy
+    },
+    byEnvironment: {
+      production: {
+        read_file: false, // example override
+      },
+    },
+  },
+};
 \`\`\`
 
 ## Project Structure
@@ -326,7 +379,8 @@ agentl build docker
 docker build -t ${name} .
 \`\`\`
 
-See the [AgentL docs](https://github.com/latitude-dev/agentl) for more.
+For full reference:
+https://github.com/latitude-dev/agentl
 `;
 
 const ENV_TEMPLATE = "ANTHROPIC_API_KEY=sk-ant-...\n";
@@ -604,18 +658,16 @@ export const initProject = async (
 export const updateAgentGuidance = async (workingDir: string): Promise<boolean> => {
   const agentPath = resolve(workingDir, "AGENT.md");
   const content = await readFile(agentPath, "utf8");
-  const guidanceSectionPattern = /## Skill Authoring Guidance[\s\S]*?(?=\n## |\n# |$)/;
+  const guidanceSectionPattern =
+    /\n## Configuration Assistant Context[\s\S]*?(?=\n## |\n# |$)|\n## Skill Authoring Guidance[\s\S]*?(?=\n## |\n# |$)/g;
   const normalized = content.replace(/\s+$/g, "");
-  const hasGuidance = guidanceSectionPattern.test(normalized);
-  const updated = hasGuidance
-    ? normalized.replace(guidanceSectionPattern, AGENT_SKILL_GUIDANCE)
-    : `${normalized}\n\n${AGENT_SKILL_GUIDANCE}\n`;
+  const updated = normalized.replace(guidanceSectionPattern, "").replace(/\n{3,}/g, "\n\n");
   if (updated === normalized) {
-    process.stdout.write("AGENT.md guidance is already up to date.\n");
+    process.stdout.write("AGENT.md does not contain deprecated embedded local guidance.\n");
     return false;
   }
-  await writeFile(agentPath, updated, "utf8");
-  process.stdout.write("Updated AGENT.md with latest skill authoring guidance.\n");
+  await writeFile(agentPath, `${updated}\n`, "utf8");
+  process.stdout.write("Removed deprecated embedded local guidance from AGENT.md.\n");
   return true;
 };
 
@@ -1681,7 +1733,7 @@ export const buildCli = (): Command => {
 
   program
     .command("update-agent")
-    .description("Backfill latest default guidance into AGENT.md")
+    .description("Remove deprecated embedded local guidance from AGENT.md")
     .action(async () => {
       await updateAgentGuidance(process.cwd());
     });

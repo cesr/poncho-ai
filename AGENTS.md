@@ -39,6 +39,7 @@ When possible, run package-scoped checks for faster feedback:
 - Keep changes minimal and package-local unless cross-package updates are required.
 - Do not introduce generated artifacts (`dist/`, coverage outputs) in commits.
 - Keep docs in sync when behavior/CLI/API changes (`README.md` and relevant files in `docs/`).
+- Keep the scaffolded init README in sync with product behavior by updating `README_TEMPLATE` in `packages/cli/src/index.ts` whenever setup, CLI/API usage, or feature guidance changes.
 
 ## Agent workflow expectations
 
@@ -46,6 +47,7 @@ When possible, run package-scoped checks for faster feedback:
 2. Make focused edits in the smallest meaningful surface area.
 3. Validate with targeted tests, then broader tests if needed.
 4. If CLI behavior or config contract changes, update docs in the same change.
+5. When API/features change, update both the repo `README.md` and the generated init README template (`packages/cli/src/index.ts`) in the same change.
 
 ## High-impact files to inspect before major edits
 

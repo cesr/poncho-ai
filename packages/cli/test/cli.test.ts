@@ -523,7 +523,7 @@ describe("cli", () => {
     expect(result.failed).toBe(0);
   });
 
-  it("can backfill skill guidance into an existing AGENT.md", async () => {
+  it("does not modify AGENT.md when no deprecated embedded guidance exists", async () => {
     const projectDir = join(tempDir, "legacy-agent");
     await mkdir(projectDir, { recursive: true });
     await writeFile(
@@ -542,12 +542,11 @@ Old instructions only.
     const changed = await updateAgentGuidance(projectDir);
     const updated = await readFile(join(projectDir, "AGENT.md"), "utf8");
 
-    expect(changed).toBe(true);
-    expect(updated).toContain("## Skill Authoring Guidance");
-    expect(updated).toContain("skills/<skill-name>/SKILL.md");
+    expect(changed).toBe(false);
+    expect(updated).toContain("Old instructions only.");
   });
 
-  it("replaces existing skill guidance with latest version", async () => {
+  it("removes deprecated embedded local guidance sections", async () => {
     const projectDir = join(tempDir, "legacy-agent-guidance");
     await mkdir(projectDir, { recursive: true });
     await writeFile(
@@ -558,9 +557,13 @@ name: legacy-agent
 
 # Legacy Agent
 
+## Configuration Assistant Context
+
+Old local config guidance that should be removed.
+
 ## Skill Authoring Guidance
 
-Old guidance that should be replaced.
+Old guidance that should be removed.
 
 ## Other Section
 
@@ -573,8 +576,10 @@ Keep this section.
     const updated = await readFile(join(projectDir, "AGENT.md"), "utf8");
 
     expect(changed).toBe(true);
-    expect(updated).toContain("Instruction skill (no tool code)");
-    expect(updated).not.toContain("Old guidance that should be replaced.");
+    expect(updated).not.toContain("## Configuration Assistant Context");
+    expect(updated).not.toContain("## Skill Authoring Guidance");
+    expect(updated).not.toContain("Old local config guidance that should be removed.");
+    expect(updated).not.toContain("Old guidance that should be removed.");
     expect(updated).toContain("## Other Section");
   });
 });

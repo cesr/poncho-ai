@@ -371,7 +371,7 @@ export const runInteractiveInk = async ({
 
   // --- State -----------------------------------------------------------------
 
-  let messages: Message[] = [];
+  let messages: Message[] = intro ? [{ role: "assistant", content: intro }] : [];
   let turn = 1;
   let activeConversationId: string | null = null;
   let showToolPayloads = false;

@@ -665,6 +665,20 @@ export default {
     },
   },
 
+  // Built-in harness tools (enabled by default unless noted)
+  tools: {
+    defaults: {
+      list_directory: true,
+      read_file: true,
+      write_file: true,       // still gated by environment/policy
+    },
+    byEnvironment: {
+      production: {
+        read_file: false      // example: disable file reading in production
+      }
+    },
+  },
+
   // Authentication for deployed agents
   auth: {
     required: true,

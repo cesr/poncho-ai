@@ -1644,7 +1644,12 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             elements.chatTitle.textContent = "";
             renderMessages([]);
             renderConversationList();
+            if (state.conversations.length === 0) {
+              await createConversation();
+            }
           }
+        } else if (state.conversations.length === 0) {
+          await createConversation();
         }
         autoResizePrompt();
         elements.prompt.focus();

@@ -22,8 +22,22 @@ export interface StorageConfig {
   };
 }
 
+export type BuiltInToolToggles = {
+  list_directory?: boolean;
+  read_file?: boolean;
+  write_file?: boolean;
+};
+
 export interface AgentlConfig extends McpConfig {
   harness?: string;
+  tools?: {
+    defaults?: BuiltInToolToggles;
+    byEnvironment?: {
+      development?: BuiltInToolToggles;
+      staging?: BuiltInToolToggles;
+      production?: BuiltInToolToggles;
+    };
+  };
   auth?: {
     required?: boolean;
     type?: "bearer" | "header" | "custom";

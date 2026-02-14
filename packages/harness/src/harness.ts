@@ -8,7 +8,7 @@ import type {
   ToolDefinition,
 } from "@agentl/sdk";
 import { parseAgentFile, renderAgentPrompt, type ParsedAgent } from "./agent-parser.js";
-import { loadAgentlConfig, resolveMemoryConfig } from "./config.js";
+import { loadAgentlConfig, resolveMemoryConfig, type AgentlConfig } from "./config.js";
 import { createDefaultTools, createWriteTool } from "./default-tools.js";
 import { LatitudeCapture } from "./latitude-capture.js";
 import { loadLocalSkillTools } from "./local-tools.js";
@@ -52,6 +52,18 @@ const trimMessageWindow = (messages: Message[]): Message[] =>
     ? messages
     : messages.slice(messages.length - MAX_CONTEXT_MESSAGES);
 
+const DEVELOPMENT_MODE_CONTEXT = `## Development Mode Context
+
+You are running locally in development mode. Treat this as an editable agent workspace.
+
+When users ask about customization:
+- Explain and edit \`agentl.config.js\` for model/provider, storage+memory, auth, telemetry, and MCP settings.
+- Help create or update local skills under \`skills/<skill-name>/SKILL.md\`.
+- For tool-backed skills, add tool modules under \`skills/<skill-name>/tools/<tool-name>.ts\` with clear schemas and stable names.
+- For setup, skills, MCP, auth, storage, telemetry, or "how do I..." questions, proactively read \`README.md\` with \`read_file\` before answering.
+- Prefer quoting concrete commands and examples from \`README.md\` over guessing.
+- Keep edits minimal, preserve unrelated settings/code, and summarize what changed.`;
+
 export class AgentHarness {
   private readonly workingDir: string;
   private readonly environment: HarnessOptions["environment"];
@@ -63,6 +75,50 @@ export class AgentHarness {
 
   private parsedAgent?: ParsedAgent;
   private mcpBridge?: LocalMcpBridge;
+
+  private getConfiguredToolFlag(
+    config: AgentlConfig | undefined,
+    name: keyof NonNullable<NonNullable<AgentlConfig["tools"]>["defaults"]>,
+  ): boolean | undefined {
+    const defaults = config?.tools?.defaults;
+    const environment = this.environment ?? "development";
+    const envOverrides = config?.tools?.byEnvironment?.[environment];
+    return envOverrides?.[name] ?? defaults?.[name];
+  }
+
+  private isBuiltInToolEnabled(config: AgentlConfig | undefined, name: string): boolean {
+    if (name === "write_file") {
+      const allowedByEnvironment = this.shouldEnableWriteTool();
+      const configured = this.getConfiguredToolFlag(config, "write_file");
+      return allowedByEnvironment && configured !== false;
+    }
+    if (name === "list_directory") {
+      const configured = this.getConfiguredToolFlag(config, "list_directory");
+      return configured !== false;
+    }
+    if (name === "read_file") {
+      const configured = this.getConfiguredToolFlag(config, "read_file");
+      return configured !== false;
+    }
+    return true;
+  }
+
+  private registerIfMissing(tool: ToolDefinition): void {
+    if (!this.dispatcher.get(tool.name)) {
+      this.dispatcher.register(tool);
+    }
+  }
+
+  private registerConfiguredBuiltInTools(config: AgentlConfig | undefined): void {
+    for (const tool of createDefaultTools(this.workingDir)) {
+      if (this.isBuiltInToolEnabled(config, tool.name)) {
+        this.registerIfMissing(tool);
+      }
+    }
+    if (this.isBuiltInToolEnabled(config, "write_file")) {
+      this.registerIfMissing(createWriteTool(this.workingDir));
+    }
+  }
 
   private shouldEnableWriteTool(): boolean {
     const override = process.env.AGENTL_FS_WRITE?.toLowerCase();
@@ -80,10 +136,6 @@ export class AgentHarness {
     this.environment = options.environment ?? "development";
     this.modelClient = createModelClient("anthropic");
     this.approvalHandler = options.approvalHandler;
-    this.dispatcher.registerMany(createDefaultTools(this.workingDir));
-    if (this.shouldEnableWriteTool()) {
-      this.dispatcher.register(createWriteTool(this.workingDir));
-    }
 
     if (options.toolDefinitions?.length) {
       this.dispatcher.registerMany(options.toolDefinitions);
@@ -93,6 +145,7 @@ export class AgentHarness {
   async initialize(): Promise<void> {
     this.parsedAgent = await parseAgentFile(this.workingDir);
     const config = await loadAgentlConfig(this.workingDir);
+    this.registerConfiguredBuiltInTools(config);
     const provider = this.parsedAgent.frontmatter.model?.provider ?? "anthropic";
     const memoryConfig = resolveMemoryConfig(config);
     const latitudeCapture = new LatitudeCapture({
@@ -162,9 +215,11 @@ export class AgentHarness {
         workingDir: this.workingDir,
       },
     });
+    const developmentContext =
+      this.environment === "development" ? `\n\n${DEVELOPMENT_MODE_CONTEXT}` : "";
     const promptWithSkills = this.skillContextWindow
-      ? `${systemPrompt}\n\n${this.skillContextWindow}`
-      : systemPrompt;
+      ? `${systemPrompt}${developmentContext}\n\n${this.skillContextWindow}`
+      : `${systemPrompt}${developmentContext}`;
     const mainMemory = this.memoryStore
       ? await this.memoryStore.getMainMemory()
       : undefined;
