@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { defineTool } from "@agentl/sdk";
 import { AgentHarness } from "../src/harness.js";
+import { loadSkillMetadata } from "../src/skill-context.js";
 
 describe("agent harness", () => {
   it("registers default filesystem tools", async () => {
@@ -140,24 +141,35 @@ model:
     expect(productionTools).not.toContain("write_file");
   });
 
-  it("loads local skill tools from skills directory", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-local-tools-"));
+  it("does not auto-register exported tool objects from skill scripts", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-no-auto-tool-register-"));
     await writeFile(
       join(dir, "AGENT.md"),
       `---
-name: local-tools-agent
+name: no-auto-tool-register-agent
 model:
   provider: anthropic
   name: claude-opus-4-5
 ---
 
-# Local Tools Agent
+# No Auto Tool Register Agent
 `,
       "utf8",
     );
-    await mkdir(join(dir, "skills", "summarize", "tools"), { recursive: true });
+    await mkdir(join(dir, "skills", "summarize", "scripts"), { recursive: true });
     await writeFile(
-      join(dir, "skills", "summarize", "tools", "summarize.ts"),
+      join(dir, "skills", "summarize", "SKILL.md"),
+      `---
+name: summarize
+description: Summarize text
+---
+
+# Summarize Skill
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "skills", "summarize", "scripts", "summarize.ts"),
       `import { defineTool } from "@agentl/sdk";
 
 export default defineTool({
@@ -182,7 +194,8 @@ export default defineTool({
     await harness.initialize();
     const names = harness.listTools().map((tool) => tool.name);
 
-    expect(names).toContain("summarize_text");
+    expect(names).not.toContain("summarize_text");
+    expect(names).toContain("run_skill_script");
   });
 
   it("injects SKILL.md context into system prompt", async () => {
@@ -206,8 +219,7 @@ model:
       `---
 name: summarize
 description: Summarize long text into concise output
-tools:
-  - summarize_text
+allowed-tools: summarize_text
 ---
 
 # Summarize Skill
@@ -246,6 +258,159 @@ When users ask for summarization, prefer calling summarize_text.
     const toolNames = firstCall?.tools?.map((t) => t.name) ?? [];
     expect(toolNames).toContain("activate_skill");
     expect(toolNames).toContain("read_skill_resource");
+    expect(toolNames).toContain("list_skill_scripts");
+    expect(toolNames).toContain("run_skill_script");
+  });
+
+  it("lists skill scripts through list_skill_scripts", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-skill-script-list-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: skill-script-list-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Skill Script List Agent
+`,
+      "utf8",
+    );
+    await mkdir(join(dir, "skills", "math", "scripts", "nested"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "math", "SKILL.md"),
+      `---
+name: math
+description: Simple math scripts
+---
+
+# Math Skill
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "skills", "math", "scripts", "add.ts"),
+      "export default async function run() { return { ok: true }; }\n",
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "skills", "math", "scripts", "nested", "multiply.js"),
+      "export async function run() { return { ok: true }; }\n",
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "skills", "math", "scripts", "README.md"),
+      "# not executable\n",
+      "utf8",
+    );
+
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    const listScripts = harness.listTools().find((tool) => tool.name === "list_skill_scripts");
+
+    expect(listScripts).toBeDefined();
+    const result = await listScripts!.handler({ skill: "math" });
+    expect(result).toEqual({
+      skill: "math",
+      scripts: ["scripts/add.ts", "scripts/nested/multiply.js"],
+    });
+  });
+
+  it("runs JavaScript/TypeScript skill scripts through run_skill_script", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-skill-script-runner-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: skill-script-runner-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Skill Script Runner Agent
+`,
+      "utf8",
+    );
+    await mkdir(join(dir, "skills", "math", "scripts"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "math", "SKILL.md"),
+      `---
+name: math
+description: Simple math scripts
+---
+
+# Math Skill
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "skills", "math", "scripts", "add.ts"),
+      `export default async function run(input) {
+  const a = Number(input?.a ?? 0);
+  const b = Number(input?.b ?? 0);
+  return { sum: a + b };
+}
+`,
+      "utf8",
+    );
+
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    const runner = harness.listTools().find((tool) => tool.name === "run_skill_script");
+
+    expect(runner).toBeDefined();
+    const result = await runner!.handler({
+      skill: "math",
+      script: "add.ts",
+      input: { a: 2, b: 3 },
+    });
+    expect(result).toEqual({
+      skill: "math",
+      script: "add.ts",
+      output: { sum: 5 },
+    });
+  });
+
+  it("blocks path traversal in run_skill_script", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-skill-script-path-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: skill-script-path-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Skill Script Path Agent
+`,
+      "utf8",
+    );
+    await mkdir(join(dir, "skills", "safe", "scripts"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "safe", "SKILL.md"),
+      `---
+name: safe
+description: Safe skill
+---
+
+# Safe Skill
+`,
+      "utf8",
+    );
+
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    const runner = harness.listTools().find((tool) => tool.name === "run_skill_script");
+    expect(runner).toBeDefined();
+    const result = await runner!.handler({
+      skill: "safe",
+      script: "../outside.ts",
+    });
+    expect(result).toMatchObject({
+      error: expect.stringContaining("must be relative and within the skill directory"),
+    });
   });
 
   it("injects local authoring guidance only in development environment", async () => {
@@ -502,5 +667,50 @@ model:
 
     expect(events.some((event) => event.type === "tool:approval:granted")).toBe(true);
     expect(events.some((event) => event.type === "tool:completed")).toBe(true);
+  });
+
+  it("parses spec-style allowed-tools from SKILL.md frontmatter", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-allowed-tools-"));
+    await mkdir(join(dir, "skills", "summarize"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "summarize", "SKILL.md"),
+      `---
+name: summarize
+description: Summarize text
+allowed-tools: summarize_text read_file
+---
+
+# Summarize
+`,
+      "utf8",
+    );
+
+    const metadata = await loadSkillMetadata(dir);
+    expect(metadata).toHaveLength(1);
+    expect(metadata[0]?.name).toBe("summarize");
+    expect(metadata[0]?.tools).toEqual(["summarize_text", "read_file"]);
+  });
+
+  it("keeps backward compatibility with legacy tools list frontmatter", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-legacy-tools-"));
+    await mkdir(join(dir, "skills", "legacy"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "legacy", "SKILL.md"),
+      `---
+name: legacy
+description: Legacy skill
+tools:
+  - legacy_tool
+---
+
+# Legacy
+`,
+      "utf8",
+    );
+
+    const metadata = await loadSkillMetadata(dir);
+    expect(metadata).toHaveLength(1);
+    expect(metadata[0]?.name).toBe("legacy");
+    expect(metadata[0]?.tools).toEqual(["legacy_tool"]);
   });
 });

@@ -150,7 +150,7 @@ describe("cli", () => {
       "utf8",
     );
     const skillTool = await readFile(
-      join(tempDir, "my-agent", "skills", "starter", "tools", "starter-echo.ts"),
+      join(tempDir, "my-agent", "skills", "starter", "scripts", "starter-echo.ts"),
       "utf8",
     );
     const basicTest = await readFile(join(tempDir, "my-agent", "tests", "basic.yaml"), "utf8");
@@ -158,7 +158,7 @@ describe("cli", () => {
     expect(agentMarkdown).toContain("name: my-agent");
     expect(pkgJson).toContain('"name": "my-agent"');
     expect(skillManifest).toContain("name: starter-skill");
-    expect(skillTool).toContain('name: "starter-echo"');
+    expect(skillTool).toContain("export default async function run(input)");
     expect(basicTest).toContain('name: "Basic sanity"');
   });
 

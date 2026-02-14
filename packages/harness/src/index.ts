@@ -3,7 +3,6 @@ export * from "./config.js";
 export * from "./default-tools.js";
 export * from "./harness.js";
 export * from "./latitude-capture.js";
-export * from "./local-tools.js";
 export * from "./memory.js";
 export * from "./mcp.js";
 export * from "./model-client.js";

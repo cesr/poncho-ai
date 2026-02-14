@@ -11,7 +11,6 @@ import { parseAgentFile, renderAgentPrompt, type ParsedAgent } from "./agent-par
 import { loadAgentlConfig, resolveMemoryConfig, type AgentlConfig } from "./config.js";
 import { createDefaultTools, createWriteTool } from "./default-tools.js";
 import { LatitudeCapture } from "./latitude-capture.js";
-import { loadLocalSkillTools } from "./local-tools.js";
 import {
   createMemoryStore,
   createMemoryTools,
@@ -59,7 +58,7 @@ You are running locally in development mode. Treat this as an editable agent wor
 When users ask about customization:
 - Explain and edit \`agentl.config.js\` for model/provider, storage+memory, auth, telemetry, and MCP settings.
 - Help create or update local skills under \`skills/<skill-name>/SKILL.md\`.
-- For tool-backed skills, add tool modules under \`skills/<skill-name>/tools/<tool-name>.ts\` with clear schemas and stable names.
+- For executable skills, add JavaScript/TypeScript scripts under \`skills/<skill-name>/scripts/\` and run them via \`run_skill_script\`.
 - For setup, skills, MCP, auth, storage, telemetry, or "how do I..." questions, proactively read \`README.md\` with \`read_file\` before answering.
 - Prefer quoting concrete commands and examples from \`README.md\` over guessing.
 - Keep edits minimal, preserve unrelated settings/code, and summarize what changed.`;
@@ -168,7 +167,6 @@ export class AgentHarness {
     const skillMetadata = await loadSkillMetadata(this.workingDir, extraSkillPaths);
     this.skillContextWindow = buildSkillContextWindow(skillMetadata);
     this.dispatcher.registerMany(createSkillTools(skillMetadata));
-    this.dispatcher.registerMany(await loadLocalSkillTools(this.workingDir, extraSkillPaths));
     if (memoryConfig?.enabled) {
       this.memoryStore = createMemoryStore(
         this.parsedAgent.frontmatter.name,

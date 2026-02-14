@@ -12,12 +12,6 @@ cd my-agent
 agentl dev
 ```
 
-## Current Implementation Notes
-
-- MCP support is intentionally **remote-only** (`agentl mcp add --url ...`).
-- `agentl init` scaffolds starter `skills/` and `tests/` directories with templates.
-- Model providers currently supported by runtime: `anthropic` and `openai`.
-
 ## What is AgentL?
 
 AgentL is a framework for building custom AI agents that are version-controlled in git, developed locally, and deployed in isolated cloud environments. You define behavior in `AGENT.md`, iterate by chatting with the agent on your machine, and expose the same agent safely through a UI/API in production. In production, agents can only act through the skills and tools you configure.
@@ -41,7 +35,7 @@ cd my-agent
 
 Init options:
 - `agentl init <name>`: light onboarding (recommended defaults)
-- `agentl init <name> --yes`: deterministic non-interactive defaults
+- `agentl init <name> --yes`: skip onboarding and configure manually
 
 This creates a ready-to-run project:
 
@@ -56,7 +50,7 @@ my-agent/
 ├── skills/
 │   └── starter/
 │       ├── SKILL.md
-│       └── tools/
+│       └── scripts/
 │           └── starter-echo.ts
 └── .gitignore
 ```
@@ -77,7 +71,7 @@ my-agent/
 - `@agentl/harness` is the agent runtime - it handles the conversation loop, tool execution, and streaming.
 - A local starter skill scaffold is generated under `skills/starter/`.
 
-### 2. Configure your API key
+### 2. Configure your API key (if you skipped onboarding)
 
 ```bash
 cp .env.example .env
@@ -120,43 +114,16 @@ docker build -t my-agent .
 
 ## The AGENT.md File
 
-Your agent is defined in a single `AGENT.md` file with YAML frontmatter. This is the default scaffold from `agentl init`:
+Your agent is defined in a single `AGENT.md` file with YAML frontmatter plus prompt content.
 
-```markdown
----
-name: my-agent
-description: A helpful AgentL assistant
-model:
-  provider: anthropic
-  name: claude-opus-4-5
-  temperature: 0.2
-limits:
-  maxSteps: 50
-  timeout: 300
----
+This file defines your agent's instructions, context, and runtime configuration for each session.
 
-# My Agent
+- **Frontmatter** sets runtime configuration (name, model, limits, and related metadata)
+- **Body content** defines behavior and instructions the model follows
+- **Mustache variables** let you inject runtime context dynamically (for example, environment or working directory)
+- **Capabilities guidance** documents which tools/skills are available so behavior stays explicit and predictable
 
-You are a helpful assistant built with AgentL.
-
-Working directory: {{runtime.workingDir}}
-Environment: {{runtime.environment}}
-
-## Task Guidance
-
-- Use tools when needed
-- Explain your reasoning clearly
-- Ask clarifying questions when requirements are ambiguous
-- Never claim a file/tool change unless the corresponding tool call actually succeeded
-
-## Default Capabilities in a Fresh Project
-
-- Built-in tools: `list_directory` and `read_file`
-- `write_file` is available in development, and disabled by default in production
-- A starter local skill is included (`starter-echo`)
-- Bash/shell commands are **not** available unless you install and enable a shell tool/skill
-- Git operations are only available if a git-capable tool/skill is configured
-```
+`agentl init` scaffolds this file so you can start quickly, then you can edit it as your agent's behavior and runtime settings evolve.
 
 ### Frontmatter options
 
@@ -262,16 +229,20 @@ export default {
 
 ### Compatibility with `npx skills`
 
-AgentL skills use the same `SKILL.md` format as the [open agent skills ecosystem](https://github.com/vercel-labs/skills). You can install skills from any compatible repo with `agentl add`, or use `npx skills` and point `skillPaths` at the directory it installs to.
+AgentL skills use the same `SKILL.md` format as the [open agent skills ecosystem](https://github.com/vercel-labs/skills). AgentL is compatible with JavaScript/TypeScript-based skills; Python-native skills are not supported directly. You can install skills from any compatible repo with `agentl add`, or use `npx skills` and point `skillPaths` at the directory it installs to.
 
 ### Create a custom skill
+
+The Agent Skills spec only requires `SKILL.md`. To stay spec-aligned, use `scripts/` for executable helpers.
+
+AgentL executes JavaScript/TypeScript skill scripts through built-in tools: `list_skill_scripts` (discovery) and `run_skill_script` (execution). No AgentL-specific tool export is required.
 
 ```
 my-agent/
 └── skills/
     └── my-skill/
         ├── SKILL.md
-        └── tools/
+        └── scripts/
             └── my-tool.ts
 ```
 
@@ -280,39 +251,21 @@ my-agent/
 ```markdown
 ---
 name: my-skill
-version: 1.0.0
-description: Does something useful
-tools:
-  - my-tool
+description: Does something useful when users ask for it
 ---
 
 # My Skill
 
-This skill provides the `my-tool` tool for doing useful things.
+This skill provides a script you can run with `run_skill_script`.
 ```
 
-**tools/my-tool.ts:**
+**scripts/my-tool.ts:**
 
 ```typescript
-import { defineTool } from '@agentl/sdk'  // Included with @agentl/harness
-
-export default defineTool({
-  name: 'my-tool',
-  description: 'Does something useful',
-
-  inputSchema: {
-    type: 'object',
-    properties: {
-      input: { type: 'string', description: 'The input to process' }
-    },
-    required: ['input']
-  },
-
-  async handler({ input }) {
-    // Your tool logic here
-    return { result: `Processed: ${input}` }
-  }
-})
+export default async function run(input) {
+  const text = typeof input?.text === 'string' ? input.text : ''
+  return { result: `Processed: ${text}` }
+}
 ```
 
 ## Using MCP Servers
@@ -942,7 +895,7 @@ Add or create a skill that provides the tool:
 # Install from npm/git/path
 agentl add <package-or-path>
 
-# Or create a local skill in ./skills/<skill-name>/ with SKILL.md and tools/
+# Or create a local skill in ./skills/<skill-name>/ with SKILL.md and scripts/
 ```
 
 ### "MCP server failed to connect"

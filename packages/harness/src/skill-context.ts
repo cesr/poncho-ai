@@ -36,7 +36,7 @@ export interface SkillMetadata {
   name: string;
   /** What the skill does and when to use it. */
   description: string;
-  /** Tool names declared in frontmatter (used for tool registration, not context). */
+  /** Tool hints declared in frontmatter (spec `allowed-tools` or legacy `tools`). */
   tools: string[];
   /** Absolute path to the skill directory. */
   skillDir: string;
@@ -80,10 +80,21 @@ const parseSkillFrontmatter = (
   const description =
     typeof parsed.description === "string" ? parsed.description.trim() : "";
 
-  const toolsValue = parsed.tools;
-  const tools = Array.isArray(toolsValue)
-    ? toolsValue.filter((tool): tool is string => typeof tool === "string")
+  const allowedToolsValue = parsed["allowed-tools"];
+  const allowedTools =
+    typeof allowedToolsValue === "string"
+      ? allowedToolsValue
+          .split(/\s+/)
+          .map((tool) => tool.trim())
+          .filter((tool) => tool.length > 0)
+      : [];
+
+  const legacyToolsValue = parsed.tools;
+  const legacyTools = Array.isArray(legacyToolsValue)
+    ? legacyToolsValue.filter((tool): tool is string => typeof tool === "string")
     : [];
+
+  const tools = allowedTools.length > 0 ? allowedTools : legacyTools;
 
   return { name, description, tools };
 };

@@ -363,7 +363,7 @@ ${name}/
 └── skills/
     └── starter/
         ├── SKILL.md
-        └── tools/
+        └── scripts/
             └── starter-echo.ts
 \`\`\`
 
@@ -408,10 +408,7 @@ const TEST_TEMPLATE = `tests:
 
 const SKILL_TEMPLATE = `---
 name: starter-skill
-version: 1.0.0
 description: Starter local skill template
-tools:
-  - starter-echo
 ---
 
 # Starter Skill
@@ -420,25 +417,14 @@ This is a starter local skill created by \`agentl init\`.
 
 ## Authoring Notes
 
-- Keep the \`tools\` frontmatter list in sync with actual tool module names.
-- Prefer narrow, explicit schemas for predictable tool calling.
-- After edits, run \`agentl tools\` to confirm discovery.
+- Put executable JavaScript/TypeScript files in \`scripts/\`.
+- Ask the agent to call \`run_skill_script\` with \`skill\`, \`script\`, and optional \`input\`.
 `;
 
-const SKILL_TOOL_TEMPLATE = `export default {
-  name: "starter-echo",
-  description: "Echoes a message for testing local skill wiring",
-  inputSchema: {
-    type: "object",
-    properties: {
-      message: { type: "string", description: "Message to echo" }
-    },
-    required: ["message"]
-  },
-  async handler(input) {
-    return { echoed: input.message };
-  }
-};
+const SKILL_TOOL_TEMPLATE = `export default async function run(input) {
+  const message = typeof input?.message === "string" ? input.message : "";
+  return { echoed: message };
+}
 `;
 
 const ensureFile = async (path: string, content: string): Promise<void> => {
@@ -605,7 +591,7 @@ export const initProject = async (
     { path: ".gitignore", content: GITIGNORE_TEMPLATE },
     { path: "tests/basic.yaml", content: TEST_TEMPLATE },
     { path: "skills/starter/SKILL.md", content: SKILL_TEMPLATE },
-    { path: "skills/starter/tools/starter-echo.ts", content: SKILL_TOOL_TEMPLATE },
+    { path: "skills/starter/scripts/starter-echo.ts", content: SKILL_TOOL_TEMPLATE },
   ];
   if (onboarding.envFile) {
     scaffoldFiles.push({ path: ".env", content: onboarding.envFile });
