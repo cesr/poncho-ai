@@ -4,7 +4,7 @@ A git-native framework for isolated AI agents you can deploy to the cloud.
 
 Program them by talking to them locally, then run them safely via API or web UI, with your own skills/tools and a traceable, eval-compatible runtime.
 
-![Poncho CLI and Web UI](assets/poncho.png)
+![Poncho CLI and Web UI](assets/poncho-thumbs.png)
 
 ```bash
 npm install -g @poncho-ai/cli
