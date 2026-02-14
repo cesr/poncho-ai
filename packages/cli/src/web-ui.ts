@@ -432,7 +432,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
   <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inconsolata:400,700">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; overflow: hidden; }
+    html, body { height: 100%; height: -webkit-fill-available; overflow: hidden; overscroll-behavior: none; touch-action: pan-y; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Helvetica Neue", sans-serif;
       background: #000;
@@ -514,7 +514,29 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     .message-error strong { color: #ff4444; }
 
     /* Layout */
-    .shell { height: 100vh; height: 100dvh; height: var(--app-height, 100dvh); display: flex; overflow: hidden; }
+    .shell { 
+      position: fixed; 
+      top: 0; 
+      left: 0; 
+      right: 0;
+      /* Use height instead of bottom:0 so JS can resize for keyboard */
+      height: 100vh;
+      height: 100dvh;
+      height: -webkit-fill-available;
+      display: flex; 
+      overflow: hidden;
+    }
+    
+    /* Edge swipe blocker - invisible touch target to intercept right edge gestures */
+    .edge-blocker-right {
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      right: 0;
+      width: 20px;
+      z-index: 9999;
+      touch-action: none;
+    }
     .sidebar {
       width: 260px;
       background: #000;
@@ -627,9 +649,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     .logout-btn:hover { color: #888; }
 
     /* Main */
-    .main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: #000; }
+    .main { flex: 1; display: flex; flex-direction: column; min-width: 0; max-width: 100%; background: #000; overflow: hidden; }
     .topbar {
-      height: 52px;
+      height: calc(52px + env(safe-area-inset-top, 0px));
       padding-top: env(safe-area-inset-top, 0px);
       display: flex;
       align-items: center;
@@ -642,34 +664,38 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       flex-shrink: 0;
     }
     .topbar-title {
-      max-width: 400px;
+      max-width: calc(100% - 100px);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
       letter-spacing: -0.01em;
+      padding: 0 50px;
     }
     .sidebar-toggle {
       display: none;
       position: absolute;
       left: 12px;
+      bottom: 4px; /* Position from bottom of topbar content area */
       background: transparent;
       border: 0;
       color: #666;
-      width: 32px;
-      height: 32px;
+      width: 44px;
+      height: 44px;
       border-radius: 6px;
       cursor: pointer;
       transition: color 0.15s, background 0.15s;
       font-size: 18px;
+      z-index: 10;
+      -webkit-tap-highlight-color: transparent;
     }
     .sidebar-toggle:hover { color: #ededed; }
 
     /* Messages */
-    .messages { flex: 1; overflow-y: auto; padding: 24px 24px; }
+    .messages { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 24px 24px; }
     .messages-column { max-width: 680px; margin: 0 auto; }
-    .message-row { margin-bottom: 24px; display: flex; }
+    .message-row { margin-bottom: 24px; display: flex; max-width: 100%; }
     .message-row.user { justify-content: flex-end; }
-    .assistant-wrap { display: flex; gap: 12px; max-width: 100%; }
+    .assistant-wrap { display: flex; gap: 12px; max-width: 100%; min-width: 0; }
     .assistant-avatar {
       width: 24px;
       height: 24px;
@@ -688,6 +714,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       color: #ededed;
       font-size: 14px;
       min-width: 0;
+      max-width: 100%;
+      overflow-wrap: break-word;
+      word-break: break-word;
       margin-top: 2px;
     }
     .assistant-content p { margin: 0 0 12px; }
@@ -801,6 +830,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       max-width: 70%;
       font-size: 14px;
       line-height: 1.5;
+      overflow-wrap: break-word;
+      word-break: break-word;
     }
     .empty-state {
       display: flex;
@@ -833,7 +864,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
 
     /* Composer */
     .composer {
-      padding: 12px 24px calc(24px + env(safe-area-inset-bottom, 0px));
+      padding: 12px 24px 24px;
       position: relative;
     }
     .composer::before {
@@ -908,8 +939,11 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         inset: 0 auto 0 0;
         z-index: 100;
         transform: translateX(-100%);
-        transition: transform 0.2s ease;
+        padding-top: calc(env(safe-area-inset-top, 0px) + 12px);
+        will-change: transform;
       }
+      .sidebar.dragging { transition: none; }
+      .sidebar:not(.dragging) { transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1); }
       .shell.sidebar-open .sidebar { transform: translateX(0); }
       .sidebar-toggle { display: grid; place-items: center; }
       .sidebar-backdrop {
@@ -919,8 +953,13 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         z-index: 50;
         backdrop-filter: blur(2px);
         -webkit-backdrop-filter: blur(2px);
+        opacity: 0;
+        pointer-events: none;
+        will-change: opacity;
       }
-      .shell:not(.sidebar-open) .sidebar-backdrop { display: none; }
+      .sidebar-backdrop:not(.dragging) { transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1); }
+      .sidebar-backdrop.dragging { transition: none; }
+      .shell.sidebar-open .sidebar-backdrop { opacity: 1; pointer-events: auto; }
       .messages { padding: 16px; }
       .composer { padding: 8px 16px 16px; }
     }
@@ -935,6 +974,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
   </style>
 </head>
 <body data-agent-initial="${agentInitial}" data-agent-name="${agentName}">
+  <div class="edge-blocker-right"></div>
   <div id="auth" class="auth hidden">
     <form id="login-form" class="auth-card">
       <div class="auth-brand">
@@ -1682,37 +1722,203 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         navigator.serviceWorker.register("/sw.js").catch(() => {});
       }
 
-      // iOS keyboard: use visualViewport to set the real visible height
-      // and prevent the page from scrolling behind the keyboard.
+      // iOS viewport and keyboard handling
       (function() {
-        const setHeight = () => {
-          const h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
-          document.documentElement.style.setProperty("--app-height", h + "px");
-        };
-        if (window.visualViewport) {
-          window.visualViewport.addEventListener("resize", setHeight);
-        }
-        window.addEventListener("resize", setHeight);
-        setHeight();
-
-        // Prevent iOS from scrolling the page when the keyboard opens.
-        // Keep scroll pinned to 0 whenever an input is focused.
-        var inputFocused = false;
-        var pinScroll = function() { if (inputFocused && window.scrollY !== 0) window.scrollTo(0, 0); };
-        document.addEventListener("focusin", function(e) {
-          if (e.target && (e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT")) {
-            inputFocused = true;
+        var shell = document.querySelector(".shell");
+        var pinScroll = function() { if (window.scrollY !== 0) window.scrollTo(0, 0); };
+        
+        // Track the "full" height when keyboard is not open
+        var fullHeight = window.innerHeight;
+        
+        // Resize shell when iOS keyboard opens/closes
+        var resizeForKeyboard = function() {
+          if (!shell || !window.visualViewport) return;
+          var vvHeight = window.visualViewport.height;
+          
+          // Update fullHeight if viewport grew (keyboard closed)
+          if (vvHeight > fullHeight) {
+            fullHeight = vvHeight;
           }
-        });
-        document.addEventListener("focusout", function() {
-          inputFocused = false;
-          window.scrollTo(0, 0);
-        });
+          
+          // Only apply height override if keyboard appears to be open
+          // (viewport significantly smaller than full height)
+          if (vvHeight < fullHeight - 100) {
+            shell.style.height = vvHeight + "px";
+          } else {
+            // Keyboard closed - remove override, let CSS handle it
+            shell.style.height = "";
+          }
+          pinScroll();
+        };
+        
         if (window.visualViewport) {
           window.visualViewport.addEventListener("scroll", pinScroll);
-          window.visualViewport.addEventListener("resize", pinScroll);
+          window.visualViewport.addEventListener("resize", resizeForKeyboard);
         }
         document.addEventListener("scroll", pinScroll);
+
+        // Draggable sidebar from left edge (mobile only)
+        (function() {
+          var sidebar = document.querySelector(".sidebar");
+          var backdrop = document.querySelector(".sidebar-backdrop");
+          var shell = document.querySelector(".shell");
+          if (!sidebar || !backdrop || !shell) return;
+          
+          var sidebarWidth = 260;
+          var edgeThreshold = 50; // px from left edge to start drag
+          var velocityThreshold = 0.3; // px/ms to trigger open/close
+          
+          var dragging = false;
+          var startX = 0;
+          var startY = 0;
+          var currentX = 0;
+          var startTime = 0;
+          var isOpen = false;
+          var directionLocked = false;
+          var isHorizontal = false;
+          
+          function getProgress() {
+            // Returns 0 (closed) to 1 (open)
+            if (isOpen) {
+              return Math.max(0, Math.min(1, 1 + currentX / sidebarWidth));
+            } else {
+              return Math.max(0, Math.min(1, currentX / sidebarWidth));
+            }
+          }
+          
+          function updatePosition(progress) {
+            var offset = (progress - 1) * sidebarWidth;
+            sidebar.style.transform = "translateX(" + offset + "px)";
+            backdrop.style.opacity = progress;
+            if (progress > 0) {
+              backdrop.style.pointerEvents = "auto";
+            } else {
+              backdrop.style.pointerEvents = "none";
+            }
+          }
+          
+          function onTouchStart(e) {
+            if (window.innerWidth > 768) return;
+            
+            // Don't intercept touches on interactive elements
+            var target = e.target;
+            if (target.tagName === "BUTTON" || target.tagName === "A" || target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.closest("button") || target.closest("a")) {
+              return;
+            }
+            
+            var touch = e.touches[0];
+            isOpen = shell.classList.contains("sidebar-open");
+            
+            // Allow drag from edge when closed, or anywhere on sidebar/backdrop when open
+            var fromEdge = touch.clientX < edgeThreshold;
+            var onSidebar = sidebar.contains(e.target);
+            var onBackdrop = e.target === backdrop;
+            
+            if (!fromEdge && !isOpen) return;
+            if (isOpen && !onSidebar && !onBackdrop) return;
+            
+            // Prevent Safari back gesture when starting from edge
+            if (fromEdge) {
+              e.preventDefault();
+            }
+            
+            startX = touch.clientX;
+            startY = touch.clientY;
+            currentX = 0;
+            startTime = Date.now();
+            directionLocked = false;
+            isHorizontal = false;
+            dragging = true;
+            sidebar.classList.add("dragging");
+            backdrop.classList.add("dragging");
+          }
+          
+          function onTouchMove(e) {
+            if (!dragging) return;
+            var touch = e.touches[0];
+            var dx = touch.clientX - startX;
+            var dy = touch.clientY - startY;
+            
+            // Lock direction after some movement
+            if (!directionLocked && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
+              directionLocked = true;
+              isHorizontal = Math.abs(dx) > Math.abs(dy);
+              if (!isHorizontal) {
+                // Vertical scroll, cancel drag
+                dragging = false;
+                sidebar.classList.remove("dragging");
+                backdrop.classList.remove("dragging");
+                return;
+              }
+            }
+            
+            if (!directionLocked) return;
+            
+            // Prevent scrolling while dragging sidebar
+            e.preventDefault();
+            
+            currentX = dx;
+            updatePosition(getProgress());
+          }
+          
+          function onTouchEnd(e) {
+            if (!dragging) return;
+            dragging = false;
+            sidebar.classList.remove("dragging");
+            backdrop.classList.remove("dragging");
+            
+            var touch = e.changedTouches[0];
+            var dx = touch.clientX - startX;
+            var dt = Date.now() - startTime;
+            var velocity = dx / dt; // px/ms
+            
+            var progress = getProgress();
+            var shouldOpen;
+            
+            // Use velocity if fast enough, otherwise use position threshold
+            if (Math.abs(velocity) > velocityThreshold) {
+              shouldOpen = velocity > 0;
+            } else {
+              shouldOpen = progress > 0.5;
+            }
+            
+            // Reset inline styles and let CSS handle the animation
+            sidebar.style.transform = "";
+            backdrop.style.opacity = "";
+            backdrop.style.pointerEvents = "";
+            
+            if (shouldOpen) {
+              shell.classList.add("sidebar-open");
+            } else {
+              shell.classList.remove("sidebar-open");
+            }
+          }
+          
+          document.addEventListener("touchstart", onTouchStart, { passive: false });
+          document.addEventListener("touchmove", onTouchMove, { passive: false });
+          document.addEventListener("touchend", onTouchEnd, { passive: true });
+          document.addEventListener("touchcancel", onTouchEnd, { passive: true });
+        })();
+
+        // Prevent Safari back/forward navigation by manipulating history
+        // This doesn't stop the gesture animation but prevents actual navigation
+        if (window.navigator.standalone || window.matchMedia("(display-mode: standalone)").matches) {
+          history.pushState(null, "", location.href);
+          window.addEventListener("popstate", function() {
+            history.pushState(null, "", location.href);
+          });
+        }
+        
+        // Right edge blocker - intercept touch events to prevent forward navigation
+        var rightBlocker = document.querySelector(".edge-blocker-right");
+        if (rightBlocker) {
+          rightBlocker.addEventListener("touchstart", function(e) {
+            e.preventDefault();
+          }, { passive: false });
+          rightBlocker.addEventListener("touchmove", function(e) {
+            e.preventDefault();
+          }, { passive: false });
+        }
       })();
 
     </script>
