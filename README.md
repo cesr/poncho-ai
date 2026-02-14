@@ -1,6 +1,6 @@
 # Poncho
 
-A git-native framework for conversational AI agents you can deploy to the cloud.
+A git-native framework for building and deploying conversational AI agents.
 
 Develop locally with `poncho run --interactive`, then deploy the same agent with configured skills and scripts, tools and MCP servers, OpenTelemetry traces, and testing workflows.
 
