@@ -96,6 +96,29 @@ Changesets handles dependency ordering automatically. Manual order if needed:
 3. `@poncho-ai/client` (depends on sdk)
 4. `@poncho-ai/cli` (depends on sdk + harness)
 
+## Local development with linked packages
+
+To test local changes in other projects while keeping the production `poncho` command available:
+
+```bash
+# From the poncho-ai repo root
+pnpm build
+cd packages/cli && pnpm link --global
+```
+
+This makes `poncho-local` available globally, pointing to your local build:
+
+```bash
+poncho-local dev      # Uses local development version
+poncho dev            # Uses production npm version (if installed globally)
+```
+
+To unlink:
+
+```bash
+cd packages/cli && pnpm unlink --global
+```
+
 ## Guardrails
 
 - Preserve backward compatibility for public CLI commands and HTTP API unless explicitly changing spec.

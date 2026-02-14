@@ -12,7 +12,8 @@
   },
   "type": "module",
   "bin": {
-    "poncho": "./dist/cli.js"
+    "poncho": "./dist/cli.js",
+    "poncho-local": "./dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
