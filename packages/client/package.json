@@ -1,7 +1,15 @@
 {
   "name": "@poncho-ai/client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript client for calling deployed Poncho agents",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/latitude-dev/poncho-ai.git",
+    "directory": "packages/client"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -24,6 +32,11 @@
     "tsup": "^8.0.0",
     "vitest": "^1.4.0"
   },
-  "keywords": ["ai", "agent", "client", "sdk"],
+  "keywords": [
+    "ai",
+    "agent",
+    "client",
+    "sdk"
+  ],
   "license": "MIT"
 }

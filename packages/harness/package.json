@@ -1,7 +1,15 @@
 {
   "name": "@poncho-ai/harness",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Agent execution runtime - conversation loop, tool dispatch, streaming",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/latitude-dev/poncho-ai.git",
+    "directory": "packages/harness"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

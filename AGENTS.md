@@ -58,6 +58,44 @@ When possible, run package-scoped checks for faster feedback:
 - `docs/SPEC_WEB_UI.md`
 - `docs/SPEC_MVP_TRACKER.md`
 
+## Releasing packages to npm
+
+This repo uses [Changesets](https://github.com/changesets/changesets) for versioning and publishing.
+
+### Adding a changeset (during development)
+
+When you make changes that should be released, run:
+
+```bash
+pnpm changeset
+```
+
+This interactively prompts for:
+1. Which packages changed
+2. Bump type (major/minor/patch)
+3. Summary of changes
+
+A markdown file is created in `.changeset/` — commit it with your PR.
+
+### Publishing a release
+
+```bash
+pnpm changeset version   # Consumes changesets, bumps versions, generates CHANGELOGs
+pnpm release             # Builds all packages and publishes to npm
+```
+
+**Note:** Publishing requires either:
+- A granular npm access token with "Bypass 2FA for automation" enabled, or
+- Manual publish with OTP: `pnpm -r publish --access public --otp YOUR_CODE`
+
+### Publish order
+
+Changesets handles dependency ordering automatically. Manual order if needed:
+1. `@poncho-ai/sdk` (no internal deps)
+2. `@poncho-ai/harness` (depends on sdk)
+3. `@poncho-ai/client` (depends on sdk)
+4. `@poncho-ai/cli` (depends on sdk + harness)
+
 ## Guardrails
 
 - Preserve backward compatibility for public CLI commands and HTTP API unless explicitly changing spec.
