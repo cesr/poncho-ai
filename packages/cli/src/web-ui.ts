@@ -988,6 +988,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         csrfToken: "",
         conversations: [],
         activeConversationId: null,
+        activeMessages: [],
         isStreaming: false,
         confirmDeleteId: null
       };
@@ -1234,6 +1235,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             await api("/api/conversations/" + c.conversationId, { method: "DELETE" });
             if (state.activeConversationId === c.conversationId) {
               state.activeConversationId = null;
+              state.activeMessages = [];
               pushConversationUrl(null);
               elements.chatTitle.textContent = "";
               renderMessages([]);
@@ -1328,11 +1330,13 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       const loadConversation = async (conversationId) => {
         const payload = await api("/api/conversations/" + encodeURIComponent(conversationId));
         elements.chatTitle.textContent = payload.conversation.title;
-        renderMessages(payload.conversation.messages);
+        state.activeMessages = payload.conversation.messages || [];
+        renderMessages(state.activeMessages);
         elements.prompt.focus();
       };
 
-      const createConversation = async (title) => {
+      const createConversation = async (title, options = {}) => {
+        const shouldLoadConversation = options.loadConversation !== false;
         const payload = await api("/api/conversations", {
           method: "POST",
           body: JSON.stringify(title ? { title } : {})
@@ -1341,7 +1345,11 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         state.confirmDeleteId = null;
         pushConversationUrl(state.activeConversationId);
         await loadConversations();
-        await loadConversation(state.activeConversationId);
+        if (shouldLoadConversation) {
+          await loadConversation(state.activeConversationId);
+        } else {
+          elements.chatTitle.textContent = payload.conversation.title || "New conversation";
+        }
         return state.activeConversationId;
       };
 
@@ -1407,17 +1415,17 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         if (!messageText || state.isStreaming) {
           return;
         }
-        let conversationId = state.activeConversationId;
-        if (!conversationId) {
-          conversationId = await createConversation(messageText);
-        }
-        const existingPayload = await api("/api/conversations/" + encodeURIComponent(conversationId));
-        const localMessages = [...(existingPayload.conversation.messages || []), { role: "user", content: messageText }];
+        const localMessages = [...(state.activeMessages || []), { role: "user", content: messageText }];
         let assistantMessage = { role: "assistant", content: "", metadata: { toolActivity: [] } };
         localMessages.push(assistantMessage);
+        state.activeMessages = localMessages;
         renderMessages(localMessages, true);
         setStreaming(true);
+        let conversationId = state.activeConversationId;
         try {
+          if (!conversationId) {
+            conversationId = await createConversation(messageText, { loadConversation: false });
+          }
           const response = await fetch("/api/conversations/" + encodeURIComponent(conversationId) + "/messages", {
             method: "POST",
             credentials: "include",
@@ -1534,6 +1542,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
               await loadConversation(urlConversationId);
             } catch {
               state.activeConversationId = null;
+              state.activeMessages = [];
               replaceConversationUrl(null);
               renderMessages([]);
               renderConversationList();
@@ -1546,6 +1555,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
 
       elements.newChat.addEventListener("click", () => {
         state.activeConversationId = null;
+        state.activeMessages = [];
         state.confirmDeleteId = null;
         pushConversationUrl(null);
         elements.chatTitle.textContent = "";
@@ -1577,6 +1587,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       elements.logout.addEventListener("click", async () => {
         await api("/api/auth/logout", { method: "POST" });
         state.activeConversationId = null;
+        state.activeMessages = [];
         state.confirmDeleteId = null;
         state.conversations = [];
         state.csrfToken = "";
@@ -1614,6 +1625,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           } catch {
             // Conversation not found – fall back to empty state
             state.activeConversationId = null;
+            state.activeMessages = [];
             replaceConversationUrl(null);
             elements.chatTitle.textContent = "";
             renderMessages([]);
@@ -1621,6 +1633,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           }
         } else {
           state.activeConversationId = null;
+          state.activeMessages = [];
           elements.chatTitle.textContent = "";
           renderMessages([]);
           renderConversationList();
@@ -1649,6 +1662,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           } catch {
             // URL pointed to a conversation that no longer exists
             state.activeConversationId = null;
+            state.activeMessages = [];
             replaceConversationUrl(null);
             elements.chatTitle.textContent = "";
             renderMessages([]);
