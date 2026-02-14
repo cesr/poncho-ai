@@ -4,6 +4,8 @@ A git-native framework for isolated AI agents you can deploy to the cloud.
 
 Program them by talking to them locally, then run them safely via API or web UI, with your own skills/tools and a traceable, eval-compatible runtime.
 
+> **Beta**: Poncho is under active development. Expect breaking changes, and please open an issue if you hit anything confusing or sharp.
+
 ![Poncho CLI and Web UI](assets/poncho.png)
 
 ```bash
@@ -18,13 +20,22 @@ poncho dev
 
 Poncho is a framework for building custom AI agents that are version-controlled in git, developed locally, and deployed in isolated cloud environments. You define behavior in `AGENT.md`, iterate by chatting with the agent on your machine, and expose the same agent safely through a UI/API in production. In production, agents can only act through the skills and tools you configure.
 
+## Why Poncho?
+
+- **Local-first development**: chat with your agent via `poncho dev` (web UI + API) or `poncho run --interactive` (terminal UI), with tool calls streaming as they run.
+- **Same agent in dev and prod**: what you build locally (`AGENT.md`, `skills/`, config, tests) is what you deploy—no separate rewrite.
+- **Guardrails by configuration**: in production, agents only act through the tools/skills you enable (and risky tools can require approval).
+- **Deployable + observable**: build once and run on Vercel, Docker, Lambda, Fly.io, and more, with OpenTelemetry traces and `poncho test` workflows.
+
 **Key features:**
 
-- **Git-native**: Agent behavior, skills, and tests are version-controlled in your repository
-- **Isolated deployment**: Build once and run safely on Vercel, AWS, Fly.io, Docker, or other runtimes
-- **Programmable by conversation**: Develop by talking to the agent locally, then reuse the same config anywhere
-- **Tool/skill-driven runtime**: Deployed agents act through configured skills, MCP servers, and tools
-- **Fully traceable and eval-ready**: OpenTelemetry traces + built-in `poncho test` workflows
+- **Git-native**: agent behavior, skills, and tests live in your repository (reviewable diffs + easy rollbacks).
+- **Single-file agent definition**: define runtime config + instructions in `AGENT.md` (YAML frontmatter + prompt content).
+- **Skills you can ship**: AgentSkills-style `skills/*/SKILL.md` plus TypeScript/JavaScript scripts under `scripts/`.
+- **MCP support**: connect remote tool servers and inject required environment variables through config.
+- **Conversation-first API + streaming**: stored conversations with SSE streaming responses and tool events.
+- **Pluggable storage + memory**: local files for dev or hosted stores (e.g. Upstash), with optional persistent memory + recall.
+- **Testing + observability**: `poncho test` workflows and OpenTelemetry traces/events.
 
 ## Quick Start
 
