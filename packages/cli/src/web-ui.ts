@@ -432,7 +432,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
   <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inconsolata:400,700">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; height: -webkit-fill-available; overflow: hidden; overscroll-behavior: none; touch-action: pan-y; }
+    html, body { height: 100vh; overflow: hidden; overscroll-behavior: none; touch-action: pan-y; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Helvetica Neue", sans-serif;
       background: #000;
@@ -513,18 +513,22 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     }
     .message-error strong { color: #ff4444; }
 
-    /* Layout */
+    /* Layout - use fixed positioning with explicit dimensions */
     .shell { 
       position: fixed; 
       top: 0; 
-      left: 0; 
-      right: 0;
-      /* Use height instead of bottom:0 so JS can resize for keyboard */
+      left: 0;
+      width: 100vw;
       height: 100vh;
-      height: 100dvh;
-      height: -webkit-fill-available;
+      height: 100dvh; /* Dynamic viewport height for normal browsers */
       display: flex; 
       overflow: hidden;
+    }
+    /* PWA standalone mode: use 100vh which works correctly */
+    @media (display-mode: standalone) {
+      .shell {
+        height: 100vh;
+      }
     }
     
     /* Edge swipe blocker - invisible touch target to intercept right edge gestures */
@@ -689,6 +693,24 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       -webkit-tap-highlight-color: transparent;
     }
     .sidebar-toggle:hover { color: #ededed; }
+    .topbar-new-chat {
+      display: none;
+      position: absolute;
+      right: 12px;
+      bottom: 4px;
+      background: transparent;
+      border: 0;
+      color: #666;
+      width: 44px;
+      height: 44px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: color 0.15s, background 0.15s;
+      z-index: 10;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .topbar-new-chat:hover { color: #ededed; }
+    .topbar-new-chat svg { width: 16px; height: 16px; }
 
     /* Messages */
     .messages { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 24px 24px; }
@@ -867,6 +889,18 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       padding: 12px 24px 24px;
       position: relative;
     }
+    /* PWA standalone mode - extra bottom padding */
+    @media (display-mode: standalone), (-webkit-touch-callout: none) {
+      .composer {
+        padding-bottom: 32px;
+      }
+    }
+    @supports (-webkit-touch-callout: none) {
+      /* iOS Safari standalone check via JS class */
+      .standalone .composer {
+        padding-bottom: 32px;
+      }
+    }
     .composer::before {
       content: "";
       position: absolute;
@@ -946,6 +980,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       .sidebar:not(.dragging) { transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1); }
       .shell.sidebar-open .sidebar { transform: translateX(0); }
       .sidebar-toggle { display: grid; place-items: center; }
+      .topbar-new-chat { display: grid; place-items: center; }
       .sidebar-backdrop {
         position: fixed;
         inset: 0;
@@ -962,6 +997,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       .shell.sidebar-open .sidebar-backdrop { opacity: 1; pointer-events: auto; }
       .messages { padding: 16px; }
       .composer { padding: 8px 16px 16px; }
+      /* Always show delete button on mobile (no hover) */
+      .conversation-item .delete-btn { opacity: 1; }
     }
 
     /* Reduced motion */
@@ -1003,6 +1040,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       <div class="topbar">
         <button id="sidebar-toggle" class="sidebar-toggle">&#9776;</button>
         <div id="chat-title" class="topbar-title"></div>
+        <button id="topbar-new-chat" class="topbar-new-chat">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
       </div>
       <div id="messages" class="messages">
         <div class="empty-state">
@@ -1043,6 +1083,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         loginError: $("login-error"),
         list: $("conversation-list"),
         newChat: $("new-chat"),
+        topbarNewChat: $("topbar-new-chat"),
         messages: $("messages"),
         chatTitle: $("chat-title"),
         logout: $("logout"),
@@ -1286,10 +1327,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           item.appendChild(deleteBtn);
 
           item.onclick = async () => {
+            // Clear any delete confirmation, but still navigate
             if (state.confirmDeleteId) {
               state.confirmDeleteId = null;
-              renderConversationList();
-              return;
             }
             state.activeConversationId = c.conversationId;
             pushConversationUrl(c.conversationId);
@@ -1593,7 +1633,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         }
       });
 
-      elements.newChat.addEventListener("click", () => {
+      const startNewChat = () => {
         state.activeConversationId = null;
         state.activeMessages = [];
         state.confirmDeleteId = null;
@@ -1605,7 +1645,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         if (isMobile()) {
           setSidebarOpen(false);
         }
-      });
+      };
+
+      elements.newChat.addEventListener("click", startNewChat);
+      elements.topbarNewChat.addEventListener("click", startNewChat);
 
       elements.prompt.addEventListener("input", () => {
         autoResizePrompt();
@@ -1722,6 +1765,11 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         navigator.serviceWorker.register("/sw.js").catch(() => {});
       }
 
+      // Detect iOS standalone mode and add class for CSS targeting
+      if (window.navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches) {
+        document.documentElement.classList.add("standalone");
+      }
+
       // iOS viewport and keyboard handling
       (function() {
         var shell = document.querySelector(".shell");
@@ -1765,7 +1813,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           if (!sidebar || !backdrop || !shell) return;
           
           var sidebarWidth = 260;
-          var edgeThreshold = 50; // px from left edge to start drag
+          var edgeThreshold = 200; // px from left edge to start drag
           var velocityThreshold = 0.3; // px/ms to trigger open/close
           
           var dragging = false;
@@ -1802,20 +1850,20 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             
             // Don't intercept touches on interactive elements
             var target = e.target;
-            if (target.tagName === "BUTTON" || target.tagName === "A" || target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.closest("button") || target.closest("a")) {
+            if (target.closest("button") || target.closest("a") || target.closest("input") || target.closest("textarea")) {
               return;
             }
             
             var touch = e.touches[0];
             isOpen = shell.classList.contains("sidebar-open");
             
-            // Allow drag from edge when closed, or anywhere on sidebar/backdrop when open
+            // When sidebar is closed: only respond to edge swipes
+            // When sidebar is open: only respond to backdrop touches (not sidebar content)
             var fromEdge = touch.clientX < edgeThreshold;
-            var onSidebar = sidebar.contains(e.target);
             var onBackdrop = e.target === backdrop;
             
-            if (!fromEdge && !isOpen) return;
-            if (isOpen && !onSidebar && !onBackdrop) return;
+            if (!isOpen && !fromEdge) return;
+            if (isOpen && !onBackdrop) return;
             
             // Prevent Safari back gesture when starting from edge
             if (fromEdge) {
