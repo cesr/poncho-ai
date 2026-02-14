@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
-import { defineTool, type ToolDefinition } from "@agentl/sdk";
+import { defineTool, type ToolDefinition } from "@poncho-ai/sdk";
 import type { StateProviderName } from "./state.js";
 
 export interface MainMemory {
@@ -58,9 +58,9 @@ const getStateDirectory = (): string => {
     home.startsWith("/var/task") ||
     process.env.SERVERLESS === "1";
   if (isServerless) {
-    return "/tmp/.agentl/state";
+    return "/tmp/.poncho/state";
   }
-  return resolve(homedir(), ".agentl", "state");
+  return resolve(homedir(), ".poncho", "state");
 };
 
 const projectScopedMemoryPath = (workingDir: string): string => {
@@ -490,7 +490,7 @@ export const createMemoryStore = (
 ): MemoryStore => {
   const provider = config?.provider ?? "local";
   const ttl = config?.ttl;
-  const storageKey = `agentl:memory:${agentId}:main`;
+  const storageKey = `poncho:memory:${agentId}:main`;
   const workingDir = options?.workingDir ?? process.cwd();
   if (provider === "local") {
     return new FileMainMemoryStore(workingDir, ttl);
@@ -531,7 +531,7 @@ export const createMemoryStore = (
     return new InMemoryMemoryStore(ttl);
   }
   if (provider === "dynamodb") {
-    const table = config?.table ?? process.env.AGENTL_DYNAMODB_TABLE ?? "";
+    const table = config?.table ?? process.env.PONCHO_DYNAMODB_TABLE ?? "";
     if (table) {
       return new DynamoDbMemoryStore({
         table,

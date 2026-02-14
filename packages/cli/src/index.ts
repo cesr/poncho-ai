@@ -14,12 +14,12 @@ import {
   AgentHarness,
   TelemetryEmitter,
   createConversationStore,
-  loadAgentlConfig,
+  loadPonchoConfig,
   resolveStateConfig,
-  type AgentlConfig,
+  type PonchoConfig,
   type ConversationStore,
-} from "@agentl/harness";
-import type { AgentEvent, Message, RunInput } from "@agentl/sdk";
+} from "@poncho-ai/harness";
+import type { AgentEvent, Message, RunInput } from "@poncho-ai/sdk";
 import { Command } from "commander";
 import dotenv from "dotenv";
 import YAML from "yaml";
@@ -68,7 +68,7 @@ const readRequestBody = async (request: IncomingMessage): Promise<unknown> => {
 };
 
 const resolveHarnessEnvironment = (): "development" | "staging" | "production" => {
-  const value = (process.env.AGENTL_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
+  const value = (process.env.PONCHO_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
   if (value === "production" || value === "staging") {
     return value;
   }
@@ -150,7 +150,7 @@ const AGENT_TEMPLATE = (
   options: { modelProvider: "anthropic" | "openai"; modelName: string },
 ): string => `---
 name: ${name}
-description: A helpful AgentL assistant
+description: A helpful Poncho assistant
 model:
   provider: ${options.modelProvider}
   name: ${options.modelName}
@@ -162,7 +162,7 @@ limits:
 
 # {{name}}
 
-You are **{{name}}**, a helpful assistant built with AgentL.
+You are **{{name}}**, a helpful assistant built with Poncho.
 
 Working directory: {{runtime.workingDir}}
 Environment: {{runtime.environment}}
@@ -227,8 +227,8 @@ const PACKAGE_TEMPLATE = (name: string, projectDir: string): string => {
       private: true,
       type: "module",
       dependencies: {
-        "@agentl/harness": deps.harness,
-        "@agentl/sdk": deps.sdk,
+        "@poncho-ai/harness": deps.harness,
+        "@poncho-ai/sdk": deps.sdk,
       },
     },
     null,
@@ -238,7 +238,7 @@ const PACKAGE_TEMPLATE = (name: string, projectDir: string): string => {
 
 const README_TEMPLATE = (name: string): string => `# ${name}
 
-An AI agent built with [AgentL](https://github.com/latitude-dev/agentl).
+An AI agent built with [Poncho](https://github.com/cesr/poncho-ai).
 
 ## Prerequisites
 
@@ -253,7 +253,7 @@ npm install
 # If you didn't enter an API key during init:
 cp .env.example .env
 # Then edit .env and add your API key
-agentl dev
+poncho dev
 \`\`\`
 
 Open \`http://localhost:3000\` for the web UI.
@@ -264,19 +264,19 @@ On your first interactive session, the agent introduces its configurable capabil
 
 \`\`\`bash
 # Local web UI + API server
-agentl dev
+poncho dev
 
 # Local interactive CLI
-agentl run --interactive
+poncho run --interactive
 
 # One-off run
-agentl run "Your task here"
+poncho run "Your task here"
 
 # Run tests
-agentl test
+poncho test
 
 # List available tools
-agentl tools
+poncho tools
 \`\`\`
 
 ## Add Skills
@@ -285,13 +285,13 @@ Install skills from a local path or remote repository, then verify discovery:
 
 \`\`\`bash
 # Install skills into ./skills
-agentl add <repo-or-path>
+poncho add <repo-or-path>
 
 # Verify loaded tools
-agentl tools
+poncho tools
 \`\`\`
 
-After adding skills, run \`agentl dev\` or \`agentl run --interactive\` and ask the agent to use them.
+After adding skills, run \`poncho dev\` or \`poncho run --interactive\` and ask the agent to use them.
 
 ## Configure MCP Servers (Remote)
 
@@ -299,13 +299,13 @@ Connect remote MCP servers and expose their tools to the agent:
 
 \`\`\`bash
 # Add remote MCP server
-agentl mcp add --url wss://mcp.example.com/github --name github --env GITHUB_TOKEN
+poncho mcp add --url wss://mcp.example.com/github --name github --env GITHUB_TOKEN
 
 # List configured servers
-agentl mcp list
+poncho mcp list
 
 # Remove a server
-agentl mcp remove github
+poncho mcp remove github
 \`\`\`
 
 Set required secrets in \`.env\` (for example, \`GITHUB_TOKEN=...\`).
@@ -315,10 +315,10 @@ Set required secrets in \`.env\` (for example, \`GITHUB_TOKEN=...\`).
 Core files:
 
 - \`AGENT.md\`: behavior, model selection, runtime guidance
-- \`agentl.config.js\`: runtime config (storage, auth, telemetry, MCP, tools)
+- \`poncho.config.js\`: runtime config (storage, auth, telemetry, MCP, tools)
 - \`.env\`: secrets and environment variables
 
-Example \`agentl.config.js\`:
+Example \`poncho.config.js\`:
 
 \`\`\`javascript
 export default {
@@ -355,7 +355,7 @@ export default {
 \`\`\`
 ${name}/
 ├── AGENT.md           # Agent definition and system prompt
-├── agentl.config.js   # Configuration (MCP servers, auth, etc.)
+├── poncho.config.js   # Configuration (MCP servers, auth, etc.)
 ├── package.json       # Dependencies
 ├── .env.example       # Environment variables template
 ├── tests/
@@ -371,21 +371,21 @@ ${name}/
 
 \`\`\`bash
 # Build for Vercel
-agentl build vercel
-cd .agentl-build/vercel && vercel deploy --prod
+poncho build vercel
+cd .poncho-build/vercel && vercel deploy --prod
 
 # Build for Docker
-agentl build docker
+poncho build docker
 docker build -t ${name} .
 \`\`\`
 
 For full reference:
-https://github.com/latitude-dev/agentl
+https://github.com/cesr/poncho-ai
 `;
 
 const ENV_TEMPLATE = "ANTHROPIC_API_KEY=sk-ant-...\n";
 const GITIGNORE_TEMPLATE =
-  ".env\nnode_modules\ndist\n.agentl-build\n.agentl/\ninteractive-session.json\n";
+  ".env\nnode_modules\ndist\n.poncho-build\n.poncho/\ninteractive-session.json\n";
 const VERCEL_RUNTIME_DEPENDENCIES: Record<string, string> = {
   "@anthropic-ai/sdk": "^0.74.0",
   "@aws-sdk/client-dynamodb": "^3.988.0",
@@ -413,7 +413,7 @@ description: Starter local skill template
 
 # Starter Skill
 
-This is a starter local skill created by \`agentl init\`.
+This is a starter local skill created by \`poncho init\`.
 
 ## Authoring Notes
 
@@ -540,12 +540,12 @@ export default async function handler(req, res) {
   });
 };
 
-const renderConfigFile = (config: AgentlConfig): string =>
+const renderConfigFile = (config: PonchoConfig): string =>
   `export default ${JSON.stringify(config, null, 2)}\n`;
 
-const writeConfigFile = async (workingDir: string, config: AgentlConfig): Promise<void> => {
+const writeConfigFile = async (workingDir: string, config: PonchoConfig): Promise<void> => {
   const serialized = renderConfigFile(config);
-  await writeFile(resolve(workingDir, "agentl.config.js"), serialized, "utf8");
+  await writeFile(resolve(workingDir, "poncho.config.js"), serialized, "utf8");
 };
 
 const gitInit = (cwd: string): Promise<boolean> =>
@@ -584,7 +584,7 @@ export const initProject = async (
 
   const scaffoldFiles: Array<{ path: string; content: string }> = [
     { path: "AGENT.md", content: AGENT_TEMPLATE(projectName, { modelProvider: onboarding.agentModel.provider, modelName: onboarding.agentModel.name }) },
-    { path: "agentl.config.js", content: renderConfigFile(onboarding.config) },
+    { path: "poncho.config.js", content: renderConfigFile(onboarding.config) },
     { path: "package.json", content: PACKAGE_TEMPLATE(projectName, projectDir) },
     { path: "README.md", content: README_TEMPLATE(projectName) },
     { path: ".env.example", content: options?.envExampleOverride ?? onboarding.envExample ?? ENV_TEMPLATE },
@@ -608,7 +608,7 @@ export const initProject = async (
 
   process.stdout.write("\n");
 
-  // Install dependencies so subsequent commands (e.g. `agentl add`) succeed.
+  // Install dependencies so subsequent commands (e.g. `poncho add`) succeed.
   try {
     await runPnpmInstall(projectDir);
     process.stdout.write(`  ${G}✓${R} ${D}Installed dependencies${R}\n`);
@@ -629,8 +629,8 @@ export const initProject = async (
   process.stdout.write("\n");
   process.stdout.write(`    ${D}$${R} cd ${projectName}\n`);
   process.stdout.write("\n");
-  process.stdout.write(`    ${CY}Web UI${R}          ${D}$${R} agentl dev\n`);
-  process.stdout.write(`    ${CY}CLI interactive${R}  ${D}$${R} agentl run --interactive\n`);
+  process.stdout.write(`    ${CY}Web UI${R}          ${D}$${R} poncho dev\n`);
+  process.stdout.write(`    ${CY}CLI interactive${R}  ${D}$${R} poncho run --interactive\n`);
   process.stdout.write("\n");
   if (onboarding.envNeedsUserInput) {
     process.stdout.write(
@@ -670,7 +670,7 @@ export const createRequestHandler = async (options?: {
 }): Promise<RequestHandler> => {
   const workingDir = options?.workingDir ?? process.cwd();
   dotenv.config({ path: resolve(workingDir, ".env") });
-  const config = await loadAgentlConfig(workingDir);
+  const config = await loadPonchoConfig(workingDir);
   let agentName = "Agent";
   let agentModelProvider = "anthropic";
   let agentModelName = "claude-opus-4-5";
@@ -746,7 +746,7 @@ export const createRequestHandler = async (options?: {
     }
 
     const cookies = parseCookies(request);
-    const sessionId = cookies.agentl_session;
+    const sessionId = cookies.poncho_session;
     const session = sessionId ? sessionStore.get(sessionId) : undefined;
     const ownerId = session?.ownerId ?? "local-owner";
     const requiresCsrfValidation =
@@ -798,7 +798,7 @@ export const createRequestHandler = async (options?: {
       }
       loginRateLimiter.registerSuccess(ip);
       const createdSession = sessionStore.create(ownerId);
-      setCookie(response, "agentl_session", createdSession.sessionId, {
+      setCookie(response, "poncho_session", createdSession.sessionId, {
         httpOnly: true,
         secure: secureCookies,
         sameSite: "Lax",
@@ -816,7 +816,7 @@ export const createRequestHandler = async (options?: {
       if (session?.sessionId) {
         sessionStore.delete(session.sessionId);
       }
-      setCookie(response, "agentl_session", "", {
+      setCookie(response, "poncho_session", "", {
         httpOnly: true,
         secure: secureCookies,
         sameSite: "Lax",
@@ -1060,7 +1060,7 @@ export const startDevServer = async (
   if (actualPort !== port) {
     process.stdout.write(`Port ${port} is in use, switched to ${actualPort}.\n`);
   }
-  process.stdout.write(`AgentL dev server running at http://localhost:${actualPort}\n`);
+  process.stdout.write(`Poncho dev server running at http://localhost:${actualPort}\n`);
 
   const shutdown = () => {
     server.close();
@@ -1085,7 +1085,7 @@ export const runOnce = async (
 ): Promise<void> => {
   const workingDir = options.workingDir ?? process.cwd();
   dotenv.config({ path: resolve(workingDir, ".env") });
-  const config = await loadAgentlConfig(workingDir);
+  const config = await loadPonchoConfig(workingDir);
   const harness = new AgentHarness({ workingDir });
   const telemetry = new TelemetryEmitter(config?.telemetry);
   await harness.initialize();
@@ -1130,7 +1130,7 @@ export const runInteractive = async (
   params: Record<string, string>,
 ): Promise<void> => {
   dotenv.config({ path: resolve(workingDir, ".env") });
-  const config = await loadAgentlConfig(workingDir);
+  const config = await loadPonchoConfig(workingDir);
 
   // Approval bridge: the harness calls this handler which creates a pending
   // promise. The Ink UI picks up the pending request and shows a Y/N prompt.
@@ -1178,7 +1178,7 @@ export const runInteractive = async (
         harness: AgentHarness;
         params: Record<string, string>;
         workingDir: string;
-        config?: AgentlConfig;
+        config?: PonchoConfig;
         conversationStore: ConversationStore;
         onSetApprovalCallback?: (cb: (req: ApprovalRequest) => void) => void;
       }) => Promise<void>
@@ -1434,23 +1434,23 @@ export const runTests = async (
 };
 
 export const buildTarget = async (workingDir: string, target: string): Promise<void> => {
-  const outDir = resolve(workingDir, ".agentl-build", target);
+  const outDir = resolve(workingDir, ".poncho-build", target);
   await mkdir(outDir, { recursive: true });
-  const serverEntrypoint = `import { startDevServer } from "agentl";
+  const serverEntrypoint = `import { startDevServer } from "@poncho-ai/cli";
 
 const port = Number.parseInt(process.env.PORT ?? "3000", 10);
 await startDevServer(Number.isNaN(port) ? 3000 : port, { workingDir: process.cwd() });
 `;
   const runtimePackageJson = JSON.stringify(
     {
-      name: "agentl-runtime-bundle",
+      name: "poncho-runtime-bundle",
       private: true,
       type: "module",
       scripts: {
         start: "node server.js",
       },
       dependencies: {
-        agentl: "^0.1.0",
+        "@poncho-ai/cli": "^0.1.0",
       },
     },
     null,
@@ -1461,8 +1461,8 @@ await startDevServer(Number.isNaN(port) ? 3000 : port, { workingDir: process.cwd
     await mkdir(resolve(outDir, "api"), { recursive: true });
     await copyIfExists(resolve(workingDir, "AGENT.md"), resolve(outDir, "AGENT.md"));
     await copyIfExists(
-      resolve(workingDir, "agentl.config.js"),
-      resolve(outDir, "agentl.config.js"),
+      resolve(workingDir, "poncho.config.js"),
+      resolve(outDir, "poncho.config.js"),
     );
     await copyIfExists(resolve(workingDir, "skills"), resolve(outDir, "skills"));
     await copyIfExists(resolve(workingDir, "tests"), resolve(outDir, "tests"));
@@ -1473,7 +1473,7 @@ await startDevServer(Number.isNaN(port) ? 3000 : port, { workingDir: process.cwd
           version: 2,
           functions: {
             "api/index.js": {
-              includeFiles: "{AGENT.md,agentl.config.js,skills/**,tests/**}",
+              includeFiles: "{AGENT.md,poncho.config.js,skills/**,tests/**}",
             },
           },
           routes: [{ src: "/(.*)", dest: "/api/index.js" }],
@@ -1507,11 +1507,11 @@ await startDevServer(Number.isNaN(port) ? 3000 : port, { workingDir: process.cwd
 WORKDIR /app
 COPY package.json package.json
 COPY AGENT.md AGENT.md
-COPY agentl.config.js agentl.config.js
+COPY poncho.config.js poncho.config.js
 COPY skills skills
 COPY tests tests
 COPY .env.example .env.example
-RUN corepack enable && npm install -g agentl
+RUN corepack enable && npm install -g @poncho-ai/cli
 COPY server.js server.js
 EXPOSE 3000
 CMD ["node","server.js"]
@@ -1523,7 +1523,7 @@ CMD ["node","server.js"]
   } else if (target === "lambda") {
     await writeFile(
       resolve(outDir, "lambda-handler.js"),
-      `import { startDevServer } from "agentl";
+      `import { startDevServer } from "@poncho-ai/cli";
 let serverPromise;
 export const handler = async (event = {}) => {
   if (!serverPromise) {
@@ -1542,7 +1542,7 @@ export const handler = async (event = {}) => {
   } else if (target === "fly") {
     await writeFile(
       resolve(outDir, "fly.toml"),
-      `app = "agentl-app"
+      `app = "poncho-app"
 [env]
   PORT = "3000"
 [http_service]
@@ -1560,10 +1560,10 @@ export const handler = async (event = {}) => {
 WORKDIR /app
 COPY package.json package.json
 COPY AGENT.md AGENT.md
-COPY agentl.config.js agentl.config.js
+COPY poncho.config.js poncho.config.js
 COPY skills skills
 COPY tests tests
-RUN npm install -g agentl
+RUN npm install -g @poncho-ai/cli
 COPY server.js server.js
 EXPOSE 3000
 CMD ["node","server.js"]
@@ -1590,7 +1590,7 @@ export const mcpAdd = async (
     envVars?: string[];
   },
 ): Promise<void> => {
-  const config = (await loadAgentlConfig(workingDir)) ?? { mcp: [] };
+  const config = (await loadPonchoConfig(workingDir)) ?? { mcp: [] };
   const mcp = [...(config.mcp ?? [])];
   if (!options.url) {
     throw new Error("Remote MCP only: provide --url for a remote MCP server.");
@@ -1606,7 +1606,7 @@ export const mcpAdd = async (
 };
 
 export const mcpList = async (workingDir: string): Promise<void> => {
-  const config = await loadAgentlConfig(workingDir);
+  const config = await loadPonchoConfig(workingDir);
   const mcp = config?.mcp ?? [];
   if (mcp.length === 0) {
     process.stdout.write("No MCP servers configured.\n");
@@ -1619,7 +1619,7 @@ export const mcpList = async (workingDir: string): Promise<void> => {
 };
 
 export const mcpRemove = async (workingDir: string, name: string): Promise<void> => {
-  const config = (await loadAgentlConfig(workingDir)) ?? { mcp: [] };
+  const config = (await loadPonchoConfig(workingDir)) ?? { mcp: [] };
   const before = config.mcp ?? [];
   const filtered = before.filter((entry) => normalizeMcpName(entry) !== name);
   await writeConfigFile(workingDir, { ...config, mcp: filtered });
@@ -1629,15 +1629,15 @@ export const mcpRemove = async (workingDir: string, name: string): Promise<void>
 export const buildCli = (): Command => {
   const program = new Command();
   program
-    .name("agentl")
-    .description("CLI for building and running AgentL agents")
+    .name("poncho")
+    .description("CLI for building and running Poncho agents")
     .version("0.1.0");
 
   program
     .command("init")
     .argument("<name>", "project name")
     .option("--yes", "accept defaults and skip prompts", false)
-    .description("Scaffold a new AgentL project")
+    .description("Scaffold a new Poncho project")
     .action(async (name: string, options: { yes: boolean }) => {
       await initProject(name, {
         onboarding: {
@@ -1787,7 +1787,7 @@ export const main = async (argv: string[] = process.argv): Promise<void> => {
       "code" in error &&
       (error as { code?: string }).code === "EADDRINUSE"
     ) {
-      const message = "Port is already in use. Try `agentl dev --port 3001` or stop the process using port 3000.";
+      const message = "Port is already in use. Try `poncho dev --port 3001` or stop the process using port 3000.";
       process.stderr.write(`${message}\n`);
       process.exitCode = 1;
       return;

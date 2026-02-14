@@ -1,11 +1,11 @@
 import { stdin, stdout } from "node:process";
 import { input, password, select } from "@inquirer/prompts";
-import type { AgentlConfig } from "@agentl/harness";
+import type { PonchoConfig } from "@poncho-ai/harness";
 import {
   ONBOARDING_FIELDS,
   fieldsForScope,
   type OnboardingField,
-} from "@agentl/sdk";
+} from "@poncho-ai/sdk";
 
 // ANSI style helpers
 const C = {
@@ -29,7 +29,7 @@ export type InitOnboardingOptions = {
 
 export type InitOnboardingResult = {
   answers: OnboardingAnswers;
-  config: AgentlConfig;
+  config: PonchoConfig;
   envExample: string;
   envFile: string;
   envNeedsUserInput: boolean;
@@ -50,12 +50,12 @@ type DotPath<T> = T extends Primitive
         : K | Join<K, DotPath<NonNullable<T[K]>>>;
     }[keyof T & string];
 
-type AgentlConfigPath = DotPath<AgentlConfig>;
+type PonchoConfigPath = DotPath<PonchoConfig>;
 type RegistryConfigPath = Extract<
   (typeof ONBOARDING_FIELDS)[number],
   { target: "config" }
 >["path"];
-type RegistryConfigPathContract = RegistryConfigPath extends AgentlConfigPath
+type RegistryConfigPathContract = RegistryConfigPath extends PonchoConfigPath
   ? true
   : never;
 const REGISTRY_CONFIG_PATH_CONTRACT: RegistryConfigPathContract = true;
@@ -247,7 +247,7 @@ const askOnboardingQuestions = async (options: InitOnboardingOptions): Promise<O
   }
 
   stdout.write("\n");
-  stdout.write(`  ${bold("AgentL")} ${dim("· quick setup")}\n`);
+  stdout.write(`  ${bold("Poncho")} ${dim("· quick setup")}\n`);
   stdout.write("\n");
   const fields = fieldsForScope("light");
   for (const field of fields) {
@@ -292,15 +292,15 @@ const maybeSet = (
 
 export const buildConfigFromOnboardingAnswers = (
   answers: OnboardingAnswers,
-): AgentlConfig => {
+): PonchoConfig => {
   const storageProvider = String(answers["storage.provider"] ?? "local");
   const memoryEnabled = Boolean(answers["storage.memory.enabled"] ?? true);
   const maxRecallConversations = Number(
     answers["storage.memory.maxRecallConversations"] ?? 20,
   );
 
-  const storage: NonNullable<AgentlConfig["storage"]> = {
-    provider: storageProvider as NonNullable<AgentlConfig["storage"]>["provider"],
+  const storage: NonNullable<PonchoConfig["storage"]> = {
+    provider: storageProvider as NonNullable<PonchoConfig["storage"]>["provider"],
     memory: {
       enabled: memoryEnabled,
       maxRecallConversations,
@@ -315,7 +315,7 @@ export const buildConfigFromOnboardingAnswers = (
   const authType =
     (answers["auth.type"] as "bearer" | "header" | "custom" | undefined) ?? "bearer";
 
-  const auth: NonNullable<AgentlConfig["auth"]> = {
+  const auth: NonNullable<PonchoConfig["auth"]> = {
     required: authRequired,
     type: authType,
   };
@@ -324,7 +324,7 @@ export const buildConfigFromOnboardingAnswers = (
   }
 
   const telemetryEnabled = Boolean(answers["telemetry.enabled"] ?? true);
-  const telemetry: NonNullable<AgentlConfig["telemetry"]> = {
+  const telemetry: NonNullable<PonchoConfig["telemetry"]> = {
     enabled: telemetryEnabled,
   };
   maybeSet(telemetry, "otlp", answers["telemetry.otlp"]);
@@ -338,7 +338,7 @@ export const buildConfigFromOnboardingAnswers = (
 };
 
 export const isDefaultOnboardingConfig = (
-  config: AgentlConfig | undefined,
+  config: PonchoConfig | undefined,
 ): boolean => {
   if (!config) {
     return true;
@@ -401,20 +401,20 @@ const collectEnvVars = (answers: OnboardingAnswers): string[] => {
     envVars.add("UPSTASH_REDIS_REST_TOKEN=...");
   }
   if (storageProvider === "dynamodb") {
-    envVars.add("AGENTL_DYNAMODB_TABLE=agentl-conversations");
+    envVars.add("PONCHO_DYNAMODB_TABLE=poncho-conversations");
     envVars.add("AWS_REGION=us-east-1");
   }
   const authRequired = Boolean(answers["auth.required"] ?? false);
   if (authRequired) {
-    envVars.add("AGENTL_AUTH_TOKEN=...");
+    envVars.add("PONCHO_AUTH_TOKEN=...");
   }
   return Array.from(envVars);
 };
 
 const collectEnvFileLines = (answers: OnboardingAnswers): string[] => {
   const lines: string[] = [
-    "# AgentL environment configuration",
-    "# Fill in empty values before running `agentl dev` or `agentl run --interactive`.",
+    "# Poncho environment configuration",
+    "# Fill in empty values before running `poncho dev` or `poncho run --interactive`.",
     "# Tip: keep secrets in `.env` only (never commit them).",
     "",
   ];
@@ -439,7 +439,7 @@ const collectEnvFileLines = (answers: OnboardingAnswers): string[] => {
   const authRequired = Boolean(answers["auth.required"] ?? false);
   const authType =
     (answers["auth.type"] as "bearer" | "header" | "custom" | undefined) ?? "bearer";
-  const authHeaderName = String(answers["auth.headerName"] ?? "x-agentl-key");
+  const authHeaderName = String(answers["auth.headerName"] ?? "x-poncho-key");
   if (authRequired) {
     lines.push("# Auth (API request authentication)");
     if (authType === "bearer") {
@@ -449,7 +449,7 @@ const collectEnvFileLines = (answers: OnboardingAnswers): string[] => {
     } else {
       lines.push("# Custom auth mode: read this token in your auth.validate function.");
     }
-    lines.push("AGENTL_AUTH_TOKEN=");
+    lines.push("PONCHO_AUTH_TOKEN=");
     lines.push("");
   }
 
@@ -469,9 +469,9 @@ const collectEnvFileLines = (answers: OnboardingAnswers): string[] => {
     lines.push("");
   } else if (storageProvider === "dynamodb") {
     lines.push("# Storage (DynamoDB)");
-    lines.push("# Create a DynamoDB table for AgentL conversation/state storage.");
+    lines.push("# Create a DynamoDB table for Poncho conversation/state storage.");
     lines.push("# Ensure AWS credentials are configured (AWS_PROFILE or access keys).");
-    lines.push("AGENTL_DYNAMODB_TABLE=");
+    lines.push("PONCHO_DYNAMODB_TABLE=");
     lines.push("AWS_REGION=");
     lines.push("");
   } else if (storageProvider === "local" || storageProvider === "memory") {

@@ -23,15 +23,15 @@ importers:
 
   packages/cli:
     dependencies:
-      '@agentl/harness':
-        specifier: workspace:*
-        version: link:../harness
-      '@agentl/sdk':
-        specifier: workspace:*
-        version: link:../sdk
       '@inquirer/prompts':
         specifier: ^8.2.0
         version: 8.2.0(@types/node@24.10.13)
+      '@poncho-ai/harness':
+        specifier: workspace:*
+        version: link:../harness
+      '@poncho-ai/sdk':
+        specifier: workspace:*
+        version: link:../sdk
       commander:
         specifier: ^12.0.0
         version: 12.1.0
@@ -66,7 +66,7 @@ importers:
 
   packages/client:
     dependencies:
-      '@agentl/sdk':
+      '@poncho-ai/sdk':
         specifier: workspace:*
         version: link:../sdk
     devDependencies:
@@ -79,9 +79,6 @@ importers:
 
   packages/harness:
     dependencies:
-      '@agentl/sdk':
-        specifier: workspace:*
-        version: link:../sdk
       '@anthropic-ai/sdk':
         specifier: ^0.74.0
         version: 0.74.0(zod@3.25.76)
@@ -91,6 +88,9 @@ importers:
       '@latitude-data/telemetry':
         specifier: ^2.0.2
         version: 2.0.2(@opentelemetry/sdk-trace-base@1.30.1(@opentelemetry/api@1.9.0))(openai@6.21.0(ws@8.19.0)(zod@3.25.76))(typescript@5.9.3)
+      '@poncho-ai/sdk':
+        specifier: workspace:*
+        version: link:../sdk
       jiti:
         specifier: ^2.6.1
         version: 2.6.1

@@ -1,4 +1,4 @@
-import type { ToolContext, ToolDefinition } from "@agentl/sdk";
+import type { ToolContext, ToolDefinition } from "@poncho-ai/sdk";
 
 export interface ToolCall {
   id: string;

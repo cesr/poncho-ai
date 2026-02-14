@@ -108,7 +108,7 @@ export const ONBOARDING_FIELDS = [
       {
         value: "dynamodb",
         label: "DynamoDB",
-        envVars: ["AGENTL_DYNAMODB_TABLE"],
+        envVars: ["PONCHO_DYNAMODB_TABLE"],
       },
     ],
   },
@@ -220,7 +220,7 @@ export const ONBOARDING_FIELDS = [
     scopes: ["full"],
     label: "Header name",
     prompt: "Header name (for auth type=header)",
-    defaultValue: "x-agentl-key",
+    defaultValue: "x-poncho-key",
     dependsOn: { fieldId: "auth.type", equals: "header" },
   },
   {

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
-import type { Message } from "@agentl/sdk";
+import type { Message } from "@poncho-ai/sdk";
 
 export interface ConversationState {
   runId: string;
@@ -53,7 +53,7 @@ export interface StateConfig {
 }
 
 const DEFAULT_OWNER = "local-owner";
-const CONVERSATIONS_STATE_KEY = "__agentl_conversations__";
+const CONVERSATIONS_STATE_KEY = "__poncho_conversations__";
 const LOCAL_CONVERSATIONS_FILE = "local-conversations.json";
 const LOCAL_STATE_FILE = "local-state.json";
 
@@ -72,9 +72,9 @@ const getStateDirectory = (): string => {
     home.startsWith("/var/task") ||
     process.env.SERVERLESS === "1";
   if (isServerless) {
-    return "/tmp/.agentl/state";
+    return "/tmp/.poncho/state";
   }
-  return resolve(homedir(), ".agentl", "state");
+  return resolve(homedir(), ".poncho", "state");
 };
 
 const projectScopedFilePath = (workingDir: string, suffix: string): string => {
@@ -965,7 +965,7 @@ export const createStateStore = (
     return new InMemoryStateStore(ttl);
   }
   if (provider === "dynamodb") {
-    const table = config?.table ?? process.env.AGENTL_DYNAMODB_TABLE ?? "";
+    const table = config?.table ?? process.env.PONCHO_DYNAMODB_TABLE ?? "";
     if (table) {
       return new DynamoDbStateStore(table, config?.region as string | undefined, ttl);
     }
@@ -1007,7 +1007,7 @@ export const createConversationStore = (
     return new InMemoryConversationStore(ttl);
   }
   if (provider === "dynamodb") {
-    const table = config?.table ?? process.env.AGENTL_DYNAMODB_TABLE ?? "";
+    const table = config?.table ?? process.env.PONCHO_DYNAMODB_TABLE ?? "";
     if (table) {
       return new DynamoDbConversationStore(table, config?.region as string | undefined, ttl);
     }

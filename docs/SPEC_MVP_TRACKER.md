@@ -1,4 +1,4 @@
-# AgentL SPEC Progress Tracker
+# Poncho SPEC Progress Tracker
 
 This document tracks implementation progress against `docs/SPEC.md` after completing MVP and subsequent full-spec expansion work.
 
@@ -14,7 +14,7 @@ This document tracks implementation progress against `docs/SPEC.md` after comple
 
 - [x] Monorepo TypeScript baseline with shared `tsconfig.base.json`.
 - [x] Package entrypoints and build scripts for `sdk`, `harness`, `cli`, and `client`.
-- [x] Shared runtime types and event contracts in `@agentl/sdk`.
+- [x] Shared runtime types and event contracts in `@poncho-ai/sdk`.
 
 ### Agent Definition (`SPEC.md` section 4)
 
@@ -38,15 +38,15 @@ This document tracks implementation progress against `docs/SPEC.md` after comple
 
 ### CLI (`SPEC.md` section 9)
 
-- [x] `agentl init` scaffolding command.
-- [x] `agentl dev` local server command.
-- [x] `agentl run` one-shot and interactive mode.
-- [x] `agentl test`.
-- [x] `agentl tools`.
-- [x] `agentl add`.
-- [x] `agentl build <target>` (`vercel`, `docker`, `lambda`, `fly`) artifact generation.
-- [x] `agentl mcp add/list/remove`.
-- [x] `agentl update-agent` guidance backfill/replacement for existing `AGENT.md`.
+- [x] `poncho init` scaffolding command.
+- [x] `poncho dev` local server command.
+- [x] `poncho run` one-shot and interactive mode.
+- [x] `poncho test`.
+- [x] `poncho tools`.
+- [x] `poncho add`.
+- [x] `poncho build <target>` (`vercel`, `docker`, `lambda`, `fly`) artifact generation.
+- [x] `poncho mcp add/list/remove`.
+- [x] `poncho update-agent` guidance backfill/replacement for existing `AGENT.md`.
 - [x] Improved interactive TUI (streaming-first output, spinner, cleaner tool event rendering).
 
 ### HTTP API (`SPEC.md` section 12)
@@ -77,7 +77,7 @@ This document tracks implementation progress against `docs/SPEC.md` after comple
 ### MCP
 
 - [x] Remote-only MCP strategy adopted.
-- [x] `agentl mcp add/list/remove` command set exists.
+- [x] `poncho mcp add/list/remove` command set exists.
 - [x] MCP protocol transport implementation (remote WebSocket JSON-RPC with `tools/list` + `tools/call`).
 - [x] Remote MCP WebSocket session management with reconnect/backoff baseline.
 - [ ] Heartbeat and health-probe policy for remote MCP sessions.

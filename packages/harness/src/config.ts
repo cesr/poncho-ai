@@ -28,7 +28,7 @@ export type BuiltInToolToggles = {
   write_file?: boolean;
 };
 
-export interface AgentlConfig extends McpConfig {
+export interface PonchoConfig extends McpConfig {
   harness?: string;
   tools?: {
     defaults?: BuiltInToolToggles;
@@ -64,7 +64,7 @@ export interface AgentlConfig extends McpConfig {
   };
   skills?: Record<string, Record<string, unknown>>;
   /** Extra directories (relative to project root) to scan for skills.
-   *  `skills/` and `.agentl/skills/` are always scanned. */
+   *  `skills/` and `.poncho/skills/` are always scanned. */
   skillPaths?: string[];
   build?: {
     vercel?: Record<string, unknown>;
@@ -88,7 +88,7 @@ const resolveTtl = (
 };
 
 export const resolveStateConfig = (
-  config: AgentlConfig | undefined,
+  config: PonchoConfig | undefined,
 ): StateConfig | undefined => {
   if (config?.storage) {
     return {
@@ -104,7 +104,7 @@ export const resolveStateConfig = (
 };
 
 export const resolveMemoryConfig = (
-  config: AgentlConfig | undefined,
+  config: PonchoConfig | undefined,
 ): MemoryConfig | undefined => {
   if (config?.storage) {
     return {
@@ -123,10 +123,10 @@ export const resolveMemoryConfig = (
   return config?.memory;
 };
 
-export const loadAgentlConfig = async (
+export const loadPonchoConfig = async (
   workingDir: string,
-): Promise<AgentlConfig | undefined> => {
-  const filePath = resolve(workingDir, "agentl.config.js");
+): Promise<PonchoConfig | undefined> => {
+  const filePath = resolve(workingDir, "poncho.config.js");
   try {
     await access(filePath);
   } catch {
@@ -134,7 +134,7 @@ export const loadAgentlConfig = async (
   }
 
   const imported = (await import(`${filePath}?t=${Date.now()}`)) as {
-    default?: AgentlConfig;
+    default?: PonchoConfig;
   };
 
   return imported.default;

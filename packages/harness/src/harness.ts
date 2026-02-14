@@ -6,9 +6,9 @@ import type {
   RunResult,
   ToolContext,
   ToolDefinition,
-} from "@agentl/sdk";
+} from "@poncho-ai/sdk";
 import { parseAgentFile, renderAgentPrompt, type ParsedAgent } from "./agent-parser.js";
-import { loadAgentlConfig, resolveMemoryConfig, type AgentlConfig } from "./config.js";
+import { loadPonchoConfig, resolveMemoryConfig, type PonchoConfig } from "./config.js";
 import { createDefaultTools, createWriteTool } from "./default-tools.js";
 import { LatitudeCapture } from "./latitude-capture.js";
 import {
@@ -56,7 +56,7 @@ const DEVELOPMENT_MODE_CONTEXT = `## Development Mode Context
 You are running locally in development mode. Treat this as an editable agent workspace.
 
 When users ask about customization:
-- Explain and edit \`agentl.config.js\` for model/provider, storage+memory, auth, telemetry, and MCP settings.
+- Explain and edit \`poncho.config.js\` for model/provider, storage+memory, auth, telemetry, and MCP settings.
 - Help create or update local skills under \`skills/<skill-name>/SKILL.md\`.
 - For executable skills, add JavaScript/TypeScript scripts under \`skills/<skill-name>/scripts/\` and run them via \`run_skill_script\`.
 - For setup, skills, MCP, auth, storage, telemetry, or "how do I..." questions, proactively read \`README.md\` with \`read_file\` before answering.
@@ -76,8 +76,8 @@ export class AgentHarness {
   private mcpBridge?: LocalMcpBridge;
 
   private getConfiguredToolFlag(
-    config: AgentlConfig | undefined,
-    name: keyof NonNullable<NonNullable<AgentlConfig["tools"]>["defaults"]>,
+    config: PonchoConfig | undefined,
+    name: keyof NonNullable<NonNullable<PonchoConfig["tools"]>["defaults"]>,
   ): boolean | undefined {
     const defaults = config?.tools?.defaults;
     const environment = this.environment ?? "development";
@@ -85,7 +85,7 @@ export class AgentHarness {
     return envOverrides?.[name] ?? defaults?.[name];
   }
 
-  private isBuiltInToolEnabled(config: AgentlConfig | undefined, name: string): boolean {
+  private isBuiltInToolEnabled(config: PonchoConfig | undefined, name: string): boolean {
     if (name === "write_file") {
       const allowedByEnvironment = this.shouldEnableWriteTool();
       const configured = this.getConfiguredToolFlag(config, "write_file");
@@ -108,7 +108,7 @@ export class AgentHarness {
     }
   }
 
-  private registerConfiguredBuiltInTools(config: AgentlConfig | undefined): void {
+  private registerConfiguredBuiltInTools(config: PonchoConfig | undefined): void {
     for (const tool of createDefaultTools(this.workingDir)) {
       if (this.isBuiltInToolEnabled(config, tool.name)) {
         this.registerIfMissing(tool);
@@ -120,7 +120,7 @@ export class AgentHarness {
   }
 
   private shouldEnableWriteTool(): boolean {
-    const override = process.env.AGENTL_FS_WRITE?.toLowerCase();
+    const override = process.env.PONCHO_FS_WRITE?.toLowerCase();
     if (override === "1" || override === "true" || override === "yes") {
       return true;
     }
@@ -143,7 +143,7 @@ export class AgentHarness {
 
   async initialize(): Promise<void> {
     this.parsedAgent = await parseAgentFile(this.workingDir);
-    const config = await loadAgentlConfig(this.workingDir);
+    const config = await loadPonchoConfig(this.workingDir);
     this.registerConfiguredBuiltInTools(config);
     const provider = this.parsedAgent.frontmatter.model?.provider ?? "anthropic";
     const memoryConfig = resolveMemoryConfig(config);

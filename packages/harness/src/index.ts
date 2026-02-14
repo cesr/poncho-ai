@@ -13,5 +13,5 @@ export * from "./skill-tools.js";
 export * from "./state.js";
 export * from "./telemetry.js";
 export * from "./tool-dispatcher.js";
-export { defineTool } from "@agentl/sdk";
-export type { ToolDefinition } from "@agentl/sdk";
+export { defineTool } from "@poncho-ai/sdk";
+export type { ToolDefinition } from "@poncho-ai/sdk";

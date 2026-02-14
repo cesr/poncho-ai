@@ -1,4 +1,4 @@
-# AgentL Web UI Specification
+# Poncho Web UI Specification
 
 > ChatGPT-like web interface for local development and deployed agents
 
@@ -27,7 +27,7 @@
 
 ## 1. Executive Summary
 
-AgentL will add a first-party Web UI that feels familiar to ChatGPT users:
+Poncho will add a first-party Web UI that feels familiar to ChatGPT users:
 
 - Left sidebar with past conversations
 - Main chat window with streaming responses
@@ -51,7 +51,7 @@ The architecture is intentionally **tenant-ready** (with `tenantId` and `ownerId
 | Priority | Goal |
 |----------|------|
 | P0 | ChatGPT-like UX with sidebar and chat canvas |
-| P0 | Smooth streaming chat behavior using existing AgentL runtime endpoints |
+| P0 | Smooth streaming chat behavior using existing Poncho runtime endpoints |
 | P0 | Secure, simple login for local and deployed usage |
 | P0 | Persist and manage conversation history |
 | P1 | Clear migration path to multi-user/tenant model |
@@ -99,7 +99,7 @@ Reference these projects for UX and interaction patterns:
 - **Chatbot UI** (`https://github.com/mckaywrigley/chatbot-ui`)  
   Lean chat-first layout and interaction flow references.
 
-These are references only. AgentL retains its own architecture and API contracts.
+These are references only. Poncho retains its own architecture and API contracts.
 
 ### 3.3 Primary user journeys
 
@@ -127,7 +127,7 @@ These are references only. AgentL retains its own architecture and API contracts
 Web UI is a browser client served by a web server/BFF layer that:
 
 - Owns browser auth/session management
-- Proxies/coordinates calls to AgentL runtime endpoints
+- Proxies/coordinates calls to Poncho runtime endpoints
 - Persists conversation and session metadata
 
 ```mermaid
@@ -234,7 +234,7 @@ Behavior:
    - HTTPS required in deployment
    - Plain HTTP allowed only for local loopback development
 
-### 7.3 Relationship to existing AgentL API auth
+### 7.3 Relationship to existing Poncho API auth
 
 - Existing runtime API auth (`Authorization: Bearer`) remains the runtime boundary.
 - Web UI session auth protects browser users at the UI/BFF layer.

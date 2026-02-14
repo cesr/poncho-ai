@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { AgentlConfig } from "@agentl/harness";
-import { resolveMemoryConfig, resolveStateConfig } from "@agentl/harness";
-import { ONBOARDING_FIELDS } from "@agentl/sdk";
+import type { PonchoConfig } from "@poncho-ai/harness";
+import { resolveMemoryConfig, resolveStateConfig } from "@poncho-ai/harness";
+import { ONBOARDING_FIELDS } from "@poncho-ai/sdk";
 import { buildConfigFromOnboardingAnswers } from "../src/init-onboarding.js";
 
 type Primitive = string | number | boolean | bigint | symbol | null | undefined;
@@ -14,12 +14,12 @@ type DotPath<T> = T extends Primitive
         : K | Join<K, DotPath<NonNullable<T[K]>>>;
     }[keyof T & string];
 
-type AgentlConfigPath = DotPath<AgentlConfig>;
+type PonchoConfigPath = DotPath<PonchoConfig>;
 type RegistryConfigPath = Extract<
   (typeof ONBOARDING_FIELDS)[number],
   { target: "config" }
 >["path"];
-type RegistryPathContract = RegistryConfigPath extends AgentlConfigPath ? true : never;
+type RegistryPathContract = RegistryConfigPath extends PonchoConfigPath ? true : never;
 const REGISTRY_PATH_CONTRACT: RegistryPathContract = true;
 void REGISTRY_PATH_CONTRACT;
 

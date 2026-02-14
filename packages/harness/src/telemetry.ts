@@ -1,4 +1,4 @@
-import type { AgentEvent } from "@agentl/sdk";
+import type { AgentEvent } from "@poncho-ai/sdk";
 
 export interface TelemetryConfig {
   enabled?: boolean;

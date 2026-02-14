@@ -1,4 +1,4 @@
-import type { AgentEvent, RunInput, RunResult } from "@agentl/sdk";
+import type { AgentEvent, RunInput, RunResult } from "@poncho-ai/sdk";
 
 export interface AgentClientOptions {
   url: string;

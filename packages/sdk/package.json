@@ -1,7 +1,7 @@
 {
-  "name": "@agentl/sdk",
+  "name": "@poncho-ai/sdk",
   "version": "0.1.0",
-  "description": "Core types and utilities for building AgentL skills",
+  "description": "Core types and utilities for building Poncho skills",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

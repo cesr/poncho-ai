@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import type { Message } from "@agentl/sdk";
+import type { Message } from "@poncho-ai/sdk";
 import type {
   ModelCallInput,
   ModelClient,

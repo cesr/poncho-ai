@@ -1,5 +1,5 @@
 {
-  "name": "agentl",
+  "name": "poncho",
   "private": true,
   "description": "An open framework for building and deploying AI agents",
   "workspaces": [

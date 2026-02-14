@@ -29,11 +29,11 @@ Project: {{parameters.project}}
 Env: {{runtime.environment}}
 `);
     const prompt = renderAgentPrompt(parsed, {
-      parameters: { project: "agentl" },
+      parameters: { project: "poncho" },
       runtime: { environment: "development", workingDir: "/tmp/work" },
     });
 
-    expect(prompt).toContain("Project: agentl");
+    expect(prompt).toContain("Project: poncho");
     expect(prompt).toContain("Env: development");
   });
 });

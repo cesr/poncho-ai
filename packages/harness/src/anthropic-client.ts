@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { MessageParam } from "@anthropic-ai/sdk/resources/messages";
-import type { Message } from "@agentl/sdk";
+import type { Message } from "@poncho-ai/sdk";
 import type {
   ModelCallInput,
   ModelClient,

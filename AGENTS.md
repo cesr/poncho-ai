@@ -1,10 +1,10 @@
 # AGENTS.md
 
-Repository-level context for AI agents working on `agentl`.
+Repository-level context for AI agents working on `poncho`.
 
 ## What this repository is
 
-- Monorepo for AgentL (framework for building/deploying tool-using agents).
+- Monorepo for Poncho (framework for building/deploying tool-using agents).
 - Package manager: `pnpm` (workspace + turbo).
 - Runtime baseline: Node `>=20`.
 
@@ -13,7 +13,7 @@ Repository-level context for AI agents working on `agentl`.
 - `packages/cli`: CLI entry points, local dev server, build commands.
 - `packages/harness`: Core runtime (conversation loop, tools, storage, telemetry, providers).
 - `packages/sdk`: Shared types and tool contracts.
-- `packages/client`: TypeScript client for deployed AgentL agents.
+- `packages/client`: TypeScript client for deployed Poncho agents.
 - `docs/`: Product and implementation specs (`SPEC.md`, `SPEC_WEB_UI.md`, `SPEC_MVP_TRACKER.md`).
 - `README.md`: User-facing source of truth for setup, commands, and behavior.
 
@@ -27,10 +27,10 @@ Repository-level context for AI agents working on `agentl`.
 
 When possible, run package-scoped checks for faster feedback:
 
-- `pnpm --filter agentl test` (CLI package)
-- `pnpm --filter @agentl/harness test`
-- `pnpm --filter @agentl/sdk test`
-- `pnpm --filter @agentl/client test`
+- `pnpm --filter @poncho-ai/cli test` (CLI package)
+- `pnpm --filter @poncho-ai/harness test`
+- `pnpm --filter @poncho-ai/sdk test`
+- `pnpm --filter @poncho-ai/client test`
 
 ## Code conventions in this repo
 

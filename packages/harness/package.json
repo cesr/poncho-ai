@@ -1,5 +1,5 @@
 {
-  "name": "@agentl/harness",
+  "name": "@poncho-ai/harness",
   "version": "0.1.0",
   "description": "Agent execution runtime - conversation loop, tool dispatch, streaming",
   "type": "module",
@@ -18,7 +18,7 @@
     "lint": "eslint src/"
   },
   "dependencies": {
-    "@agentl/sdk": "workspace:*",
+    "@poncho-ai/sdk": "workspace:*",
     "@anthropic-ai/sdk": "^0.74.0",
     "@aws-sdk/client-dynamodb": "^3.988.0",
     "@latitude-data/telemetry": "^2.0.2",

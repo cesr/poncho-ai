@@ -10,11 +10,11 @@ import * as readline from "node:readline";
 import { stdout } from "node:process";
 import {
   parseAgentFile,
-  type AgentlConfig,
+  type PonchoConfig,
   type AgentHarness,
   type ConversationStore,
-} from "@agentl/harness";
-import type { AgentEvent, Message, TokenUsage } from "@agentl/sdk";
+} from "@poncho-ai/harness";
+import type { AgentEvent, Message, TokenUsage } from "@poncho-ai/sdk";
 import { inferConversationTitle } from "./web-ui.js";
 import { consumeFirstRunIntro } from "./init-feature-context.js";
 
@@ -103,7 +103,7 @@ const loadMetadata = async (workingDir: string): Promise<UiMetadata> => {
     model,
     provider,
     workingDir,
-    environment: process.env.AGENTL_ENV ?? process.env.NODE_ENV ?? "development",
+    environment: process.env.PONCHO_ENV ?? process.env.NODE_ENV ?? "development",
   };
 };
 
@@ -308,7 +308,7 @@ export const runInteractiveInk = async ({
   harness: AgentHarness;
   params: Record<string, string>;
   workingDir: string;
-  config?: AgentlConfig;
+  config?: PonchoConfig;
   conversationStore: ConversationStore;
   onSetApprovalCallback?: (cb: (req: ApprovalRequest) => void) => void;
 }): Promise<void> => {

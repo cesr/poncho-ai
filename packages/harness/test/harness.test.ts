@@ -2,13 +2,13 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { defineTool } from "@agentl/sdk";
+import { defineTool } from "@poncho-ai/sdk";
 import { AgentHarness } from "../src/harness.js";
 import { loadSkillMetadata } from "../src/skill-context.js";
 
 describe("agent harness", () => {
   it("registers default filesystem tools", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-default-tools-"));
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-default-tools-"));
     await writeFile(
       join(dir, "AGENT.md"),
       `---
@@ -33,7 +33,7 @@ model:
   });
 
   it("disables write_file by default in production environment", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-prod-tools-"));
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-prod-tools-"));
     await writeFile(
       join(dir, "AGENT.md"),
       `---
@@ -57,8 +57,8 @@ model:
     expect(names).not.toContain("write_file");
   });
 
-  it("allows disabling built-in tools via agentl.config.js", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-disable-default-tools-"));
+  it("allows disabling built-in tools via poncho.config.js", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-disable-default-tools-"));
     await writeFile(
       join(dir, "AGENT.md"),
       `---
@@ -73,7 +73,7 @@ model:
       "utf8",
     );
     await writeFile(
-      join(dir, "agentl.config.js"),
+      join(dir, "poncho.config.js"),
       `export default {
   tools: {
     defaults: {
@@ -93,7 +93,7 @@ model:
   });
 
   it("supports per-environment tool overrides", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-env-tool-overrides-"));
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-env-tool-overrides-"));
     await writeFile(
       join(dir, "AGENT.md"),
       `---
@@ -108,7 +108,7 @@ model:
       "utf8",
     );
     await writeFile(
-      join(dir, "agentl.config.js"),
+      join(dir, "poncho.config.js"),
       `export default {
   tools: {
     defaults: {
@@ -142,7 +142,7 @@ model:
   });
 
   it("does not auto-register exported tool objects from skill scripts", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-no-auto-tool-register-"));
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-no-auto-tool-register-"));
     await writeFile(
       join(dir, "AGENT.md"),
       `---
@@ -170,7 +170,7 @@ description: Summarize text
     );
     await writeFile(
       join(dir, "skills", "summarize", "scripts", "summarize.ts"),
-      `import { defineTool } from "@agentl/sdk";
+      `import { defineTool } from "@poncho-ai/sdk";
 
 export default defineTool({
   name: "summarize_text",
@@ -199,7 +199,7 @@ export default defineTool({
   });
 
   it("injects SKILL.md context into system prompt", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-skill-context-"));
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-skill-context-"));
     await writeFile(
       join(dir, "AGENT.md"),
       `---
@@ -263,7 +263,7 @@ When users ask for summarization, prefer calling summarize_text.
   });
 
   it("lists skill scripts through list_skill_scripts", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-skill-script-list-"));
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-skill-script-list-"));
     await writeFile(
       join(dir, "AGENT.md"),
       `---
@@ -318,7 +318,7 @@ description: Simple math scripts
   });
 
   it("runs JavaScript/TypeScript skill scripts through run_skill_script", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-skill-script-runner-"));
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-skill-script-runner-"));
     await writeFile(
       join(dir, "AGENT.md"),
       `---
@@ -373,7 +373,7 @@ description: Simple math scripts
   });
 
   it("blocks path traversal in run_skill_script", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-skill-script-path-"));
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-skill-script-path-"));
     await writeFile(
       join(dir, "AGENT.md"),
       `---
@@ -414,7 +414,7 @@ description: Safe skill
   });
 
   it("injects local authoring guidance only in development environment", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-dev-guidance-"));
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-dev-guidance-"));
     await writeFile(
       join(dir, "AGENT.md"),
       `---
@@ -445,7 +445,7 @@ model:
     }
     const devCall = devGenerate.mock.calls[0]?.[0] as { systemPrompt?: string } | undefined;
     expect(devCall?.systemPrompt).toContain("## Development Mode Context");
-    expect(devCall?.systemPrompt).toContain("agentl.config.js");
+    expect(devCall?.systemPrompt).toContain("poncho.config.js");
     expect(devCall?.systemPrompt).toContain("skills/<skill-name>/SKILL.md");
 
     const productionHarness = new AgentHarness({ workingDir: dir, environment: "production" });
@@ -468,7 +468,7 @@ model:
   });
 
   it("runs a tool call loop and completes", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-"));
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-"));
     await writeFile(
       join(dir, "AGENT.md"),
       `---
@@ -529,7 +529,7 @@ model:
   });
 
   it("emits approval events and denies requiresApproval tools by default", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-approval-"));
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-approval-"));
     await writeFile(
       join(dir, "AGENT.md"),
       `---
@@ -601,7 +601,7 @@ model:
   });
 
   it("grants requiresApproval tools when approval handler allows it", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-approval-ok-"));
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-approval-ok-"));
     await writeFile(
       join(dir, "AGENT.md"),
       `---
@@ -670,7 +670,7 @@ model:
   });
 
   it("parses spec-style allowed-tools from SKILL.md frontmatter", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-allowed-tools-"));
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-allowed-tools-"));
     await mkdir(join(dir, "skills", "summarize"), { recursive: true });
     await writeFile(
       join(dir, "skills", "summarize", "SKILL.md"),
@@ -692,7 +692,7 @@ allowed-tools: summarize_text read_file
   });
 
   it("keeps backward compatibility with legacy tools list frontmatter", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agentl-harness-legacy-tools-"));
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-legacy-tools-"));
     await mkdir(join(dir, "skills", "legacy"), { recursive: true });
     await writeFile(
       join(dir, "skills", "legacy", "SKILL.md"),

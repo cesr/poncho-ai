@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentEvent, Message } from "@agentl/sdk";
+import type { AgentEvent, Message } from "@poncho-ai/sdk";
 import { FileConversationStore, getRequestIp, parseCookies } from "../src/web-ui.js";
 import { buildConfigFromOnboardingAnswers, runInitOnboarding } from "../src/init-onboarding.js";
 import {
@@ -10,7 +10,7 @@ import {
   initializeOnboardingMarker,
 } from "../src/init-feature-context.js";
 
-vi.mock("@agentl/harness", () => ({
+vi.mock("@poncho-ai/harness", () => ({
   AgentHarness: class MockHarness {
     async initialize(): Promise<void> {}
     listTools(): Array<{ name: string; description: string }> {
@@ -86,7 +86,7 @@ vi.mock("@agentl/harness", () => ({
       };
     }
   },
-  loadAgentlConfig: async () => ({
+  loadPonchoConfig: async () => ({
     auth: { required: false },
     state: { provider: "memory", ttl: 3600 },
     telemetry: { enabled: false },
@@ -138,7 +138,7 @@ describe("cli", () => {
   let tempDir = "";
 
   beforeEach(async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "agentl-cli-"));
+    tempDir = await mkdtemp(join(tmpdir(), "poncho-cli-"));
   });
 
   it("scaffolds a project with init", async () => {
@@ -178,7 +178,7 @@ describe("cli", () => {
       onboarding: { yes: true, interactive: false },
     });
     const configFile = await readFile(
-      join(tempDir, "default-agent", "agentl.config.js"),
+      join(tempDir, "default-agent", "poncho.config.js"),
       "utf8",
     );
     expect(configFile).toContain('"storage"');
@@ -208,7 +208,7 @@ describe("cli", () => {
       model: "claude-opus-4-5",
       config: undefined,
     });
-    expect(firstIntro).toContain("I can help configure this agent directly by chat");
+    expect(firstIntro).toContain("I can configure myself directly by chat");
     expect(secondIntro).toBeUndefined();
   });
 
@@ -230,7 +230,7 @@ describe("cli", () => {
         "telemetry.enabled": false,
       }),
     });
-    expect(intro).toContain("I can help configure this agent directly by chat");
+    expect(intro).toContain("I can configure myself directly by chat");
   });
 
   it("does not emit intro for init defaults created with --yes behavior", async () => {
@@ -335,7 +335,7 @@ describe("cli", () => {
       expect(login.status).toBe(200);
       const loginPayload = (await login.json()) as { csrfToken: string };
       const setCookieHeader = login.headers.get("set-cookie");
-      expect(setCookieHeader).toContain("agentl_session=");
+      expect(setCookieHeader).toContain("poncho_session=");
       const cookie = (setCookieHeader ?? "").split(";")[0] ?? "";
 
       const conversationCreate = await fetch(`http://localhost:${port}/api/conversations`, {
@@ -460,7 +460,7 @@ describe("cli", () => {
       });
       expect(login.status).toBe(200);
       const setCookieHeader = login.headers.get("set-cookie") ?? "";
-      expect(setCookieHeader).toContain("agentl_session=");
+      expect(setCookieHeader).toContain("poncho_session=");
       expect(setCookieHeader).toContain("Secure");
     } finally {
       delete process.env.AGENT_UI_PASSPHRASE;
@@ -491,19 +491,19 @@ describe("cli", () => {
     await buildTarget(projectDir, "lambda");
     await buildTarget(projectDir, "fly");
     const vercelConfig = await readFile(
-      join(projectDir, ".agentl-build", "vercel", "vercel.json"),
+      join(projectDir, ".poncho-build", "vercel", "vercel.json"),
       "utf8",
     );
     const dockerFile = await readFile(
-      join(projectDir, ".agentl-build", "docker", "Dockerfile"),
+      join(projectDir, ".poncho-build", "docker", "Dockerfile"),
       "utf8",
     );
     const lambdaHandler = await readFile(
-      join(projectDir, ".agentl-build", "lambda", "lambda-handler.js"),
+      join(projectDir, ".poncho-build", "lambda", "lambda-handler.js"),
       "utf8",
     );
     const flyToml = await readFile(
-      join(projectDir, ".agentl-build", "fly", "fly.toml"),
+      join(projectDir, ".poncho-build", "fly", "fly.toml"),
       "utf8",
     );
     expect(vercelConfig).toContain('"functions"');

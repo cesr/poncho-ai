@@ -21,7 +21,7 @@
 6. [Skills and Tools](#6-skills-and-tools)
 7. [Execution Environment](#7-execution-environment)
 8. [API Key Management](#8-api-key-management)
-9. [The `agentl` CLI](#9-the-agentl-cli)
+9. [The `poncho` CLI](#9-the-poncho-cli)
 10. [Observability & Telemetry](#10-observability--telemetry)
 11. [Security Considerations](#11-security-considerations)
 12. [Deployed Agent HTTP API](#12-deployed-agent-http-api)
@@ -32,7 +32,7 @@
 
 ## 1. Executive Summary
 
-AgentL is an open agent framework inspired by Claude Code patterns. Develop locally, deploy anywhere.
+Poncho is an open agent framework inspired by Claude Code patterns. Develop locally, deploy anywhere.
 
 **Core principles:**
 
@@ -45,14 +45,14 @@ AgentL is an open agent framework inspired by Claude Code patterns. Develop loca
 **The workflow:**
 
 ```bash
-agentl init my-agent          # Scaffold
-agentl add @agentl/web-fetch  # Add skills
-agentl dev                    # Develop locally
-agentl build vercel           # Build for your platform
+poncho init my-agent          # Scaffold
+poncho add @poncho-ai/web-fetch  # Add skills
+poncho dev                    # Develop locally
+poncho build vercel           # Build for your platform
 vercel deploy                 # Deploy wherever
 ```
 
-**Not a platform** - AgentL is a framework and CLI. You own your agents, you choose where they run, you connect your own tools via MCP.
+**Not a platform** - Poncho is a framework and CLI. You own your agents, you choose where they run, you connect your own tools via MCP.
 
 ---
 
@@ -74,7 +74,7 @@ vercel deploy                 # Deploy wherever
 
 ### 2.2 Non-Goals
 
-- **Not a managed platform**: AgentL is a framework, not a hosting service
+- **Not a managed platform**: Poncho is a framework, not a hosting service
 - **Not PromptL-compatible**: This is the next iteration, clean break
 - **Not opinionated about hosting**: You deploy where you want
 - **Not a single execution model**: Harness is swappable
@@ -108,7 +108,7 @@ vercel deploy                 # Deploy wherever
 │  └─────────────┘           └─────────────┘           └─────────────┘  │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
-                            agentl build
+                            poncho build
                                     │
          ┌──────────────────────────┼──────────────────────────┐
          ▼                          ▼                          ▼
@@ -132,14 +132,14 @@ vercel deploy                 # Deploy wherever
 
 ```
 Local Development:
-1. agentl dev loads AGENT.md and skills
+1. poncho dev loads AGENT.md and skills
 2. Harness initializes with MCP connections
 3. HTTP server listens for requests
 4. Each request runs the agent loop
 5. Events stream to console (or OTEL endpoint)
 
 Production:
-1. agentl build produces platform-specific artifact
+1. poncho build produces platform-specific artifact
 2. Deploy to your cloud (Vercel, etc.)
 3. Platform handles HTTP routing
 4. Same harness executes on each request
@@ -450,8 +450,8 @@ Agents have access to tools from two sources: **Skills** and **MCP Servers**.
 │  │        Skills           │  │      MCP Servers        │  │
 │  │  (bundled with agent)   │  │  (external services)    │  │
 │  │                         │  │                         │  │
-│  │  • @agentl/file-system  │  │  • GitHub MCP server    │  │
-│  │  • @agentl/web-fetch    │  │  • Slack MCP server     │  │
+│  │  • @poncho-ai/file-system  │  │  • GitHub MCP server    │  │
+│  │  • @poncho-ai/web-fetch    │  │  • Slack MCP server     │  │
 │  │  • ./skills/my-skill    │  │  • Your custom MCP      │  │
 │  └─────────────────────────┘  └─────────────────────────┘  │
 │                                                              │
@@ -460,7 +460,7 @@ Agents have access to tools from two sources: **Skills** and **MCP Servers**.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Skills**: Packages that bundle tools with the agent. They're installed via `agentl add` and included in the build output.
+**Skills**: Packages that bundle tools with the agent. They're installed via `poncho add` and included in the build output.
 
 **MCP Servers**: External services that provide tools via the MCP protocol. Can be remote (hosted) or local (run by the agent).
 
@@ -535,7 +535,7 @@ You have access to code execution tools that run in an isolated sandbox.
 
 ```typescript
 // tools/run-code.ts
-import { defineTool, ToolContext } from '@agentl/sdk'
+import { defineTool, ToolContext } from '@poncho-ai/sdk'
 
 export default defineTool({
   name: 'run-code',
@@ -609,48 +609,48 @@ At startup, the harness:
 
 ```
 Loaded skills:
-  @agentl/file-system (3 tools: read-file, write-file, glob)
-  @agentl/web-fetch (2 tools: fetch-url, fetch-json)
+  @poncho-ai/file-system (3 tools: read-file, write-file, glob)
+  @poncho-ai/web-fetch (2 tools: fetch-url, fetch-json)
   ./skills/my-skill (1 tool: my-tool)
 ```
 
 ### 6.5 Built-in Skills
 
-Official skills (published to npm as `@agentl/*`):
+Official skills (published to npm as `@poncho-ai/*`):
 
 | Package | Tools | Description |
 |---------|-------|-------------|
-| `@agentl/file-system` | read-file, write-file, glob, grep | File operations |
-| `@agentl/code-execution` | run-code | Execute JS/TS/Python |
-| `@agentl/web-fetch` | fetch-url, fetch-json | HTTP requests |
-| `@agentl/web-search` | search | Web search |
-| `@agentl/git` | git-status, git-diff, git-commit | Git operations |
-| `@agentl/shell` | run-command | Shell commands (restricted) |
+| `@poncho-ai/file-system` | read-file, write-file, glob, grep | File operations |
+| `@poncho-ai/code-execution` | run-code | Execute JS/TS/Python |
+| `@poncho-ai/web-fetch` | fetch-url, fetch-json | HTTP requests |
+| `@poncho-ai/web-search` | search | Web search |
+| `@poncho-ai/git` | git-status, git-diff, git-commit | Git operations |
+| `@poncho-ai/shell` | run-command | Shell commands (restricted) |
 
 Install with:
 
 ```bash
-agentl add @agentl/file-system @agentl/web-fetch
+poncho add @poncho-ai/file-system @poncho-ai/web-fetch
 ```
 
 ### 6.6 Skill Configuration
 
-Configure skills in `agentl.config.js`:
+Configure skills in `poncho.config.js`:
 
 ```javascript
 export default {
   skills: {
-    '@agentl/web-fetch': {
+    '@poncho-ai/web-fetch': {
       allowedDomains: ['*.github.com', 'api.example.com'],
       timeout: 10000,
       maxResponseSize: 1024 * 1024,  // 1MB
     },
-    '@agentl/code-execution': {
+    '@poncho-ai/code-execution': {
       allowedLanguages: ['javascript', 'typescript'],
       maxExecutionTime: 30000,
       // Code runs on the deployment platform (Vercel/Lambda sandbox)
     },
-    '@agentl/shell': {
+    '@poncho-ai/shell': {
       allowedCommands: ['ls', 'cat', 'grep', 'find'],
       // Disallowed by default: rm, mv, chmod, etc.
     },
@@ -726,10 +726,10 @@ When an agent needs to run code (e.g., `code-execution` skill), execution happen
 
 ### 7.3 Resource Limits
 
-Limits are set by your deployment platform, not AgentL:
+Limits are set by your deployment platform, not Poncho:
 
 ```javascript
-// agentl.config.js - platform-specific settings
+// poncho.config.js - platform-specific settings
 export default {
   build: {
     vercel: {
@@ -783,7 +783,7 @@ POST /run
 Configure a KV store for conversation persistence:
 
 ```javascript
-// agentl.config.js
+// poncho.config.js
 export default {
   state: {
     provider: 'redis',  // or 'upstash', 'dynamodb'
@@ -808,7 +808,7 @@ On platforms with persistent processes, conversations stay in memory for the pro
 
 ## 8. API Key Management
 
-Agents need API keys for model providers. Keys live in your environment, not in AgentL.
+Agents need API keys for model providers. Keys live in your environment, not in Poncho.
 
 ### 8.1 Key Flow
 
@@ -831,7 +831,7 @@ OPENAI_API_KEY=sk-...  # Optional, if using OpenAI
 ```
 
 ```bash
-agentl dev  # Loads .env automatically
+poncho dev  # Loads .env automatically
 ```
 
 ### 8.3 Deployment
@@ -866,40 +866,40 @@ The agent reads these at runtime:
 
 ---
 
-## 9. The `agentl` CLI
+## 9. The `poncho` CLI
 
-The `agentl` CLI is a local development and build tool. You develop locally, build a portable artifact, and deploy wherever you want.
+The `poncho` CLI is a local development and build tool. You develop locally, build a portable artifact, and deploy wherever you want.
 
 ### 9.1 Installation
 
 ```bash
-npm install -g agentl
+npm install -g @poncho-ai/cli
 # or
-brew install agentl
+brew install poncho
 ```
 
 ### 9.2 Commands
 
-#### `agentl init`
+#### `poncho init`
 
 Scaffold a new agent project:
 
 ```bash
-agentl init my-agent
+poncho init my-agent
 cd my-agent
 
 # Creates:
 # my-agent/
 # ├── AGENT.md           # Agent definition
 # ├── package.json       # Dependencies (skills)
-# ├── agentl.config.js   # Configuration
+# ├── poncho.config.js   # Configuration
 # ├── .env.example       # Environment template
 # └── .gitignore
 ```
 
 Init modes:
-- `agentl init <name>` uses light onboarding defaults.
-- `agentl init <name> --yes` skips prompts with deterministic defaults.
+- `poncho init <name>` uses light onboarding defaults.
+- `poncho init <name> --yes` skips prompts with deterministic defaults.
 
 **package.json:**
 
@@ -909,20 +909,20 @@ Init modes:
   "private": true,
   "type": "module",
   "dependencies": {
-    "@agentl/harness": "^1.0.0",
-    "@agentl/file-system": "^1.0.0"
+    "@poncho-ai/harness": "^1.0.0",
+    "@poncho-ai/file-system": "^1.0.0"
   }
 }
 ```
 
 Skills are npm packages listed in `dependencies`. Run `npm install` after cloning.
 
-#### `agentl dev`
+#### `poncho dev`
 
 Run the agent locally for development:
 
 ```bash
-agentl dev
+poncho dev
 
 # Starts local server at http://localhost:3000
 # Loads .env for API keys
@@ -931,21 +931,21 @@ agentl dev
 Options:
 - `--port <port>` - Server port (default: 3000)
 
-#### `agentl run`
+#### `poncho run`
 
 Execute the agent once with a task:
 
 ```bash
-agentl run "Analyze the code in ./src"
+poncho run "Analyze the code in ./src"
 
 # With parameters:
-agentl run --param project=myapp "Fix the failing tests"
+poncho run --param project=myapp "Fix the failing tests"
 
 # With file context:
-agentl run --file ./src/index.ts "Explain this code"
+poncho run --file ./src/index.ts "Explain this code"
 
 # Interactive REPL mode:
-agentl run --interactive
+poncho run --interactive
 ```
 
 On first interactive session (web UI or CLI interactive), the agent sends a one-time introduction describing available configurable features and how to request config changes in plain language.
@@ -956,13 +956,13 @@ Options:
 - `--interactive` - Multi-turn conversation mode
 - `--json` - Output JSON instead of streaming text
 
-#### `agentl test`
+#### `poncho test`
 
 Run tests against your agent:
 
 ```bash
-agentl test                    # Run all tests
-agentl test tests/math.yaml    # Run specific test file
+poncho test                    # Run all tests
+poncho test tests/math.yaml    # Run specific test file
 ```
 
 **Test file format** (`tests/example.yaml`):
@@ -986,80 +986,80 @@ tests:
       refusal: true
 ```
 
-#### `agentl tools`
+#### `poncho tools`
 
 List all tools available to your agent:
 
 ```bash
-agentl tools
+poncho tools
 
 # Output:
 # Skills:
-#   @agentl/file-system (3 tools: read-file, write-file, glob)
-#   @agentl/web-fetch (2 tools: fetch-url, fetch-json)
+#   @poncho-ai/file-system (3 tools: read-file, write-file, glob)
+#   @poncho-ai/web-fetch (2 tools: fetch-url, fetch-json)
 #   ./skills/my-skill (1 tool: my-tool)
 #
 # MCP Servers:
 #   @modelcontextprotocol/server-filesystem (3 tools)
 ```
 
-#### `agentl add`
+#### `poncho add`
 
 Add skills to your agent (modifies `package.json` and runs `npm install`):
 
 ```bash
-agentl add @agentl/code-execution    # From npm registry
-agentl add github:user/my-skill      # From GitHub
-agentl add ./path/to/local/skill     # Link local skill
+poncho add @poncho-ai/code-execution    # From npm registry
+poncho add github:user/my-skill      # From GitHub
+poncho add ./path/to/local/skill     # Link local skill
 ```
 
-This is equivalent to `npm install` but validates the package is a valid AgentL skill.
+This is equivalent to `npm install` but validates the package is a valid Poncho skill.
 
 ```bash
 # These are equivalent:
-agentl add @agentl/web-fetch
-npm install @agentl/web-fetch
+poncho add @poncho-ai/web-fetch
+npm install @poncho-ai/web-fetch
 ```
 
 **Skill discovery**: At startup, the harness scans `package.json` dependencies for packages containing a `SKILL.md` file and registers their tools.
 
-#### `agentl build`
+#### `poncho build`
 
 Build a deployable artifact for your target platform:
 
 ```bash
 # Build for Vercel
-agentl build vercel
+poncho build vercel
 # Output: .vercel/output ready to deploy
 
 # Build for Docker
-agentl build docker
+poncho build docker
 # Output: Dockerfile + image
 
 # Build for AWS Lambda
-agentl build lambda
+poncho build lambda
 # Output: Lambda-compatible zip
 
 # Build for Fly.io
-agentl build fly
+poncho build fly
 # Output: fly.toml + Dockerfile
 ```
 
 The build output is self-contained - includes the harness, your AGENT.md, and all skills.
 
-#### `agentl mcp`
+#### `poncho mcp`
 
 Connect MCP servers (remote):
 
 ```bash
 # Add a remote MCP server (connect via URL)
-agentl mcp add --url wss://mcp.example.com/github --env GITHUB_TOKEN
+poncho mcp add --url wss://mcp.example.com/github --env GITHUB_TOKEN
 
 # List connected servers
-agentl mcp list
+poncho mcp list
 
 # Remove
-agentl mcp remove filesystem
+poncho mcp remove filesystem
 ```
 
 **Remote MCP servers**: The agent connects to an external MCP server via WebSocket. You host the server separately.
@@ -1081,17 +1081,17 @@ my-agent/
 │       ├── SKILL.md
 │       └── tools/
 │           └── my-tool.ts
-├── agentl.config.js    # Optional: custom harness, MCP servers
+├── poncho.config.js    # Optional: custom harness, MCP servers
 └── .env
 ```
 
 ### 9.4 Configuration File
 
-Optional `agentl.config.js` for advanced configuration:
+Optional `poncho.config.js` for advanced configuration:
 
 ```javascript
 export default {
-  // Custom harness (default: @agentl/harness)
+  // Custom harness (default: @poncho-ai/harness)
   harness: './my-custom-harness',
 
   // MCP servers
@@ -1102,11 +1102,11 @@ export default {
 
   // Skill-specific configuration
   skills: {
-    '@agentl/web-fetch': {
+    '@poncho-ai/web-fetch': {
       allowedDomains: ['*.github.com', 'api.example.com'],
       timeout: 10000,
     },
-    '@agentl/code-execution': {
+    '@poncho-ai/code-execution': {
       allowedLanguages: ['javascript', 'typescript', 'python'],
       maxExecutionTime: 30000,
     },
@@ -1160,7 +1160,7 @@ export default {
 Full TypeScript interface for configuration:
 
 ```typescript
-interface AgentLConfig {
+interface PonchoConfig {
   harness?: string  // Package name or path
 
   mcp?: Array<
@@ -1205,7 +1205,7 @@ interface AgentLConfig {
 The harness emits lifecycle hooks for customization:
 
 ```typescript
-import { BaseHarness } from '@agentl/harness'
+import { BaseHarness } from '@poncho-ai/harness'
 
 export class MyHarness extends BaseHarness {
   // Called when a run starts
@@ -1273,14 +1273,14 @@ data: {"code": "TIMEOUT", "duration": 60000, "message": "Run exceeded timeout"}
 
 ### 9.8 Harness Swapping
 
-The harness is the agent runtime loop. The default is `@agentl/harness`, but you can:
+The harness is the agent runtime loop. The default is `@poncho-ai/harness`, but you can:
 
 1. **Use the default**: Works out of the box
 2. **Extend it**: Subclass for custom behavior
 3. **Replace it entirely**: Implement the harness interface
 
 ```typescript
-// agentl.config.js
+// poncho.config.js
 export default {
   harness: './my-harness.js'  // or '@my-org/custom-harness'
 }
@@ -1345,7 +1345,7 @@ LATITUDE_API_KEY=lat_xxx
 LATITUDE_TELEMETRY=true
 ```
 
-Or in `agentl.config.js`:
+Or in `poncho.config.js`:
 
 ```javascript
 export default {
@@ -1383,10 +1383,10 @@ You get:
 
 ### 10.4 Local Development
 
-During `agentl dev`, telemetry is logged to console by default:
+During `poncho dev`, telemetry is logged to console by default:
 
 ```bash
-agentl dev
+poncho dev
 # [run:abc123] Started
 # [run:abc123] Step 1: model request (1500 input tokens)
 # [run:abc123] Step 1: tool call "read-file" (45ms)
@@ -1399,11 +1399,11 @@ By default, dev telemetry events are logged to console output.
 
 ## 11. Security Considerations
 
-Security is a shared responsibility between AgentL and your deployment platform.
+Security is a shared responsibility between Poncho and your deployment platform.
 
-### 11.1 What AgentL Handles
+### 11.1 What Poncho Handles
 
-| Concern | How AgentL Helps |
+| Concern | How Poncho Helps |
 |---------|------------------|
 | **API key exposure** | Keys in env vars, never in code or logs |
 | **Prompt injection** | Harness sanitizes tool outputs before feeding back |
@@ -1428,7 +1428,7 @@ Security is a shared responsibility between AgentL and your deployment platform.
 Always protect your deployed agent:
 
 ```javascript
-// agentl.config.js
+// poncho.config.js
 export default {
   auth: {
     required: true,
@@ -1457,7 +1457,7 @@ defineTool({
 Be explicit about what your agent can access:
 
 ```javascript
-// agentl.config.js
+// poncho.config.js
 export default {
   skills: {
     'web-fetch': {
@@ -1578,7 +1578,7 @@ Content-Type: application/json
 ### 12.5 TypeScript SDK
 
 ```typescript
-import { AgentClient } from '@agentl/client'
+import { AgentClient } from '@poncho-ai/client'
 
 const agent = new AgentClient({
   url: 'https://my-agent.vercel.app'
@@ -1649,7 +1649,7 @@ The Web UI auth/session model is additive and does not replace direct API auth f
 | **Skills** | Open ecosystem - npm, GitHub, local |
 | **PromptL interop** | None - clean break |
 | **MCP support** | Remote MCP support (WebSocket servers) |
-| **Deployment model** | `agentl build` → deploy anywhere |
+| **Deployment model** | `poncho build` → deploy anywhere |
 | **Code execution** | Runs on deployment platform (Vercel sandbox, Lambda, etc.) |
 
 ### 14.2 Technical Decisions Needed
@@ -1684,7 +1684,7 @@ Before implementation, evaluate these components from `latitude-llm` for potenti
 |----------|---------|-------|
 | **Skill discovery** | npm search, awesome list, Latitude hub | How do people find skills? |
 | **Agent templates** | Code assistant, support bot, etc. | Starter templates for common use cases |
-| **Documentation** | Standalone site or Latitude docs | Where does AgentL docs live? |
+| **Documentation** | Standalone site or Latitude docs | Where does Poncho docs live? |
 
 ### 14.5 Latitude Platform Integration
 
@@ -1692,7 +1692,7 @@ When using Latitude (optional), you get additional features:
 
 | Feature | Description |
 |---------|-------------|
-| **`agentl sync`** | Sync agent to Latitude for managed deployment |
+| **`poncho sync`** | Sync agent to Latitude for managed deployment |
 | **Dashboard** | Run history, traces, cost tracking |
 | **Evaluations** | Run evals against your agent |
 | **Team sharing** | Collaborate on agents |
@@ -1706,7 +1706,7 @@ Open questions:
 
 ## Appendix A: Comparison with PromptL
 
-| Aspect | PromptL | AgentL |
+| Aspect | PromptL | Poncho |
 |--------|---------|--------|
 | **Philosophy** | Platform-integrated | Open, portable |
 | **Template** | Jinja2 + YAML | Mustache + frontmatter |
@@ -1723,25 +1723,25 @@ Phase 1: Core Framework
 ├── AGENT.md parser (frontmatter + Mustache)
 ├── Default harness implementation
 ├── MCP client integration
-└── agentl init / dev / run commands
+└── poncho init / dev / run commands
 
 Phase 2: Build System
-├── agentl build vercel
-├── agentl build docker
-├── agentl build lambda
+├── poncho build vercel
+├── poncho build docker
+├── poncho build lambda
 └── Build artifact bundling
 
 Phase 3: Skill Ecosystem
-├── agentl add command
+├── poncho add command
 ├── Skill package format spec
-├── Built-in skills (@agentl/*)
+├── Built-in skills (@poncho-ai/*)
 └── Skill authoring docs
 
 Phase 4: Observability
 ├── OTEL event emission
 ├── Latitude integration (optional)
 ├── Local dev logging
-└── agentl logs command (for local)
+└── poncho logs command (for local)
 ```
 
 ## Appendix C: References

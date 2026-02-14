@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createJiti } from "jiti";
-import type { ToolDefinition } from "@agentl/sdk";
+import type { ToolDefinition } from "@poncho-ai/sdk";
 import { resolveSkillDirs } from "./skill-context.js";
 
 const TOOL_FILE_PATTERN = /\.(?:[cm]?js|[cm]?ts)$/i;
@@ -36,7 +36,7 @@ const loadToolModule = async (filePath: string): Promise<unknown> => {
     } catch {
       const source = await readFile(filePath, "utf8");
       const shimmed = source.replace(
-        /import\s+\{\s*defineTool\s*\}\s+from\s+["']@agentl\/(?:sdk|harness)["'];?\s*/g,
+        /import\s+\{\s*defineTool\s*\}\s+from\s+["']@poncho-ai\/(?:sdk|harness)["'];?\s*/g,
         "const defineTool = (definition) => definition;\n",
       );
       const dataUrl = `data:text/javascript;base64,${Buffer.from(shimmed, "utf8").toString("base64")}`;
@@ -95,7 +95,7 @@ export const loadLocalSkillTools = async (
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(
-        `[agentl] Skipping skill tool module ${filePath}: ${message}\n`,
+        `[poncho] Skipping skill tool module ${filePath}: ${message}\n`,
       );
     }
   }

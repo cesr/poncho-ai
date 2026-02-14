@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Message } from "@agentl/sdk";
+import type { Message } from "@poncho-ai/sdk";
 
 export interface WebUiConversation {
   conversationId: string;
@@ -38,9 +38,9 @@ const getStateDirectory = (): string => {
     home.startsWith("/var/task") ||
     process.env.SERVERLESS === "1";
   if (isServerless) {
-    return "/tmp/.agentl/state";
+    return "/tmp/.poncho/state";
   }
-  return resolve(homedir(), ".agentl", "state");
+  return resolve(homedir(), ".poncho", "state");
 };
 
 export class FileConversationStore {
@@ -352,7 +352,7 @@ export const renderManifest = (options?: { agentName?: string }): string => {
   return JSON.stringify({
     name,
     short_name: name,
-    description: `${name} — AI agent powered by AgentL`,
+    description: `${name} — AI agent powered by Poncho`,
     start_url: "/",
     display: "standalone",
     background_color: "#000000",
@@ -376,7 +376,7 @@ export const renderIconSvg = (options?: { agentName?: string }): string => {
 };
 
 export const renderServiceWorker = (): string => `
-const CACHE_NAME = "agentl-shell-v1";
+const CACHE_NAME = "poncho-shell-v1";
 const SHELL_URLS = ["/"];
 
 self.addEventListener("install", (event) => {
@@ -1016,7 +1016,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     <form id="login-form" class="auth-card">
       <div class="auth-brand">
         <svg viewBox="0 0 24 24" fill="none"><path d="M12 2L2 19.5h20L12 2z" fill="currentColor"/></svg>
-        <h2 class="auth-title">AgentL</h2>
+        <h2 class="auth-title">Poncho</h2>
       </div>
       <p class="auth-text">Enter the passphrase to continue.</p>
       <input id="passphrase" class="auth-input" type="password" placeholder="Passphrase" required>

@@ -1,4 +1,4 @@
-import type { ToolDefinition } from "@agentl/sdk";
+import type { ToolDefinition } from "@poncho-ai/sdk";
 import { WebSocket } from "ws";
 
 export interface RemoteMcpServerConfig {

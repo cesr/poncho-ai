@@ -1,4 +1,4 @@
-import type { Message, ToolDefinition } from "@agentl/sdk";
+import type { Message, ToolDefinition } from "@poncho-ai/sdk";
 import type { LatitudeCapture } from "./latitude-capture.js";
 
 export interface ModelResponse {

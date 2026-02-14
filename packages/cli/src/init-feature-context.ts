@@ -2,13 +2,13 @@ import { createHash } from "node:crypto";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
-import type { AgentlConfig } from "@agentl/harness";
+import type { PonchoConfig } from "@poncho-ai/harness";
 
 type IntroInput = {
   agentName: string;
   provider: string;
   model: string;
-  config: AgentlConfig | undefined;
+  config: PonchoConfig | undefined;
 };
 
 type OnboardingMarkerState = {
@@ -36,12 +36,12 @@ const getStateDirectory = (): string => {
     home.startsWith("/var/task") ||
     process.env.SERVERLESS === "1";
   if (isServerless) {
-    return "/tmp/.agentl/state";
+    return "/tmp/.poncho/state";
   }
-  return resolve(homedir(), ".agentl", "state");
+  return resolve(homedir(), ".poncho", "state");
 };
 
-const summarizeConfig = (config: AgentlConfig | undefined): string[] => {
+const summarizeConfig = (config: PonchoConfig | undefined): string[] => {
   const provider = config?.storage?.provider ?? config?.state?.provider ?? "local";
   const memoryEnabled = config?.storage?.memory?.enabled ?? config?.memory?.enabled ?? false;
   const authRequired = config?.auth?.required ?? false;
@@ -110,7 +110,7 @@ export const consumeFirstRunIntro = async (
   workingDir: string,
   input: IntroInput,
 ): Promise<string | undefined> => {
-  const runtimeEnv = (process.env.AGENTL_ENV ?? process.env.NODE_ENV ?? "").toLowerCase();
+  const runtimeEnv = (process.env.PONCHO_ENV ?? process.env.NODE_ENV ?? "").toLowerCase();
   if (runtimeEnv === "production") {
     return undefined;
   }

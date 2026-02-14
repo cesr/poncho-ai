@@ -8,7 +8,7 @@ import YAML from "yaml";
 
 /**
  * Default directories to scan for skills, relative to the project root.
- * Additional directories can be added via `skillPaths` in agentl.config.js.
+ * Additional directories can be added via `skillPaths` in poncho.config.js.
  */
 const DEFAULT_SKILL_DIRS: string[] = ["skills"];
 

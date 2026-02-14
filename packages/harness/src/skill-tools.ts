@@ -1,4 +1,4 @@
-import { defineTool, type ToolDefinition } from "@agentl/sdk";
+import { defineTool, type ToolDefinition } from "@poncho-ai/sdk";
 import { access, readdir } from "node:fs/promises";
 import { extname, normalize, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";

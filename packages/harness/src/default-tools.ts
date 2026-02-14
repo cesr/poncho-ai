@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
-import { defineTool, type ToolDefinition } from "@agentl/sdk";
+import { defineTool, type ToolDefinition } from "@poncho-ai/sdk";
 
 const resolveSafePath = (workingDir: string, inputPath: string): string => {
   const base = resolve(workingDir);
