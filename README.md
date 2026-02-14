@@ -1,8 +1,8 @@
 # Poncho
 
-A git-native framework for isolated AI agents you can deploy to the cloud.
+A git-native framework for conversational AI agents you can deploy to the cloud.
 
-Program them by talking to them locally, then run them safely via API or web UI, with your own skills/tools and a traceable, eval-compatible runtime.
+Develop locally with `poncho run --interactive`, then deploy the same agent with configured tools and scripts, MCP support, OpenTelemetry traces, and testing workflows.
 
 > **Beta**: Poncho is under active development. Expect breaking changes, and please open an issue if you hit anything confusing or sharp.
 
@@ -22,10 +22,17 @@ Poncho is a framework for building custom AI agents that are version-controlled 
 
 ## Why Poncho?
 
-- **Local-first development**: chat with your agent via `poncho dev` (web UI + API) or `poncho run --interactive` (terminal UI), with tool calls streaming as they run.
-- **Same agent in dev and prod**: what you build locally (`AGENT.md`, `skills/`, config, tests) is what you deploy—no separate rewrite.
-- **Guardrails by configuration**: in production, agents only act through the tools/skills you enable (and risky tools can require approval).
-- **Deployable + observable**: build once and run on Vercel, Docker, Lambda, Fly.io, and more, with OpenTelemetry traces and `poncho test` workflows.
+1. ### Local-first development
+   Chat with your agent via `poncho dev` (web UI + API) or `poncho run --interactive` (terminal UI), with tool calls streaming as they run.
+
+2. ### Same agent in dev and prod
+   What you build locally (`AGENT.md`, `skills/`, config, tests) is what you deploy—no separate rewrite.
+
+3. ### Guardrails by configuration
+   In production, agents only act through the tools/skills you enable (and risky tools can require approval).
+
+4. ### Deployable + observable
+   Build once and run on Vercel, Docker, Lambda, Fly.io, and more, with OpenTelemetry traces and `poncho test` workflows.
 
 **Key features:**
 
