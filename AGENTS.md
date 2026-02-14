@@ -98,7 +98,7 @@ Changesets handles dependency ordering automatically. Manual order if needed:
 
 ## Local development with linked packages
 
-To test local changes in other projects while keeping the production `poncho` command available:
+To use your local build of the CLI globally:
 
 ```bash
 # From the poncho-ai repo root
@@ -106,17 +106,23 @@ pnpm build
 cd packages/cli && pnpm link --global
 ```
 
-This makes `poncho-local` available globally, pointing to your local build:
+Now `poncho` commands use your local build:
 
 ```bash
-poncho-local dev      # Uses local development version
-poncho dev            # Uses production npm version (if installed globally)
+poncho dev            # Uses local development version
 ```
 
-To unlink:
+To switch back to the npm-published version:
 
 ```bash
 cd packages/cli && pnpm unlink --global
+pnpm add -g @poncho-ai/cli   # Reinstall from npm
+```
+
+To switch back to local development:
+
+```bash
+cd packages/cli && pnpm link --global
 ```
 
 ## Guardrails
