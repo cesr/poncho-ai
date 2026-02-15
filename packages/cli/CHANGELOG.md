@@ -1,5 +1,12 @@
 # @poncho-ai/cli
 
+## 0.4.2
+
+### Patch Changes
+
+- Updated dependencies [d6256b2]
+  - @poncho-ai/harness@0.5.0
+
 ## 0.4.1
 
 ### Patch Changes
