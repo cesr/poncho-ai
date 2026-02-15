@@ -219,11 +219,11 @@ export class AgentHarness {
   }
 
   private getAgentMcpIntent(): string[] {
-    return this.parsedAgent?.frontmatter.tools?.mcp ?? [];
+    return this.parsedAgent?.frontmatter.allowedTools?.mcp ?? [];
   }
 
   private getAgentScriptIntent(): string[] {
-    return this.parsedAgent?.frontmatter.tools?.scripts ?? [];
+    return this.parsedAgent?.frontmatter.allowedTools?.scripts ?? [];
   }
 
   private getRequestedMcpPatterns(): string[] {
@@ -233,7 +233,7 @@ export class AgentHarness {
       if (!skill) {
         continue;
       }
-      for (const pattern of skill.tools.mcp) {
+      for (const pattern of skill.allowedTools.mcp) {
         skillPatterns.add(pattern);
       }
     }
@@ -250,7 +250,7 @@ export class AgentHarness {
       if (!skill) {
         continue;
       }
-      for (const pattern of skill.tools.scripts) {
+      for (const pattern of skill.allowedTools.scripts) {
         skillPatterns.add(pattern);
       }
     }

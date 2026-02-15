@@ -170,11 +170,9 @@ limits:
   timeout: 300                 # Max runtime in seconds (5 min)
 
 # Optional tool intent (declarative; policy is still enforced in config)
-tools:
-  mcp:
-    - github/list_issues       # server/tool or server/*
-  scripts:
-    - triage/scripts/*         # skill/scripts/file.ts or skill/scripts/*
+allowed-tools:
+  - mcp/github/list_issues     # MCP: mcp/server/tool or mcp/server/*
+  - triage/scripts/*           # Scripts: skill/scripts/file.ts or skill/scripts/*
 ---
 ```
 
@@ -250,10 +248,10 @@ Additional skills can be installed via `poncho add <repo-or-path>`.
 
 At startup, Poncho recursively scans the `skills/` directory for `SKILL.md` files and loads their metadata.
 
-- Script tools are available through built-in wrappers (`list_skill_scripts`, `run_skill_script`) and are accessible by default for files under each skill's `scripts/` directory. `tools.scripts` intent can further narrow scope, and `poncho.config.js` script policy remains authoritative.
+- Script tools are available through built-in wrappers (`list_skill_scripts`, `run_skill_script`) and are accessible by default for files under each skill's `scripts/` directory. Script patterns in `allowed-tools` can further narrow scope, and `poncho.config.js` script policy remains authoritative.
 - MCP tools declared in `SKILL.md` are activated on demand via `activate_skill` and removed via `deactivate_skill`.
-- If no skills are active, `AGENT.md` `tools.mcp` acts as the fallback MCP intent.
-- For scripts, `AGENT.md` `tools.scripts` can provide fallback narrowing when active skills do not declare script intent; otherwise skill script intent takes precedence.
+- If no skills are active, `AGENT.md` `allowed-tools` acts as the fallback MCP intent.
+- For scripts, `AGENT.md` `allowed-tools` can provide fallback narrowing when active skills do not declare script intent; otherwise skill script intent takes precedence.
 
 You can add extra directories to scan via `skillPaths` in `poncho.config.js`:
 
@@ -288,11 +286,9 @@ my-agent/
 ---
 name: my-skill
 description: Does something useful when users ask for it
-tools:
-  mcp:
-    - github/list_issues
-  scripts:
-    - my-skill/scripts/*
+allowed-tools:
+  - mcp/github/list_issues
+  - my-skill/scripts/*
 ---
 
 # My Skill
@@ -345,16 +341,15 @@ export default {
 
 Tool curation is layered:
 
-1. Intent in `AGENT.md` / `SKILL.md` (`tools.mcp`, `tools.scripts`)
+1. Intent in `AGENT.md` / `SKILL.md` (`allowed-tools`)
 2. Authoritative policy in `poncho.config.js` (`mode`, `include`, `exclude`, `byEnvironment`)
 3. Effective runtime set after policy filtering
 
 `activate_skill` unions MCP intent across all currently active skills before applying config policy.
-Patterns are strict slash-based only: `server/tool`, `server/*`, `skill/scripts/file.ts`, `skill/scripts/*`.
 
-MCP tool patterns are slash-only and strict:
-- Exact tool: `server/tool`
-- Wildcard: `server/*`
+Tool patterns in `allowed-tools`:
+- MCP tools: `mcp/server/tool` or `mcp/server/*` (note the `mcp/` prefix)
+- Script tools: `skill/scripts/file.ts` or `skill/scripts/*`
 
 Discover and curate tools into config allowlists:
 
@@ -364,7 +359,7 @@ poncho mcp tools select github
 ```
 
 `poncho mcp tools select` updates `poncho.config.js` and prints snippets you can paste into
-`AGENT.md` and `SKILL.md` frontmatter (`tools.mcp`).
+`AGENT.md` and `SKILL.md` frontmatter (`allowed-tools` with `mcp/` prefix).
 
 ## Local Development
 

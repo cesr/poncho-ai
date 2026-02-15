@@ -22,7 +22,7 @@ export interface AgentFrontmatter {
   description?: string;
   model?: AgentModelConfig;
   limits?: AgentLimitsConfig;
-  tools?: {
+  allowedTools?: {
     mcp?: string[];
     scripts?: string[];
   };
@@ -71,18 +71,26 @@ export const parseAgentMarkdown = (content: string): ParsedAgent => {
 
   const modelValue = asRecord(parsed.model);
   const limitsValue = asRecord(parsed.limits);
-  const toolsValue = asRecord(parsed.tools);
-  const mcpTools = Array.isArray(toolsValue.mcp)
-    ? toolsValue.mcp.filter((item): item is string => typeof item === "string")
-    : undefined;
-  const scriptTools = Array.isArray(toolsValue.scripts)
-    ? toolsValue.scripts.filter((item): item is string => typeof item === "string")
-    : undefined;
-  for (const [index, pattern] of (mcpTools ?? []).entries()) {
-    validateMcpPattern(pattern, `AGENT.md frontmatter tools.mcp[${index}]`);
-  }
-  for (const [index, pattern] of (scriptTools ?? []).entries()) {
-    validateScriptPattern(pattern, `AGENT.md frontmatter tools.scripts[${index}]`);
+
+  // Parse allowed-tools and categorize into MCP and scripts
+  const allowedToolsList = Array.isArray(parsed["allowed-tools"])
+    ? parsed["allowed-tools"].filter((item): item is string => typeof item === "string")
+    : [];
+
+  const mcpTools: string[] = [];
+  const scriptTools: string[] = [];
+
+  for (const [index, tool] of allowedToolsList.entries()) {
+    if (tool.startsWith("mcp/")) {
+      // Extract server/pattern from mcp/server/pattern or mcp/server/*
+      const withoutPrefix = tool.slice(4); // Remove "mcp/"
+      mcpTools.push(withoutPrefix);
+      validateMcpPattern(withoutPrefix, `AGENT.md frontmatter allowed-tools[${index}]`);
+    } else if (tool.includes("/scripts/")) {
+      scriptTools.push(tool);
+      validateScriptPattern(tool, `AGENT.md frontmatter allowed-tools[${index}]`);
+    }
+    // Ignore other patterns for now (future extensibility)
   }
 
   const frontmatter: AgentFrontmatter = {
@@ -111,11 +119,11 @@ export const parseAgentMarkdown = (content: string): ParsedAgent => {
             timeout: asNumberOrUndefined(limitsValue.timeout),
           }
         : undefined,
-    tools:
-      mcpTools || scriptTools
+    allowedTools:
+      mcpTools.length > 0 || scriptTools.length > 0
         ? {
-            mcp: mcpTools,
-            scripts: scriptTools,
+            mcp: mcpTools.length > 0 ? mcpTools : undefined,
+            scripts: scriptTools.length > 0 ? scriptTools : undefined,
           }
         : undefined,
   };

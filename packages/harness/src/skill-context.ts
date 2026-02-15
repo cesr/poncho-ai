@@ -37,8 +37,8 @@ export interface SkillMetadata {
   name: string;
   /** What the skill does and when to use it. */
   description: string;
-  /** Tool intent declared in frontmatter. */
-  tools: {
+  /** Tool intent declared in frontmatter (parsed from allowed-tools). */
+  allowedTools: {
     mcp: string[];
     scripts: string[];
   };
@@ -68,7 +68,7 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 
 const parseSkillFrontmatter = (
   content: string,
-): { name: string; description: string; tools: { mcp: string[]; scripts: string[] } } | undefined => {
+): { name: string; description: string; allowedTools: { mcp: string[]; scripts: string[] } } | undefined => {
   const match = content.match(FRONTMATTER_PATTERN);
   if (!match) {
     return undefined;
@@ -84,38 +84,33 @@ const parseSkillFrontmatter = (
   const description =
     typeof parsed.description === "string" ? parsed.description.trim() : "";
 
-  const toolsValue = asRecord(parsed.tools);
-  const modernMcp = Array.isArray(toolsValue.mcp)
-    ? toolsValue.mcp.filter((tool): tool is string => typeof tool === "string")
+  // Parse allowed-tools and categorize into MCP and scripts
+  const allowedToolsList = Array.isArray(parsed["allowed-tools"])
+    ? parsed["allowed-tools"].filter((item): item is string => typeof item === "string")
     : [];
-  const modernScripts = Array.isArray(toolsValue.scripts)
-    ? toolsValue.scripts.filter((tool): tool is string => typeof tool === "string")
-    : [];
-  const allowedToolsValue = parsed["allowed-tools"];
-  const allowedTools =
-    typeof allowedToolsValue === "string"
-      ? allowedToolsValue
-          .split(/\s+/)
-          .map((tool) => tool.trim())
-          .filter((tool) => tool.length > 0)
-      : [];
-  const legacyToolsValue = parsed.tools;
-  const legacyTools = Array.isArray(legacyToolsValue)
-    ? legacyToolsValue.filter((tool): tool is string => typeof tool === "string")
-    : [];
-  const mcpTools = modernMcp.length > 0 ? modernMcp : [...allowedTools, ...legacyTools];
-  for (const [index, pattern] of mcpTools.entries()) {
-    validateMcpPattern(pattern, `SKILL.md tools.mcp[${index}]`);
+
+  const mcpTools: string[] = [];
+  const scriptTools: string[] = [];
+
+  for (const [index, tool] of allowedToolsList.entries()) {
+    if (tool.startsWith("mcp/")) {
+      // Extract server/pattern from mcp/server/pattern or mcp/server/*
+      const withoutPrefix = tool.slice(4); // Remove "mcp/"
+      mcpTools.push(withoutPrefix);
+      validateMcpPattern(withoutPrefix, `SKILL.md frontmatter allowed-tools[${index}]`);
+    } else if (tool.includes("/scripts/")) {
+      scriptTools.push(tool);
+      validateScriptPattern(tool, `SKILL.md frontmatter allowed-tools[${index}]`);
+    }
+    // Ignore other patterns for now (future extensibility)
   }
-  for (const [index, pattern] of modernScripts.entries()) {
-    validateScriptPattern(pattern, `SKILL.md tools.scripts[${index}]`);
-  }
+
   return {
     name,
     description,
-    tools: {
+    allowedTools: {
       mcp: mcpTools,
-      scripts: modernScripts,
+      scripts: scriptTools,
     },
   };
 };

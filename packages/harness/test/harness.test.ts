@@ -737,7 +737,9 @@ model:
       `---
 name: summarize
 description: Summarize text
-allowed-tools: linear/list_issues linear/get_issue
+allowed-tools:
+  - mcp/linear/list_issues
+  - mcp/linear/get_issue
 ---
 
 # Summarize
@@ -748,8 +750,8 @@ allowed-tools: linear/list_issues linear/get_issue
     const metadata = await loadSkillMetadata(dir);
     expect(metadata).toHaveLength(1);
     expect(metadata[0]?.name).toBe("summarize");
-    expect(metadata[0]?.tools.mcp).toEqual(["linear/list_issues", "linear/get_issue"]);
-    expect(metadata[0]?.tools.scripts).toEqual([]);
+    expect(metadata[0]?.allowedTools.mcp).toEqual(["linear/list_issues", "linear/get_issue"]);
+    expect(metadata[0]?.allowedTools.scripts).toEqual([]);
   });
 
   it("fails when SKILL.md includes invalid non-slash tool patterns", async () => {
@@ -760,9 +762,8 @@ allowed-tools: linear/list_issues linear/get_issue
       `---
 name: legacy
 description: Legacy skill
-tools:
-  mcp:
-    - legacy_tool
+allowed-tools:
+  - mcp/legacy_tool
 ---
 
 # Legacy
@@ -877,9 +878,8 @@ model:
       `---
 name: skill-a
 description: A
-tools:
-  mcp:
-    - remote/a
+allowed-tools:
+  - mcp/remote/a
 ---
 # A
 `,
@@ -890,9 +890,8 @@ tools:
       `---
 name: skill-b
 description: B
-tools:
-  mcp:
-    - remote/b
+allowed-tools:
+  - mcp/remote/b
 ---
 # B
 `,
@@ -1012,9 +1011,8 @@ model:
       `---
 name: skill-slow
 description: Slow
-tools:
-  mcp:
-    - remote/slow
+allowed-tools:
+  - mcp/remote/slow
 ---
 # Slow
 `,
