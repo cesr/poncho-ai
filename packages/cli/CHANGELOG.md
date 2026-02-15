@@ -1,5 +1,13 @@
 # @poncho-ai/cli
 
+## 0.3.2
+
+### Patch Changes
+
+- Fix environment detection in production deployments
+
+  Agents deployed to Vercel, Railway, Render, AWS Lambda, and Fly.io now correctly detect their environment automatically without requiring manual NODE_ENV configuration. The resolved environment is now properly passed to the AgentHarness constructor.
+
 ## 0.3.1
 
 ### Patch Changes
