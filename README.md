@@ -22,6 +22,8 @@ poncho dev
 
 Poncho is a framework for building custom AI agents that are version-controlled in git, developed locally, and deployed in isolated cloud environments. You define behavior in `AGENT.md`, iterate by chatting with the agent on your machine, and expose the same agent safely through a UI/API in production. In production, agents can only act through the skills and tools you configure.
 
+Poncho uses the [AgentSkills open standard](https://agentskills.io/home) with a project structure similar to Claude Code and OpenClaw (`AGENT.md` + `skills/` folder). Skills are portable across 25+ platforms including GitHub Copilot, Cursor, and VS Code.
+
 ## Why Poncho?
 
 1. ### Local-first development
