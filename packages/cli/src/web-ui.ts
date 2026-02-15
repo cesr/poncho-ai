@@ -1813,7 +1813,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           if (!sidebar || !backdrop || !shell) return;
           
           var sidebarWidth = 260;
-          var edgeThreshold = 200; // px from left edge to start drag
+          var edgeThreshold = 50; // px from left edge to start drag
           var velocityThreshold = 0.3; // px/ms to trigger open/close
           
           var dragging = false;
