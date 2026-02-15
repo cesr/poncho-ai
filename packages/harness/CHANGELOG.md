@@ -1,5 +1,13 @@
 # @poncho-ai/harness
 
+## 0.3.1
+
+### Patch Changes
+
+- Split agent template and development context
+
+  Move development-specific guidance from AGENT.md template into runtime-injected development context. Production agents now receive a cleaner prompt focused on task execution, while development agents get additional context about customization and setup.
+
 ## 0.3.0
 
 ### Minor Changes
