@@ -1,14 +1,26 @@
-import type { ModelClient, ModelClientOptions } from "./model-client.js";
-import { AnthropicModelClient } from "./anthropic-client.js";
-import { OpenAiModelClient } from "./openai-client.js";
+import { createOpenAI } from "@ai-sdk/openai";
+import { createAnthropic } from "@ai-sdk/anthropic";
+import type { LanguageModelV1 } from "ai";
 
-export const createModelClient = (
-  provider?: string,
-  options?: ModelClientOptions,
-): ModelClient => {
+export type ModelProviderFactory = (modelName: string) => LanguageModelV1;
+
+/**
+ * Creates a model provider factory for the specified AI provider
+ * @param provider - The provider name ('openai' or 'anthropic')
+ * @returns A function that takes a model name and returns a LanguageModelV1 instance
+ */
+export const createModelProvider = (provider?: string): ModelProviderFactory => {
   const normalized = (provider ?? "anthropic").toLowerCase();
+
   if (normalized === "openai") {
-    return new OpenAiModelClient(undefined, options);
+    const openai = createOpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+    return (modelName: string) => openai(modelName);
   }
-  return new AnthropicModelClient(undefined, options);
+
+  const anthropic = createAnthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+  });
+  return (modelName: string) => anthropic(modelName);
 };

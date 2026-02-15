@@ -10,16 +10,16 @@ import type {
 import { parseAgentFile, renderAgentPrompt, type ParsedAgent } from "./agent-parser.js";
 import { loadPonchoConfig, resolveMemoryConfig, type PonchoConfig } from "./config.js";
 import { createDefaultTools, createWriteTool } from "./default-tools.js";
-import { LatitudeCapture } from "./latitude-capture.js";
 import {
   createMemoryStore,
   createMemoryTools,
   type MemoryStore,
 } from "./memory.js";
 import { LocalMcpBridge } from "./mcp.js";
-import type { ModelClient, ModelResponse } from "./model-client.js";
-import { createModelClient } from "./model-factory.js";
+import { createModelProvider, type ModelProviderFactory } from "./model-factory.js";
 import { buildSkillContextWindow, loadSkillMetadata } from "./skill-context.js";
+import { streamText, type CoreMessage } from "ai";
+import { jsonSchemaToZod } from "./schema-converter.js";
 import type { SkillMetadata } from "./skill-context.js";
 import { createSkillTools } from "./skill-tools.js";
 import {
@@ -42,6 +42,7 @@ export interface HarnessOptions {
     step: number;
     approvalId: string;
   }) => Promise<boolean> | boolean;
+  modelProvider?: ModelProviderFactory;
 }
 
 export interface HarnessRunOutput {
@@ -131,7 +132,8 @@ You are running locally in development mode. Treat this as an editable agent wor
 export class AgentHarness {
   private readonly workingDir: string;
   private readonly environment: HarnessOptions["environment"];
-  private modelClient: ModelClient;
+  private modelProvider: ModelProviderFactory;
+  private readonly modelProviderInjected: boolean;
   private readonly dispatcher = new ToolDispatcher();
   private readonly approvalHandler?: HarnessOptions["approvalHandler"];
   private skillContextWindow = "";
@@ -202,7 +204,8 @@ export class AgentHarness {
   constructor(options: HarnessOptions = {}) {
     this.workingDir = options.workingDir ?? process.cwd();
     this.environment = options.environment ?? "development";
-    this.modelClient = createModelClient("anthropic");
+    this.modelProviderInjected = !!options.modelProvider;
+    this.modelProvider = options.modelProvider ?? createModelProvider("anthropic");
     this.approvalHandler = options.approvalHandler;
 
     if (options.toolDefinitions?.length) {
@@ -352,20 +355,12 @@ export class AgentHarness {
     this.registerConfiguredBuiltInTools(config);
     const provider = this.parsedAgent.frontmatter.model?.provider ?? "anthropic";
     const memoryConfig = resolveMemoryConfig(config);
-    const latitudeCapture = new LatitudeCapture({
-      apiKey:
-        config?.telemetry?.latitude?.apiKey ?? process.env.LATITUDE_API_KEY,
-      projectId:
-        config?.telemetry?.latitude?.projectId ??
-        process.env.LATITUDE_PROJECT_ID,
-      path:
-        config?.telemetry?.latitude?.path ??
-        config?.telemetry?.latitude?.documentPath ??
-        process.env.LATITUDE_PATH ??
-        process.env.LATITUDE_DOCUMENT_PATH,
-      defaultPath: `agents/${this.parsedAgent.frontmatter.name}/model-call`,
-    });
-    this.modelClient = createModelClient(provider, { latitudeCapture });
+    // TODO: Integrate Latitude telemetry with Vercel AI SDK
+    // Only create modelProvider if one wasn't injected (for production use)
+    // Tests can inject a mock modelProvider via constructor options
+    if (!this.modelProviderInjected) {
+      this.modelProvider = createModelProvider(provider);
+    }
     const bridge = new LocalMcpBridge(config);
     this.mcpBridge = bridge;
     const extraSkillPaths = config?.skillPaths;
@@ -486,23 +481,24 @@ ${boundedMainMemory.trim()}`
     let totalOutputTokens = 0;
 
     for (let step = 1; step <= maxSteps; step += 1) {
-      if (now() - start > timeoutMs) {
-        yield pushEvent({
-          type: "run:error",
-          runId,
-          error: {
-            code: "TIMEOUT",
-            message: `Run exceeded timeout of ${Math.floor(timeoutMs / 1000)}s`,
-          },
-        });
-        return;
-      }
+      try {
+        if (now() - start > timeoutMs) {
+          yield pushEvent({
+            type: "run:error",
+            runId,
+            error: {
+              code: "TIMEOUT",
+              message: `Run exceeded timeout of ${Math.floor(timeoutMs / 1000)}s`,
+            },
+          });
+          return;
+        }
 
-      const stepStart = now();
-      yield pushEvent({ type: "step:started", step });
-      yield pushEvent({ type: "model:request", tokens: 0 });
+        const stepStart = now();
+        yield pushEvent({ type: "step:started", step });
+        yield pushEvent({ type: "model:request", tokens: 0 });
 
-      const dispatcherTools = this.dispatcher.list();
+        const dispatcherTools = this.dispatcher.list();
       const exposedToolNames = new Map<string, string>();
       const usedProviderToolNames = new Set<string>();
       const modelTools = dispatcherTools.map((tool, index) => {
@@ -514,52 +510,130 @@ ${boundedMainMemory.trim()}`
         return { ...tool, name: safeName };
       });
 
-      const modelCallInput = {
-        modelName: agent.frontmatter.model?.name ?? "claude-opus-4-5",
-        temperature: agent.frontmatter.model?.temperature,
-        maxTokens: agent.frontmatter.model?.maxTokens,
-        systemPrompt: integrityPrompt,
-        messages: trimMessageWindow(messages),
-        tools: modelTools,
-      };
-      let modelResponse: ModelResponse | undefined;
-      let streamedAnyChunk = false;
+      // Convert tools to Vercel AI SDK format
+      const tools: Record<string, { description: string; parameters: any }> = {};
+      for (const tool of modelTools) {
+        tools[tool.name] = {
+          description: tool.description,
+          parameters: jsonSchemaToZod(tool.inputSchema),
+        };
+      }
 
-      if (this.modelClient.generateStream) {
-        for await (const streamEvent of this.modelClient.generateStream(modelCallInput)) {
-          if (streamEvent.type === "chunk" && streamEvent.content.length > 0) {
-            streamedAnyChunk = true;
-            yield pushEvent({ type: "model:chunk", content: streamEvent.content });
+        // Convert messages to CoreMessage format
+        const coreMessages: CoreMessage[] = trimMessageWindow(messages).map((msg) => {
+          if (msg.role === "tool") {
+            // Tool messages need special handling - parse and transform to Vercel AI SDK format
+            const toolResults: Array<{
+              type: "tool_result";
+              tool_use_id: string;
+              tool_name: string;
+              content: string;
+            }> = JSON.parse(msg.content);
+
+            return {
+              role: "tool" as const,
+              content: toolResults.map((tr) => {
+                // Parse JSON content for successful results, keep error messages as strings
+                let result: unknown;
+                if (tr.content.startsWith("Tool error:")) {
+                  result = tr.content;
+                } else {
+                  try {
+                    result = JSON.parse(tr.content);
+                  } catch {
+                    result = tr.content;
+                  }
+                }
+                return {
+                  type: "tool-result" as const,
+                  toolCallId: tr.tool_use_id,
+                  toolName: tr.tool_name,
+                  result,
+                };
+              }),
+            };
           }
-          if (streamEvent.type === "final") {
-            modelResponse = streamEvent.response;
+
+          if (msg.role === "assistant") {
+            // Check if this assistant message has tool calls
+            try {
+              const parsed = JSON.parse(msg.content);
+              if (parsed.tool_calls && Array.isArray(parsed.tool_calls)) {
+                // Assistant message with tool calls
+                return {
+                  role: "assistant" as const,
+                  content: [
+                    ...(parsed.text ? [{ type: "text" as const, text: parsed.text }] : []),
+                    ...parsed.tool_calls.map((tc: any) => ({
+                      type: "tool-call" as const,
+                      toolCallId: tc.id,
+                      toolName: tc.name,
+                      args: tc.input,
+                    })),
+                  ],
+                };
+              }
+            } catch {
+              // Not JSON, treat as regular text
+            }
           }
-        }
-      } else {
-        modelResponse = await this.modelClient.generate(modelCallInput);
+
+          return {
+            role: msg.role as "user" | "assistant" | "system",
+            content: msg.content,
+          };
+        });
+
+        const modelName = agent.frontmatter.model?.name ?? "claude-opus-4-5";
+        const temperature = agent.frontmatter.model?.temperature ?? 0.2;
+        const maxTokens = agent.frontmatter.model?.maxTokens ?? 1024;
+
+        // Stream response using Vercel AI SDK
+        const result = await streamText({
+        model: this.modelProvider(modelName),
+        system: integrityPrompt,
+        messages: coreMessages,
+        tools,
+        temperature,
+        maxTokens,
+        });
+
+        // Stream text chunks
+        let streamedAnyChunk = false;
+        let fullText = "";
+        for await (const chunk of result.textStream) {
+        streamedAnyChunk = true;
+        fullText += chunk;
+        yield pushEvent({ type: "model:chunk", content: chunk });
       }
 
-      if (!modelResponse) {
-        throw new Error("Model response ended without final payload");
-      }
+      // Get full response with usage and tool calls
+      const fullResult = await result.response;
+      const usage = await result.usage;
+      const toolCallsResult = await result.toolCalls;
 
-      totalInputTokens += modelResponse.usage.input;
-      totalOutputTokens += modelResponse.usage.output;
+      // Update token usage
+      totalInputTokens += usage.promptTokens;
+      totalOutputTokens += usage.completionTokens;
 
-      if (!streamedAnyChunk && modelResponse.text) {
-        yield pushEvent({ type: "model:chunk", content: modelResponse.text });
-      }
       yield pushEvent({
         type: "model:response",
         usage: {
-          input: modelResponse.usage.input,
-          output: modelResponse.usage.output,
+          input: usage.promptTokens,
+          output: usage.completionTokens,
           cached: 0,
         },
       });
 
-      if (modelResponse.toolCalls.length === 0) {
-        responseText = modelResponse.text;
+      // Extract tool calls
+      const toolCalls = toolCallsResult.map((tc) => ({
+        id: tc.toolCallId,
+        name: tc.toolName,
+        input: tc.args as Record<string, unknown>,
+      }));
+
+      if (toolCalls.length === 0) {
+        responseText = fullText;
         yield pushEvent({
           type: "step:completed",
           step,
@@ -591,6 +665,7 @@ ${boundedMainMemory.trim()}`
       const toolResultsForModel: Array<{
         type: "tool_result";
         tool_use_id: string;
+        tool_name: string;
         content: string;
       }> = [];
 
@@ -600,7 +675,7 @@ ${boundedMainMemory.trim()}`
         input: Record<string, unknown>;
       }> = [];
 
-      for (const call of modelResponse.toolCalls) {
+      for (const call of toolCalls) {
         const runtimeToolName = exposedToolNames.get(call.name) ?? call.name;
         yield pushEvent({ type: "tool:started", tool: runtimeToolName, input: call.input });
         const definition = this.dispatcher.get(runtimeToolName);
@@ -636,6 +711,7 @@ ${boundedMainMemory.trim()}`
             toolResultsForModel.push({
               type: "tool_result",
               tool_use_id: call.id,
+              tool_name: runtimeToolName,
               content: "Tool error: Tool execution denied by approval policy",
             });
             continue;
@@ -665,6 +741,7 @@ ${boundedMainMemory.trim()}`
           toolResultsForModel.push({
             type: "tool_result",
             tool_use_id: result.callId,
+            tool_name: result.tool,
             content: `Tool error: ${result.error}`,
           });
         } else {
@@ -677,14 +754,27 @@ ${boundedMainMemory.trim()}`
           toolResultsForModel.push({
             type: "tool_result",
             tool_use_id: result.callId,
+            tool_name: result.tool,
             content: JSON.stringify(result.output ?? null),
           });
         }
       }
 
+      // Store assistant message with tool calls information
+      const assistantContent = toolCalls.length > 0
+        ? JSON.stringify({
+            text: fullText,
+            tool_calls: toolCalls.map(tc => ({
+              id: tc.id,
+              name: tc.name,
+              input: tc.input,
+            })),
+          })
+        : fullText;
+
       messages.push({
         role: "assistant",
-        content: modelResponse.text || `[tool calls: ${modelResponse.toolCalls.length}]`,
+        content: assistantContent,
         metadata: { timestamp: now(), id: randomUUID(), step },
       });
       messages.push({
@@ -693,11 +783,23 @@ ${boundedMainMemory.trim()}`
         metadata: { timestamp: now(), id: randomUUID(), step },
       });
 
-      yield pushEvent({
-        type: "step:completed",
-        step,
-        duration: now() - stepStart,
-      });
+        yield pushEvent({
+          type: "step:completed",
+          step,
+          duration: now() - stepStart,
+        });
+      } catch (error) {
+        yield pushEvent({
+          type: "run:error",
+          runId,
+          error: {
+            code: "STEP_ERROR",
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+        console.error(`[poncho][harness] Step ${step} error:`, error);
+        return;
+      }
     }
 
     yield {

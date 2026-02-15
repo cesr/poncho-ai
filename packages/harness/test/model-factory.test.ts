@@ -1,16 +1,41 @@
 import { describe, expect, it } from "vitest";
-import { createModelClient } from "../src/model-factory.js";
-import { AnthropicModelClient } from "../src/anthropic-client.js";
-import { OpenAiModelClient } from "../src/openai-client.js";
+import { createModelProvider } from "../src/model-factory.js";
 
 describe("model factory", () => {
-  it("creates OpenAI model client for openai provider", () => {
-    const client = createModelClient("openai");
-    expect(client).toBeInstanceOf(OpenAiModelClient);
+  it("creates a function for OpenAI provider", () => {
+    const provider = createModelProvider("openai");
+    expect(provider).toBeInstanceOf(Function);
+
+    // Should be able to call it with a model name
+    const model = provider("gpt-4");
+    expect(model).toBeDefined();
+    expect(model.provider).toBe("openai.chat");
   });
 
-  it("defaults to Anthropic model client", () => {
-    const client = createModelClient(undefined);
-    expect(client).toBeInstanceOf(AnthropicModelClient);
+  it("creates a function for Anthropic provider", () => {
+    const provider = createModelProvider("anthropic");
+    expect(provider).toBeInstanceOf(Function);
+
+    // Should be able to call it with a model name
+    const model = provider("claude-3-opus-20240229");
+    expect(model).toBeDefined();
+    expect(model.provider).toBe("anthropic.messages");
+  });
+
+  it("defaults to Anthropic when no provider specified", () => {
+    const provider = createModelProvider(undefined);
+    expect(provider).toBeInstanceOf(Function);
+
+    const model = provider("claude-3-opus-20240229");
+    expect(model).toBeDefined();
+    expect(model.provider).toBe("anthropic.messages");
+  });
+
+  it("normalizes provider names to lowercase", () => {
+    const provider = createModelProvider("OpenAI");
+    expect(provider).toBeInstanceOf(Function);
+
+    const model = provider("gpt-4");
+    expect(model.provider).toBe("openai.chat");
   });
 });
