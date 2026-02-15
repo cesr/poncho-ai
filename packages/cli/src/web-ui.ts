@@ -1,13 +1,17 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, resolve, join } from "node:path";
 import { homedir } from "node:os";
+import { createRequire } from "node:module";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Message } from "@poncho-ai/sdk";
 
-// Load marked library at module initialization
-const markedSource = readFileSync(require.resolve("marked/marked.min.js"), "utf-8");
+// Load marked library at module initialization (ESM compatible)
+const require = createRequire(import.meta.url);
+const markedPackagePath = require.resolve("marked");
+const markedDir = dirname(markedPackagePath);
+const markedSource = readFileSync(join(markedDir, "marked.umd.js"), "utf-8");
 
 export interface WebUiConversation {
   conversationId: string;
@@ -820,6 +824,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       border: 1px solid rgba(255,255,255,0.08);
       border-radius: 8px;
       overflow: hidden;
+      display: block;
+      max-width: 100%;
+      overflow-x: auto;
+      white-space: nowrap;
     }
     .assistant-content th {
       background: rgba(255,255,255,0.06);
@@ -828,16 +836,23 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       font-weight: 600;
       border-bottom: 1px solid rgba(255,255,255,0.12);
       color: #fff;
+      min-width: 100px;
     }
     .assistant-content td {
       padding: 10px 12px;
       border-bottom: 1px solid rgba(255,255,255,0.06);
+      min-width: 100px;
     }
     .assistant-content tr:last-child td {
       border-bottom: none;
     }
     .assistant-content tbody tr:hover {
       background: rgba(255,255,255,0.02);
+    }
+    .assistant-content hr {
+      border: 0;
+      border-top: 1px solid rgba(255,255,255,0.1);
+      margin: 20px 0;
     }
     .tool-activity {
       margin-top: 12px;
