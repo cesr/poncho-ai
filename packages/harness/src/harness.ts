@@ -96,7 +96,18 @@ const DEVELOPMENT_MODE_CONTEXT = `## Development Mode Context
 
 You are running locally in development mode. Treat this as an editable agent workspace.
 
-When users ask about customization:
+## Understanding Your Environment
+
+- Built-in tools: \`list_directory\` and \`read_file\`
+- \`write_file\` is available in development (disabled by default in production)
+- A starter local skill is included (\`starter-echo\`)
+- Bash/shell commands are **not** available unless you install and enable a shell tool/skill
+- Git operations are only available if a git-capable tool/skill is configured
+- For setup/configuration/skills/MCP questions, proactively read \`README.md\` with \`read_file\` before answering
+- Prefer concrete commands and examples from \`README.md\` over assumptions
+
+## When users ask about customization:
+
 - Explain and edit \`poncho.config.js\` for model/provider, storage+memory, auth, telemetry, and MCP settings.
 - Help create or update local skills under \`skills/<skill-name>/SKILL.md\`.
 - For executable skills, add JavaScript/TypeScript scripts under \`skills/<skill-name>/scripts/\` and run them via \`run_skill_script\`.
