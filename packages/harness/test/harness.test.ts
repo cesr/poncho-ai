@@ -738,8 +738,8 @@ model:
 name: summarize
 description: Summarize text
 allowed-tools:
-  - mcp/linear/list_issues
-  - mcp/linear/get_issue
+  - mcp:linear/list_issues
+  - mcp:linear/get_issue
 ---
 
 # Summarize
@@ -763,7 +763,7 @@ allowed-tools:
 name: legacy
 description: Legacy skill
 allowed-tools:
-  - mcp/legacy_tool
+  - mcp:legacy_tool
 ---
 
 # Legacy
@@ -879,7 +879,7 @@ model:
 name: skill-a
 description: A
 allowed-tools:
-  - mcp/remote/a
+  - mcp:remote/a
 ---
 # A
 `,
@@ -891,7 +891,7 @@ allowed-tools:
 name: skill-b
 description: B
 allowed-tools:
-  - mcp/remote/b
+  - mcp:remote/b
 ---
 # B
 `,
@@ -1012,7 +1012,7 @@ model:
 name: skill-slow
 description: Slow
 allowed-tools:
-  - mcp/remote/slow
+  - mcp:remote/slow
 ---
 # Slow
 `,

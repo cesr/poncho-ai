@@ -93,9 +93,9 @@ const parseSkillFrontmatter = (
   const scriptTools: string[] = [];
 
   for (const [index, tool] of allowedToolsList.entries()) {
-    if (tool.startsWith("mcp/")) {
-      // Extract server/pattern from mcp/server/pattern or mcp/server/*
-      const withoutPrefix = tool.slice(4); // Remove "mcp/"
+    if (tool.startsWith("mcp:")) {
+      // Extract server/pattern from mcp:server/pattern or mcp:server/*
+      const withoutPrefix = tool.slice(4); // Remove "mcp:"
       mcpTools.push(withoutPrefix);
       validateMcpPattern(withoutPrefix, `SKILL.md frontmatter allowed-tools[${index}]`);
     } else if (tool.includes("/scripts/")) {

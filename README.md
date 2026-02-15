@@ -171,7 +171,7 @@ limits:
 
 # Optional tool intent (declarative; policy is still enforced in config)
 allowed-tools:
-  - mcp/github/list_issues     # MCP: mcp/server/tool or mcp/server/*
+  - mcp:github/list_issues    # MCP: mcp:server/tool or mcp:server/*
   - triage/scripts/*           # Scripts: skill/scripts/file.ts or skill/scripts/*
 ---
 ```
@@ -287,7 +287,7 @@ my-agent/
 name: my-skill
 description: Does something useful when users ask for it
 allowed-tools:
-  - mcp/github/list_issues
+  - mcp:github/list_issues
   - my-skill/scripts/*
 ---
 
@@ -348,7 +348,7 @@ Tool curation is layered:
 `activate_skill` unions MCP intent across all currently active skills before applying config policy.
 
 Tool patterns in `allowed-tools`:
-- MCP tools: `mcp/server/tool` or `mcp/server/*` (note the `mcp/` prefix)
+- MCP tools: `mcp:server/tool` or `mcp:server/*` (protocol-like prefix)
 - Script tools: `skill/scripts/file.ts` or `skill/scripts/*`
 
 Discover and curate tools into config allowlists:
@@ -359,7 +359,7 @@ poncho mcp tools select github
 ```
 
 `poncho mcp tools select` updates `poncho.config.js` and prints snippets you can paste into
-`AGENT.md` and `SKILL.md` frontmatter (`allowed-tools` with `mcp/` prefix).
+`AGENT.md` and `SKILL.md` frontmatter (`allowed-tools` with `mcp:` prefix).
 
 ## Local Development
 
