@@ -22,6 +22,7 @@ import { streamText, type CoreMessage } from "ai";
 import { jsonSchemaToZod } from "./schema-converter.js";
 import type { SkillMetadata } from "./skill-context.js";
 import { createSkillTools } from "./skill-tools.js";
+import { LatitudeTelemetry } from "@latitude-data/telemetry";
 import {
   applyToolPolicy,
   matchesSlashPattern,
@@ -355,7 +356,6 @@ export class AgentHarness {
     this.registerConfiguredBuiltInTools(config);
     const provider = this.parsedAgent.frontmatter.model?.provider ?? "anthropic";
     const memoryConfig = resolveMemoryConfig(config);
-    // TODO: Integrate Latitude telemetry with Vercel AI SDK
     // Only create modelProvider if one wasn't injected (for production use)
     // Tests can inject a mock modelProvider via constructor options
     if (!this.modelProviderInjected) {
@@ -407,6 +407,75 @@ export class AgentHarness {
 
   listTools(): ToolDefinition[] {
     return this.dispatcher.list();
+  }
+
+  /**
+   * Wraps the run() generator with Latitude telemetry capture for complete trace coverage
+   * Streams events in real-time using an event queue pattern
+   */
+  async *runWithTelemetry(input: RunInput): AsyncGenerator<AgentEvent> {
+    const config = this.loadedConfig;
+    const telemetryEnabled = config?.telemetry?.enabled !== false;
+    const latitudeApiKey = config?.telemetry?.latitude?.apiKey;
+    const rawProjectId = config?.telemetry?.latitude?.projectId;
+    const projectId = typeof rawProjectId === 'string' ? parseInt(rawProjectId, 10) : rawProjectId;
+    const path = config?.telemetry?.latitude?.path ?? this.parsedAgent?.frontmatter.name ?? 'agent';
+
+    // If Latitude telemetry is configured, wrap the entire run with capture
+    if (telemetryEnabled && latitudeApiKey && projectId) {
+      const telemetry = new LatitudeTelemetry(latitudeApiKey);
+
+      // Event queue for streaming events in real-time
+      const eventQueue: AgentEvent[] = [];
+      let queueResolve: ((value: void) => void) | null = null;
+      let generatorDone = false;
+      let generatorError: Error | null = null;
+
+      // Start the generator inside telemetry.capture() (runs in background)
+      const capturePromise = telemetry.capture({ projectId, path }, async () => {
+        try {
+          for await (const event of this.run(input)) {
+            eventQueue.push(event);
+            if (queueResolve) {
+              const resolve = queueResolve;
+              queueResolve = null;
+              resolve();
+            }
+          }
+        } catch (error) {
+          generatorError = error as Error;
+        } finally {
+          generatorDone = true;
+          if (queueResolve) {
+            queueResolve();
+            queueResolve = null;
+          }
+        }
+      });
+
+      // Yield events from the queue as they arrive
+      try {
+        while (!generatorDone || eventQueue.length > 0) {
+          if (eventQueue.length > 0) {
+            yield eventQueue.shift()!;
+          } else if (!generatorDone) {
+            // Wait for next event
+            await new Promise<void>((resolve) => {
+              queueResolve = resolve;
+            });
+          }
+        }
+
+        if (generatorError) {
+          throw generatorError;
+        }
+      } finally {
+        await capturePromise;
+      }
+    } else {
+      // No telemetry configured, just pass through
+      yield* this.run(input);
+    }
   }
 
   async *run(input: RunInput): AsyncGenerator<AgentEvent> {
@@ -588,14 +657,20 @@ ${boundedMainMemory.trim()}`
         const temperature = agent.frontmatter.model?.temperature ?? 0.2;
         const maxTokens = agent.frontmatter.model?.maxTokens ?? 1024;
 
-        // Stream response using Vercel AI SDK
+        // Stream response using Vercel AI SDK with telemetry enabled
+        const telemetryEnabled = this.loadedConfig?.telemetry?.enabled !== false;
+        const latitudeApiKey = this.loadedConfig?.telemetry?.latitude?.apiKey;
+
         const result = await streamText({
-        model: this.modelProvider(modelName),
-        system: integrityPrompt,
-        messages: coreMessages,
-        tools,
-        temperature,
-        maxTokens,
+          model: this.modelProvider(modelName),
+          system: integrityPrompt,
+          messages: coreMessages,
+          tools,
+          temperature,
+          maxTokens,
+          experimental_telemetry: {
+            isEnabled: telemetryEnabled && !!latitudeApiKey,
+          },
         });
 
         // Stream text chunks

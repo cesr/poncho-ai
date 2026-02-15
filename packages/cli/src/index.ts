@@ -1109,7 +1109,7 @@ export const createRequestHandler = async (options?: {
           }))
           .filter((item) => item.content.length > 0);
 
-        for await (const event of harness.run({
+        for await (const event of harness.runWithTelemetry({
           task: messageText,
           parameters: {
             ...(body.parameters ?? {}),
@@ -1282,7 +1282,7 @@ export const runOnce = async (
     return;
   }
 
-  for await (const event of harness.run(input)) {
+  for await (const event of harness.runWithTelemetry(input)) {
     await telemetry.emit(event);
     if (event.type === "model:chunk") {
       process.stdout.write(event.content);
