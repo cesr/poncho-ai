@@ -575,10 +575,15 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       gap: 2px;
     }
     .conversation-item {
-      padding: 7px 28px 7px 10px;
+      height: 36px;
+      min-height: 36px;
+      max-height: 36px;
+      flex-shrink: 0;
+      padding: 0 16px 0 10px;
       border-radius: 12px;
       cursor: pointer;
       font-size: 13px;
+      line-height: 36px;
       color: #555;
       white-space: nowrap;
       overflow: hidden;
