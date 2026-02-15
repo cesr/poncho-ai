@@ -2,7 +2,9 @@
 
 A git-native framework for building and deploying conversational AI agents.
 
-Develop locally with `poncho dev`, then deploy the same agent with configured skills and scripts, tools and MCP servers, OpenTelemetry traces, and testing workflows.
+Develop locally with `poncho dev`, then deploy the same agent to production with configured skills and scripts, tools and MCP servers, OpenTelemetry traces, and testing workflows.
+
+Deployed agents are accessible via web UI, REST API, or the TypeScript SDK.
 
 > **Beta**: Poncho is under active development. Expect breaking changes, and please open an issue if you hit anything confusing or sharp.
 
