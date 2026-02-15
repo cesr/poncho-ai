@@ -1,9 +1,13 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Message } from "@poncho-ai/sdk";
+
+// Load marked library at module initialization
+const markedSource = readFileSync(require.resolve("marked/marked.min.js"), "utf-8");
 
 export interface WebUiConversation {
   conversationId: string;
@@ -783,6 +787,33 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       font-size: 13px;
       line-height: 1.5;
     }
+    .assistant-content table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 14px 0;
+      font-size: 13px;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .assistant-content th {
+      background: rgba(255,255,255,0.06);
+      padding: 10px 12px;
+      text-align: left;
+      font-weight: 600;
+      border-bottom: 1px solid rgba(255,255,255,0.12);
+      color: #fff;
+    }
+    .assistant-content td {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .assistant-content tr:last-child td {
+      border-bottom: none;
+    }
+    .assistant-content tbody tr:hover {
+      background: rgba(255,255,255,0.02);
+    }
     .tool-activity {
       margin-top: 12px;
       border: 1px solid rgba(255,255,255,0.08);
@@ -1064,6 +1095,15 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
   </div>
 
     <script>
+      // Marked library (inlined)
+      ${markedSource}
+
+      // Configure marked for GitHub Flavored Markdown (tables, etc.)
+      marked.setOptions({
+        gfm: true,
+        breaks: true
+      });
+
       const state = {
         csrfToken: "",
         conversations: [],
@@ -1149,75 +1189,17 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           .replace(/"/g, "&quot;")
           .replace(/'/g, "&#39;");
 
-      const renderInlineMarkdown = (value) => {
-        let html = escapeHtml(value);
-        html = html.replace(/\\*\\*([^*]+)\\*\\*/g, "<strong>$1</strong>");
-        html = html.replace(/\\x60([^\\x60]+)\\x60/g, "<code>$1</code>");
-        return html;
-      };
-
-      const renderMarkdownBlock = (value) => {
-        const lines = String(value || "").split("\\n");
-        let html = "";
-        let inList = false;
-
-        for (const rawLine of lines) {
-          const line = rawLine.trimEnd();
-          const trimmed = line.trim();
-          const headingMatch = trimmed.match(/^(#{1,3})\\s+(.+)$/);
-
-          if (headingMatch) {
-            if (inList) {
-              html += "</ul>";
-              inList = false;
-            }
-            const level = Math.min(3, headingMatch[1].length);
-            const tag = level === 1 ? "h2" : level === 2 ? "h3" : "p";
-            html += "<" + tag + ">" + renderInlineMarkdown(headingMatch[2]) + "</" + tag + ">";
-            continue;
-          }
-
-          if (/^\\s*-\\s+/.test(line)) {
-            if (!inList) {
-              html += "<ul>";
-              inList = true;
-            }
-            html += "<li>" + renderInlineMarkdown(line.replace(/^\\s*-\\s+/, "")) + "</li>";
-            continue;
-          }
-          if (inList) {
-            html += "</ul>";
-            inList = false;
-          }
-          if (trimmed.length === 0) {
-            continue;
-          }
-          html += "<p>" + renderInlineMarkdown(line) + "</p>";
-        }
-
-        if (inList) {
-          html += "</ul>";
-        }
-        return html;
-      };
-
       const renderAssistantMarkdown = (value) => {
-        const source = String(value || "");
-        const fenceRegex = /\\x60\\x60\\x60([\\s\\S]*?)\\x60\\x60\\x60/g;
-        let html = "";
-        let lastIndex = 0;
-        let match;
+        const source = String(value || "").trim();
+        if (!source) return "<p></p>";
 
-        while ((match = fenceRegex.exec(source))) {
-          const before = source.slice(lastIndex, match.index);
-          html += renderMarkdownBlock(before);
-          const codeText = String(match[1] || "").replace(/^\\n+|\\n+$/g, "");
-          html += "<pre><code>" + escapeHtml(codeText) + "</code></pre>";
-          lastIndex = match.index + match[0].length;
+        try {
+          return marked.parse(source);
+        } catch (error) {
+          console.error("Markdown parsing error:", error);
+          // Fallback to escaped text
+          return "<p>" + escapeHtml(source) + "</p>";
         }
-
-        html += renderMarkdownBlock(source.slice(lastIndex));
-        return html || "<p></p>";
       };
 
       const extractToolActivity = (value) => {
