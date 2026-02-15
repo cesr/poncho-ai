@@ -332,7 +332,7 @@ export default {
       auth: { type: 'bearer', tokenEnv: 'SLACK_TOKEN' },
       tools: {
         mode: 'allowlist',
-        include: ['slack/list_channels', 'slack/post_message']
+        include: ['list_channels', 'post_message']
       }
     }
   ]
@@ -665,11 +665,11 @@ export default {
       auth: { type: 'bearer', tokenEnv: 'GITHUB_TOKEN' },
       tools: {
         mode: 'allowlist', // all | allowlist | denylist
-        include: ['github/list_issues', 'github/get_issue', 'github/*'],
+        include: ['list_issues', 'get_issue', '*'],
         byEnvironment: {
           production: {
             mode: 'allowlist',
-            include: ['github/list_issues', 'github/get_issue']
+            include: ['list_issues', 'get_issue']
           }
         }
       }
@@ -715,13 +715,16 @@ export default {
     },
   },
 
-  // Authentication for deployed agents
+  // Authentication (protects both Web UI and API)
   auth: {
     required: true,
     type: 'bearer',              // 'bearer' | 'header' | 'custom'
     // Custom validation (optional)
-    validate: async (token) => token === process.env.AGENT_API_KEY,
+    validate: async (token) => token === process.env.PONCHO_AUTH_TOKEN,
   },
+  // When auth.required is true:
+  // - Web UI: users enter PONCHO_AUTH_TOKEN as the passphrase
+  // - API: clients include Authorization: Bearer <PONCHO_AUTH_TOKEN> header
 
   // Unified storage (preferred). Replaces separate `state` and `memory` blocks.
   storage: {
@@ -776,7 +779,7 @@ export default {
 |----------|----------|-------------|
 | `ANTHROPIC_API_KEY` | Yes* | Claude API key |
 | `OPENAI_API_KEY` | No | OpenAI API key (if using OpenAI) |
-| `AGENT_API_KEY` | No | Secret key to protect your endpoint |
+| `PONCHO_AUTH_TOKEN` | No | Unified auth token (Web UI passphrase + API Bearer token) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | Telemetry destination |
 | `LATITUDE_API_KEY` | No | Latitude dashboard integration |
 | `LATITUDE_PROJECT_ID` | No | Latitude project identifier for capture traces |
@@ -793,13 +796,38 @@ export default {
 
 ### Protect your endpoint
 
+Enable authentication to secure both the Web UI and API:
+
 ```javascript
 // poncho.config.js
 export default {
   auth: {
     required: true,
+    type: 'bearer'  // Default: validates against PONCHO_AUTH_TOKEN
+  }
+}
+```
+
+```bash
+# .env
+PONCHO_AUTH_TOKEN=your-secret-token-here
+```
+
+With `auth.required: true`:
+- **Web UI**: Users must enter `PONCHO_AUTH_TOKEN` as the passphrase to login
+- **API**: Clients must include `Authorization: Bearer <PONCHO_AUTH_TOKEN>` header
+
+For custom validation:
+
+```javascript
+// poncho.config.js
+export default {
+  auth: {
+    required: true,
+    type: 'custom',
     validate: async (token) => {
-      return token === process.env.AGENT_API_KEY
+      // Custom logic: check database, verify JWT, etc.
+      return token === process.env.PONCHO_AUTH_TOKEN
     }
   }
 }

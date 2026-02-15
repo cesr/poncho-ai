@@ -463,48 +463,41 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       background: #000;
     }
     .auth-card {
-      width: min(380px, 90vw);
-      background: #0a0a0a;
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 12px;
-      padding: 32px;
-      display: grid;
-      gap: 20px;
+      width: min(400px, 90vw);
     }
-    .auth-brand {
+    .auth-shell {
+      background: #0a0a0a;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 9999px;
       display: flex;
       align-items: center;
-      gap: 8px;
-    }
-    .auth-brand svg { width: 20px; height: 20px; }
-    .auth-title {
-      font-size: 16px;
-      font-weight: 500;
-      letter-spacing: -0.01em;
-    }
-    .auth-text { color: #666; font-size: 13px; line-height: 1.5; }
-    .auth-input {
-      width: 100%;
-      background: #000;
-      border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 6px;
-      color: #ededed;
-      padding: 10px 12px;
-      font-size: 14px;
-      outline: none;
+      padding: 4px 6px 4px 18px;
       transition: border-color 0.15s;
     }
-    .auth-input:focus { border-color: rgba(255,255,255,0.3); }
-    .auth-input::placeholder { color: #555; }
-    .auth-submit {
-      background: #ededed;
-      color: #000;
+    .auth-shell:focus-within { border-color: rgba(255,255,255,0.2); }
+    .auth-input {
+      flex: 1;
+      background: transparent;
       border: 0;
-      border-radius: 6px;
-      padding: 10px 16px;
+      outline: none;
+      color: #ededed;
+      padding: 10px 0 8px;
       font-size: 14px;
-      font-weight: 500;
+      margin-top: -2px;
+    }
+    .auth-input::placeholder { color: #444; }
+    .auth-submit {
+      width: 32px;
+      height: 32px;
+      background: #ededed;
+      border: 0;
+      border-radius: 50%;
+      color: #000;
       cursor: pointer;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+      margin-bottom: 2px;
       transition: background 0.15s;
     }
     .auth-submit:hover { background: #fff; }
@@ -1009,6 +1002,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       padding: 10px 0 8px;
       font-size: 14px;
       line-height: 1.5;
+      margin-top: -2px;
     }
     .composer-input::placeholder { color: #444; }
     .send-btn {
@@ -1089,13 +1083,12 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
   <div class="edge-blocker-right"></div>
   <div id="auth" class="auth hidden">
     <form id="login-form" class="auth-card">
-      <div class="auth-brand">
-        <svg viewBox="0 0 24 24" fill="none"><path d="M12 2L2 19.5h20L12 2z" fill="currentColor"/></svg>
-        <h2 class="auth-title">Poncho</h2>
+      <div class="auth-shell">
+        <input id="passphrase" class="auth-input" type="password" placeholder="Passphrase" required autofocus>
+        <button class="auth-submit" type="submit">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 8h8M9 5l3 3-3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
       </div>
-      <p class="auth-text">Enter the passphrase to continue.</p>
-      <input id="passphrase" class="auth-input" type="password" placeholder="Passphrase" required>
-      <button class="auth-submit" type="submit">Continue</button>
       <div id="login-error" class="error"></div>
     </form>
   </div>

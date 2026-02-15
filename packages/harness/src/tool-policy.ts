@@ -14,12 +14,21 @@ export interface ToolPatternPolicy {
 }
 
 const MCP_PATTERN = /^[^/*\s]+\/(\*|[^/*\s]+)$/;
+const MCP_TOOL_PATTERN = /^(\*|[^/*\s]+)$/;
 const SCRIPT_PATTERN = /^[^/*\s]+\/(\*|[^*\s]+)$/;
 
 export const validateMcpPattern = (pattern: string, path: string): void => {
   if (!MCP_PATTERN.test(pattern)) {
     throw new Error(
       `Invalid MCP tool pattern at ${path}: "${pattern}". Expected "server/tool" or "server/*".`,
+    );
+  }
+};
+
+export const validateMcpToolPattern = (pattern: string, path: string): void => {
+  if (!MCP_TOOL_PATTERN.test(pattern)) {
+    throw new Error(
+      `Invalid MCP tool pattern at ${path}: "${pattern}". Expected "tool" or "*".`,
     );
   }
 };

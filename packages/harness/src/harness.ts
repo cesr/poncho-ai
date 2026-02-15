@@ -108,6 +108,15 @@ You are running locally in development mode. Treat this as an editable agent wor
 - For setup/configuration/skills/MCP questions, proactively read \`README.md\` with \`read_file\` before answering
 - Prefer concrete commands and examples from \`README.md\` over assumptions
 
+## Self-Extension Capabilities
+
+You can extend your own capabilities by creating custom JavaScript/TypeScript scripts:
+
+- Create scripts under \`skills/<skill-name>/scripts/\` to add new functionality
+- Scripts can perform any Node.js operations: API calls, file processing, data transformations, web scraping, etc.
+- Use the \`run_skill_script\` tool to execute these scripts and integrate results into your workflow
+- This allows you to dynamically add custom tools and capabilities as users need them, without requiring external dependencies or MCP servers
+
 ## When users ask about customization:
 
 - Explain and edit \`poncho.config.js\` for model/provider, storage+memory, auth, telemetry, and MCP settings.
@@ -115,17 +124,16 @@ You are running locally in development mode. Treat this as an editable agent wor
 - For executable skills, add JavaScript/TypeScript scripts under \`skills/<skill-name>/scripts/\` and run them via \`run_skill_script\`.
 - For MCP setup, default to direct \`poncho.config.js\` edits (\`mcp\` entries with URL, bearer token env, and tool policy).
 - Keep MCP server connection details in \`poncho.config.js\` only (name/url/auth/tools policy). Do not move server definitions into \`SKILL.md\`.
-- In \`AGENT.md\`/\`SKILL.md\`, declare MCP intent only as \`tools.mcp\` string patterns (for example \`linear/*\` or \`linear/list_issues\`).
-- Never use nested MCP objects in skill frontmatter (for example \`mcp: [{ name, url, auth }]\`) and never use underscore/colon tool patterns.
-- To scope tools to a skill: keep server config in \`poncho.config.js\`, add desired \`tools.mcp\` patterns in that skill's \`SKILL.md\`, and remove global \`AGENT.md tools.mcp\` fallback if you do not want global availability.
+- In \`AGENT.md\`/\`SKILL.md\` frontmatter, declare MCP tools in \`allowed-tools\` array as \`mcp:server/pattern\` (for example \`mcp:linear/*\` or \`mcp:linear/list_issues\`).
+- Never use nested MCP objects in skill frontmatter (for example \`mcp: [{ name, url, auth }]\`).
+- To scope tools to a skill: keep server config in \`poncho.config.js\`, add desired \`allowed-tools\` patterns in that skill's \`SKILL.md\`, and remove global \`AGENT.md\` patterns if you do not want global availability.
 - Do not invent unsupported top-level config keys (for example \`model\` in \`poncho.config.js\`). Keep existing config structure unless README/spec explicitly says otherwise.
-- In \`poncho.config.js\`, MCP tool allowlist patterns must be slash-based (for example \`linear/list_initiatives\` or \`linear/*\`), not underscored names like \`linear_list_initiatives\`.
+- In \`poncho.config.js\`, MCP tool patterns are scoped within each server object, so use just the tool name (for example \`include: ["*"]\` or \`include: ["list_issues"]\`), not the full \`server/tool\` format.
 - Keep \`poncho.config.js\` valid JavaScript and preserve existing imports/types/comments. If there is a JSDoc type import, do not rewrite it to a different package name.
 - Preferred MCP config shape in \`poncho.config.js\`:
-  \`mcp: [{ name: "linear", url: "https://mcp.linear.app/mcp", auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" }, tools: { mode: "allowlist", include: ["linear/*"] } }]\`
+  \`mcp: [{ name: "linear", url: "https://mcp.linear.app/mcp", auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" }, tools: { mode: "allowlist", include: ["*"] } }]\`
 - If shell/CLI access exists, you can use \`poncho mcp add --url ... --name ... --auth-bearer-env ...\`, then \`poncho mcp tools list <server>\` and \`poncho mcp tools select <server>\`.
 - If shell/CLI access is unavailable, ask the user to run needed commands and provide exact copy-paste commands.
-- Use strict slash patterns for MCP tool selections (\`server/tool\`, \`server/*\`) and verify by inspecting config/tool state.
 - For setup, skills, MCP, auth, storage, telemetry, or "how do I..." questions, proactively read \`README.md\` with \`read_file\` before answering.
 - Prefer quoting concrete commands and examples from \`README.md\` over guessing.
 - Keep edits minimal, preserve unrelated settings/code, and summarize what changed.`;

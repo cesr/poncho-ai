@@ -6,6 +6,7 @@ import {
   type RuntimeEnvironment,
   type ToolPatternPolicy,
   validateMcpPattern,
+  validateMcpToolPattern,
 } from "./tool-policy.js";
 
 export interface RemoteMcpServerConfig {
@@ -304,7 +305,7 @@ export class LocalMcpBridge {
     const policy = server.tools;
     const validateList = (values: string[] | undefined, path: string): void => {
       for (const [index, value] of (values ?? []).entries()) {
-        validateMcpPattern(value, `${path}[${index}]`);
+        validateMcpToolPattern(value, `${path}[${index}]`);
       }
     };
     validateList(policy?.include, `mcp.${serverName}.tools.include`);
@@ -494,7 +495,13 @@ export class LocalMcpBridge {
       const discovered = this.toolCatalog.get(serverName) ?? [];
       const fullNames = discovered.map((tool) => `${serverName}/${tool.name}`);
       const effectivePolicy = mergePolicyForEnvironment(server.tools, environment);
-      const policyDecision = applyToolPolicy(fullNames, effectivePolicy);
+      // Prepend server name to patterns for matching
+      const fullPatternPolicy = effectivePolicy ? {
+        ...effectivePolicy,
+        include: effectivePolicy.include?.map((p) => `${serverName}/${p}`),
+        exclude: effectivePolicy.exclude?.map((p) => `${serverName}/${p}`),
+      } : effectivePolicy;
+      const policyDecision = applyToolPolicy(fullNames, fullPatternPolicy);
       filteredByPolicy.push(...policyDecision.filteredOut);
       const selectedFullNames = policyDecision.allowed.filter((toolName) =>
         requestedPatterns.some((pattern) => matchesSlashPattern(toolName, pattern)),
