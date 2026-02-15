@@ -1,5 +1,14 @@
 # @poncho-ai/cli
 
+## 0.4.1
+
+### Patch Changes
+
+- Fix MCP tool prefix to use `mcp:` instead of `@mcp:` for YAML compatibility. The `@` character is reserved in YAML and cannot start plain values without quoting.
+
+- Updated dependencies []:
+  - @poncho-ai/harness@0.4.1
+
 ## 0.4.0
 
 ### Minor Changes
