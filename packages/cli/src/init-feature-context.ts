@@ -3,6 +3,7 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { PonchoConfig } from "@poncho-ai/harness";
+import { resolveHarnessEnvironment } from "./index.js";
 
 type IntroInput = {
   agentName: string;
@@ -110,7 +111,7 @@ export const consumeFirstRunIntro = async (
   workingDir: string,
   input: IntroInput,
 ): Promise<string | undefined> => {
-  const runtimeEnv = (process.env.PONCHO_ENV ?? process.env.NODE_ENV ?? "").toLowerCase();
+  const runtimeEnv = resolveHarnessEnvironment();
   if (runtimeEnv === "production") {
     return undefined;
   }

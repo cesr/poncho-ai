@@ -17,6 +17,7 @@ import {
 import type { AgentEvent, Message, TokenUsage } from "@poncho-ai/sdk";
 import { inferConversationTitle } from "./web-ui.js";
 import { consumeFirstRunIntro } from "./init-feature-context.js";
+import { resolveHarnessEnvironment } from "./index.js";
 
 // Re-export types that index.ts references
 export type ApprovalRequest = {
@@ -103,7 +104,7 @@ const loadMetadata = async (workingDir: string): Promise<UiMetadata> => {
     model,
     provider,
     workingDir,
-    environment: process.env.PONCHO_ENV ?? process.env.NODE_ENV ?? "development",
+    environment: resolveHarnessEnvironment(),
   };
 };
 

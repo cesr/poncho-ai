@@ -69,11 +69,63 @@ const readRequestBody = async (request: IncomingMessage): Promise<unknown> => {
   return body.length > 0 ? (JSON.parse(body) as unknown) : {};
 };
 
-const resolveHarnessEnvironment = (): "development" | "staging" | "production" => {
-  const value = (process.env.PONCHO_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
-  if (value === "production" || value === "staging") {
-    return value;
+/**
+ * Detects the runtime environment from platform-specific or standard environment variables.
+ * Priority: PONCHO_ENV > platform detection (Vercel, Railway, etc.) > NODE_ENV > "development"
+ */
+export const resolveHarnessEnvironment = (): "development" | "staging" | "production" => {
+  // Check explicit Poncho environment variable first
+  if (process.env.PONCHO_ENV) {
+    const value = process.env.PONCHO_ENV.toLowerCase();
+    if (value === "production" || value === "staging") {
+      return value;
+    }
+    return "development";
   }
+
+  // Detect platform-specific environment variables
+  // Vercel
+  if (process.env.VERCEL_ENV) {
+    const vercelEnv = process.env.VERCEL_ENV.toLowerCase();
+    if (vercelEnv === "production") return "production";
+    if (vercelEnv === "preview") return "staging";
+    return "development";
+  }
+
+  // Railway
+  if (process.env.RAILWAY_ENVIRONMENT) {
+    const railwayEnv = process.env.RAILWAY_ENVIRONMENT.toLowerCase();
+    if (railwayEnv === "production") return "production";
+    return "staging";
+  }
+
+  // Render
+  if (process.env.RENDER) {
+    // Render sets IS_PULL_REQUEST for preview deploys
+    if (process.env.IS_PULL_REQUEST === "true") return "staging";
+    return "production";
+  }
+
+  // AWS Lambda
+  if (process.env.AWS_EXECUTION_ENV || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    return "production";
+  }
+
+  // Fly.io
+  if (process.env.FLY_APP_NAME) {
+    return "production";
+  }
+
+  // Fall back to NODE_ENV
+  if (process.env.NODE_ENV) {
+    const value = process.env.NODE_ENV.toLowerCase();
+    if (value === "production" || value === "staging") {
+      return value;
+    }
+    return "development";
+  }
+
+  // Default to development
   return "development";
 };
 
