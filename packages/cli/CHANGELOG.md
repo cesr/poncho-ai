@@ -1,5 +1,33 @@
 # @poncho-ai/cli
 
+## 0.4.0
+
+### Minor Changes
+
+- BREAKING: Switch to AgentSkills allowed-tools format with mcp/ prefix
+
+  Replace nested `tools: { mcp: [...], scripts: [...] }` with flat `allowed-tools: [...]` list format. MCP tools now require `mcp/` prefix (e.g., `mcp/github/list_issues`).
+
+  Migration: Update AGENT.md and SKILL.md frontmatter from:
+
+  ```yaml
+  tools:
+    mcp:
+      - github/list_issues
+  ```
+
+  To:
+
+  ```yaml
+  allowed-tools:
+    - mcp/github/list_issues
+  ```
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @poncho-ai/harness@0.4.0
+
 ## 0.3.2
 
 ### Patch Changes
