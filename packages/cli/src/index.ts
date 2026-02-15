@@ -824,7 +824,7 @@ export const createRequestHandler = async (options?: {
       agentModelName = modelMatch[1].trim().replace(/^["']|["']$/g, "");
     }
   } catch {}
-  const harness = new AgentHarness({ workingDir });
+  const harness = new AgentHarness({ workingDir, environment: resolveHarnessEnvironment() });
   await harness.initialize();
   const telemetry = new TelemetryEmitter(config?.telemetry);
   const conversationStore = createConversationStore(resolveStateConfig(config), { workingDir });
