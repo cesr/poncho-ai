@@ -1,5 +1,15 @@
 # @poncho-ai/harness
 
+## 0.7.0
+
+### Minor Changes
+
+- Simplify MCP tool patterns and improve auth UI
+  - Allow tool patterns without server prefix in poncho.config.js (e.g., `include: ['*']` instead of `include: ['linear/*']`)
+  - Fix auth screen button styling to be fully rounded with centered arrow
+  - Add self-extension capabilities section to development mode instructions
+  - Update documentation to clarify MCP pattern formats
+
 ## 0.6.0
 
 ### Minor Changes
