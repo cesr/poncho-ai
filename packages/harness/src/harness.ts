@@ -20,7 +20,15 @@ import { LocalMcpBridge } from "./mcp.js";
 import type { ModelClient, ModelResponse } from "./model-client.js";
 import { createModelClient } from "./model-factory.js";
 import { buildSkillContextWindow, loadSkillMetadata } from "./skill-context.js";
+import type { SkillMetadata } from "./skill-context.js";
 import { createSkillTools } from "./skill-tools.js";
+import {
+  applyToolPolicy,
+  matchesSlashPattern,
+  mergePolicyForEnvironment,
+  type RuntimeEnvironment,
+  validateScriptPattern,
+} from "./tool-policy.js";
 import { ToolDispatcher } from "./tool-dispatcher.js";
 
 export interface HarnessOptions {
@@ -51,6 +59,39 @@ const trimMessageWindow = (messages: Message[]): Message[] =>
     ? messages
     : messages.slice(messages.length - MAX_CONTEXT_MESSAGES);
 
+const MODEL_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
+
+const toProviderSafeToolName = (
+  originalName: string,
+  index: number,
+  used: Set<string>,
+): string => {
+  if (MODEL_TOOL_NAME_PATTERN.test(originalName) && !used.has(originalName)) {
+    used.add(originalName);
+    return originalName;
+  }
+  let base = originalName
+    .replace(/[^a-zA-Z0-9_-]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (base.length === 0) {
+    base = `tool_${index + 1}`;
+  }
+  if (base.length > 120) {
+    base = base.slice(0, 120);
+  }
+  let candidate = base;
+  let suffix = 2;
+  while (used.has(candidate) || !MODEL_TOOL_NAME_PATTERN.test(candidate)) {
+    const suffixText = `_${suffix}`;
+    const maxBaseLength = Math.max(1, 128 - suffixText.length);
+    candidate = `${base.slice(0, maxBaseLength)}${suffixText}`;
+    suffix += 1;
+  }
+  used.add(candidate);
+  return candidate;
+};
+
 const DEVELOPMENT_MODE_CONTEXT = `## Development Mode Context
 
 You are running locally in development mode. Treat this as an editable agent workspace.
@@ -59,6 +100,19 @@ When users ask about customization:
 - Explain and edit \`poncho.config.js\` for model/provider, storage+memory, auth, telemetry, and MCP settings.
 - Help create or update local skills under \`skills/<skill-name>/SKILL.md\`.
 - For executable skills, add JavaScript/TypeScript scripts under \`skills/<skill-name>/scripts/\` and run them via \`run_skill_script\`.
+- For MCP setup, default to direct \`poncho.config.js\` edits (\`mcp\` entries with URL, bearer token env, and tool policy).
+- Keep MCP server connection details in \`poncho.config.js\` only (name/url/auth/tools policy). Do not move server definitions into \`SKILL.md\`.
+- In \`AGENT.md\`/\`SKILL.md\`, declare MCP intent only as \`tools.mcp\` string patterns (for example \`linear/*\` or \`linear/list_issues\`).
+- Never use nested MCP objects in skill frontmatter (for example \`mcp: [{ name, url, auth }]\`) and never use underscore/colon tool patterns.
+- To scope tools to a skill: keep server config in \`poncho.config.js\`, add desired \`tools.mcp\` patterns in that skill's \`SKILL.md\`, and remove global \`AGENT.md tools.mcp\` fallback if you do not want global availability.
+- Do not invent unsupported top-level config keys (for example \`model\` in \`poncho.config.js\`). Keep existing config structure unless README/spec explicitly says otherwise.
+- In \`poncho.config.js\`, MCP tool allowlist patterns must be slash-based (for example \`linear/list_initiatives\` or \`linear/*\`), not underscored names like \`linear_list_initiatives\`.
+- Keep \`poncho.config.js\` valid JavaScript and preserve existing imports/types/comments. If there is a JSDoc type import, do not rewrite it to a different package name.
+- Preferred MCP config shape in \`poncho.config.js\`:
+  \`mcp: [{ name: "linear", url: "https://mcp.linear.app/mcp", auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" }, tools: { mode: "allowlist", include: ["linear/*"] } }]\`
+- If shell/CLI access exists, you can use \`poncho mcp add --url ... --name ... --auth-bearer-env ...\`, then \`poncho mcp tools list <server>\` and \`poncho mcp tools select <server>\`.
+- If shell/CLI access is unavailable, ask the user to run needed commands and provide exact copy-paste commands.
+- Use strict slash patterns for MCP tool selections (\`server/tool\`, \`server/*\`) and verify by inspecting config/tool state.
 - For setup, skills, MCP, auth, storage, telemetry, or "how do I..." questions, proactively read \`README.md\` with \`read_file\` before answering.
 - Prefer quoting concrete commands and examples from \`README.md\` over guessing.
 - Keep edits minimal, preserve unrelated settings/code, and summarize what changed.`;
@@ -71,6 +125,10 @@ export class AgentHarness {
   private readonly approvalHandler?: HarnessOptions["approvalHandler"];
   private skillContextWindow = "";
   private memoryStore?: MemoryStore;
+  private loadedConfig?: PonchoConfig;
+  private loadedSkills: SkillMetadata[] = [];
+  private readonly activeSkillNames = new Set<string>();
+  private readonly registeredMcpToolNames = new Set<string>();
 
   private parsedAgent?: ParsedAgent;
   private mcpBridge?: LocalMcpBridge;
@@ -141,9 +199,145 @@ export class AgentHarness {
     }
   }
 
+  private runtimeEnvironment(): RuntimeEnvironment {
+    return this.environment ?? "development";
+  }
+
+  private listActiveSkills(): string[] {
+    return [...this.activeSkillNames].sort();
+  }
+
+  private getAgentMcpIntent(): string[] {
+    return this.parsedAgent?.frontmatter.tools?.mcp ?? [];
+  }
+
+  private getAgentScriptIntent(): string[] {
+    return this.parsedAgent?.frontmatter.tools?.scripts ?? [];
+  }
+
+  private getRequestedMcpPatterns(): string[] {
+    const skillPatterns = new Set<string>();
+    for (const skillName of this.activeSkillNames) {
+      const skill = this.loadedSkills.find((entry) => entry.name === skillName);
+      if (!skill) {
+        continue;
+      }
+      for (const pattern of skill.tools.mcp) {
+        skillPatterns.add(pattern);
+      }
+    }
+    if (skillPatterns.size > 0) {
+      return [...skillPatterns];
+    }
+    return this.getAgentMcpIntent();
+  }
+
+  private getRequestedScriptPatterns(): string[] {
+    const skillPatterns = new Set<string>();
+    for (const skillName of this.activeSkillNames) {
+      const skill = this.loadedSkills.find((entry) => entry.name === skillName);
+      if (!skill) {
+        continue;
+      }
+      for (const pattern of skill.tools.scripts) {
+        skillPatterns.add(pattern);
+      }
+    }
+    if (skillPatterns.size > 0) {
+      return [...skillPatterns];
+    }
+    return this.getAgentScriptIntent();
+  }
+
+  private isScriptAllowedByPolicy(skill: string, scriptPath: string): boolean {
+    const identifier = `${skill}/${scriptPath}`;
+    const intentPatterns = this.getRequestedScriptPatterns();
+    const matchedIntent =
+      intentPatterns.length === 0
+        ? true
+        : intentPatterns.some((pattern) => matchesSlashPattern(identifier, pattern));
+    if (!matchedIntent) {
+      return false;
+    }
+    const policy = mergePolicyForEnvironment(
+      this.loadedConfig?.scripts,
+      this.runtimeEnvironment(),
+    );
+    const decision = applyToolPolicy([identifier], policy);
+    return decision.allowed.length > 0;
+  }
+
+  private async refreshMcpTools(reason: string): Promise<void> {
+    if (!this.mcpBridge) {
+      return;
+    }
+    const requestedPatterns = this.getRequestedMcpPatterns();
+    this.dispatcher.unregisterMany(this.registeredMcpToolNames);
+    this.registeredMcpToolNames.clear();
+    if (requestedPatterns.length === 0) {
+      console.info(
+        `[poncho][mcp] ${JSON.stringify({ event: "tools.cleared", reason, requestedPatterns })}`,
+      );
+      return;
+    }
+    const tools = await this.mcpBridge.loadTools(
+      requestedPatterns,
+      this.runtimeEnvironment(),
+    );
+    this.dispatcher.registerMany(tools);
+    for (const tool of tools) {
+      this.registeredMcpToolNames.add(tool.name);
+    }
+    console.info(
+      `[poncho][mcp] ${JSON.stringify({
+        event: "tools.refreshed",
+        reason,
+        requestedPatterns,
+        registeredCount: tools.length,
+        activeSkills: this.listActiveSkills(),
+      })}`,
+    );
+  }
+
+  private validateScriptPolicyConfig(config: PonchoConfig | undefined): void {
+    const check = (values: string[] | undefined, path: string): void => {
+      for (const [index, value] of (values ?? []).entries()) {
+        validateScriptPattern(value, `${path}[${index}]`);
+      }
+    };
+    check(config?.scripts?.include, "poncho.config.js scripts.include");
+    check(config?.scripts?.exclude, "poncho.config.js scripts.exclude");
+    check(
+      config?.scripts?.byEnvironment?.development?.include,
+      "poncho.config.js scripts.byEnvironment.development.include",
+    );
+    check(
+      config?.scripts?.byEnvironment?.development?.exclude,
+      "poncho.config.js scripts.byEnvironment.development.exclude",
+    );
+    check(
+      config?.scripts?.byEnvironment?.staging?.include,
+      "poncho.config.js scripts.byEnvironment.staging.include",
+    );
+    check(
+      config?.scripts?.byEnvironment?.staging?.exclude,
+      "poncho.config.js scripts.byEnvironment.staging.exclude",
+    );
+    check(
+      config?.scripts?.byEnvironment?.production?.include,
+      "poncho.config.js scripts.byEnvironment.production.include",
+    );
+    check(
+      config?.scripts?.byEnvironment?.production?.exclude,
+      "poncho.config.js scripts.byEnvironment.production.exclude",
+    );
+  }
+
   async initialize(): Promise<void> {
     this.parsedAgent = await parseAgentFile(this.workingDir);
     const config = await loadPonchoConfig(this.workingDir);
+    this.validateScriptPolicyConfig(config);
+    this.loadedConfig = config;
     this.registerConfiguredBuiltInTools(config);
     const provider = this.parsedAgent.frontmatter.model?.provider ?? "anthropic";
     const memoryConfig = resolveMemoryConfig(config);
@@ -165,8 +359,25 @@ export class AgentHarness {
     this.mcpBridge = bridge;
     const extraSkillPaths = config?.skillPaths;
     const skillMetadata = await loadSkillMetadata(this.workingDir, extraSkillPaths);
+    this.loadedSkills = skillMetadata;
     this.skillContextWindow = buildSkillContextWindow(skillMetadata);
-    this.dispatcher.registerMany(createSkillTools(skillMetadata));
+    this.dispatcher.registerMany(
+      createSkillTools(skillMetadata, {
+        onActivateSkill: async (name: string) => {
+          this.activeSkillNames.add(name);
+          await this.refreshMcpTools(`activate:${name}`);
+          return this.listActiveSkills();
+        },
+        onDeactivateSkill: async (name: string) => {
+          this.activeSkillNames.delete(name);
+          await this.refreshMcpTools(`deactivate:${name}`);
+          return this.listActiveSkills();
+        },
+        onListActiveSkills: () => this.listActiveSkills(),
+        isScriptAllowed: (skill: string, scriptPath: string) =>
+          this.isScriptAllowedByPolicy(skill, scriptPath),
+      }),
+    );
     if (memoryConfig?.enabled) {
       this.memoryStore = createMemoryStore(
         this.parsedAgent.frontmatter.name,
@@ -180,7 +391,8 @@ export class AgentHarness {
       );
     }
     await bridge.startLocalServers();
-    this.dispatcher.registerMany(await bridge.loadTools());
+    await bridge.discoverTools();
+    await this.refreshMcpTools("initialize");
   }
 
   async shutdown(): Promise<void> {
@@ -279,13 +491,25 @@ ${boundedMainMemory.trim()}`
       yield pushEvent({ type: "step:started", step });
       yield pushEvent({ type: "model:request", tokens: 0 });
 
+      const dispatcherTools = this.dispatcher.list();
+      const exposedToolNames = new Map<string, string>();
+      const usedProviderToolNames = new Set<string>();
+      const modelTools = dispatcherTools.map((tool, index) => {
+        const safeName = toProviderSafeToolName(tool.name, index, usedProviderToolNames);
+        exposedToolNames.set(safeName, tool.name);
+        if (safeName === tool.name) {
+          return tool;
+        }
+        return { ...tool, name: safeName };
+      });
+
       const modelCallInput = {
         modelName: agent.frontmatter.model?.name ?? "claude-opus-4-5",
         temperature: agent.frontmatter.model?.temperature,
         maxTokens: agent.frontmatter.model?.maxTokens,
         systemPrompt: integrityPrompt,
         messages: trimMessageWindow(messages),
-        tools: this.dispatcher.list(),
+        tools: modelTools,
       };
       let modelResponse: ModelResponse | undefined;
       let streamedAnyChunk = false;
@@ -366,19 +590,20 @@ ${boundedMainMemory.trim()}`
       }> = [];
 
       for (const call of modelResponse.toolCalls) {
-        yield pushEvent({ type: "tool:started", tool: call.name, input: call.input });
-        const definition = this.dispatcher.get(call.name);
+        const runtimeToolName = exposedToolNames.get(call.name) ?? call.name;
+        yield pushEvent({ type: "tool:started", tool: runtimeToolName, input: call.input });
+        const definition = this.dispatcher.get(runtimeToolName);
         if (definition?.requiresApproval) {
           const approvalId = `approval_${randomUUID()}`;
           yield pushEvent({
             type: "tool:approval:required",
-            tool: call.name,
+            tool: runtimeToolName,
             input: call.input,
             approvalId,
           });
           const approved = this.approvalHandler
             ? await this.approvalHandler({
-                tool: call.name,
+                tool: runtimeToolName,
                 input: call.input,
                 runId,
                 step,
@@ -408,7 +633,7 @@ ${boundedMainMemory.trim()}`
         }
         approvedCalls.push({
           id: call.id,
-          name: call.name,
+          name: runtimeToolName,
           input: call.input,
         });
       }

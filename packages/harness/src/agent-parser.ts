@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import Mustache from "mustache";
 import YAML from "yaml";
+import { validateMcpPattern, validateScriptPattern } from "./tool-policy.js";
 
 export interface AgentModelConfig {
   provider: string;
@@ -21,6 +22,10 @@ export interface AgentFrontmatter {
   description?: string;
   model?: AgentModelConfig;
   limits?: AgentLimitsConfig;
+  tools?: {
+    mcp?: string[];
+    scripts?: string[];
+  };
 }
 
 export interface ParsedAgent {
@@ -66,6 +71,19 @@ export const parseAgentMarkdown = (content: string): ParsedAgent => {
 
   const modelValue = asRecord(parsed.model);
   const limitsValue = asRecord(parsed.limits);
+  const toolsValue = asRecord(parsed.tools);
+  const mcpTools = Array.isArray(toolsValue.mcp)
+    ? toolsValue.mcp.filter((item): item is string => typeof item === "string")
+    : undefined;
+  const scriptTools = Array.isArray(toolsValue.scripts)
+    ? toolsValue.scripts.filter((item): item is string => typeof item === "string")
+    : undefined;
+  for (const [index, pattern] of (mcpTools ?? []).entries()) {
+    validateMcpPattern(pattern, `AGENT.md frontmatter tools.mcp[${index}]`);
+  }
+  for (const [index, pattern] of (scriptTools ?? []).entries()) {
+    validateScriptPattern(pattern, `AGENT.md frontmatter tools.scripts[${index}]`);
+  }
 
   const frontmatter: AgentFrontmatter = {
     name: parsed.name,
@@ -91,6 +109,13 @@ export const parseAgentMarkdown = (content: string): ParsedAgent => {
         ? {
             maxSteps: asNumberOrUndefined(limitsValue.maxSteps),
             timeout: asNumberOrUndefined(limitsValue.timeout),
+          }
+        : undefined,
+    tools:
+      mcpTools || scriptTools
+        ? {
+            mcp: mcpTools,
+            scripts: scriptTools,
           }
         : undefined,
   };

@@ -164,6 +164,13 @@ model:
 limits:
   maxSteps: 50                 # Max turns before stopping
   timeout: 300                 # Max runtime in seconds (5 min)
+
+# Optional tool intent (declarative; policy is still enforced in config)
+tools:
+  mcp:
+    - github/list_issues       # server/tool or server/*
+  scripts:
+    - triage/scripts/*         # skill/scripts/file.ts or skill/scripts/*
 ---
 ```
 
@@ -237,7 +244,12 @@ Additional skills can be installed via `poncho add <repo-or-path>`.
 
 ### How skill discovery works
 
-At startup, Poncho recursively scans the `skills/` directory for `SKILL.md` files. Each valid skill (with a `name` in its frontmatter) is registered and its tools are made available to the model.
+At startup, Poncho recursively scans the `skills/` directory for `SKILL.md` files and loads their metadata.
+
+- Script tools are available through built-in wrappers (`list_skill_scripts`, `run_skill_script`) and are accessible by default for files under each skill's `scripts/` directory. `tools.scripts` intent can further narrow scope, and `poncho.config.js` script policy remains authoritative.
+- MCP tools declared in `SKILL.md` are activated on demand via `activate_skill` and removed via `deactivate_skill`.
+- If no skills are active, `AGENT.md` `tools.mcp` acts as the fallback MCP intent.
+- For scripts, `AGENT.md` `tools.scripts` can provide fallback narrowing when active skills do not declare script intent; otherwise skill script intent takes precedence.
 
 You can add extra directories to scan via `skillPaths` in `poncho.config.js`:
 
@@ -272,6 +284,11 @@ my-agent/
 ---
 name: my-skill
 description: Does something useful when users ask for it
+tools:
+  mcp:
+    - github/list_issues
+  scripts:
+    - my-skill/scripts/*
 ---
 
 # My Skill
@@ -300,8 +317,8 @@ MCP (Model Context Protocol) is a standard for connecting AI agents to external 
 
 ```bash
 # Remote server (connect via URL)
-poncho mcp add --url wss://mcp.example.com/github \
-  --env GITHUB_TOKEN
+poncho mcp add --url https://mcp.example.com/github \
+  --auth-bearer-env GITHUB_TOKEN
 ```
 
 ### Configure in poncho.config.js
@@ -311,12 +328,39 @@ export default {
   mcp: [
     {
       // Remote: connect to external server
-      url: 'wss://mcp.example.com/slack',
-      env: ['SLACK_TOKEN']
+      url: 'https://mcp.example.com/slack',
+      auth: { type: 'bearer', tokenEnv: 'SLACK_TOKEN' },
+      tools: {
+        mode: 'allowlist',
+        include: ['slack/list_channels', 'slack/post_message']
+      }
     }
   ]
 }
 ```
+
+Tool curation is layered:
+
+1. Intent in `AGENT.md` / `SKILL.md` (`tools.mcp`, `tools.scripts`)
+2. Authoritative policy in `poncho.config.js` (`mode`, `include`, `exclude`, `byEnvironment`)
+3. Effective runtime set after policy filtering
+
+`activate_skill` unions MCP intent across all currently active skills before applying config policy.
+Patterns are strict slash-based only: `server/tool`, `server/*`, `skill/scripts/file.ts`, `skill/scripts/*`.
+
+MCP tool patterns are slash-only and strict:
+- Exact tool: `server/tool`
+- Wildcard: `server/*`
+
+Discover and curate tools into config allowlists:
+
+```bash
+poncho mcp tools list github
+poncho mcp tools select github
+```
+
+`poncho mcp tools select` updates `poncho.config.js` and prints snippets you can paste into
+`AGENT.md` and `SKILL.md` frontmatter (`tools.mcp`).
 
 ## Local Development
 
@@ -616,8 +660,28 @@ export default {
   // MCP servers (remote)
   mcp: [
     // Remote: Connect to external server
-    { url: 'wss://mcp.example.com/github', env: ['GITHUB_TOKEN'] }
+    {
+      name: 'github',
+      url: 'https://mcp.example.com/github',
+      auth: { type: 'bearer', tokenEnv: 'GITHUB_TOKEN' },
+      tools: {
+        mode: 'allowlist', // all | allowlist | denylist
+        include: ['github/list_issues', 'github/get_issue', 'github/*'],
+        byEnvironment: {
+          production: {
+            mode: 'allowlist',
+            include: ['github/list_issues', 'github/get_issue']
+          }
+        }
+      }
+    }
   ],
+
+  // Script execution policy (authoritative)
+  scripts: {
+    mode: 'allowlist',
+    include: ['starter/scripts/*']
+  },
 
   // Extra directories to scan for skills (skills/ is always scanned)
   skillPaths: ['.cursor/skills'],
@@ -922,7 +986,7 @@ poncho add <package-or-path>
 
 Check that:
 1. A remote MCP server is configured (`poncho mcp list`)
-2. The MCP URL is correct and reachable (`ws://` for local dev, `wss://` for production)
+2. The MCP URL is correct and reachable (`http://` or `https://`)
 3. Required environment variables/secrets are set
 4. Any required auth headers/tokens expected by the remote server are configured
 

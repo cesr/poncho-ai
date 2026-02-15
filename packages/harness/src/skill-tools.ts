@@ -17,6 +17,12 @@ import { loadSkillInstructions, readSkillResource } from "./skill-context.js";
  */
 export const createSkillTools = (
   skills: SkillMetadata[],
+  options?: {
+    onActivateSkill?: (name: string) => Promise<string[]> | string[];
+    onDeactivateSkill?: (name: string) => Promise<string[]> | string[];
+    onListActiveSkills?: () => string[];
+    isScriptAllowed?: (skill: string, scriptPath: string) => boolean;
+  },
 ): ToolDefinition[] => {
   if (skills.length === 0) {
     return [];
@@ -53,8 +59,12 @@ export const createSkillTools = (
         }
         try {
           const instructions = await loadSkillInstructions(skill);
+          const activeSkills = options?.onActivateSkill
+            ? await options.onActivateSkill(name)
+            : [];
           return {
             skill: name,
+            activeSkills,
             instructions: instructions || "(no instructions provided)",
           };
         } catch (err) {
@@ -63,6 +73,50 @@ export const createSkillTools = (
           };
         }
       },
+    }),
+    defineTool({
+      name: "deactivate_skill",
+      description:
+        "Deactivate a previously activated skill and update scoped tool availability.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description: "Name of the skill to deactivate",
+          },
+        },
+        required: ["name"],
+        additionalProperties: false,
+      },
+      handler: async (input) => {
+        const name = typeof input.name === "string" ? input.name.trim() : "";
+        if (!name) {
+          return { error: "Skill name is required" };
+        }
+        try {
+          const activeSkills = options?.onDeactivateSkill
+            ? await options.onDeactivateSkill(name)
+            : [];
+          return { skill: name, activeSkills };
+        } catch (err) {
+          return {
+            error: `Failed to deactivate skill "${name}": ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+      },
+    }),
+    defineTool({
+      name: "list_active_skills",
+      description: "List currently active skills with scoped MCP tools.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+      handler: async () => ({
+        activeSkills: options?.onListActiveSkills ? options.onListActiveSkills() : [],
+      }),
     }),
     defineTool({
       name: "read_skill_resource",
@@ -133,7 +187,7 @@ export const createSkillTools = (
           };
         }
         try {
-          const scripts = await listSkillScripts(skill);
+          const scripts = await listSkillScripts(skill, options?.isScriptAllowed);
           return {
             skill: name,
             scripts,
@@ -191,6 +245,18 @@ export const createSkillTools = (
 
         try {
           const scriptPath = resolveSkillScriptPath(skill, script);
+          const relativeScript = `scripts/${scriptPath
+            .slice(resolve(skill.skillDir, "scripts").length + 1)
+            .split(sep)
+            .join("/")}`;
+          if (
+            options?.isScriptAllowed &&
+            !options.isScriptAllowed(name, relativeScript)
+          ) {
+            return {
+              error: `Script "${relativeScript}" for skill "${name}" is not allowed by policy.`,
+            };
+          }
           await access(scriptPath);
           const fn = await loadRunnableScriptFunction(scriptPath);
           const output = await fn(payload, {
@@ -215,7 +281,10 @@ export const createSkillTools = (
 
 const SCRIPT_EXTENSIONS = new Set([".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"]);
 
-const listSkillScripts = async (skill: SkillMetadata): Promise<string[]> => {
+const listSkillScripts = async (
+  skill: SkillMetadata,
+  isScriptAllowed?: (skill: string, scriptPath: string) => boolean,
+): Promise<string[]> => {
   const scriptsRoot = resolve(skill.skillDir, "scripts");
   try {
     await access(scriptsRoot);
@@ -226,6 +295,7 @@ const listSkillScripts = async (skill: SkillMetadata): Promise<string[]> => {
   const scripts = await collectScriptFiles(scriptsRoot);
   return scripts
     .map((fullPath) => `scripts/${fullPath.slice(scriptsRoot.length + 1).split(sep).join("/")}`)
+    .filter((path) => (isScriptAllowed ? isScriptAllowed(skill.name, path) : true))
     .sort();
 };
 

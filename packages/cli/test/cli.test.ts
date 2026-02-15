@@ -482,7 +482,7 @@ describe("cli", () => {
     const projectDir = join(tempDir, "aux-agent");
 
     await listTools(projectDir);
-    await mcpAdd(projectDir, { url: "wss://example.com/mcp", name: "remote-mcp" });
+    await mcpAdd(projectDir, { url: "https://example.com/mcp", name: "remote-mcp" });
     await mcpList(projectDir);
     await mcpRemove(projectDir, "remote-mcp");
 
@@ -523,6 +523,20 @@ describe("cli", () => {
     const result = await runTests(projectDir, join(testsDir, "basic.yaml"));
     expect(result.passed).toBe(1);
     expect(result.failed).toBe(0);
+  });
+
+  it("seeds bearer token placeholders in env files when adding mcp auth", async () => {
+    await initProject("mcp-env-seed-agent", { workingDir: tempDir });
+    const projectDir = join(tempDir, "mcp-env-seed-agent");
+    await mcpAdd(projectDir, {
+      url: "https://example.com/mcp",
+      name: "remote-mcp",
+      authBearerEnv: "LINEAR_TOKEN",
+    });
+    const envFile = await readFile(join(projectDir, ".env"), "utf8");
+    const envExampleFile = await readFile(join(projectDir, ".env.example"), "utf8");
+    expect(envFile).toContain("LINEAR_TOKEN=");
+    expect(envExampleFile).toContain("LINEAR_TOKEN=");
   });
 
   it("does not modify AGENT.md when no deprecated embedded guidance exists", async () => {

@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -219,7 +220,9 @@ model:
       `---
 name: summarize
 description: Summarize long text into concise output
-allowed-tools: summarize_text
+tools:
+  mcp:
+    - linear/list_issues
 ---
 
 # Summarize Skill
@@ -410,6 +413,63 @@ description: Safe skill
     });
     expect(result).toMatchObject({
       error: expect.stringContaining("must be relative and within the skill directory"),
+    });
+  });
+
+  it("enforces scripts denylist policy from config", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-script-policy-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: script-policy-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Script Policy Agent
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "poncho.config.js"),
+      `export default {
+  scripts: {
+    mode: "denylist",
+    exclude: ["math/scripts/add.ts"]
+  }
+};
+`,
+      "utf8",
+    );
+    await mkdir(join(dir, "skills", "math", "scripts"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "math", "SKILL.md"),
+      `---
+name: math
+description: Math scripts
+---
+
+# Math
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "skills", "math", "scripts", "add.ts"),
+      "export default async function run() { return { ok: true }; }\n",
+      "utf8",
+    );
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    const listScripts = harness.listTools().find((tool) => tool.name === "list_skill_scripts");
+    const runScript = harness.listTools().find((tool) => tool.name === "run_skill_script");
+    expect(listScripts).toBeDefined();
+    expect(runScript).toBeDefined();
+    const listed = await listScripts!.handler({ skill: "math" });
+    expect(listed).toEqual({ skill: "math", scripts: [] });
+    const result = await runScript!.handler({ skill: "math", script: "add.ts" });
+    expect(result).toMatchObject({
+      error: expect.stringContaining("is not allowed by policy"),
     });
   });
 
@@ -677,7 +737,7 @@ model:
       `---
 name: summarize
 description: Summarize text
-allowed-tools: summarize_text read_file
+allowed-tools: linear/list_issues linear/get_issue
 ---
 
 # Summarize
@@ -688,11 +748,12 @@ allowed-tools: summarize_text read_file
     const metadata = await loadSkillMetadata(dir);
     expect(metadata).toHaveLength(1);
     expect(metadata[0]?.name).toBe("summarize");
-    expect(metadata[0]?.tools).toEqual(["summarize_text", "read_file"]);
+    expect(metadata[0]?.tools.mcp).toEqual(["linear/list_issues", "linear/get_issue"]);
+    expect(metadata[0]?.tools.scripts).toEqual([]);
   });
 
-  it("keeps backward compatibility with legacy tools list frontmatter", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-legacy-tools-"));
+  it("fails when SKILL.md includes invalid non-slash tool patterns", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-invalid-tools-"));
     await mkdir(join(dir, "skills", "legacy"), { recursive: true });
     await writeFile(
       join(dir, "skills", "legacy", "SKILL.md"),
@@ -700,7 +761,8 @@ allowed-tools: summarize_text read_file
 name: legacy
 description: Legacy skill
 tools:
-  - legacy_tool
+  mcp:
+    - legacy_tool
 ---
 
 # Legacy
@@ -708,9 +770,374 @@ tools:
       "utf8",
     );
 
-    const metadata = await loadSkillMetadata(dir);
-    expect(metadata).toHaveLength(1);
-    expect(metadata[0]?.name).toBe("legacy");
-    expect(metadata[0]?.tools).toEqual(["legacy_tool"]);
+    await expect(loadSkillMetadata(dir)).rejects.toThrow(
+      /Invalid MCP tool pattern/,
+    );
+  });
+
+  it("registers MCP tools dynamically for stacked active skills and supports deactivation", async () => {
+    process.env.LINEAR_TOKEN = "token-123";
+    const mcpServer = createServer(async (req, res) => {
+      if (req.method === "DELETE") {
+        res.statusCode = 200;
+        res.end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = Buffer.concat(chunks).toString("utf8");
+      const payload = body.trim().length > 0 ? (JSON.parse(body) as any) : {};
+      if (payload.method === "initialize") {
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Mcp-Session-Id", "sess");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              protocolVersion: "2025-03-26",
+              capabilities: { tools: { listChanged: true } },
+              serverInfo: { name: "remote", version: "1.0.0" },
+            },
+          }),
+        );
+        return;
+      }
+      if (payload.method === "notifications/initialized") {
+        res.statusCode = 202;
+        res.end();
+        return;
+      }
+      if (payload.method === "tools/list") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [
+                { name: "a", inputSchema: { type: "object", properties: {} } },
+                { name: "b", inputSchema: { type: "object", properties: {} } },
+              ],
+            },
+          }),
+        );
+        return;
+      }
+      if (payload.method === "tools/call") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: { result: { ok: true } },
+          }),
+        );
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+    await new Promise<void>((resolveOpen) => mcpServer.listen(0, () => resolveOpen()));
+    const address = mcpServer.address();
+    if (!address || typeof address === "string") throw new Error("Unexpected address");
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-stacked-activation-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: stacked-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Stacked Agent
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "poncho.config.js"),
+      `export default {
+  mcp: [
+    {
+      name: "remote",
+      url: "http://127.0.0.1:${address.port}/mcp",
+      auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" },
+      tools: { mode: "allowlist", include: ["remote/*"] }
+    }
+  ]
+};
+`,
+      "utf8",
+    );
+    await mkdir(join(dir, "skills", "skill-a"), { recursive: true });
+    await mkdir(join(dir, "skills", "skill-b"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "skill-a", "SKILL.md"),
+      `---
+name: skill-a
+description: A
+tools:
+  mcp:
+    - remote/a
+---
+# A
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "skills", "skill-b", "SKILL.md"),
+      `---
+name: skill-b
+description: B
+tools:
+  mcp:
+    - remote/b
+---
+# B
+`,
+      "utf8",
+    );
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    expect(harness.listTools().map((tool) => tool.name)).not.toContain("remote/a");
+    expect(harness.listTools().map((tool) => tool.name)).not.toContain("remote/b");
+    const activate = harness.listTools().find((tool) => tool.name === "activate_skill");
+    const deactivate = harness.listTools().find((tool) => tool.name === "deactivate_skill");
+    expect(activate).toBeDefined();
+    expect(deactivate).toBeDefined();
+    await activate!.handler({ name: "skill-a" }, {} as any);
+    expect(harness.listTools().map((tool) => tool.name)).toContain("remote/a");
+    expect(harness.listTools().map((tool) => tool.name)).not.toContain("remote/b");
+    await activate!.handler({ name: "skill-b" }, {} as any);
+    const afterStack = harness.listTools().map((tool) => tool.name);
+    expect(afterStack).toContain("remote/a");
+    expect(afterStack).toContain("remote/b");
+    await deactivate!.handler({ name: "skill-a" }, {} as any);
+    const afterDeactivate = harness.listTools().map((tool) => tool.name);
+    expect(afterDeactivate).not.toContain("remote/a");
+    expect(afterDeactivate).toContain("remote/b");
+    await harness.shutdown();
+    await new Promise<void>((resolveClose) => mcpServer.close(() => resolveClose()));
+  });
+
+  it("allows in-flight MCP calls to finish after skill deactivation", async () => {
+    process.env.LINEAR_TOKEN = "token-123";
+    const mcpServer = createServer(async (req, res) => {
+      if (req.method === "DELETE") {
+        res.statusCode = 200;
+        res.end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = Buffer.concat(chunks).toString("utf8");
+      const payload = body.trim().length > 0 ? (JSON.parse(body) as any) : {};
+      if (payload.method === "initialize") {
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Mcp-Session-Id", "sess");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              protocolVersion: "2025-03-26",
+              capabilities: { tools: { listChanged: true } },
+              serverInfo: { name: "remote", version: "1.0.0" },
+            },
+          }),
+        );
+        return;
+      }
+      if (payload.method === "notifications/initialized") {
+        res.statusCode = 202;
+        res.end();
+        return;
+      }
+      if (payload.method === "tools/list") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: { tools: [{ name: "slow", inputSchema: { type: "object", properties: {} } }] },
+          }),
+        );
+        return;
+      }
+      if (payload.method === "tools/call") {
+        await new Promise((resolveTimer) => setTimeout(resolveTimer, 25));
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: payload.id, result: { result: { done: true } } }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+    await new Promise<void>((resolveOpen) => mcpServer.listen(0, () => resolveOpen()));
+    const address = mcpServer.address();
+    if (!address || typeof address === "string") throw new Error("Unexpected address");
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-inflight-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: inflight-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Inflight
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "poncho.config.js"),
+      `export default {
+  mcp: [
+    {
+      name: "remote",
+      url: "http://127.0.0.1:${address.port}/mcp",
+      auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" },
+      tools: { mode: "allowlist", include: ["remote/*"] }
+    }
+  ]
+};
+`,
+      "utf8",
+    );
+    await mkdir(join(dir, "skills", "skill-slow"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "skill-slow", "SKILL.md"),
+      `---
+name: skill-slow
+description: Slow
+tools:
+  mcp:
+    - remote/slow
+---
+# Slow
+`,
+      "utf8",
+    );
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    const activate = harness.listTools().find((tool) => tool.name === "activate_skill");
+    const deactivate = harness.listTools().find((tool) => tool.name === "deactivate_skill");
+    await activate!.handler({ name: "skill-slow" }, {} as any);
+    const slowTool = harness.listTools().find((tool) => tool.name === "remote/slow");
+    expect(slowTool).toBeDefined();
+    const inFlight = slowTool!.handler({}, {} as any);
+    await deactivate!.handler({ name: "skill-slow" }, {} as any);
+    const output = await inFlight;
+    expect(output).toEqual({ done: true });
+    await harness.shutdown();
+    await new Promise<void>((resolveClose) => mcpServer.close(() => resolveClose()));
+  });
+
+  it("sanitizes tool names sent to model providers when MCP tools include slashes", async () => {
+    process.env.LINEAR_TOKEN = "token-123";
+    const mcpServer = createServer(async (req, res) => {
+      if (req.method === "DELETE") {
+        res.statusCode = 200;
+        res.end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = Buffer.concat(chunks).toString("utf8");
+      const payload = body.trim().length > 0 ? (JSON.parse(body) as any) : {};
+      if (payload.method === "initialize") {
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Mcp-Session-Id", "sess");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              protocolVersion: "2025-03-26",
+              capabilities: { tools: { listChanged: true } },
+              serverInfo: { name: "linear", version: "1.0.0" },
+            },
+          }),
+        );
+        return;
+      }
+      if (payload.method === "notifications/initialized") {
+        res.statusCode = 202;
+        res.end();
+        return;
+      }
+      if (payload.method === "tools/list") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [{ name: "list_issues", inputSchema: { type: "object", properties: {} } }],
+            },
+          }),
+        );
+        return;
+      }
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: payload.id, result: {} }));
+    });
+    await new Promise<void>((resolveOpen) => mcpServer.listen(0, () => resolveOpen()));
+    const address = mcpServer.address();
+    if (!address || typeof address === "string") throw new Error("Unexpected address");
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-tool-name-sanitize-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: sanitize-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+tools:
+  mcp:
+    - linear/*
+---
+
+# Sanitize
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "poncho.config.js"),
+      `export default {
+  mcp: [
+    {
+      name: "linear",
+      url: "http://127.0.0.1:${address.port}/mcp",
+      auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" },
+      tools: { mode: "allowlist", include: ["linear/*"] }
+    }
+  ]
+};
+`,
+      "utf8",
+    );
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    const mockedGenerate = vi.fn().mockResolvedValueOnce({
+      text: "done",
+      toolCalls: [],
+      usage: { input: 5, output: 5 },
+      rawContent: [],
+    });
+    (harness as unknown as { modelClient: { generate: unknown } }).modelClient = {
+      generate: mockedGenerate,
+    };
+    for await (const _event of harness.run({ task: "hello" })) {
+      // consume events
+    }
+    const firstCall = mockedGenerate.mock.calls[0]?.[0] as
+      | { tools?: Array<{ name: string }> }
+      | undefined;
+    expect(firstCall?.tools?.some((tool) => tool.name.includes("/"))).toBe(false);
+    await harness.shutdown();
+    await new Promise<void>((resolveClose) => mcpServer.close(() => resolveClose()));
   });
 });

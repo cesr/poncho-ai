@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
   AgentHarness,
+  LocalMcpBridge,
   TelemetryEmitter,
   createConversationStore,
   loadPonchoConfig,
@@ -36,6 +37,7 @@ import {
   setCookie,
   verifyPassphrase,
 } from "./web-ui.js";
+import { createInterface } from "node:readline/promises";
 import {
   runInitOnboarding,
   type InitOnboardingOptions,
@@ -299,16 +301,47 @@ Connect remote MCP servers and expose their tools to the agent:
 
 \`\`\`bash
 # Add remote MCP server
-poncho mcp add --url wss://mcp.example.com/github --name github --env GITHUB_TOKEN
+poncho mcp add --url https://mcp.example.com/github --name github --auth-bearer-env GITHUB_TOKEN
 
 # List configured servers
 poncho mcp list
+
+# Discover and select MCP tools into config allowlist
+poncho mcp tools list github
+poncho mcp tools select github
 
 # Remove a server
 poncho mcp remove github
 \`\`\`
 
 Set required secrets in \`.env\` (for example, \`GITHUB_TOKEN=...\`).
+
+## Tool Intent in Frontmatter
+
+Declare tool intent directly in \`AGENT.md\` and \`SKILL.md\` frontmatter:
+
+\`\`\`yaml
+tools:
+  mcp:
+    - github/list_issues
+    - github/*
+  scripts:
+    - starter/scripts/*
+\`\`\`
+
+How it works:
+
+- \`AGENT.md\` provides fallback MCP intent when no skill is active.
+- \`SKILL.md\` intent applies when you activate that skill (\`activate_skill\`).
+- Skill scripts are accessible by default from each skill's \`scripts/\` directory.
+- \`AGENT.md\` \`tools.scripts\` can still be used to narrow script access when active skills do not set script intent.
+- Active skills are unioned, then filtered by policy in \`poncho.config.js\`.
+- Deactivating a skill (\`deactivate_skill\`) removes its MCP tools from runtime registration.
+
+Pattern format is strict slash-only:
+
+- MCP: \`server/tool\`, \`server/*\`
+- Scripts: \`skill/scripts/file.ts\`, \`skill/scripts/*\`
 
 ## Configuration
 
@@ -334,6 +367,21 @@ export default {
   },
   telemetry: {
     enabled: true,
+  },
+  mcp: [
+    {
+      name: "github",
+      url: "https://mcp.example.com/github",
+      auth: { type: "bearer", tokenEnv: "GITHUB_TOKEN" },
+      tools: {
+        mode: "allowlist",
+        include: ["github/list_issues", "github/get_issue"],
+      },
+    },
+  ],
+  scripts: {
+    mode: "allowlist",
+    include: ["starter/scripts/*"],
   },
   tools: {
     defaults: {
@@ -396,7 +444,6 @@ const VERCEL_RUNTIME_DEPENDENCIES: Record<string, string> = {
   mustache: "^4.2.0",
   openai: "^6.3.0",
   redis: "^5.10.0",
-  ws: "^8.18.0",
   yaml: "^2.8.1",
 };
 const TEST_TEMPLATE = `tests:
@@ -546,6 +593,52 @@ const renderConfigFile = (config: PonchoConfig): string =>
 const writeConfigFile = async (workingDir: string, config: PonchoConfig): Promise<void> => {
   const serialized = renderConfigFile(config);
   await writeFile(resolve(workingDir, "poncho.config.js"), serialized, "utf8");
+};
+
+const ensureEnvPlaceholder = async (filePath: string, key: string): Promise<boolean> => {
+  const normalizedKey = key.trim();
+  if (!normalizedKey) {
+    return false;
+  }
+  let content = "";
+  try {
+    content = await readFile(filePath, "utf8");
+  } catch {
+    await writeFile(filePath, `${normalizedKey}=\n`, "utf8");
+    return true;
+  }
+  const present = content
+    .split(/\r?\n/)
+    .some((line) => line.trimStart().startsWith(`${normalizedKey}=`));
+  if (present) {
+    return false;
+  }
+  const withTrailingNewline = content.length === 0 || content.endsWith("\n")
+    ? content
+    : `${content}\n`;
+  await writeFile(filePath, `${withTrailingNewline}${normalizedKey}=\n`, "utf8");
+  return true;
+};
+
+const removeEnvPlaceholder = async (filePath: string, key: string): Promise<boolean> => {
+  const normalizedKey = key.trim();
+  if (!normalizedKey) {
+    return false;
+  }
+  let content = "";
+  try {
+    content = await readFile(filePath, "utf8");
+  } catch {
+    return false;
+  }
+  const lines = content.split(/\r?\n/);
+  const filtered = lines.filter((line) => !line.trimStart().startsWith(`${normalizedKey}=`));
+  if (filtered.length === lines.length) {
+    return false;
+  }
+  const nextContent = filtered.join("\n").replace(/\n+$/, "");
+  await writeFile(filePath, nextContent.length > 0 ? `${nextContent}\n` : "", "utf8");
+  return true;
 };
 
 const gitInit = (cwd: string): Promise<boolean> =>
@@ -1588,6 +1681,7 @@ export const mcpAdd = async (
     url?: string;
     name?: string;
     envVars?: string[];
+    authBearerEnv?: string;
   },
 ): Promise<void> => {
   const config = (await loadPonchoConfig(workingDir)) ?? { mcp: [] };
@@ -1595,14 +1689,56 @@ export const mcpAdd = async (
   if (!options.url) {
     throw new Error("Remote MCP only: provide --url for a remote MCP server.");
   }
+  if (options.url.startsWith("ws://") || options.url.startsWith("wss://")) {
+    throw new Error("WebSocket MCP URLs are no longer supported. Use an HTTP MCP endpoint.");
+  }
+  if (!options.url.startsWith("http://") && !options.url.startsWith("https://")) {
+    throw new Error("Invalid MCP URL. Expected http:// or https://.");
+  }
+  const serverName = options.name ?? normalizeMcpName({ url: options.url });
   mcp.push({
-    name: options.name ?? normalizeMcpName({ url: options.url }),
+    name: serverName,
     url: options.url,
     env: options.envVars ?? [],
+    auth: options.authBearerEnv
+      ? {
+          type: "bearer",
+          tokenEnv: options.authBearerEnv,
+        }
+      : undefined,
   });
 
   await writeConfigFile(workingDir, { ...config, mcp });
-  process.stdout.write("MCP server added.\n");
+  let envSeedMessage: string | undefined;
+  if (options.authBearerEnv) {
+    const envPath = resolve(workingDir, ".env");
+    const envExamplePath = resolve(workingDir, ".env.example");
+    const addedEnv = await ensureEnvPlaceholder(envPath, options.authBearerEnv);
+    const addedEnvExample = await ensureEnvPlaceholder(envExamplePath, options.authBearerEnv);
+    if (addedEnv || addedEnvExample) {
+      envSeedMessage = `Added ${options.authBearerEnv}= to ${addedEnv ? ".env" : ""}${addedEnv && addedEnvExample ? " and " : ""}${addedEnvExample ? ".env.example" : ""}.`;
+    }
+  }
+  const nextSteps: string[] = [];
+  let step = 1;
+  if (options.authBearerEnv) {
+    nextSteps.push(`  ${step}) Set token in .env: ${options.authBearerEnv}=...`);
+    step += 1;
+  }
+  nextSteps.push(`  ${step}) Discover tools: poncho mcp tools list ${serverName}`);
+  step += 1;
+  nextSteps.push(`  ${step}) Select tools:   poncho mcp tools select ${serverName}`);
+  step += 1;
+  nextSteps.push(`  ${step}) Verify config:  poncho mcp list`);
+  process.stdout.write(
+    [
+      `MCP server added: ${serverName}`,
+      ...(envSeedMessage ? [envSeedMessage] : []),
+      "Next steps:",
+      ...nextSteps,
+      "",
+    ].join("\n"),
+  );
 };
 
 export const mcpList = async (workingDir: string): Promise<void> => {
@@ -1610,20 +1746,204 @@ export const mcpList = async (workingDir: string): Promise<void> => {
   const mcp = config?.mcp ?? [];
   if (mcp.length === 0) {
     process.stdout.write("No MCP servers configured.\n");
+    if (config?.scripts) {
+      process.stdout.write(
+        `Script policy: mode=${config.scripts.mode ?? "all"} include=${config.scripts.include?.length ?? 0} exclude=${config.scripts.exclude?.length ?? 0}\n`,
+      );
+    }
     return;
   }
   process.stdout.write("Configured MCP servers:\n");
   for (const entry of mcp) {
-    process.stdout.write(`- ${entry.name ?? entry.url} (remote: ${entry.url})\n`);
+    const auth =
+      entry.auth?.type === "bearer" ? `auth=bearer:${entry.auth.tokenEnv}` : "auth=none";
+    const mode = entry.tools?.mode ?? "all";
+    process.stdout.write(
+      `- ${entry.name ?? entry.url} (remote: ${entry.url}, ${auth}, mode=${mode})\n`,
+    );
+  }
+  if (config?.scripts) {
+    process.stdout.write(
+      `Script policy: mode=${config.scripts.mode ?? "all"} include=${config.scripts.include?.length ?? 0} exclude=${config.scripts.exclude?.length ?? 0}\n`,
+    );
   }
 };
 
 export const mcpRemove = async (workingDir: string, name: string): Promise<void> => {
   const config = (await loadPonchoConfig(workingDir)) ?? { mcp: [] };
   const before = config.mcp ?? [];
+  const removed = before.filter((entry) => normalizeMcpName(entry) === name);
   const filtered = before.filter((entry) => normalizeMcpName(entry) !== name);
   await writeConfigFile(workingDir, { ...config, mcp: filtered });
+  const removedTokenEnvNames = new Set(
+    removed
+      .map((entry) =>
+        entry.auth?.type === "bearer" ? entry.auth.tokenEnv?.trim() ?? "" : "",
+      )
+      .filter((value) => value.length > 0),
+  );
+  const stillUsedTokenEnvNames = new Set(
+    filtered
+      .map((entry) =>
+        entry.auth?.type === "bearer" ? entry.auth.tokenEnv?.trim() ?? "" : "",
+      )
+      .filter((value) => value.length > 0),
+  );
+  const removedFromExample: string[] = [];
+  for (const tokenEnv of removedTokenEnvNames) {
+    if (stillUsedTokenEnvNames.has(tokenEnv)) {
+      continue;
+    }
+    const changed = await removeEnvPlaceholder(resolve(workingDir, ".env.example"), tokenEnv);
+    if (changed) {
+      removedFromExample.push(tokenEnv);
+    }
+  }
   process.stdout.write(`Removed MCP server: ${name}\n`);
+  if (removedFromExample.length > 0) {
+    process.stdout.write(
+      `Removed unused token placeholder(s) from .env.example: ${removedFromExample.join(", ")}\n`,
+    );
+  }
+};
+
+const resolveMcpEntry = async (
+  workingDir: string,
+  serverName: string,
+): Promise<{ config: PonchoConfig; index: number }> => {
+  const config = (await loadPonchoConfig(workingDir)) ?? { mcp: [] };
+  const entries = config.mcp ?? [];
+  const index = entries.findIndex((entry) => normalizeMcpName(entry) === serverName);
+  if (index < 0) {
+    throw new Error(`MCP server "${serverName}" is not configured.`);
+  }
+  return { config, index };
+};
+
+const discoverMcpTools = async (
+  workingDir: string,
+  serverName: string,
+): Promise<string[]> => {
+  dotenv.config({ path: resolve(workingDir, ".env") });
+  const { config, index } = await resolveMcpEntry(workingDir, serverName);
+  const entry = (config.mcp ?? [])[index];
+  const bridge = new LocalMcpBridge({ mcp: [entry] });
+  try {
+    await bridge.startLocalServers();
+    await bridge.discoverTools();
+    return bridge.listDiscoveredTools(normalizeMcpName(entry));
+  } finally {
+    await bridge.stopLocalServers();
+  }
+};
+
+export const mcpToolsList = async (
+  workingDir: string,
+  serverName: string,
+): Promise<void> => {
+  const discovered = await discoverMcpTools(workingDir, serverName);
+  if (discovered.length === 0) {
+    process.stdout.write(`No tools discovered for MCP server "${serverName}".\n`);
+    return;
+  }
+  process.stdout.write(`Discovered tools for "${serverName}":\n`);
+  for (const tool of discovered) {
+    process.stdout.write(`- ${tool}\n`);
+  }
+};
+
+export const mcpToolsSelect = async (
+  workingDir: string,
+  serverName: string,
+  options: {
+    all?: boolean;
+    toolsCsv?: string;
+  },
+): Promise<void> => {
+  const discovered = await discoverMcpTools(workingDir, serverName);
+  if (discovered.length === 0) {
+    process.stdout.write(`No tools discovered for MCP server "${serverName}".\n`);
+    return;
+  }
+  let selected: string[] = [];
+  if (options.all) {
+    selected = [...discovered];
+  } else if (options.toolsCsv && options.toolsCsv.trim().length > 0) {
+    const requested = options.toolsCsv
+      .split(",")
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    selected = discovered.filter((tool) => requested.includes(tool));
+  } else {
+    process.stdout.write(`Discovered tools for "${serverName}":\n`);
+    discovered.forEach((tool, idx) => {
+      process.stdout.write(`${idx + 1}. ${tool}\n`);
+    });
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await rl.question(
+      "Enter comma-separated tool numbers/names to allow (or * for all): ",
+    );
+    rl.close();
+    const raw = answer.trim();
+    if (raw === "*") {
+      selected = [...discovered];
+    } else {
+      const tokens = raw
+        .split(",")
+        .map((part) => part.trim())
+        .filter((part) => part.length > 0);
+      const fromIndex = tokens
+        .map((token) => Number.parseInt(token, 10))
+        .filter((value) => !Number.isNaN(value))
+        .map((index) => discovered[index - 1])
+        .filter((value): value is string => typeof value === "string");
+      const byName = discovered.filter((tool) => tokens.includes(tool));
+      selected = [...new Set([...fromIndex, ...byName])];
+    }
+  }
+  if (selected.length === 0) {
+    throw new Error("No valid tools selected.");
+  }
+  const includePatterns =
+    selected.length === discovered.length
+      ? [`${serverName}/*`]
+      : selected.sort();
+  const { config, index } = await resolveMcpEntry(workingDir, serverName);
+  const mcp = [...(config.mcp ?? [])];
+  const existing = mcp[index];
+  mcp[index] = {
+    ...existing,
+    tools: {
+      ...(existing.tools ?? {}),
+      mode: "allowlist",
+      include: includePatterns,
+    },
+  };
+  await writeConfigFile(workingDir, { ...config, mcp });
+  process.stdout.write(
+    `Updated ${serverName} to allowlist ${includePatterns.join(", ")} in poncho.config.js.\n`,
+  );
+  process.stdout.write(
+    "\nRequired next step: add MCP intent in AGENT.md or SKILL.md. Without this, these MCP tools will not be registered for the model.\n",
+  );
+  process.stdout.write(
+    "\nOption A: AGENT.md (global fallback intent)\n" +
+      "Paste this into AGENT.md frontmatter:\n" +
+      "---\n" +
+      "tools:\n" +
+      "  mcp:\n" +
+      includePatterns.map((tool) => `    - ${tool}`).join("\n") +
+      "\n---\n",
+  );
+  process.stdout.write(
+    "\nOption B: SKILL.md (only when that skill is activated)\n" +
+      "Paste this into SKILL.md frontmatter:\n" +
+      "---\n" +
+      "tools:\n" +
+      "  mcp:\n" +
+      includePatterns.map((tool) => `    - ${tool}`).join("\n") +
+      "\n---\n",
+  );
 };
 
 export const buildCli = (): Command => {
@@ -1739,6 +2059,10 @@ export const buildCli = (): Command => {
     .command("add")
     .requiredOption("--url <url>", "remote MCP url")
     .option("--name <name>", "server name")
+    .option(
+      "--auth-bearer-env <name>",
+      "env var name containing bearer token for this MCP server",
+    )
     .option("--env <name>", "env variable (repeatable)", (value, all: string[]) => {
       all.push(value);
       return all;
@@ -1748,6 +2072,7 @@ export const buildCli = (): Command => {
         options: {
           url?: string;
           name?: string;
+          authBearerEnv?: string;
           env: string[];
         },
       ) => {
@@ -1755,6 +2080,7 @@ export const buildCli = (): Command => {
           url: options.url,
           name: options.name,
           envVars: options.env,
+          authBearerEnv: options.authBearerEnv,
         });
       },
     );
@@ -1773,6 +2099,39 @@ export const buildCli = (): Command => {
     .action(async (name: string) => {
       await mcpRemove(process.cwd(), name);
     });
+
+  const mcpToolsCommand = mcpCommand
+    .command("tools")
+    .description("Discover and curate tools for a configured MCP server");
+
+  mcpToolsCommand
+    .command("list")
+    .argument("<name>", "server name")
+    .description("Discover and list tools from a configured MCP server")
+    .action(async (name: string) => {
+      await mcpToolsList(process.cwd(), name);
+    });
+
+  mcpToolsCommand
+    .command("select")
+    .argument("<name>", "server name")
+    .description("Select MCP tools and store as config allowlist")
+    .option("--all", "select all discovered tools", false)
+    .option("--tools <csv>", "comma-separated discovered tool names")
+    .action(
+      async (
+        name: string,
+        options: {
+          all: boolean;
+          tools?: string;
+        },
+      ) => {
+        await mcpToolsSelect(process.cwd(), name, {
+          all: options.all,
+          toolsCsv: options.tools,
+        });
+      },
+    );
 
   return program;
 };

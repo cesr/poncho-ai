@@ -1,6 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { dirname, resolve, normalize } from "node:path";
 import YAML from "yaml";
+import { validateMcpPattern, validateScriptPattern } from "./tool-policy.js";
 
 // ---------------------------------------------------------------------------
 // Skill directory scanning — default directories and ecosystem compatibility
@@ -36,8 +37,11 @@ export interface SkillMetadata {
   name: string;
   /** What the skill does and when to use it. */
   description: string;
-  /** Tool hints declared in frontmatter (spec `allowed-tools` or legacy `tools`). */
-  tools: string[];
+  /** Tool intent declared in frontmatter. */
+  tools: {
+    mcp: string[];
+    scripts: string[];
+  };
   /** Absolute path to the skill directory. */
   skillDir: string;
   /** Absolute path to the SKILL.md file. */
@@ -64,7 +68,7 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 
 const parseSkillFrontmatter = (
   content: string,
-): { name: string; description: string; tools: string[] } | undefined => {
+): { name: string; description: string; tools: { mcp: string[]; scripts: string[] } } | undefined => {
   const match = content.match(FRONTMATTER_PATTERN);
   if (!match) {
     return undefined;
@@ -80,6 +84,13 @@ const parseSkillFrontmatter = (
   const description =
     typeof parsed.description === "string" ? parsed.description.trim() : "";
 
+  const toolsValue = asRecord(parsed.tools);
+  const modernMcp = Array.isArray(toolsValue.mcp)
+    ? toolsValue.mcp.filter((tool): tool is string => typeof tool === "string")
+    : [];
+  const modernScripts = Array.isArray(toolsValue.scripts)
+    ? toolsValue.scripts.filter((tool): tool is string => typeof tool === "string")
+    : [];
   const allowedToolsValue = parsed["allowed-tools"];
   const allowedTools =
     typeof allowedToolsValue === "string"
@@ -88,15 +99,25 @@ const parseSkillFrontmatter = (
           .map((tool) => tool.trim())
           .filter((tool) => tool.length > 0)
       : [];
-
   const legacyToolsValue = parsed.tools;
   const legacyTools = Array.isArray(legacyToolsValue)
     ? legacyToolsValue.filter((tool): tool is string => typeof tool === "string")
     : [];
-
-  const tools = allowedTools.length > 0 ? allowedTools : legacyTools;
-
-  return { name, description, tools };
+  const mcpTools = modernMcp.length > 0 ? modernMcp : [...allowedTools, ...legacyTools];
+  for (const [index, pattern] of mcpTools.entries()) {
+    validateMcpPattern(pattern, `SKILL.md tools.mcp[${index}]`);
+  }
+  for (const [index, pattern] of modernScripts.entries()) {
+    validateScriptPattern(pattern, `SKILL.md tools.scripts[${index}]`);
+  }
+  return {
+    name,
+    description,
+    tools: {
+      mcp: mcpTools,
+      scripts: modernScripts,
+    },
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -155,7 +176,14 @@ export const loadSkillMetadata = async (
           skillPath: manifest,
         });
       }
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.startsWith("Invalid MCP tool pattern") ||
+        message.startsWith("Invalid script pattern")
+      ) {
+        throw new Error(`Invalid SKILL.md frontmatter at ${manifest}: ${message}`);
+      }
       // Ignore unreadable skill manifests.
     }
   }

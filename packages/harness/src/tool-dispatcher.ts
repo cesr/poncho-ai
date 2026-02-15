@@ -26,6 +26,16 @@ export class ToolDispatcher {
     }
   }
 
+  unregister(name: string): void {
+    this.tools.delete(name);
+  }
+
+  unregisterMany(names: Iterable<string>): void {
+    for (const name of names) {
+      this.unregister(name);
+    }
+  }
+
   list(): ToolDefinition[] {
     return [...this.tools.values()];
   }
