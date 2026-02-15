@@ -20,6 +20,7 @@ export interface Message {
     tokenCount?: number;
     step?: number;
     toolActivity?: string[];
+    sections?: Array<{ type: "text" | "tools"; content: string | string[] }>;
   };
 }
 

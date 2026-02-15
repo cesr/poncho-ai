@@ -1090,6 +1090,9 @@ export const createRequestHandler = async (options?: {
       let latestRunId = conversation.runtimeRunId ?? "";
       let assistantResponse = "";
       const toolTimeline: string[] = [];
+      const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
+      let currentText = "";
+      let currentTools: string[] = [];
       try {
         const recallCorpus = (await conversationStore.list(ownerId))
           .filter((item) => item.conversationId !== conversationId)
@@ -1119,25 +1122,48 @@ export const createRequestHandler = async (options?: {
             latestRunId = event.runId;
           }
           if (event.type === "model:chunk") {
+            // If we have tools accumulated and text starts again, push tools as a section
+            if (currentTools.length > 0) {
+              sections.push({ type: "tools", content: currentTools });
+              currentTools = [];
+            }
             assistantResponse += event.content;
+            currentText += event.content;
           }
           if (event.type === "tool:started") {
-            toolTimeline.push(`- start \`${event.tool}\``);
+            // If we have text accumulated, push it as a text section
+            if (currentText.length > 0) {
+              sections.push({ type: "text", content: currentText });
+              currentText = "";
+            }
+            const toolText = `- start \`${event.tool}\``;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
           }
           if (event.type === "tool:completed") {
-            toolTimeline.push(`- done \`${event.tool}\` (${event.duration}ms)`);
+            const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
           }
           if (event.type === "tool:error") {
-            toolTimeline.push(`- error \`${event.tool}\`: ${event.error}`);
+            const toolText = `- error \`${event.tool}\`: ${event.error}`;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
           }
           if (event.type === "tool:approval:required") {
-            toolTimeline.push(`- approval required \`${event.tool}\``);
+            const toolText = `- approval required \`${event.tool}\``;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
           }
           if (event.type === "tool:approval:granted") {
-            toolTimeline.push(`- approval granted (${event.approvalId})`);
+            const toolText = `- approval granted (${event.approvalId})`;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
           }
           if (event.type === "tool:approval:denied") {
-            toolTimeline.push(`- approval denied (${event.approvalId})`);
+            const toolText = `- approval denied (${event.approvalId})`;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
           }
           if (
             event.type === "run:completed" &&
@@ -1149,6 +1175,13 @@ export const createRequestHandler = async (options?: {
           await telemetry.emit(event);
           response.write(formatSseEvent(event));
         }
+        // Finalize sections
+        if (currentTools.length > 0) {
+          sections.push({ type: "tools", content: currentTools });
+        }
+        if (currentText.length > 0) {
+          sections.push({ type: "text", content: currentText });
+        }
         conversation.messages = [
           ...conversation.messages,
           { role: "user", content: messageText },
@@ -1156,8 +1189,11 @@ export const createRequestHandler = async (options?: {
             role: "assistant",
             content: assistantResponse,
             metadata:
-              toolTimeline.length > 0
-                ? ({ toolActivity: toolTimeline } as Message["metadata"])
+              toolTimeline.length > 0 || sections.length > 0
+                ? ({
+                    toolActivity: toolTimeline,
+                    sections: sections.length > 0 ? sections : undefined,
+                  } as Message["metadata"])
                 : undefined,
           },
         ];

@@ -443,6 +443,9 @@ export const runInteractiveInk = async ({
     let sawChunk = false;
     let toolEvents = 0;
     const toolTimeline: string[] = [];
+    const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
+    let currentText = "";
+    let currentTools: string[] = [];
     let runFailed = false;
     let usage: TokenUsage | undefined;
     let latestRunId = "";
@@ -459,8 +462,14 @@ export const runInteractiveInk = async ({
         }
         if (event.type === "model:chunk") {
           sawChunk = true;
+          // If we have tools accumulated and text starts again, push tools as a section
+          if (currentTools.length > 0) {
+            sections.push({ type: "tools", content: currentTools });
+            currentTools = [];
+          }
           responseText += event.content;
           streamedText += event.content;
+          currentText += event.content;
 
           if (!thinkingCleared) {
             clearThinking();
@@ -485,11 +494,18 @@ export const runInteractiveInk = async ({
           clearThinking();
 
           if (event.type === "tool:started") {
+            // If we have text accumulated, push it as a text section
+            if (currentText.length > 0) {
+              sections.push({ type: "text", content: currentText });
+              currentText = "";
+            }
             const preview = showToolPayloads
               ? compactPreview(event.input, 400)
               : compactPreview(event.input, 100);
             console.log(yellow(`tools> start ${event.tool} input=${preview}`));
-            toolTimeline.push(`- start \`${event.tool}\``);
+            const toolText = `- start \`${event.tool}\``;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
             toolEvents += 1;
           } else if (event.type === "tool:completed") {
             const preview = showToolPayloads
@@ -503,29 +519,37 @@ export const runInteractiveInk = async ({
             if (showToolPayloads) {
               console.log(yellow(`tools> output ${preview}`));
             }
-            toolTimeline.push(
-              `- done \`${event.tool}\` in ${formatDuration(event.duration)}`,
-            );
+            const toolText = `- done \`${event.tool}\` in ${formatDuration(event.duration)}`;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
           } else if (event.type === "tool:error") {
             console.log(
               red(`tools> error ${event.tool}: ${event.error}`),
             );
-            toolTimeline.push(`- error \`${event.tool}\`: ${event.error}`);
+            const toolText = `- error \`${event.tool}\`: ${event.error}`;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
           } else if (event.type === "tool:approval:required") {
             console.log(
               magenta(`tools> approval required for ${event.tool}`),
             );
-            toolTimeline.push(`- approval required \`${event.tool}\``);
+            const toolText = `- approval required \`${event.tool}\``;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
           } else if (event.type === "tool:approval:granted") {
             console.log(
               gray(`tools> approval granted (${event.approvalId})`),
             );
-            toolTimeline.push(`- approval granted (${event.approvalId})`);
+            const toolText = `- approval granted (${event.approvalId})`;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
           } else if (event.type === "tool:approval:denied") {
             console.log(
               magenta(`tools> approval denied (${event.approvalId})`),
             );
-            toolTimeline.push(`- approval denied (${event.approvalId})`);
+            const toolText = `- approval denied (${event.approvalId})`;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
           }
         } else if (event.type === "run:error") {
           clearThinking();
@@ -588,13 +612,24 @@ export const runInteractiveInk = async ({
       activeConversationId = created.conversationId;
     }
 
+    // Finalize sections
+    if (currentTools.length > 0) {
+      sections.push({ type: "tools", content: currentTools });
+    }
+    if (currentText.length > 0) {
+      sections.push({ type: "text", content: currentText });
+    }
+
     messages.push({ role: "user", content: trimmed });
     messages.push({
       role: "assistant",
       content: responseText,
       metadata:
-        toolTimeline.length > 0
-          ? ({ toolActivity: toolTimeline } as Message["metadata"])
+        toolTimeline.length > 0 || sections.length > 0
+          ? ({
+              toolActivity: toolTimeline,
+              sections: sections.length > 0 ? sections : undefined,
+            } as Message["metadata"])
           : undefined,
     });
     turn = computeTurn(messages);

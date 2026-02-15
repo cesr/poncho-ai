@@ -783,8 +783,34 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       font-size: 13px;
       line-height: 1.5;
     }
+    .tool-activity-inline {
+      margin: 8px 0;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #8a8a8a;
+    }
+    .tool-activity-inline code {
+      font-family: ui-monospace, "SF Mono", "Fira Code", monospace;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      padding: 4px 8px;
+      border-radius: 6px;
+      color: #bcbcbc;
+      font-size: 11px;
+    }
+    .tool-status {
+      color: #8a8a8a;
+      font-style: italic;
+    }
+    .tool-done {
+      color: #6a9955;
+    }
+    .tool-error {
+      color: #f48771;
+    }
     .tool-activity {
       margin-top: 12px;
+      margin-bottom: 12px;
       border: 1px solid rgba(255,255,255,0.08);
       background: rgba(255,255,255,0.03);
       border-radius: 10px;
@@ -792,6 +818,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       line-height: 1.45;
       color: #bcbcbc;
       max-width: 300px;
+    }
+    .assistant-content > .tool-activity:first-child {
+      margin-top: 0;
     }
     .tool-activity-disclosure {
       display: block;
@@ -1360,23 +1389,13 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             const content = document.createElement("div");
             content.className = "assistant-content";
             const text = String(m.content || "");
-            const parsed = extractToolActivity(text);
-            const metadataToolActivity =
-              m.metadata && Array.isArray(m.metadata.toolActivity)
-                ? m.metadata.toolActivity
-                : [];
-            const toolActivity =
-              Array.isArray(m._toolActivity) && m._toolActivity.length > 0
-                ? m._toolActivity
-                : metadataToolActivity.length > 0
-                  ? metadataToolActivity
-                  : parsed.activities;
+
             if (m._error) {
               const errorEl = document.createElement("div");
               errorEl.className = "message-error";
               errorEl.innerHTML = "<strong>Error</strong><br>" + escapeHtml(m._error);
               content.appendChild(errorEl);
-            } else if (isStreaming && i === messages.length - 1 && !parsed.content) {
+            } else if (isStreaming && i === messages.length - 1 && !text && (!m._chunks || m._chunks.length === 0)) {
               const spinner = document.createElement("span");
               spinner.className = "thinking-indicator";
               const starFrames = ["✶","✸","✹","✺","✹","✷"];
@@ -1385,10 +1404,44 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
               spinner._interval = setInterval(() => { frame = (frame + 1) % starFrames.length; spinner.textContent = starFrames[frame]; }, 70);
               content.appendChild(spinner);
             } else {
-              content.innerHTML = renderAssistantMarkdown(parsed.content);
-            }
-            if (toolActivity.length > 0) {
-              content.insertAdjacentHTML("beforeend", renderToolActivity(toolActivity));
+              // Check for sections in _sections (streaming) or metadata.sections (stored)
+              const sections = m._sections || (m.metadata && m.metadata.sections);
+
+              if (sections && sections.length > 0) {
+                // Render sections interleaved
+                sections.forEach(section => {
+                  if (section.type === "text") {
+                    const textDiv = document.createElement("div");
+                    textDiv.innerHTML = renderAssistantMarkdown(section.content);
+                    content.appendChild(textDiv);
+                  } else if (section.type === "tools") {
+                    content.insertAdjacentHTML("beforeend", renderToolActivity(section.content));
+                  }
+                });
+                // While streaming, show current tools if any
+                if (isStreaming && i === messages.length - 1 && m._currentTools && m._currentTools.length > 0) {
+                  content.insertAdjacentHTML("beforeend", renderToolActivity(m._currentTools));
+                }
+                // Show current text being typed
+                if (isStreaming && i === messages.length - 1 && m._currentText) {
+                  const textDiv = document.createElement("div");
+                  textDiv.innerHTML = renderAssistantMarkdown(m._currentText);
+                  content.appendChild(textDiv);
+                }
+              } else {
+                // Fallback: render text and tools the old way (for old messages without sections)
+                if (text) {
+                  const parsed = extractToolActivity(text);
+                  content.innerHTML = renderAssistantMarkdown(parsed.content);
+                }
+                const metadataToolActivity =
+                  m.metadata && Array.isArray(m.metadata.toolActivity)
+                    ? m.metadata.toolActivity
+                    : [];
+                if (metadataToolActivity.length > 0) {
+                  content.insertAdjacentHTML("beforeend", renderToolActivity(metadataToolActivity));
+                }
+              }
             }
             wrap.appendChild(content);
             row.appendChild(wrap);
@@ -1496,7 +1549,14 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           return;
         }
         const localMessages = [...(state.activeMessages || []), { role: "user", content: messageText }];
-        let assistantMessage = { role: "assistant", content: "", metadata: { toolActivity: [] } };
+        let assistantMessage = {
+          role: "assistant",
+          content: "",
+          _sections: [], // Array of {type: 'text'|'tools', content: string|array}
+          _currentText: "",
+          _currentTools: [],
+          metadata: { toolActivity: [] }
+        };
         localMessages.push(assistantMessage);
         state.activeMessages = localMessages;
         renderMessages(localMessages, true);
@@ -1526,44 +1586,88 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             buffer += decoder.decode(value, { stream: true });
             buffer = parseSseChunk(buffer, (eventName, payload) => {
               if (eventName === "model:chunk") {
-                assistantMessage.content += String(payload.content || "");
+                const chunk = String(payload.content || "");
+                // If we have tools accumulated and text starts again, push tools as a section
+                if (assistantMessage._currentTools.length > 0 && chunk.length > 0) {
+                  assistantMessage._sections.push({ type: "tools", content: assistantMessage._currentTools });
+                  assistantMessage._currentTools = [];
+                }
+                assistantMessage.content += chunk;
+                assistantMessage._currentText += chunk;
                 renderMessages(localMessages, true);
               }
               if (eventName === "tool:started") {
-                pushToolActivity(assistantMessage, "start " + (payload.tool || "tool"));
+                const toolName = payload.tool || "tool";
+                // If we have text accumulated, push it as a text section
+                if (assistantMessage._currentText.length > 0) {
+                  assistantMessage._sections.push({ type: "text", content: assistantMessage._currentText });
+                  assistantMessage._currentText = "";
+                }
+                const toolText = "- start \\x60" + toolName + "\\x60";
+                assistantMessage._currentTools.push(toolText);
+                if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                assistantMessage.metadata.toolActivity.push(toolText);
                 renderMessages(localMessages, true);
               }
               if (eventName === "tool:completed") {
+                const toolName = payload.tool || "tool";
                 const duration = typeof payload.duration === "number" ? payload.duration : null;
-                pushToolActivity(
-                  assistantMessage,
-                  "done " +
-                    (payload.tool || "tool") +
-                    (duration !== null ? " (" + duration + "ms)" : ""),
-                );
+                const toolText = "- done \\x60" + toolName + "\\x60" + (duration !== null ? " (" + duration + "ms)" : "");
+                assistantMessage._currentTools.push(toolText);
+                if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                assistantMessage.metadata.toolActivity.push(toolText);
                 renderMessages(localMessages, true);
               }
               if (eventName === "tool:error") {
-                pushToolActivity(
-                  assistantMessage,
-                  "error " + (payload.tool || "tool") + ": " + (payload.error || "unknown error"),
-                );
+                const toolName = payload.tool || "tool";
+                const errorMsg = payload.error || "unknown error";
+                const toolText = "- error \\x60" + toolName + "\\x60: " + errorMsg;
+                assistantMessage._currentTools.push(toolText);
+                if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                assistantMessage.metadata.toolActivity.push(toolText);
                 renderMessages(localMessages, true);
               }
               if (eventName === "tool:approval:required") {
-                pushToolActivity(assistantMessage, "approval required for " + (payload.tool || "tool"));
+                const toolName = payload.tool || "tool";
+                const toolText = "- approval required \\x60" + toolName + "\\x60";
+                assistantMessage._currentTools.push(toolText);
+                if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                assistantMessage.metadata.toolActivity.push(toolText);
                 renderMessages(localMessages, true);
               }
               if (eventName === "tool:approval:granted") {
-                pushToolActivity(assistantMessage, "approval granted");
+                const toolText = "- approval granted";
+                assistantMessage._currentTools.push(toolText);
+                if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                assistantMessage.metadata.toolActivity.push(toolText);
                 renderMessages(localMessages, true);
               }
               if (eventName === "tool:approval:denied") {
-                pushToolActivity(assistantMessage, "approval denied");
+                const toolText = "- approval denied";
+                assistantMessage._currentTools.push(toolText);
+                if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                assistantMessage.metadata.toolActivity.push(toolText);
                 renderMessages(localMessages, true);
               }
-              if (eventName === "run:completed" && (!assistantMessage.content || assistantMessage.content.length === 0)) {
-                assistantMessage.content = String(payload.result?.response || "");
+              if (eventName === "run:completed") {
+                if (!assistantMessage.content || assistantMessage.content.length === 0) {
+                  assistantMessage.content = String(payload.result?.response || "");
+                }
+                // Finalize sections: push any remaining tools and text
+                if (assistantMessage._currentTools.length > 0) {
+                  assistantMessage._sections.push({ type: "tools", content: assistantMessage._currentTools });
+                  assistantMessage._currentTools = [];
+                }
+                if (assistantMessage._currentText.length > 0) {
+                  assistantMessage._sections.push({ type: "text", content: assistantMessage._currentText });
+                  assistantMessage._currentText = "";
+                }
                 renderMessages(localMessages, false);
               }
               if (eventName === "run:error") {
@@ -1574,8 +1678,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
               }
             });
           }
+          // Update the state with our local messages (don't reload and lose tool chips)
+          state.activeMessages = localMessages;
           await loadConversations();
-          await loadConversation(conversationId);
+          // Don't reload the conversation - we already have the latest state with tool chips
         } finally {
           setStreaming(false);
           elements.prompt.focus();
