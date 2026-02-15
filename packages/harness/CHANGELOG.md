@@ -1,5 +1,13 @@
 # @poncho-ai/harness
 
+## 0.3.0
+
+### Minor Changes
+
+- Implement tool policy and declarative intent system
+
+  Add comprehensive tool policy framework for MCP and script tools with pattern matching, environment-based configuration, and declarative tool intent in AGENT.md and SKILL.md frontmatter.
+
 ## 0.2.0
 
 ### Minor Changes
