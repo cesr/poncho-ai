@@ -1,5 +1,22 @@
 # @poncho-ai/cli
 
+## 0.5.0
+
+### Minor Changes
+
+- Add markdown table support and fix Latitude telemetry integration
+  - Add markdown table rendering with `marked` library in web UI
+  - Add table styling with horizontal scroll and hover effects
+  - Add margins to HR elements for better spacing
+  - Integrate Latitude telemetry with Vercel AI SDK using event queue pattern
+  - Enable real-time streaming while capturing complete traces
+  - Fix telemetry to show all messages and interactions in Latitude dashboard
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @poncho-ai/harness@0.6.0
+
 ## 0.4.2
 
 ### Patch Changes
