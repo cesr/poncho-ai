@@ -23,13 +23,14 @@
     "lint": "eslint src/"
   },
   "dependencies": {
+    "@inquirer/prompts": "^8.2.0",
     "@poncho-ai/harness": "workspace:*",
     "@poncho-ai/sdk": "workspace:*",
-    "@inquirer/prompts": "^8.2.0",
     "commander": "^12.0.0",
     "dotenv": "^16.4.0",
     "esbuild": "^0.25.9",
     "ink": "^6.7.0",
+    "marked": "^17.0.2",
     "react": "^19.2.4",
     "react-devtools-core": "^6.1.5",
     "yaml": "^2.8.1"
