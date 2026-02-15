@@ -830,10 +830,29 @@ export const createRequestHandler = async (options?: {
   const conversationStore = createConversationStore(resolveStateConfig(config), { workingDir });
   const sessionStore = new SessionStore();
   const loginRateLimiter = new LoginRateLimiter();
-  const passphrase = process.env.AGENT_UI_PASSPHRASE ?? "";
+
+  // Unified authentication using PONCHO_AUTH_TOKEN for both Web UI and API
+  const authToken = process.env.PONCHO_AUTH_TOKEN ?? "";
+  const authRequired = config?.auth?.required ?? false;
+  const requireAuth = authRequired && authToken.length > 0;
+
   const isProduction = resolveHarnessEnvironment() === "production";
-  const requireUiAuth = passphrase.length > 0;
   const secureCookies = isProduction;
+
+  // Helper to extract and validate Bearer token from Authorization header
+  const validateBearerToken = (authHeader: string | string[] | undefined): boolean => {
+    if (!requireAuth || !authToken) {
+      return true; // No auth required
+    }
+    if (!authHeader || typeof authHeader !== "string") {
+      return false;
+    }
+    const match = authHeader.match(/^Bearer\s+(.+)$/i);
+    if (!match || !match[1]) {
+      return false;
+    }
+    return verifyPassphrase(match[1], authToken);
+  };
 
   return async (request: IncomingMessage, response: ServerResponse) => {
     if (!request.url || !request.method) {
@@ -888,7 +907,7 @@ export const createRequestHandler = async (options?: {
       request.method !== "GET" && request.method !== "HEAD" && request.method !== "OPTIONS";
 
     if (pathname === "/api/auth/session" && request.method === "GET") {
-      if (!requireUiAuth) {
+      if (!requireAuth) {
         writeJson(response, 200, { authenticated: true, csrfToken: "" });
         return;
       }
@@ -906,7 +925,7 @@ export const createRequestHandler = async (options?: {
     }
 
     if (pathname === "/api/auth/login" && request.method === "POST") {
-      if (!requireUiAuth) {
+      if (!requireAuth) {
         writeJson(response, 200, { authenticated: true, csrfToken: "" });
         return;
       }
@@ -922,7 +941,7 @@ export const createRequestHandler = async (options?: {
       }
       const body = (await readRequestBody(request)) as { passphrase?: string };
       const provided = body.passphrase ?? "";
-      if (!verifyPassphrase(provided, passphrase)) {
+      if (!verifyPassphrase(provided, authToken)) {
         const failure = loginRateLimiter.registerFailure(ip);
         writeJson(response, 401, {
           code: "AUTH_ERROR",
@@ -963,15 +982,23 @@ export const createRequestHandler = async (options?: {
     }
 
     if (pathname.startsWith("/api/")) {
-      if (requireUiAuth && !session) {
+      // Check authentication: either valid session (Web UI) or valid Bearer token (API)
+      const hasBearerToken = request.headers.authorization?.startsWith("Bearer ");
+      const isAuthenticated = !requireAuth || session || validateBearerToken(request.headers.authorization);
+
+      if (!isAuthenticated) {
         writeJson(response, 401, {
           code: "AUTH_ERROR",
           message: "Authentication required",
         });
         return;
       }
+
+      // CSRF validation only for session-based requests (not Bearer token requests)
       if (
-        requireUiAuth &&
+        requireAuth &&
+        session &&
+        !hasBearerToken &&
         requiresCsrfValidation &&
         pathname !== "/api/auth/login" &&
         request.headers["x-csrf-token"] !== session?.csrfToken

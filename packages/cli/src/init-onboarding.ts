@@ -441,11 +441,12 @@ const collectEnvFileLines = (answers: OnboardingAnswers): string[] => {
     (answers["auth.type"] as "bearer" | "header" | "custom" | undefined) ?? "bearer";
   const authHeaderName = String(answers["auth.headerName"] ?? "x-poncho-key");
   if (authRequired) {
-    lines.push("# Auth (API request authentication)");
+    lines.push("# Auth (protects both Web UI and API)");
+    lines.push("# Web UI: enter this token as the passphrase");
     if (authType === "bearer") {
-      lines.push("# Requests should include: Authorization: Bearer <token>");
+      lines.push("# API: include Authorization: Bearer <token> header");
     } else if (authType === "header") {
-      lines.push(`# Requests should include: ${authHeaderName}: <token>`);
+      lines.push(`# API: include ${authHeaderName}: <token> header`);
     } else {
       lines.push("# Custom auth mode: read this token in your auth.validate function.");
     }
