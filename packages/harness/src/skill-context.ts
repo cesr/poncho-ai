@@ -1,7 +1,13 @@
 import { readFile, readdir } from "node:fs/promises";
 import { dirname, resolve, normalize } from "node:path";
 import YAML from "yaml";
-import { validateMcpPattern, validateScriptPattern } from "./tool-policy.js";
+import {
+  isSiblingScriptsPattern,
+  matchesRelativeScriptPattern,
+  matchesSlashPattern,
+  normalizeRelativeScriptPattern,
+  validateMcpPattern,
+} from "./tool-policy.js";
 
 // ---------------------------------------------------------------------------
 // Skill directory scanning — default directories and ecosystem compatibility
@@ -42,6 +48,10 @@ export interface SkillMetadata {
     mcp: string[];
     scripts: string[];
   };
+  approvalRequired: {
+    mcp: string[];
+    scripts: string[];
+  };
   /** Absolute path to the skill directory. */
   skillDir: string;
   /** Absolute path to the SKILL.md file. */
@@ -68,7 +78,12 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 
 const parseSkillFrontmatter = (
   content: string,
-): { name: string; description: string; allowedTools: { mcp: string[]; scripts: string[] } } | undefined => {
+): {
+  name: string;
+  description: string;
+  allowedTools: { mcp: string[]; scripts: string[] };
+  approvalRequired: { mcp: string[]; scripts: string[] };
+} | undefined => {
   const match = content.match(FRONTMATTER_PATTERN);
   if (!match) {
     return undefined;
@@ -84,34 +99,58 @@ const parseSkillFrontmatter = (
   const description =
     typeof parsed.description === "string" ? parsed.description.trim() : "";
 
-  // Parse allowed-tools and categorize into MCP and scripts
-  const allowedToolsList = Array.isArray(parsed["allowed-tools"])
-    ? parsed["allowed-tools"].filter((item): item is string => typeof item === "string")
-    : [];
-
-  const mcpTools: string[] = [];
-  const scriptTools: string[] = [];
-
-  for (const [index, tool] of allowedToolsList.entries()) {
-    if (tool.startsWith("mcp:")) {
-      // Extract server/pattern from mcp:server/pattern or mcp:server/*
-      const withoutPrefix = tool.slice(4); // Remove "mcp:"
-      mcpTools.push(withoutPrefix);
-      validateMcpPattern(withoutPrefix, `SKILL.md frontmatter allowed-tools[${index}]`);
-    } else if (tool.includes("/scripts/")) {
-      scriptTools.push(tool);
-      validateScriptPattern(tool, `SKILL.md frontmatter allowed-tools[${index}]`);
+  const parseTools = (
+    key: "allowed-tools" | "approval-required",
+  ): { mcp: string[]; scripts: string[] } => {
+    const entries = Array.isArray(parsed[key])
+      ? parsed[key].filter((item): item is string => typeof item === "string")
+      : [];
+    const mcp: string[] = [];
+    const scripts: string[] = [];
+    for (const [index, entry] of entries.entries()) {
+      if (entry.startsWith("mcp:")) {
+        const withoutPrefix = entry.slice(4);
+        validateMcpPattern(withoutPrefix, `SKILL.md frontmatter ${key}[${index}]`);
+        mcp.push(withoutPrefix);
+        continue;
+      }
+      scripts.push(
+        normalizeRelativeScriptPattern(entry, `SKILL.md frontmatter ${key}[${index}]`),
+      );
     }
-    // Ignore other patterns for now (future extensibility)
+    return { mcp, scripts };
+  };
+  const allowedTools = parseTools("allowed-tools");
+  const approvalRequired = parseTools("approval-required");
+  for (const pattern of approvalRequired.mcp) {
+    const matchesAllowed = allowedTools.mcp.some((allowedPattern) =>
+      matchesSlashPattern(pattern, allowedPattern),
+    );
+    if (!matchesAllowed) {
+      throw new Error(
+        `Invalid SKILL.md frontmatter approval-required: MCP pattern "${pattern}" must be included in allowed-tools.`,
+      );
+    }
+  }
+  for (const pattern of approvalRequired.scripts) {
+    if (isSiblingScriptsPattern(pattern)) {
+      continue;
+    }
+    const matchesAllowed = allowedTools.scripts.some((allowedPattern) =>
+      matchesRelativeScriptPattern(pattern, allowedPattern),
+    );
+    if (!matchesAllowed) {
+      throw new Error(
+        `Invalid SKILL.md frontmatter approval-required: script pattern "${pattern}" must be included in allowed-tools when outside ./scripts/.`,
+      );
+    }
   }
 
   return {
     name,
     description,
-    allowedTools: {
-      mcp: mcpTools,
-      scripts: scriptTools,
-    },
+    allowedTools,
+    approvalRequired,
   };
 };
 
@@ -176,6 +215,11 @@ export const loadSkillMetadata = async (
       if (
         message.startsWith("Invalid MCP tool pattern") ||
         message.startsWith("Invalid script pattern")
+      ) {
+        throw new Error(`Invalid SKILL.md frontmatter at ${manifest}: ${message}`);
+      }
+      if (
+        message.startsWith("Invalid SKILL.md frontmatter approval-required")
       ) {
         throw new Error(`Invalid SKILL.md frontmatter at ${manifest}: ${message}`);
       }

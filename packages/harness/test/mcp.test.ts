@@ -138,7 +138,7 @@ describe("mcp bridge protocol transports", () => {
     ).toThrow(/Duplicate MCP server name/);
   });
 
-  it("applies allowlist and denylist policy filters", async () => {
+  it("selects discovered tools by requested patterns", async () => {
     process.env.LINEAR_TOKEN = "token-123";
     const server = createServer(async (req, res) => {
       if (req.method === "DELETE") {
@@ -195,37 +195,22 @@ describe("mcp bridge protocol transports", () => {
     if (!address || typeof address === "string") {
       throw new Error("Unexpected server address");
     }
-    const allowBridge = new LocalMcpBridge({
+    const bridge = new LocalMcpBridge({
       mcp: [
         {
           name: "remote",
           url: `http://127.0.0.1:${address.port}/mcp`,
           auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" },
-          tools: { mode: "allowlist", include: ["remote/a"] },
         },
       ],
     });
-    await allowBridge.startLocalServers();
-    await allowBridge.discoverTools();
-    const allowTools = await allowBridge.loadTools(["remote/*"]);
-    expect(allowTools.map((tool) => tool.name)).toEqual(["remote/a"]);
-    await allowBridge.stopLocalServers();
-
-    const denyBridge = new LocalMcpBridge({
-      mcp: [
-        {
-          name: "remote",
-          url: `http://127.0.0.1:${address.port}/mcp`,
-          auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" },
-          tools: { mode: "denylist", exclude: ["remote/b"] },
-        },
-      ],
-    });
-    await denyBridge.startLocalServers();
-    await denyBridge.discoverTools();
-    const denyTools = await denyBridge.loadTools(["remote/*"]);
-    expect(denyTools.map((tool) => tool.name).sort()).toEqual(["remote/a"]);
-    await denyBridge.stopLocalServers();
+    await bridge.startLocalServers();
+    await bridge.discoverTools();
+    const exact = await bridge.loadTools(["remote/a"]);
+    expect(exact.map((tool) => tool.name)).toEqual(["remote/a"]);
+    const wildcard = await bridge.loadTools(["remote/*"]);
+    expect(wildcard.map((tool) => tool.name).sort()).toEqual(["remote/a", "remote/b"]);
+    await bridge.stopLocalServers();
     await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
   });
 

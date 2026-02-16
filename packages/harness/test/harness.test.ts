@@ -303,8 +303,41 @@ description: Simple math scripts
     });
     expect(result).toEqual({
       skill: "math",
-      script: "add.ts",
+      script: "./scripts/add.ts",
       output: { sum: 5 },
+    });
+  });
+
+  it("runs AGENT-scope scripts from root scripts directory", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-root-script-run-"));
+    await mkdir(join(dir, "scripts"), { recursive: true });
+    await writeFile(
+      join(dir, "scripts", "ping.ts"),
+      "export default async function run() { return { pong: true }; }\n",
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: root-run-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Root Run Agent
+`,
+      "utf8",
+    );
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    const runner = harness.listTools().find((tool) => tool.name === "run_skill_script");
+    expect(runner).toBeDefined();
+    const result = await runner!.handler({ script: "ping.ts" });
+    expect(result).toEqual({
+      skill: null,
+      script: "./scripts/ping.ts",
+      output: { pong: true },
     });
   });
 
@@ -345,12 +378,12 @@ description: Safe skill
       script: "../outside.ts",
     });
     expect(result).toMatchObject({
-      error: expect.stringContaining("must be relative and within the skill directory"),
+      error: expect.stringContaining("must be relative and within the allowed directory"),
     });
   });
 
-  it("enforces scripts denylist policy from config", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-script-policy-"));
+  it("requires allowed-tools entries for non-standard script directories", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-script-allowed-tools-"));
     await writeFile(
       join(dir, "AGENT.md"),
       `---
@@ -364,23 +397,15 @@ model:
 `,
       "utf8",
     );
-    await writeFile(
-      join(dir, "poncho.config.js"),
-      `export default {
-  scripts: {
-    mode: "denylist",
-    exclude: ["math/scripts/add.ts"]
-  }
-};
-`,
-      "utf8",
-    );
     await mkdir(join(dir, "skills", "math", "scripts"), { recursive: true });
+    await mkdir(join(dir, "skills", "math", "tools"), { recursive: true });
     await writeFile(
       join(dir, "skills", "math", "SKILL.md"),
       `---
 name: math
 description: Math scripts
+allowed-tools:
+  - ./tools/multiply.ts
 ---
 
 # Math
@@ -392,6 +417,11 @@ description: Math scripts
       "export default async function run() { return { ok: true }; }\n",
       "utf8",
     );
+    await writeFile(
+      join(dir, "skills", "math", "tools", "multiply.ts"),
+      "export default async function run() { return { ok: true, kind: 'tools' }; }\n",
+      "utf8",
+    );
     const harness = new AgentHarness({ workingDir: dir });
     await harness.initialize();
     const listScripts = harness.listTools().find((tool) => tool.name === "list_skill_scripts");
@@ -399,11 +429,14 @@ description: Math scripts
     expect(listScripts).toBeDefined();
     expect(runScript).toBeDefined();
     const listed = await listScripts!.handler({ skill: "math" });
-    expect(listed).toEqual({ skill: "math", scripts: [] });
+    expect(listed).toEqual({ skill: "math", scripts: ["scripts/add.ts"] });
     const result = await runScript!.handler({ skill: "math", script: "add.ts" });
-    expect(result).toMatchObject({
-      error: expect.stringContaining("is not allowed by policy"),
+    expect(result).toMatchObject({ output: { ok: true } });
+    const toolsResult = await runScript!.handler({
+      skill: "math",
+      script: "./tools/multiply.ts",
     });
+    expect(toolsResult).toMatchObject({ output: { ok: true, kind: "tools" } });
   });
 
 
@@ -431,6 +464,38 @@ allowed-tools:
     expect(metadata[0]?.name).toBe("summarize");
     expect(metadata[0]?.allowedTools.mcp).toEqual(["linear/list_issues", "linear/get_issue"]);
     expect(metadata[0]?.allowedTools.scripts).toEqual([]);
+    expect(metadata[0]?.approvalRequired.mcp).toEqual([]);
+    expect(metadata[0]?.approvalRequired.scripts).toEqual([]);
+  });
+
+  it("parses approval-required patterns from SKILL.md frontmatter", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-approval-required-"));
+    await mkdir(join(dir, "skills", "triage"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "triage", "SKILL.md"),
+      `---
+name: triage
+description: Triage
+allowed-tools:
+  - mcp:github/list_issues
+  - mcp:github/create_issue
+  - ./tools/open-pr.ts
+approval-required:
+  - mcp:github/create_issue
+  - ./scripts/review.ts
+  - ./tools/open-pr.ts
+---
+
+# Triage
+`,
+      "utf8",
+    );
+    const metadata = await loadSkillMetadata(dir);
+    expect(metadata[0]?.approvalRequired.mcp).toEqual(["github/create_issue"]);
+    expect(metadata[0]?.approvalRequired.scripts).toEqual([
+      "./scripts/review.ts",
+      "./tools/open-pr.ts",
+    ]);
   });
 
   it("fails when SKILL.md includes invalid non-slash tool patterns", async () => {
@@ -542,8 +607,7 @@ model:
     {
       name: "remote",
       url: "http://127.0.0.1:${address.port}/mcp",
-      auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" },
-      tools: { mode: "allowlist", include: ["remote/*"] }
+      auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" }
     }
   ]
 };
@@ -676,8 +740,7 @@ model:
     {
       name: "remote",
       url: "http://127.0.0.1:${address.port}/mcp",
-      auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" },
-      tools: { mode: "allowlist", include: ["remote/*"] }
+      auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" }
     }
   ]
 };
@@ -711,6 +774,5 @@ allowed-tools:
     await harness.shutdown();
     await new Promise<void>((resolveClose) => mcpServer.close(() => resolveClose()));
   });
-
 
 });

@@ -21,14 +21,13 @@ import { buildSkillContextWindow, loadSkillMetadata } from "./skill-context.js";
 import { streamText, type CoreMessage } from "ai";
 import { jsonSchemaToZod } from "./schema-converter.js";
 import type { SkillMetadata } from "./skill-context.js";
-import { createSkillTools } from "./skill-tools.js";
+import { createSkillTools, normalizeScriptPolicyPath } from "./skill-tools.js";
 import { LatitudeTelemetry } from "@latitude-data/telemetry";
 import {
-  applyToolPolicy,
+  isSiblingScriptsPattern,
+  matchesRelativeScriptPattern,
   matchesSlashPattern,
-  mergePolicyForEnvironment,
-  type RuntimeEnvironment,
-  validateScriptPattern,
+  normalizeRelativeScriptPattern,
 } from "./tool-policy.js";
 import { ToolDispatcher } from "./tool-dispatcher.js";
 
@@ -121,17 +120,17 @@ You can extend your own capabilities by creating custom JavaScript/TypeScript sc
 
 - Explain and edit \`poncho.config.js\` for model/provider, storage+memory, auth, telemetry, and MCP settings.
 - Help create or update local skills under \`skills/<skill-name>/SKILL.md\`.
-- For executable skills, add JavaScript/TypeScript scripts under \`skills/<skill-name>/scripts/\` and run them via \`run_skill_script\`.
-- For MCP setup, default to direct \`poncho.config.js\` edits (\`mcp\` entries with URL, bearer token env, and tool policy).
-- Keep MCP server connection details in \`poncho.config.js\` only (name/url/auth/tools policy). Do not move server definitions into \`SKILL.md\`.
-- In \`AGENT.md\`/\`SKILL.md\` frontmatter, declare MCP tools in \`allowed-tools\` array as \`mcp:server/pattern\` (for example \`mcp:linear/*\` or \`mcp:linear/list_issues\`).
+- For executable scripts, use a sibling \`scripts/\` directory next to \`AGENT.md\` or \`SKILL.md\`; run via \`run_skill_script\`.
+- To use a custom script folder (for example \`tools/\`), declare it in \`allowed-tools\` and gate sensitive paths with \`approval-required\` in frontmatter.
+- For MCP setup, default to direct \`poncho.config.js\` edits (\`mcp\` entries with URL and bearer token env).
+- Keep MCP server connection details in \`poncho.config.js\` only (name/url/auth). Do not move server definitions into \`SKILL.md\`.
+- In \`AGENT.md\`/\`SKILL.md\` frontmatter, declare MCP tools in \`allowed-tools\` array as \`mcp:server/pattern\` (for example \`mcp:linear/*\` or \`mcp:linear/list_issues\`), and use \`approval-required\` for human-gated calls.
 - Never use nested MCP objects in skill frontmatter (for example \`mcp: [{ name, url, auth }]\`).
-- To scope tools to a skill: keep server config in \`poncho.config.js\`, add desired \`allowed-tools\` patterns in that skill's \`SKILL.md\`, and remove global \`AGENT.md\` patterns if you do not want global availability.
+- To scope tools to a skill: keep server config in \`poncho.config.js\`, add desired \`allowed-tools\`/ \`approval-required\` patterns in that skill's \`SKILL.md\`, and remove global \`AGENT.md\` patterns if you do not want global availability.
 - Do not invent unsupported top-level config keys (for example \`model\` in \`poncho.config.js\`). Keep existing config structure unless README/spec explicitly says otherwise.
-- In \`poncho.config.js\`, MCP tool patterns are scoped within each server object, so use just the tool name (for example \`include: ["*"]\` or \`include: ["list_issues"]\`), not the full \`server/tool\` format.
 - Keep \`poncho.config.js\` valid JavaScript and preserve existing imports/types/comments. If there is a JSDoc type import, do not rewrite it to a different package name.
 - Preferred MCP config shape in \`poncho.config.js\`:
-  \`mcp: [{ name: "linear", url: "https://mcp.linear.app/mcp", auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" }, tools: { mode: "allowlist", include: ["*"] } }]\`
+  \`mcp: [{ name: "linear", url: "https://mcp.linear.app/mcp", auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" } }]\`
 - If shell/CLI access exists, you can use \`poncho mcp add --url ... --name ... --auth-bearer-env ...\`, then \`poncho mcp tools list <server>\` and \`poncho mcp tools select <server>\`.
 - If shell/CLI access is unavailable, ask the user to run needed commands and provide exact copy-paste commands.
 - For setup, skills, MCP, auth, storage, telemetry, or "how do I..." questions, proactively read \`README.md\` with \`read_file\` before answering.
@@ -222,10 +221,6 @@ export class AgentHarness {
     }
   }
 
-  private runtimeEnvironment(): RuntimeEnvironment {
-    return this.environment ?? "development";
-  }
-
   private listActiveSkills(): string[] {
     return [...this.activeSkillNames].sort();
   }
@@ -236,6 +231,14 @@ export class AgentHarness {
 
   private getAgentScriptIntent(): string[] {
     return this.parsedAgent?.frontmatter.allowedTools?.scripts ?? [];
+  }
+
+  private getAgentMcpApprovalPatterns(): string[] {
+    return this.parsedAgent?.frontmatter.approvalRequired?.mcp ?? [];
+  }
+
+  private getAgentScriptApprovalPatterns(): string[] {
+    return this.parsedAgent?.frontmatter.approvalRequired?.scripts ?? [];
   }
 
   private getRequestedMcpPatterns(): string[] {
@@ -256,38 +259,104 @@ export class AgentHarness {
   }
 
   private getRequestedScriptPatterns(): string[] {
-    const skillPatterns = new Set<string>();
+    const patterns = new Set<string>(this.getAgentScriptIntent());
     for (const skillName of this.activeSkillNames) {
       const skill = this.loadedSkills.find((entry) => entry.name === skillName);
       if (!skill) {
         continue;
       }
       for (const pattern of skill.allowedTools.scripts) {
+        patterns.add(pattern);
+      }
+    }
+    return [...patterns];
+  }
+
+  private getRequestedMcpApprovalPatterns(): string[] {
+    const skillPatterns = new Set<string>();
+    for (const skillName of this.activeSkillNames) {
+      const skill = this.loadedSkills.find((entry) => entry.name === skillName);
+      if (!skill) {
+        continue;
+      }
+      for (const pattern of skill.approvalRequired.mcp) {
         skillPatterns.add(pattern);
       }
     }
     if (skillPatterns.size > 0) {
       return [...skillPatterns];
     }
-    return this.getAgentScriptIntent();
+    return this.getAgentMcpApprovalPatterns();
+  }
+
+  private getRequestedScriptApprovalPatterns(): string[] {
+    const patterns = new Set<string>(this.getAgentScriptApprovalPatterns());
+    for (const skillName of this.activeSkillNames) {
+      const skill = this.loadedSkills.find((entry) => entry.name === skillName);
+      if (!skill) {
+        continue;
+      }
+      for (const pattern of skill.approvalRequired.scripts) {
+        patterns.add(pattern);
+      }
+    }
+    return [...patterns];
   }
 
   private isScriptAllowedByPolicy(skill: string, scriptPath: string): boolean {
-    const identifier = `${skill}/${scriptPath}`;
-    const intentPatterns = this.getRequestedScriptPatterns();
-    const matchedIntent =
-      intentPatterns.length === 0
-        ? true
-        : intentPatterns.some((pattern) => matchesSlashPattern(identifier, pattern));
-    if (!matchedIntent) {
-      return false;
-    }
-    const policy = mergePolicyForEnvironment(
-      this.loadedConfig?.scripts,
-      this.runtimeEnvironment(),
+    const normalizedScriptPath = normalizeRelativeScriptPattern(
+      scriptPath,
+      "run_skill_script input.script",
     );
-    const decision = applyToolPolicy([identifier], policy);
-    return decision.allowed.length > 0;
+    if (isSiblingScriptsPattern(normalizedScriptPath)) {
+      return true;
+    }
+    const skillPatterns =
+      this.loadedSkills.find((entry) => entry.name === skill)?.allowedTools.scripts ?? [];
+    const intentPatterns = new Set<string>([
+      ...this.getAgentScriptIntent(),
+      ...skillPatterns,
+      ...this.getRequestedScriptPatterns(),
+    ]);
+    return [...intentPatterns].some((pattern) =>
+      matchesRelativeScriptPattern(normalizedScriptPath, pattern),
+    );
+  }
+
+  private isRootScriptAllowedByPolicy(scriptPath: string): boolean {
+    const normalizedScriptPath = normalizeRelativeScriptPattern(
+      scriptPath,
+      "run_skill_script input.script",
+    );
+    if (isSiblingScriptsPattern(normalizedScriptPath)) {
+      return true;
+    }
+    const patterns = this.getAgentScriptIntent();
+    return patterns.some((pattern) =>
+      matchesRelativeScriptPattern(normalizedScriptPath, pattern),
+    );
+  }
+
+  private requiresApprovalForToolCall(
+    toolName: string,
+    input: Record<string, unknown>,
+  ): boolean {
+    if (toolName === "run_skill_script") {
+      const rawScript = typeof input.script === "string" ? input.script.trim() : "";
+      if (!rawScript) {
+        return false;
+      }
+      const canonicalPath = normalizeRelativeScriptPattern(
+        `./${normalizeScriptPolicyPath(rawScript, "scripts")}`,
+        "run_skill_script input.script",
+      );
+      const scriptPatterns = this.getRequestedScriptApprovalPatterns();
+      return scriptPatterns.some((pattern) =>
+        matchesRelativeScriptPattern(canonicalPath, pattern),
+      );
+    }
+    const mcpPatterns = this.getRequestedMcpApprovalPatterns();
+    return mcpPatterns.some((pattern) => matchesSlashPattern(toolName, pattern));
   }
 
   private async refreshMcpTools(reason: string): Promise<void> {
@@ -303,10 +372,7 @@ export class AgentHarness {
       );
       return;
     }
-    const tools = await this.mcpBridge.loadTools(
-      requestedPatterns,
-      this.runtimeEnvironment(),
-    );
+    const tools = await this.mcpBridge.loadTools(requestedPatterns);
     this.dispatcher.registerMany(tools);
     for (const tool of tools) {
       this.registeredMcpToolNames.add(tool.name);
@@ -322,44 +388,9 @@ export class AgentHarness {
     );
   }
 
-  private validateScriptPolicyConfig(config: PonchoConfig | undefined): void {
-    const check = (values: string[] | undefined, path: string): void => {
-      for (const [index, value] of (values ?? []).entries()) {
-        validateScriptPattern(value, `${path}[${index}]`);
-      }
-    };
-    check(config?.scripts?.include, "poncho.config.js scripts.include");
-    check(config?.scripts?.exclude, "poncho.config.js scripts.exclude");
-    check(
-      config?.scripts?.byEnvironment?.development?.include,
-      "poncho.config.js scripts.byEnvironment.development.include",
-    );
-    check(
-      config?.scripts?.byEnvironment?.development?.exclude,
-      "poncho.config.js scripts.byEnvironment.development.exclude",
-    );
-    check(
-      config?.scripts?.byEnvironment?.staging?.include,
-      "poncho.config.js scripts.byEnvironment.staging.include",
-    );
-    check(
-      config?.scripts?.byEnvironment?.staging?.exclude,
-      "poncho.config.js scripts.byEnvironment.staging.exclude",
-    );
-    check(
-      config?.scripts?.byEnvironment?.production?.include,
-      "poncho.config.js scripts.byEnvironment.production.include",
-    );
-    check(
-      config?.scripts?.byEnvironment?.production?.exclude,
-      "poncho.config.js scripts.byEnvironment.production.exclude",
-    );
-  }
-
   async initialize(): Promise<void> {
     this.parsedAgent = await parseAgentFile(this.workingDir);
     const config = await loadPonchoConfig(this.workingDir);
-    this.validateScriptPolicyConfig(config);
     this.loadedConfig = config;
     this.registerConfiguredBuiltInTools(config);
     const provider = this.parsedAgent.frontmatter.model?.provider ?? "anthropic";
@@ -390,6 +421,9 @@ export class AgentHarness {
         onListActiveSkills: () => this.listActiveSkills(),
         isScriptAllowed: (skill: string, scriptPath: string) =>
           this.isScriptAllowedByPolicy(skill, scriptPath),
+        isRootScriptAllowed: (scriptPath: string) =>
+          this.isRootScriptAllowedByPolicy(scriptPath),
+        workingDir: this.workingDir,
       }),
     );
     if (memoryConfig?.enabled) {
@@ -761,8 +795,11 @@ ${boundedMainMemory.trim()}`
       for (const call of toolCalls) {
         const runtimeToolName = exposedToolNames.get(call.name) ?? call.name;
         yield pushEvent({ type: "tool:started", tool: runtimeToolName, input: call.input });
-        const definition = this.dispatcher.get(runtimeToolName);
-        if (definition?.requiresApproval) {
+        const requiresApproval = this.requiresApprovalForToolCall(
+          runtimeToolName,
+          call.input,
+        );
+        if (requiresApproval) {
           const approvalId = `approval_${randomUUID()}`;
           yield pushEvent({
             type: "tool:approval:required",

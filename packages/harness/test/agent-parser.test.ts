@@ -36,4 +36,30 @@ Env: {{runtime.environment}}
     expect(prompt).toContain("Project: poncho");
     expect(prompt).toContain("Env: development");
   });
+
+  it("parses approval-required with relative script paths", () => {
+    const parsed = parseAgentMarkdown(`---
+name: test-agent
+allowed-tools:
+  - mcp:github/list_issues
+  - mcp:github/create_issue
+  - ./tools/deploy.ts
+approval-required:
+  - mcp:github/create_issue
+  - ./scripts/release.ts
+  - ./tools/deploy.ts
+---
+
+# Agent
+`);
+    expect(parsed.frontmatter.allowedTools?.mcp).toEqual([
+      "github/list_issues",
+      "github/create_issue",
+    ]);
+    expect(parsed.frontmatter.approvalRequired?.mcp).toEqual(["github/create_issue"]);
+    expect(parsed.frontmatter.approvalRequired?.scripts).toEqual([
+      "./scripts/release.ts",
+      "./tools/deploy.ts",
+    ]);
+  });
 });

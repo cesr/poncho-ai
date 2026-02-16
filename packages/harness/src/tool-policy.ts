@@ -41,6 +41,45 @@ export const validateScriptPattern = (pattern: string, path: string): void => {
   }
 };
 
+export const normalizeRelativeScriptPattern = (
+  value: string,
+  path: string,
+): string => {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error(`Invalid script pattern at ${path}: value cannot be empty.`);
+  }
+  const withoutDotPrefix = trimmed.startsWith("./") ? trimmed.slice(2) : trimmed;
+  const normalized = withoutDotPrefix.replaceAll("\\", "/");
+  if (normalized.startsWith("/") || normalized === ".." || normalized.startsWith("../")) {
+    throw new Error(
+      `Invalid script pattern at ${path}: "${value}". Expected a relative path.`,
+    );
+  }
+  const segments = normalized.split("/");
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    throw new Error(
+      `Invalid script pattern at ${path}: "${value}". Expected a normalized relative path.`,
+    );
+  }
+  return `./${segments.join("/")}`;
+};
+
+export const isSiblingScriptsPattern = (pattern: string): boolean =>
+  pattern === "./scripts" || pattern.startsWith("./scripts/");
+
+const escapeRegex = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+export const matchesRelativeScriptPattern = (value: string, pattern: string): boolean => {
+  const normalizedValue = normalizeRelativeScriptPattern(value, "value");
+  const normalizedPattern = normalizeRelativeScriptPattern(pattern, "pattern");
+  const regex = new RegExp(
+    `^${escapeRegex(normalizedPattern).replaceAll("\\*", ".*")}$`,
+  );
+  return regex.test(normalizedValue);
+};
+
 const splitPattern = (pattern: string): [string, string] => {
   const slash = pattern.indexOf("/");
   if (slash < 0) {

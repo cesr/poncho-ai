@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import type { MemoryConfig } from "./memory.js";
 import type { McpConfig } from "./mcp.js";
 import type { StateConfig } from "./state.js";
-import type { ToolPatternPolicy } from "./tool-policy.js";
 
 export interface StorageConfig {
   provider?: "local" | "memory" | "redis" | "upstash" | "dynamodb";
@@ -64,7 +63,6 @@ export interface PonchoConfig extends McpConfig {
     handler?: (event: unknown) => Promise<void> | void;
   };
   skills?: Record<string, Record<string, unknown>>;
-  scripts?: ToolPatternPolicy;
   /** Extra directories (relative to project root) to scan for skills.
    *  `skills/` and `.poncho/skills/` are always scanned. */
   skillPaths?: string[];

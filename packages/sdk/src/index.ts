@@ -48,7 +48,6 @@ export interface ToolDefinition<
   timeout?: number;
   retries?: number;
   isolated?: boolean;
-  requiresApproval?: boolean;
   handler: ToolHandler<TInput, TOutput>;
 }
 

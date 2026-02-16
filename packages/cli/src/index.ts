@@ -348,7 +348,7 @@ poncho mcp add --url https://mcp.example.com/github --name github --auth-bearer-
 # List configured servers
 poncho mcp list
 
-# Discover and select MCP tools into config allowlist
+# Discover MCP tools and print frontmatter intent snippets
 poncho mcp tools list github
 poncho mcp tools select github
 
@@ -358,32 +358,32 @@ poncho mcp remove github
 
 Set required secrets in \`.env\` (for example, \`GITHUB_TOKEN=...\`).
 
-## Tool Intent in Frontmatter
+## Tool Intent and Approvals in Frontmatter
 
 Declare tool intent directly in \`AGENT.md\` and \`SKILL.md\` frontmatter:
 
 \`\`\`yaml
-tools:
-  mcp:
-    - github/list_issues
-    - github/*
-  scripts:
-    - starter/scripts/*
+allowed-tools:
+  - mcp:github/list_issues
+  - mcp:github/*
+approval-required:
+  - mcp:github/create_issue
+  - ./scripts/deploy.ts
 \`\`\`
 
 How it works:
 
 - \`AGENT.md\` provides fallback MCP intent when no skill is active.
 - \`SKILL.md\` intent applies when you activate that skill (\`activate_skill\`).
-- Skill scripts are accessible by default from each skill's \`scripts/\` directory.
-- \`AGENT.md\` \`tools.scripts\` can still be used to narrow script access when active skills do not set script intent.
-- Active skills are unioned, then filtered by policy in \`poncho.config.js\`.
+- Scripts in a sibling \`scripts/\` directory are available by convention.
+- For non-standard script folders (for example \`tools/\`), add explicit relative entries in \`allowed-tools\`.
+- Use \`approval-required\` to require human approval for specific MCP calls or script files.
 - Deactivating a skill (\`deactivate_skill\`) removes its MCP tools from runtime registration.
 
 Pattern format is strict slash-only:
 
 - MCP: \`server/tool\`, \`server/*\`
-- Scripts: \`skill/scripts/file.ts\`, \`skill/scripts/*\`
+- Scripts: relative paths such as \`./scripts/file.ts\`, \`./scripts/*\`, \`./tools/deploy.ts\`
 
 ## Configuration
 
@@ -415,16 +415,8 @@ export default {
       name: "github",
       url: "https://mcp.example.com/github",
       auth: { type: "bearer", tokenEnv: "GITHUB_TOKEN" },
-      tools: {
-        mode: "allowlist",
-        include: ["github/list_issues", "github/get_issue"],
-      },
     },
   ],
-  scripts: {
-    mode: "allowlist",
-    include: ["starter/scripts/*"],
-  },
   tools: {
     defaults: {
       list_directory: true,
@@ -824,7 +816,23 @@ export const createRequestHandler = async (options?: {
       agentModelName = modelMatch[1].trim().replace(/^["']|["']$/g, "");
     }
   } catch {}
-  const harness = new AgentHarness({ workingDir, environment: resolveHarnessEnvironment() });
+  const runOwners = new Map<string, string>();
+  const pendingApprovals = new Map<
+    string,
+    { ownerId: string; resolve: (approved: boolean) => void }
+  >();
+  const harness = new AgentHarness({
+    workingDir,
+    environment: resolveHarnessEnvironment(),
+    approvalHandler: async (request) =>
+      new Promise<boolean>((resolveApproval) => {
+        const ownerIdForRun = runOwners.get(request.runId) ?? "local-owner";
+        pendingApprovals.set(request.approvalId, {
+          ownerId: ownerIdForRun,
+          resolve: resolveApproval,
+        });
+      }),
+  });
   await harness.initialize();
   const telemetry = new TelemetryEmitter(config?.telemetry);
   const conversationStore = createConversationStore(resolveStateConfig(config), { workingDir });
@@ -1045,6 +1053,25 @@ export const createRequestHandler = async (options?: {
       return;
     }
 
+    const approvalMatch = pathname.match(/^\/api\/approvals\/([^/]+)$/);
+    if (approvalMatch && request.method === "POST") {
+      const approvalId = decodeURIComponent(approvalMatch[1] ?? "");
+      const pending = pendingApprovals.get(approvalId);
+      if (!pending || pending.ownerId !== ownerId) {
+        writeJson(response, 404, {
+          code: "APPROVAL_NOT_FOUND",
+          message: "Approval request not found",
+        });
+        return;
+      }
+      const body = (await readRequestBody(request)) as { approved?: boolean };
+      const approved = body.approved === true;
+      pendingApprovals.delete(approvalId);
+      pending.resolve(approved);
+      writeJson(response, 200, { ok: true, approvalId, approved });
+      return;
+    }
+
     const conversationPathMatch = pathname.match(/^\/api\/conversations\/([^/]+)$/);
     if (conversationPathMatch) {
       const conversationId = decodeURIComponent(conversationPathMatch[1] ?? "");
@@ -1147,6 +1174,7 @@ export const createRequestHandler = async (options?: {
         })) {
           if (event.type === "run:started") {
             latestRunId = event.runId;
+            runOwners.set(event.runId, ownerId);
           }
           if (event.type === "model:chunk") {
             // If we have tools accumulated and text starts again, push tools as a section
@@ -1239,6 +1267,9 @@ export const createRequestHandler = async (options?: {
           }),
         );
       } finally {
+        if (latestRunId) {
+          runOwners.delete(latestRunId);
+        }
         response.end();
       }
       return;
@@ -1851,25 +1882,14 @@ export const mcpList = async (workingDir: string): Promise<void> => {
   const mcp = config?.mcp ?? [];
   if (mcp.length === 0) {
     process.stdout.write("No MCP servers configured.\n");
-    if (config?.scripts) {
-      process.stdout.write(
-        `Script policy: mode=${config.scripts.mode ?? "all"} include=${config.scripts.include?.length ?? 0} exclude=${config.scripts.exclude?.length ?? 0}\n`,
-      );
-    }
     return;
   }
   process.stdout.write("Configured MCP servers:\n");
   for (const entry of mcp) {
     const auth =
       entry.auth?.type === "bearer" ? `auth=bearer:${entry.auth.tokenEnv}` : "auth=none";
-    const mode = entry.tools?.mode ?? "all";
     process.stdout.write(
-      `- ${entry.name ?? entry.url} (remote: ${entry.url}, ${auth}, mode=${mode})\n`,
-    );
-  }
-  if (config?.scripts) {
-    process.stdout.write(
-      `Script policy: mode=${config.scripts.mode ?? "all"} include=${config.scripts.include?.length ?? 0} exclude=${config.scripts.exclude?.length ?? 0}\n`,
+      `- ${entry.name ?? entry.url} (remote: ${entry.url}, ${auth})\n`,
     );
   }
 };
@@ -2013,40 +2033,26 @@ export const mcpToolsSelect = async (
     selected.length === discovered.length
       ? [`${serverName}/*`]
       : selected.sort();
-  const { config, index } = await resolveMcpEntry(workingDir, serverName);
-  const mcp = [...(config.mcp ?? [])];
-  const existing = mcp[index];
-  mcp[index] = {
-    ...existing,
-    tools: {
-      ...(existing.tools ?? {}),
-      mode: "allowlist",
-      include: includePatterns,
-    },
-  };
-  await writeConfigFile(workingDir, { ...config, mcp });
+  process.stdout.write(`Selected MCP tools: ${includePatterns.join(", ")}\n`);
   process.stdout.write(
-    `Updated ${serverName} to allowlist ${includePatterns.join(", ")} in poncho.config.js.\n`,
-  );
-  process.stdout.write(
-    "\nRequired next step: add MCP intent in AGENT.md or SKILL.md. Without this, these MCP tools will not be registered for the model.\n",
+    "\nRequired next step: add MCP intent in AGENT.md or SKILL.md allowed-tools. Without this, these MCP tools will not be registered for the model.\n",
   );
   process.stdout.write(
     "\nOption A: AGENT.md (global fallback intent)\n" +
       "Paste this into AGENT.md frontmatter:\n" +
       "---\n" +
-      "tools:\n" +
-      "  mcp:\n" +
-      includePatterns.map((tool) => `    - ${tool}`).join("\n") +
+      "allowed-tools:\n" +
+      includePatterns.map((tool) => `  - mcp:${tool}`).join("\n") +
       "\n---\n",
   );
   process.stdout.write(
     "\nOption B: SKILL.md (only when that skill is activated)\n" +
       "Paste this into SKILL.md frontmatter:\n" +
       "---\n" +
-      "tools:\n" +
-      "  mcp:\n" +
-      includePatterns.map((tool) => `    - ${tool}`).join("\n") +
+      "allowed-tools:\n" +
+      includePatterns.map((tool) => `  - mcp:${tool}`).join("\n") +
+      "\napproval-required:\n" +
+      includePatterns.map((tool) => `  - mcp:${tool}`).join("\n") +
       "\n---\n",
   );
 };
@@ -2220,7 +2226,7 @@ export const buildCli = (): Command => {
   mcpToolsCommand
     .command("select")
     .argument("<name>", "server name")
-    .description("Select MCP tools and store as config allowlist")
+    .description("Select MCP tools and print frontmatter allowed-tools entries")
     .option("--all", "select all discovered tools", false)
     .option("--tools <csv>", "comma-separated discovered tool names")
     .action(

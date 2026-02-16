@@ -1,12 +1,7 @@
 import type { ToolDefinition } from "@poncho-ai/sdk";
 import {
-  applyToolPolicy,
   matchesSlashPattern,
-  mergePolicyForEnvironment,
-  type RuntimeEnvironment,
-  type ToolPatternPolicy,
   validateMcpPattern,
-  validateMcpToolPattern,
 } from "./tool-policy.js";
 
 export interface RemoteMcpServerConfig {
@@ -17,7 +12,6 @@ export interface RemoteMcpServerConfig {
     type: "bearer";
     tokenEnv?: string;
   };
-  tools?: ToolPatternPolicy;
   timeoutMs?: number;
   reconnectAttempts?: number;
   reconnectDelayMs?: number;
@@ -297,43 +291,7 @@ export class LocalMcpBridge {
           `Invalid MCP auth config for "${name}": auth.type "bearer" requires auth.tokenEnv.`,
         );
       }
-      this.validatePolicy(server, name);
     }
-  }
-
-  private validatePolicy(server: RemoteMcpServerConfig, serverName: string): void {
-    const policy = server.tools;
-    const validateList = (values: string[] | undefined, path: string): void => {
-      for (const [index, value] of (values ?? []).entries()) {
-        validateMcpToolPattern(value, `${path}[${index}]`);
-      }
-    };
-    validateList(policy?.include, `mcp.${serverName}.tools.include`);
-    validateList(policy?.exclude, `mcp.${serverName}.tools.exclude`);
-    validateList(
-      policy?.byEnvironment?.development?.include,
-      `mcp.${serverName}.tools.byEnvironment.development.include`,
-    );
-    validateList(
-      policy?.byEnvironment?.development?.exclude,
-      `mcp.${serverName}.tools.byEnvironment.development.exclude`,
-    );
-    validateList(
-      policy?.byEnvironment?.staging?.include,
-      `mcp.${serverName}.tools.byEnvironment.staging.include`,
-    );
-    validateList(
-      policy?.byEnvironment?.staging?.exclude,
-      `mcp.${serverName}.tools.byEnvironment.staging.exclude`,
-    );
-    validateList(
-      policy?.byEnvironment?.production?.include,
-      `mcp.${serverName}.tools.byEnvironment.production.include`,
-    );
-    validateList(
-      policy?.byEnvironment?.production?.exclude,
-      `mcp.${serverName}.tools.byEnvironment.production.exclude`,
-    );
   }
 
   private getServerName(server: RemoteMcpServerConfig): string {
@@ -475,7 +433,6 @@ export class LocalMcpBridge {
 
   async loadTools(
     requestedPatterns: string[],
-    environment: RuntimeEnvironment = "development",
   ): Promise<ToolDefinition[]> {
     for (const [index, pattern] of requestedPatterns.entries()) {
       validateMcpPattern(pattern, `requestedPatterns[${index}]`);
@@ -484,7 +441,6 @@ export class LocalMcpBridge {
     if (requestedPatterns.length === 0) {
       return tools;
     }
-    const filteredByPolicy: string[] = [];
     const filteredByIntent: string[] = [];
     for (const server of this.remoteServers) {
       const serverName = this.getServerName(server);
@@ -494,21 +450,12 @@ export class LocalMcpBridge {
       }
       const discovered = this.toolCatalog.get(serverName) ?? [];
       const fullNames = discovered.map((tool) => `${serverName}/${tool.name}`);
-      const effectivePolicy = mergePolicyForEnvironment(server.tools, environment);
-      // Prepend server name to patterns for matching
-      const fullPatternPolicy = effectivePolicy ? {
-        ...effectivePolicy,
-        include: effectivePolicy.include?.map((p) => `${serverName}/${p}`),
-        exclude: effectivePolicy.exclude?.map((p) => `${serverName}/${p}`),
-      } : effectivePolicy;
-      const policyDecision = applyToolPolicy(fullNames, fullPatternPolicy);
-      filteredByPolicy.push(...policyDecision.filteredOut);
-      const selectedFullNames = policyDecision.allowed.filter((toolName) =>
+      const selectedFullNames = fullNames.filter((toolName) =>
         requestedPatterns.some((pattern) => matchesSlashPattern(toolName, pattern)),
       );
-      for (const allowedTool of policyDecision.allowed) {
-        if (!selectedFullNames.includes(allowedTool)) {
-          filteredByIntent.push(allowedTool);
+      for (const discoveredTool of fullNames) {
+        if (!selectedFullNames.includes(discoveredTool)) {
+          filteredByIntent.push(discoveredTool);
         }
       }
       const selectedRawNames = new Set(
@@ -522,7 +469,7 @@ export class LocalMcpBridge {
     this.log("info", "tools.selected", {
       requestedPatternCount: requestedPatterns.length,
       registeredCount: tools.length,
-      filteredByPolicyCount: filteredByPolicy.length,
+      filteredByPolicyCount: 0,
       filteredByIntentCount: filteredByIntent.length,
     });
     return tools;

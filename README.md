@@ -248,10 +248,11 @@ Additional skills can be installed via `poncho add <repo-or-path>`.
 
 At startup, Poncho recursively scans the `skills/` directory for `SKILL.md` files and loads their metadata.
 
-- Script tools are available through built-in wrappers (`list_skill_scripts`, `run_skill_script`) and are accessible by default for files under each skill's `scripts/` directory. Script patterns in `allowed-tools` can further narrow scope, and `poncho.config.js` script policy remains authoritative.
+- Script tools are available through built-in wrappers (`list_skill_scripts`, `run_skill_script`) and are accessible by default for files under a sibling `scripts/` directory next to `AGENT.md`/`SKILL.md`.
 - MCP tools declared in `SKILL.md` are activated on demand via `activate_skill` and removed via `deactivate_skill`.
 - If no skills are active, `AGENT.md` `allowed-tools` acts as the fallback MCP intent.
-- For scripts, `AGENT.md` `allowed-tools` can provide fallback narrowing when active skills do not declare script intent; otherwise skill script intent takes precedence.
+- For non-standard script directories (for example `./tools/*`), declare explicit paths in `allowed-tools`.
+- Use `approval-required` in frontmatter to require human approval for specific MCP calls or script files.
 
 You can add extra directories to scan via `skillPaths` in `poncho.config.js`:
 
@@ -288,7 +289,8 @@ name: my-skill
 description: Does something useful when users ask for it
 allowed-tools:
   - mcp:github/list_issues
-  - my-skill/scripts/*
+approval-required:
+  - ./scripts/my-tool.ts
 ---
 
 # My Skill
@@ -330,10 +332,6 @@ export default {
       // Remote: connect to external server
       url: 'https://mcp.example.com/slack',
       auth: { type: 'bearer', tokenEnv: 'SLACK_TOKEN' },
-      tools: {
-        mode: 'allowlist',
-        include: ['list_channels', 'post_message']
-      }
     }
   ]
 }
@@ -341,25 +339,25 @@ export default {
 
 Tool curation is layered:
 
-1. Intent in `AGENT.md` / `SKILL.md` (`allowed-tools`)
-2. Authoritative policy in `poncho.config.js` (`mode`, `include`, `exclude`, `byEnvironment`)
-3. Effective runtime set after policy filtering
+1. MCP server connection in `poncho.config.js` (`mcp` URL/auth)
+2. Intent in `AGENT.md` / `SKILL.md` (`allowed-tools`)
+3. Approval gates in `AGENT.md` / `SKILL.md` (`approval-required`)
 
-`activate_skill` unions MCP intent across all currently active skills before applying config policy.
+`activate_skill` unions MCP intent across currently active skills (with AGENT fallback when none are active).
 
-Tool patterns in `allowed-tools`:
+Tool patterns in frontmatter:
 - MCP tools: `mcp:server/tool` or `mcp:server/*` (protocol-like prefix)
-- Script tools: `skill/scripts/file.ts` or `skill/scripts/*`
+- Script tools: relative paths such as `./scripts/file.ts`, `./scripts/*`, `./tools/deploy.ts`
 
-Discover and curate tools into config allowlists:
+Discover tools and print frontmatter snippets:
 
 ```bash
 poncho mcp tools list github
 poncho mcp tools select github
 ```
 
-`poncho mcp tools select` updates `poncho.config.js` and prints snippets you can paste into
-`AGENT.md` and `SKILL.md` frontmatter (`allowed-tools` with `mcp:` prefix).
+`poncho mcp tools select` prints snippets you can paste into `AGENT.md` and `SKILL.md`
+frontmatter (`allowed-tools` / `approval-required` with `mcp:` prefix).
 
 ## Local Development
 
@@ -663,24 +661,8 @@ export default {
       name: 'github',
       url: 'https://mcp.example.com/github',
       auth: { type: 'bearer', tokenEnv: 'GITHUB_TOKEN' },
-      tools: {
-        mode: 'allowlist', // all | allowlist | denylist
-        include: ['list_issues', 'get_issue', '*'],
-        byEnvironment: {
-          production: {
-            mode: 'allowlist',
-            include: ['list_issues', 'get_issue']
-          }
-        }
-      }
     }
   ],
-
-  // Script execution policy (authoritative)
-  scripts: {
-    mode: 'allowlist',
-    include: ['starter/scripts/*']
-  },
 
   // Extra directories to scan for skills (skills/ is always scanned)
   skillPaths: ['.cursor/skills'],

@@ -861,7 +861,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       font-size: 12px;
       line-height: 1.45;
       color: #bcbcbc;
-      max-width: 300px;
+      width: 300px;
     }
     .assistant-content > .tool-activity:first-child {
       margin-top: 0;
@@ -916,6 +916,74 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       border-radius: 6px;
       padding: 4px 7px;
       color: #d6d6d6;
+    }
+    .approval-requests {
+      border-top: 1px solid rgba(255,255,255,0.08);
+      padding: 10px 12px 12px;
+      display: grid;
+      gap: 8px;
+      background: rgba(0,0,0,0.16);
+    }
+    .approval-requests-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #b0b0b0;
+      font-weight: 600;
+    }
+    .approval-request-item {
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(255,255,255,0.03);
+      border-radius: 8px;
+      padding: 8px;
+      display: grid;
+      gap: 6px;
+    }
+    .approval-request-tool {
+      font-size: 12px;
+      color: #fff;
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+    .approval-request-input {
+      font-family: ui-monospace, "SF Mono", "Fira Code", monospace;
+      font-size: 11px;
+      color: #cfcfcf;
+      background: rgba(0,0,0,0.25);
+      border-radius: 6px;
+      padding: 6px;
+      overflow-wrap: anywhere;
+      max-height: 80px;
+      overflow-y: auto;
+    }
+    .approval-request-actions {
+      display: flex;
+      gap: 6px;
+    }
+    .approval-action-btn {
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.06);
+      color: #f0f0f0;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 8px;
+      cursor: pointer;
+    }
+    .approval-action-btn:hover {
+      background: rgba(255,255,255,0.12);
+    }
+    .approval-action-btn.approve {
+      border-color: rgba(58, 208, 122, 0.45);
+      color: #78e7a6;
+    }
+    .approval-action-btn.deny {
+      border-color: rgba(224, 95, 95, 0.45);
+      color: #f59b9b;
+    }
+    .approval-action-btn[disabled] {
+      opacity: 0.55;
+      cursor: not-allowed;
     }
     .user-bubble {
       background: #111;
@@ -1152,7 +1220,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         activeConversationId: null,
         activeMessages: [],
         isStreaming: false,
-        confirmDeleteId: null
+        confirmDeleteId: null,
+        approvalRequestsInFlight: {}
       };
 
       const agentInitial = document.body.dataset.agentInitial || "A";
@@ -1265,26 +1334,118 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         return { content, activities };
       };
 
-      const renderToolActivity = (items) => {
-        if (!items || !items.length) {
+      const renderApprovalRequests = (requests) => {
+        if (!Array.isArray(requests) || requests.length === 0) {
           return "";
         }
-        const chips = items
-          .map((item) => '<div class="tool-activity-item">' + escapeHtml(item) + "</div>")
+        const rows = requests
+          .map((req) => {
+            const approvalId = typeof req.approvalId === "string" ? req.approvalId : "";
+            const tool = typeof req.tool === "string" ? req.tool : "tool";
+            const inputPreview = typeof req.inputPreview === "string" ? req.inputPreview : "{}";
+            const submitting = req.state === "submitting";
+            const approveLabel = submitting && req.pendingDecision === "approve" ? "Approving..." : "Approve";
+            const denyLabel = submitting && req.pendingDecision === "deny" ? "Denying..." : "Deny";
+            return (
+              '<div class="approval-request-item">' +
+              '<div class="approval-request-tool">' +
+              escapeHtml(tool) +
+              "</div>" +
+              '<div class="approval-request-input">' +
+              escapeHtml(inputPreview) +
+              "</div>" +
+              '<div class="approval-request-actions">' +
+              '<button class="approval-action-btn approve" data-approval-id="' +
+              escapeHtml(approvalId) +
+              '" data-approval-decision="approve" ' +
+              (submitting ? "disabled" : "") +
+              ">" +
+              approveLabel +
+              "</button>" +
+              '<button class="approval-action-btn deny" data-approval-id="' +
+              escapeHtml(approvalId) +
+              '" data-approval-decision="deny" ' +
+              (submitting ? "disabled" : "") +
+              ">" +
+              denyLabel +
+              "</button>" +
+              "</div>" +
+              "</div>"
+            );
+          })
           .join("");
         return (
-          '<div class="tool-activity">' +
-          '<details class="tool-activity-disclosure">' +
-          '<summary class="tool-activity-summary">' +
-          '<span class="tool-activity-label">Tool activity</span>' +
-          '<span class="tool-activity-caret" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none"><path d="M4.5 2.75L8 6L4.5 9.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></span>' +
-          "</summary>" +
-          '<div class="tool-activity-list">' +
-          chips +
-          "</div>" +
-          "</details>" +
+          '<div class="approval-requests">' +
+          '<div class="approval-requests-label">Approval required</div>' +
+          rows +
           "</div>"
         );
+      };
+
+      const renderToolActivity = (items, approvalRequests = []) => {
+        const hasItems = Array.isArray(items) && items.length > 0;
+        const hasApprovals = Array.isArray(approvalRequests) && approvalRequests.length > 0;
+        if (!hasItems && !hasApprovals) {
+          return "";
+        }
+        const chips = hasItems
+          ? items
+              .map((item) => '<div class="tool-activity-item">' + escapeHtml(item) + "</div>")
+              .join("")
+          : "";
+        const disclosure = hasItems
+          ? (
+              '<details class="tool-activity-disclosure">' +
+              '<summary class="tool-activity-summary">' +
+              '<span class="tool-activity-label">Tool activity</span>' +
+              '<span class="tool-activity-caret" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none"><path d="M4.5 2.75L8 6L4.5 9.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></span>' +
+              "</summary>" +
+              '<div class="tool-activity-list">' +
+              chips +
+              "</div>" +
+              "</details>"
+            )
+          : "";
+        return (
+          '<div class="tool-activity">' +
+          disclosure +
+          renderApprovalRequests(approvalRequests) +
+          "</div>"
+        );
+      };
+
+      const safeJsonPreview = (value) => {
+        try {
+          return JSON.stringify(value, (_, nestedValue) =>
+            typeof nestedValue === "bigint" ? String(nestedValue) : nestedValue,
+          );
+        } catch {
+          return "[unserializable input]";
+        }
+      };
+
+      const updatePendingApproval = (approvalId, updater) => {
+        if (!approvalId || typeof updater !== "function") {
+          return false;
+        }
+        const messages = state.activeMessages || [];
+        for (const message of messages) {
+          if (!message || !Array.isArray(message._pendingApprovals)) {
+            continue;
+          }
+          const idx = message._pendingApprovals.findIndex((req) => req.approvalId === approvalId);
+          if (idx < 0) {
+            continue;
+          }
+          const next = updater(message._pendingApprovals[idx], message._pendingApprovals);
+          if (next === null) {
+            message._pendingApprovals.splice(idx, 1);
+          } else if (next && typeof next === "object") {
+            message._pendingApprovals[idx] = next;
+          }
+          return true;
+        }
+        return false;
       };
 
       const formatDate = (epoch) => {
@@ -1390,7 +1551,14 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
               errorEl.className = "message-error";
               errorEl.innerHTML = "<strong>Error</strong><br>" + escapeHtml(m._error);
               content.appendChild(errorEl);
-            } else if (isStreaming && i === messages.length - 1 && !text && (!m._chunks || m._chunks.length === 0)) {
+            } else if (
+              isStreaming &&
+              i === messages.length - 1 &&
+              !text &&
+              (!Array.isArray(m._sections) || m._sections.length === 0) &&
+              (!Array.isArray(m._currentTools) || m._currentTools.length === 0) &&
+              (!Array.isArray(m._pendingApprovals) || m._pendingApprovals.length === 0)
+            ) {
               const spinner = document.createElement("span");
               spinner.className = "thinking-indicator";
               const starFrames = ["✶","✸","✹","✺","✹","✷"];
@@ -1415,7 +1583,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                 });
                 // While streaming, show current tools if any
                 if (isStreaming && i === messages.length - 1 && m._currentTools && m._currentTools.length > 0) {
-                  content.insertAdjacentHTML("beforeend", renderToolActivity(m._currentTools));
+                  content.insertAdjacentHTML(
+                    "beforeend",
+                    renderToolActivity(m._currentTools, m._pendingApprovals || []),
+                  );
                 }
                 // Show current text being typed
                 if (isStreaming && i === messages.length - 1 && m._currentText) {
@@ -1434,7 +1605,13 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                     ? m.metadata.toolActivity
                     : [];
                 if (metadataToolActivity.length > 0) {
-                  content.insertAdjacentHTML("beforeend", renderToolActivity(metadataToolActivity));
+                  content.insertAdjacentHTML(
+                    "beforeend",
+                    renderToolActivity(
+                      metadataToolActivity,
+                      isStreaming && i === messages.length - 1 ? m._pendingApprovals || [] : [],
+                    ),
+                  );
                 }
               }
             }
@@ -1550,6 +1727,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           _sections: [], // Array of {type: 'text'|'tools', content: string|array}
           _currentText: "",
           _currentTools: [],
+          _pendingApprovals: [],
           metadata: { toolActivity: [] }
         };
         localMessages.push(assistantMessage);
@@ -1580,96 +1758,134 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             }
             buffer += decoder.decode(value, { stream: true });
             buffer = parseSseChunk(buffer, (eventName, payload) => {
-              if (eventName === "model:chunk") {
-                const chunk = String(payload.content || "");
-                // If we have tools accumulated and text starts again, push tools as a section
-                if (assistantMessage._currentTools.length > 0 && chunk.length > 0) {
-                  assistantMessage._sections.push({ type: "tools", content: assistantMessage._currentTools });
-                  assistantMessage._currentTools = [];
+              try {
+                if (eventName === "model:chunk") {
+                  const chunk = String(payload.content || "");
+                  // If we have tools accumulated and text starts again, push tools as a section
+                  if (assistantMessage._currentTools.length > 0 && chunk.length > 0) {
+                    assistantMessage._sections.push({ type: "tools", content: assistantMessage._currentTools });
+                    assistantMessage._currentTools = [];
+                  }
+                  assistantMessage.content += chunk;
+                  assistantMessage._currentText += chunk;
+                  renderMessages(localMessages, true);
                 }
-                assistantMessage.content += chunk;
-                assistantMessage._currentText += chunk;
-                renderMessages(localMessages, true);
-              }
-              if (eventName === "tool:started") {
-                const toolName = payload.tool || "tool";
-                // If we have text accumulated, push it as a text section
-                if (assistantMessage._currentText.length > 0) {
-                  assistantMessage._sections.push({ type: "text", content: assistantMessage._currentText });
-                  assistantMessage._currentText = "";
+                if (eventName === "tool:started") {
+                  const toolName = payload.tool || "tool";
+                  // If we have text accumulated, push it as a text section
+                  if (assistantMessage._currentText.length > 0) {
+                    assistantMessage._sections.push({ type: "text", content: assistantMessage._currentText });
+                    assistantMessage._currentText = "";
+                  }
+                  const toolText = "- start \\x60" + toolName + "\\x60";
+                  assistantMessage._currentTools.push(toolText);
+                  if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                  if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                  assistantMessage.metadata.toolActivity.push(toolText);
+                  renderMessages(localMessages, true);
                 }
-                const toolText = "- start \\x60" + toolName + "\\x60";
-                assistantMessage._currentTools.push(toolText);
-                if (!assistantMessage.metadata) assistantMessage.metadata = {};
-                if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
-                assistantMessage.metadata.toolActivity.push(toolText);
-                renderMessages(localMessages, true);
-              }
-              if (eventName === "tool:completed") {
-                const toolName = payload.tool || "tool";
-                const duration = typeof payload.duration === "number" ? payload.duration : null;
-                const toolText = "- done \\x60" + toolName + "\\x60" + (duration !== null ? " (" + duration + "ms)" : "");
-                assistantMessage._currentTools.push(toolText);
-                if (!assistantMessage.metadata) assistantMessage.metadata = {};
-                if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
-                assistantMessage.metadata.toolActivity.push(toolText);
-                renderMessages(localMessages, true);
-              }
-              if (eventName === "tool:error") {
-                const toolName = payload.tool || "tool";
-                const errorMsg = payload.error || "unknown error";
-                const toolText = "- error \\x60" + toolName + "\\x60: " + errorMsg;
-                assistantMessage._currentTools.push(toolText);
-                if (!assistantMessage.metadata) assistantMessage.metadata = {};
-                if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
-                assistantMessage.metadata.toolActivity.push(toolText);
-                renderMessages(localMessages, true);
-              }
-              if (eventName === "tool:approval:required") {
-                const toolName = payload.tool || "tool";
-                const toolText = "- approval required \\x60" + toolName + "\\x60";
-                assistantMessage._currentTools.push(toolText);
-                if (!assistantMessage.metadata) assistantMessage.metadata = {};
-                if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
-                assistantMessage.metadata.toolActivity.push(toolText);
-                renderMessages(localMessages, true);
-              }
-              if (eventName === "tool:approval:granted") {
-                const toolText = "- approval granted";
-                assistantMessage._currentTools.push(toolText);
-                if (!assistantMessage.metadata) assistantMessage.metadata = {};
-                if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
-                assistantMessage.metadata.toolActivity.push(toolText);
-                renderMessages(localMessages, true);
-              }
-              if (eventName === "tool:approval:denied") {
-                const toolText = "- approval denied";
-                assistantMessage._currentTools.push(toolText);
-                if (!assistantMessage.metadata) assistantMessage.metadata = {};
-                if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
-                assistantMessage.metadata.toolActivity.push(toolText);
-                renderMessages(localMessages, true);
-              }
-              if (eventName === "run:completed") {
-                if (!assistantMessage.content || assistantMessage.content.length === 0) {
-                  assistantMessage.content = String(payload.result?.response || "");
+                if (eventName === "tool:completed") {
+                  const toolName = payload.tool || "tool";
+                  const duration = typeof payload.duration === "number" ? payload.duration : null;
+                  const toolText = "- done \\x60" + toolName + "\\x60" + (duration !== null ? " (" + duration + "ms)" : "");
+                  assistantMessage._currentTools.push(toolText);
+                  if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                  if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                  assistantMessage.metadata.toolActivity.push(toolText);
+                  renderMessages(localMessages, true);
                 }
-                // Finalize sections: push any remaining tools and text
-                if (assistantMessage._currentTools.length > 0) {
-                  assistantMessage._sections.push({ type: "tools", content: assistantMessage._currentTools });
-                  assistantMessage._currentTools = [];
+                if (eventName === "tool:error") {
+                  const toolName = payload.tool || "tool";
+                  const errorMsg = payload.error || "unknown error";
+                  const toolText = "- error \\x60" + toolName + "\\x60: " + errorMsg;
+                  assistantMessage._currentTools.push(toolText);
+                  if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                  if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                  assistantMessage.metadata.toolActivity.push(toolText);
+                  renderMessages(localMessages, true);
                 }
-                if (assistantMessage._currentText.length > 0) {
-                  assistantMessage._sections.push({ type: "text", content: assistantMessage._currentText });
-                  assistantMessage._currentText = "";
+                if (eventName === "tool:approval:required") {
+                  const toolName = payload.tool || "tool";
+                  const toolText = "- approval required \\x60" + toolName + "\\x60";
+                  assistantMessage._currentTools.push(toolText);
+                  if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                  if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                  assistantMessage.metadata.toolActivity.push(toolText);
+                  const approvalId =
+                    typeof payload.approvalId === "string" ? payload.approvalId : "";
+                  if (approvalId) {
+                    const preview = safeJsonPreview(payload.input ?? {});
+                    const inputPreview = preview.length > 600 ? preview.slice(0, 600) + "..." : preview;
+                    if (!Array.isArray(assistantMessage._pendingApprovals)) {
+                      assistantMessage._pendingApprovals = [];
+                    }
+                    const exists = assistantMessage._pendingApprovals.some(
+                      (req) => req.approvalId === approvalId,
+                    );
+                    if (!exists) {
+                      assistantMessage._pendingApprovals.push({
+                        approvalId,
+                        tool: toolName,
+                        inputPreview,
+                        state: "pending",
+                      });
+                    }
+                  }
+                  renderMessages(localMessages, true);
                 }
-                renderMessages(localMessages, false);
-              }
-              if (eventName === "run:error") {
-                const errMsg = payload.error?.message || "Something went wrong";
-                assistantMessage.content = "";
-                assistantMessage._error = errMsg;
-                renderMessages(localMessages, false);
+                if (eventName === "tool:approval:granted") {
+                  const toolText = "- approval granted";
+                  assistantMessage._currentTools.push(toolText);
+                  if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                  if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                  assistantMessage.metadata.toolActivity.push(toolText);
+                  const approvalId =
+                    typeof payload.approvalId === "string" ? payload.approvalId : "";
+                  if (approvalId && Array.isArray(assistantMessage._pendingApprovals)) {
+                    assistantMessage._pendingApprovals = assistantMessage._pendingApprovals.filter(
+                      (req) => req.approvalId !== approvalId,
+                    );
+                  }
+                  renderMessages(localMessages, true);
+                }
+                if (eventName === "tool:approval:denied") {
+                  const toolText = "- approval denied";
+                  assistantMessage._currentTools.push(toolText);
+                  if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                  if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                  assistantMessage.metadata.toolActivity.push(toolText);
+                  const approvalId =
+                    typeof payload.approvalId === "string" ? payload.approvalId : "";
+                  if (approvalId && Array.isArray(assistantMessage._pendingApprovals)) {
+                    assistantMessage._pendingApprovals = assistantMessage._pendingApprovals.filter(
+                      (req) => req.approvalId !== approvalId,
+                    );
+                  }
+                  renderMessages(localMessages, true);
+                }
+                if (eventName === "run:completed") {
+                  if (!assistantMessage.content || assistantMessage.content.length === 0) {
+                    assistantMessage.content = String(payload.result?.response || "");
+                  }
+                  // Finalize sections: push any remaining tools and text
+                  if (assistantMessage._currentTools.length > 0) {
+                    assistantMessage._sections.push({ type: "tools", content: assistantMessage._currentTools });
+                    assistantMessage._currentTools = [];
+                  }
+                  if (assistantMessage._currentText.length > 0) {
+                    assistantMessage._sections.push({ type: "text", content: assistantMessage._currentText });
+                    assistantMessage._currentText = "";
+                  }
+                  renderMessages(localMessages, false);
+                }
+                if (eventName === "run:error") {
+                  const errMsg = payload.error?.message || "Something went wrong";
+                  assistantMessage.content = "";
+                  assistantMessage._error = errMsg;
+                  renderMessages(localMessages, false);
+                }
+              } catch (error) {
+                console.error("SSE event handling error:", eventName, error);
               }
             });
           }
@@ -1784,6 +2000,49 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         elements.prompt.value = "";
         autoResizePrompt();
         await sendMessage(value);
+      });
+
+      elements.messages.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+          return;
+        }
+        const button = target.closest(".approval-action-btn");
+        if (!button) {
+          return;
+        }
+        const approvalId = button.getAttribute("data-approval-id") || "";
+        const decision = button.getAttribute("data-approval-decision") || "";
+        if (!approvalId || (decision !== "approve" && decision !== "deny")) {
+          return;
+        }
+        if (state.approvalRequestsInFlight[approvalId]) {
+          return;
+        }
+        state.approvalRequestsInFlight[approvalId] = true;
+        updatePendingApproval(approvalId, (request) => ({
+          ...request,
+          state: "submitting",
+          pendingDecision: decision,
+        }));
+        renderMessages(state.activeMessages, state.isStreaming);
+        try {
+          await api("/api/approvals/" + encodeURIComponent(approvalId), {
+            method: "POST",
+            body: JSON.stringify({ approved: decision === "approve" }),
+          });
+        } catch (error) {
+          const errMsg = error instanceof Error ? error.message : String(error);
+          updatePendingApproval(approvalId, (request) => ({
+            ...request,
+            state: "pending",
+            pendingDecision: null,
+            inputPreview: String(request.inputPreview || "") + " (submit failed: " + errMsg + ")",
+          }));
+          renderMessages(state.activeMessages, state.isStreaming);
+        } finally {
+          delete state.approvalRequestsInFlight[approvalId];
+        }
       });
 
       document.addEventListener("click", (event) => {

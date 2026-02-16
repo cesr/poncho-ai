@@ -18,18 +18,16 @@ import { loadSkillInstructions, readSkillResource } from "./skill-context.js";
 export const createSkillTools = (
   skills: SkillMetadata[],
   options?: {
+    workingDir?: string;
     onActivateSkill?: (name: string) => Promise<string[]> | string[];
     onDeactivateSkill?: (name: string) => Promise<string[]> | string[];
     onListActiveSkills?: () => string[];
     isScriptAllowed?: (skill: string, scriptPath: string) => boolean;
+    isRootScriptAllowed?: (scriptPath: string) => boolean;
   },
 ): ToolDefinition[] => {
-  if (skills.length === 0) {
-    return [];
-  }
-
   const skillsByName = new Map(skills.map((skill) => [skill.name, skill]));
-  const knownNames = skills.map((skill) => skill.name).join(", ");
+  const knownNames = skills.length > 0 ? skills.map((skill) => skill.name).join(", ") : "(none)";
 
   return [
     defineTool({
@@ -202,7 +200,7 @@ export const createSkillTools = (
     defineTool({
       name: "run_skill_script",
       description:
-        "Run a JavaScript/TypeScript module in a skill's scripts directory. " +
+        "Run a JavaScript/TypeScript module in a skill or project directory. " +
         "Uses default export function or named run/main/handler function. " +
         `Available skills: ${knownNames}`,
       inputSchema: {
@@ -210,19 +208,20 @@ export const createSkillTools = (
         properties: {
           skill: {
             type: "string",
-            description: "Name of the skill",
+            description:
+              "Optional skill name. Omit to run a project-level script relative to AGENT.md directory.",
           },
           script: {
             type: "string",
             description:
-              "Relative path under scripts/ (e.g. scripts/summarize.ts or summarize.ts)",
+              "Relative script path (e.g. ./scripts/summarize.ts, scripts/summarize.ts, or summarize.ts)",
           },
           input: {
             type: "object",
             description: "Optional JSON input payload passed to the script function",
           },
         },
-        required: ["skill", "script"],
+        required: ["script"],
         additionalProperties: false,
       },
       handler: async (input) => {
@@ -233,45 +232,66 @@ export const createSkillTools = (
             ? (input.input as Record<string, unknown>)
             : {};
 
-        const skill = skillsByName.get(name);
-        if (!skill) {
-          return {
-            error: `Unknown skill: "${name}". Available skills: ${knownNames}`,
-          };
-        }
         if (!script) {
           return { error: "Script path is required" };
         }
 
         try {
-          const scriptPath = resolveSkillScriptPath(skill, script);
-          const relativeScript = `scripts/${scriptPath
-            .slice(resolve(skill.skillDir, "scripts").length + 1)
-            .split(sep)
-            .join("/")}`;
-          if (
-            options?.isScriptAllowed &&
-            !options.isScriptAllowed(name, relativeScript)
-          ) {
+          if (name) {
+            const skill = skillsByName.get(name);
+            if (!skill) {
+              return {
+                error: `Unknown skill: "${name}". Available skills: ${knownNames}`,
+              };
+            }
+            const resolved = resolveScriptPath(skill.skillDir, script, "scripts");
+            if (
+              options?.isScriptAllowed &&
+              !options.isScriptAllowed(name, resolved.relativePath)
+            ) {
+              return {
+                error: `Script "${resolved.relativePath}" for skill "${name}" is not allowed by policy.`,
+              };
+            }
+            await access(resolved.fullPath);
+            const fn = await loadRunnableScriptFunction(resolved.fullPath);
+            const output = await fn(payload, {
+              scope: "skill",
+              skill: name,
+              scriptPath: resolved.fullPath,
+            });
             return {
-              error: `Script "${relativeScript}" for skill "${name}" is not allowed by policy.`,
+              skill: name,
+              script: resolved.relativePath,
+              output,
             };
           }
-          await access(scriptPath);
-          const fn = await loadRunnableScriptFunction(scriptPath);
+          const baseDir = options?.workingDir ?? process.cwd();
+          const resolved = resolveScriptPath(baseDir, script, "scripts");
+          if (
+            options?.isRootScriptAllowed &&
+            !options.isRootScriptAllowed(resolved.relativePath)
+          ) {
+            return {
+              error: `Script "${resolved.relativePath}" is not allowed by policy.`,
+            };
+          }
+          await access(resolved.fullPath);
+          const fn = await loadRunnableScriptFunction(resolved.fullPath);
           const output = await fn(payload, {
-            skill: name,
-            skillDir: skill.skillDir,
-            scriptPath,
+            scope: "agent",
+            scriptPath: resolved.fullPath,
           });
           return {
-            skill: name,
-            script,
+            skill: null,
+            script: resolved.relativePath,
             output,
           };
         } catch (err) {
           return {
-            error: `Failed to run script "${script}" in skill "${name}": ${err instanceof Error ? err.message : String(err)}`,
+            error: name
+              ? `Failed to run script "${script}" in skill "${name}": ${err instanceof Error ? err.message : String(err)}`
+              : `Failed to run script "${script}" from AGENT scope: ${err instanceof Error ? err.message : String(err)}`,
           };
         }
       },
@@ -319,37 +339,51 @@ const collectScriptFiles = async (directory: string): Promise<string[]> => {
   return files;
 };
 
-const resolveSkillScriptPath = (skill: SkillMetadata, relativePath: string): string => {
-  const normalized = normalize(relativePath);
+export const normalizeScriptPolicyPath = (
+  relativePath: string,
+  defaultDirectory: string,
+): string => {
+  const normalized = normalize(relativePath).split(sep).join("/");
   if (normalized.startsWith("..") || normalized.startsWith("/")) {
-    throw new Error("Script path must be relative and within the skill directory");
+    throw new Error("Script path must be relative and within the allowed directory");
   }
-
-  const normalizedWithPrefix = normalized.startsWith("scripts/")
-    ? normalized
-    : `scripts/${normalized}`;
-  const fullPath = resolve(skill.skillDir, normalizedWithPrefix);
-  const scriptsRoot = resolve(skill.skillDir, "scripts");
-
-  if (!fullPath.startsWith(`${scriptsRoot}${sep}`) && fullPath !== scriptsRoot) {
-    throw new Error("Script path must stay inside the scripts directory");
+  const withoutDotPrefix = normalized.startsWith("./") ? normalized.slice(2) : normalized;
+  if (withoutDotPrefix.length === 0 || withoutDotPrefix === ".") {
+    throw new Error("Script path must point to a file");
   }
+  if (!withoutDotPrefix.includes("/")) {
+    return `${defaultDirectory}/${withoutDotPrefix}`;
+  }
+  return withoutDotPrefix;
+};
 
+const resolveScriptPath = (
+  baseDir: string,
+  relativePath: string,
+  defaultDirectory: string,
+): { fullPath: string; relativePath: string } => {
+  const normalized = normalizeScriptPolicyPath(relativePath, defaultDirectory);
+  const fullPath = resolve(baseDir, normalized);
+  if (!fullPath.startsWith(`${resolve(baseDir)}${sep}`) && fullPath !== resolve(baseDir)) {
+    throw new Error("Script path must stay inside the allowed directory");
+  }
   const extension = extname(fullPath).toLowerCase();
   if (!SCRIPT_EXTENSIONS.has(extension)) {
     throw new Error(
       `Unsupported script extension "${extension || "(none)"}". Allowed: ${[...SCRIPT_EXTENSIONS].join(", ")}`,
     );
   }
-
-  return fullPath;
+  return {
+    fullPath,
+    relativePath: `./${normalized}`,
+  };
 };
 
 type RunnableScriptFunction = (
   input: Record<string, unknown>,
   context: {
-    skill: string;
-    skillDir: string;
+    scope: "agent" | "skill";
+    skill?: string;
     scriptPath: string;
   },
 ) => unknown | Promise<unknown>;

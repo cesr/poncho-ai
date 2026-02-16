@@ -3,7 +3,12 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import Mustache from "mustache";
 import YAML from "yaml";
-import { validateMcpPattern, validateScriptPattern } from "./tool-policy.js";
+import {
+  matchesSlashPattern,
+  matchesRelativeScriptPattern,
+  normalizeRelativeScriptPattern,
+  validateMcpPattern,
+} from "./tool-policy.js";
 
 export interface AgentModelConfig {
   provider: string;
@@ -23,6 +28,10 @@ export interface AgentFrontmatter {
   model?: AgentModelConfig;
   limits?: AgentLimitsConfig;
   allowedTools?: {
+    mcp?: string[];
+    scripts?: string[];
+  };
+  approvalRequired?: {
     mcp?: string[];
     scripts?: string[];
   };
@@ -71,26 +80,51 @@ export const parseAgentMarkdown = (content: string): ParsedAgent => {
 
   const modelValue = asRecord(parsed.model);
   const limitsValue = asRecord(parsed.limits);
-
-  // Parse allowed-tools and categorize into MCP and scripts
-  const allowedToolsList = Array.isArray(parsed["allowed-tools"])
-    ? parsed["allowed-tools"].filter((item): item is string => typeof item === "string")
-    : [];
-
-  const mcpTools: string[] = [];
-  const scriptTools: string[] = [];
-
-  for (const [index, tool] of allowedToolsList.entries()) {
-    if (tool.startsWith("mcp:")) {
-      // Extract server/pattern from mcp:server/pattern or mcp:server/*
-      const withoutPrefix = tool.slice(4); // Remove "mcp:"
-      mcpTools.push(withoutPrefix);
-      validateMcpPattern(withoutPrefix, `AGENT.md frontmatter allowed-tools[${index}]`);
-    } else if (tool.includes("/scripts/")) {
-      scriptTools.push(tool);
-      validateScriptPattern(tool, `AGENT.md frontmatter allowed-tools[${index}]`);
+  const parseTools = (
+    key: "allowed-tools" | "approval-required",
+  ): { mcp: string[]; scripts: string[] } => {
+    const entries = Array.isArray(parsed[key])
+      ? parsed[key].filter((item): item is string => typeof item === "string")
+      : [];
+    const mcp: string[] = [];
+    const scripts: string[] = [];
+    for (const [index, entry] of entries.entries()) {
+      if (entry.startsWith("mcp:")) {
+        const withoutPrefix = entry.slice(4);
+        validateMcpPattern(withoutPrefix, `AGENT.md frontmatter ${key}[${index}]`);
+        mcp.push(withoutPrefix);
+        continue;
+      }
+      scripts.push(
+        normalizeRelativeScriptPattern(entry, `AGENT.md frontmatter ${key}[${index}]`),
+      );
     }
-    // Ignore other patterns for now (future extensibility)
+    return { mcp, scripts };
+  };
+  const allowedTools = parseTools("allowed-tools");
+  const approvalRequired = parseTools("approval-required");
+  for (const pattern of approvalRequired.mcp) {
+    const matchesAllowed = allowedTools.mcp.some((allowedPattern) =>
+      matchesSlashPattern(pattern, allowedPattern),
+    );
+    if (!matchesAllowed) {
+      throw new Error(
+        `Invalid AGENT.md frontmatter approval-required: MCP pattern "${pattern}" must be included in allowed-tools.`,
+      );
+    }
+  }
+  for (const pattern of approvalRequired.scripts) {
+    if (pattern.startsWith("./scripts/")) {
+      continue;
+    }
+    const matchesAllowed = allowedTools.scripts.some((allowedPattern) =>
+      matchesRelativeScriptPattern(pattern, allowedPattern),
+    );
+    if (!matchesAllowed) {
+      throw new Error(
+        `Invalid AGENT.md frontmatter approval-required: script pattern "${pattern}" must be included in allowed-tools when outside ./scripts/.`,
+      );
+    }
   }
 
   const frontmatter: AgentFrontmatter = {
@@ -120,10 +154,23 @@ export const parseAgentMarkdown = (content: string): ParsedAgent => {
           }
         : undefined,
     allowedTools:
-      mcpTools.length > 0 || scriptTools.length > 0
+      allowedTools.mcp.length > 0 || allowedTools.scripts.length > 0
         ? {
-            mcp: mcpTools.length > 0 ? mcpTools : undefined,
-            scripts: scriptTools.length > 0 ? scriptTools : undefined,
+            mcp: allowedTools.mcp.length > 0 ? allowedTools.mcp : undefined,
+            scripts: allowedTools.scripts.length > 0 ? allowedTools.scripts : undefined,
+          }
+        : undefined,
+    approvalRequired:
+      approvalRequired.mcp.length > 0 || approvalRequired.scripts.length > 0
+        ? {
+            mcp:
+              approvalRequired.mcp.length > 0
+                ? approvalRequired.mcp
+                : undefined,
+            scripts:
+              approvalRequired.scripts.length > 0
+                ? approvalRequired.scripts
+                : undefined,
           }
         : undefined,
   };
