@@ -4,7 +4,7 @@ An agent harness framework for building and deploying general AI agents.
 
 Develop locally with `poncho dev`, then deploy the same agent to production with configured skills and scripts, tools and MCP servers, OpenTelemetry traces, and testing workflows.
 
-Deployed agents are accessible via web UI, REST API, or the TypeScript SDK.
+Poncho is built for the web: deployed agents are accessible via web UI, REST API, or the TypeScript SDK.
 
 > **Beta**: Poncho is under active development. Expect breaking changes, and please open an issue if you hit anything confusing or sharp.
 
@@ -23,6 +23,35 @@ poncho dev
 Poncho is a framework for building custom AI agents that are version-controlled in git, developed locally, and deployed in isolated cloud environments. You define behavior in `AGENT.md`, iterate by chatting with the agent on your machine, and expose the same agent safely through a UI/API in production. In production, agents can only act through the skills and tools you configure.
 
 Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` folder) and implements the [AgentSkills open standard](https://agentskills.io/home). Skills are portable across 25+ platforms including GitHub Copilot, Cursor, and VS Code.
+
+### Getting Started
+- [Why Poncho?](#why-poncho)
+- [Quick Start](#quick-start)
+
+### Core Concepts
+- [The AGENT.md File](#the-agentmd-file)
+- [Adding Skills](#adding-skills)
+- [Using MCP Servers](#using-mcp-servers)
+
+### Development
+- [Local Development](#local-development)
+- [Testing Your Agent](#testing-your-agent)
+
+### Deploy & Integrate
+- [Building and Deploying](#building-and-deploying)
+- [HTTP API](#http-api)
+- [Multi-turn Conversations](#multi-turn-conversations)
+
+### Features
+- [Persistent Memory](#persistent-memory-mvp)
+- [Observability](#observability)
+
+### Reference
+- [Configuration](#configuration-reference)
+- [Security](#security)
+- [Examples](#examples)
+- [Error Handling](#error-handling)
+- [Troubleshooting](#troubleshooting)
 
 ## Why Poncho?
 
