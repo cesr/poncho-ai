@@ -401,6 +401,16 @@ Pattern format is strict slash-only:
 - MCP: \`server/tool\`, \`server/*\`
 - Scripts: relative paths such as \`./scripts/file.ts\`, \`./scripts/*\`, \`./tools/deploy.ts\`
 
+Skill authoring guardrails:
+
+- Every \`SKILL.md\` must include YAML frontmatter between \`---\` markers.
+- Include at least \`name\` (required for discovery) and \`description\`.
+- Put tool intent in frontmatter using \`allowed-tools\` and \`approval-required\`.
+- \`approval-required\` is stricter than allowed access:
+  - MCP entries in \`approval-required\` must also appear in \`allowed-tools\`.
+  - Script entries outside \`./scripts/\` must also appear in \`allowed-tools\`.
+- Keep MCP server connection details in \`poncho.config.js\`, not in \`SKILL.md\`.
+
 ## Configuration
 
 Core files:

@@ -325,6 +325,18 @@ The Agent Skills spec only requires `SKILL.md`. To stay spec-aligned, use `scrip
 
 Poncho executes JavaScript/TypeScript skill scripts through built-in tools: `list_skill_scripts` (discovery) and `run_skill_script` (execution). No Poncho-specific tool export is required.
 
+Skill authoring rules:
+
+- Every `SKILL.md` must include YAML frontmatter between `---` markers.
+- Frontmatter should include at least `name` (required for discovery) and `description`.
+- Put tool intent in frontmatter using `allowed-tools` and `approval-required`.
+- MCP patterns use `mcp:server/tool` or `mcp:server/*`.
+- Script patterns use relative paths (for example `./scripts/fetch.ts`, `./tools/audit.ts`, `./fetch-page.ts`).
+- `approval-required` must be a stricter subset of allowed access:
+  - MCP entries in `approval-required` must also be in `allowed-tools`.
+  - Script entries outside `./scripts/` must also be in `allowed-tools`.
+- Keep MCP server connection details in `poncho.config.js` only (not in `SKILL.md` frontmatter).
+
 ```
 my-agent/
 └── skills/

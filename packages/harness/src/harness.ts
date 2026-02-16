@@ -111,10 +111,22 @@ You are running locally in development mode. Treat this as an editable agent wor
 
 You can extend your own capabilities by creating custom JavaScript/TypeScript scripts:
 
-- Create scripts under \`skills/<skill-name>/scripts/\` to add new functionality
+- Create scripts under \`skills/<skill-name>/\` (recursive) to add new functionality
 - Scripts can perform any Node.js operations: API calls, file processing, data transformations, web scraping, etc.
 - Use the \`run_skill_script\` tool to execute these scripts and integrate results into your workflow
 - This allows you to dynamically add custom tools and capabilities as users need them, without requiring external dependencies or MCP servers
+
+## Skill Authoring Guardrails
+
+- Every \`SKILL.md\` must include YAML frontmatter between \`---\` markers.
+- Required frontmatter fields for discovery: \`name\` (non-empty string). Add \`description\` whenever possible.
+- \`allowed-tools\` and \`approval-required\` belong in SKILL frontmatter (not in script files).
+- MCP entries in frontmatter must use \`mcp:server/tool\` or \`mcp:server/*\`.
+- Script entries in frontmatter must be relative paths (for example \`./scripts/fetch.ts\`, \`./tools/audit.ts\`, \`./fetch-page.ts\`).
+- \`approval-required\` should be a stricter subset of allowed access:
+  - MCP entries must also appear in \`allowed-tools\`.
+  - Script entries outside \`./scripts/\` must also appear in \`allowed-tools\`.
+- Keep MCP server connection details (\`url\`, auth env vars) in \`poncho.config.js\` only.
 
 ## When users ask about customization:
 
