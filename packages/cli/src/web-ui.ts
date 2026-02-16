@@ -839,6 +839,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     .assistant-content td {
       padding: 10px 12px;
       border-bottom: 1px solid rgba(255,255,255,0.06);
+      width: 100%;
       min-width: 100px;
     }
     .assistant-content tr:last-child td {
@@ -1220,6 +1221,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         activeConversationId: null,
         activeMessages: [],
         isStreaming: false,
+        isMessagesPinnedToBottom: true,
         confirmDeleteId: null,
         approvalRequestsInFlight: {}
       };
@@ -1590,7 +1592,18 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         }
       };
 
-      const renderMessages = (messages, isStreaming = false) => {
+      const isNearBottom = (element, threshold = 64) => {
+        if (!element) return true;
+        return (
+          element.scrollHeight - element.clientHeight - element.scrollTop <= threshold
+        );
+      };
+
+      const renderMessages = (messages, isStreaming = false, options = {}) => {
+        const previousScrollTop = elements.messages.scrollTop;
+        const shouldStickToBottom =
+          options.forceScrollBottom === true || state.isMessagesPinnedToBottom;
+
         const createThinkingIndicator = () => {
           const spinner = document.createElement("span");
           spinner.className = "thinking-indicator";
@@ -1607,6 +1620,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         elements.messages.innerHTML = "";
         if (!messages || !messages.length) {
           elements.messages.innerHTML = '<div class="empty-state"><div class="assistant-avatar">' + agentInitial + '</div><div>How can I help you today?</div></div>';
+          elements.messages.scrollTop = 0;
           return;
         }
         const col = document.createElement("div");
@@ -1724,7 +1738,14 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           col.appendChild(row);
         });
         elements.messages.appendChild(col);
-        elements.messages.scrollTop = elements.messages.scrollHeight;
+        if (shouldStickToBottom) {
+          elements.messages.scrollTop = elements.messages.scrollHeight;
+          state.isMessagesPinnedToBottom = true;
+          return;
+        }
+        if (options.preserveScroll !== false) {
+          elements.messages.scrollTop = previousScrollTop;
+        }
       };
 
       const loadConversations = async () => {
@@ -1740,13 +1761,20 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           payload.conversation.messages || [],
           payload.conversation.pendingApprovals || payload.pendingApprovals || [],
         );
-        renderMessages(state.activeMessages);
+        renderMessages(state.activeMessages, false, { forceScrollBottom: true });
         elements.prompt.focus();
       };
 
       const streamConversationEvents = (conversationId) => {
         return new Promise((resolve) => {
           const localMessages = state.activeMessages || [];
+          const renderIfActiveConversation = (streaming) => {
+            if (state.activeConversationId !== conversationId) {
+              return;
+            }
+            state.activeMessages = localMessages;
+            renderMessages(localMessages, streaming);
+          };
           let assistantMessage = localMessages[localMessages.length - 1];
           if (!assistantMessage || assistantMessage.role !== "assistant") {
             assistantMessage = {
@@ -1800,7 +1828,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                       }
                       assistantMessage.content += chunk;
                       assistantMessage._currentText += chunk;
-                      renderMessages(localMessages, true);
+                      renderIfActiveConversation(true);
                     }
                     if (eventName === "tool:started") {
                       const toolName = payload.tool || "tool";
@@ -1814,7 +1842,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                       const toolText = "- start \\x60" + toolName + "\\x60";
                       assistantMessage._currentTools.push(toolText);
                       assistantMessage.metadata.toolActivity.push(toolText);
-                      renderMessages(localMessages, true);
+                      renderIfActiveConversation(true);
                     }
                     if (eventName === "tool:completed") {
                       const toolName = payload.tool || "tool";
@@ -1827,7 +1855,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                         (duration !== null ? " (" + duration + "ms)" : "");
                       assistantMessage._currentTools.push(toolText);
                       assistantMessage.metadata.toolActivity.push(toolText);
-                      renderMessages(localMessages, true);
+                      renderIfActiveConversation(true);
                     }
                     if (eventName === "tool:error") {
                       const toolName = payload.tool || "tool";
@@ -1835,7 +1863,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                       const toolText = "- error \\x60" + toolName + "\\x60: " + errorMsg;
                       assistantMessage._currentTools.push(toolText);
                       assistantMessage.metadata.toolActivity.push(toolText);
-                      renderMessages(localMessages, true);
+                      renderIfActiveConversation(true);
                     }
                     if (eventName === "run:completed") {
                       if (
@@ -1860,14 +1888,14 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                         });
                         assistantMessage._currentText = "";
                       }
-                      renderMessages(localMessages, false);
+                      renderIfActiveConversation(false);
                     }
                     if (eventName === "run:error") {
                       const errMsg =
                         payload.error?.message || "Something went wrong";
                       assistantMessage.content = "";
                       assistantMessage._error = errMsg;
-                      renderMessages(localMessages, false);
+                      renderIfActiveConversation(false);
                     }
                   } catch (error) {
                     console.error("SSE reconnect event error:", eventName, error);
@@ -1876,7 +1904,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
               }
             };
             processChunks().finally(() => {
-              state.activeMessages = localMessages;
+              if (state.activeConversationId === conversationId) {
+                state.activeMessages = localMessages;
+              }
               resolve(undefined);
             });
           }).catch(() => {
@@ -1977,13 +2007,21 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         };
         localMessages.push(assistantMessage);
         state.activeMessages = localMessages;
-        renderMessages(localMessages, true);
+        renderMessages(localMessages, true, { forceScrollBottom: true });
         setStreaming(true);
         let conversationId = state.activeConversationId;
         try {
           if (!conversationId) {
             conversationId = await createConversation(messageText, { loadConversation: false });
           }
+          const streamConversationId = conversationId;
+          const renderIfActiveConversation = (streaming) => {
+            if (state.activeConversationId !== streamConversationId) {
+              return;
+            }
+            state.activeMessages = localMessages;
+            renderMessages(localMessages, streaming);
+          };
           const response = await fetch("/api/conversations/" + encodeURIComponent(conversationId) + "/messages", {
             method: "POST",
             credentials: "include",
@@ -2013,7 +2051,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                   }
                   assistantMessage.content += chunk;
                   assistantMessage._currentText += chunk;
-                  renderMessages(localMessages, true);
+                  renderIfActiveConversation(true);
                 }
                 if (eventName === "tool:started") {
                   const toolName = payload.tool || "tool";
@@ -2027,7 +2065,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                   if (!assistantMessage.metadata) assistantMessage.metadata = {};
                   if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
                   assistantMessage.metadata.toolActivity.push(toolText);
-                  renderMessages(localMessages, true);
+                  renderIfActiveConversation(true);
                 }
                 if (eventName === "tool:completed") {
                   const toolName = payload.tool || "tool";
@@ -2037,7 +2075,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                   if (!assistantMessage.metadata) assistantMessage.metadata = {};
                   if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
                   assistantMessage.metadata.toolActivity.push(toolText);
-                  renderMessages(localMessages, true);
+                  renderIfActiveConversation(true);
                 }
                 if (eventName === "tool:error") {
                   const toolName = payload.tool || "tool";
@@ -2047,7 +2085,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                   if (!assistantMessage.metadata) assistantMessage.metadata = {};
                   if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
                   assistantMessage.metadata.toolActivity.push(toolText);
-                  renderMessages(localMessages, true);
+                  renderIfActiveConversation(true);
                 }
                 if (eventName === "tool:approval:required") {
                   const toolName = payload.tool || "tool";
@@ -2076,7 +2114,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                       });
                     }
                   }
-                  renderMessages(localMessages, true);
+                  renderIfActiveConversation(true);
                 }
                 if (eventName === "tool:approval:granted") {
                   const toolText = "- approval granted";
@@ -2091,7 +2129,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                       (req) => req.approvalId !== approvalId,
                     );
                   }
-                  renderMessages(localMessages, true);
+                  renderIfActiveConversation(true);
                 }
                 if (eventName === "tool:approval:denied") {
                   const toolText = "- approval denied";
@@ -2106,7 +2144,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                       (req) => req.approvalId !== approvalId,
                     );
                   }
-                  renderMessages(localMessages, true);
+                  renderIfActiveConversation(true);
                 }
                 if (eventName === "run:completed") {
                   if (!assistantMessage.content || assistantMessage.content.length === 0) {
@@ -2121,21 +2159,23 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                     assistantMessage._sections.push({ type: "text", content: assistantMessage._currentText });
                     assistantMessage._currentText = "";
                   }
-                  renderMessages(localMessages, false);
+                  renderIfActiveConversation(false);
                 }
                 if (eventName === "run:error") {
                   const errMsg = payload.error?.message || "Something went wrong";
                   assistantMessage.content = "";
                   assistantMessage._error = errMsg;
-                  renderMessages(localMessages, false);
+                  renderIfActiveConversation(false);
                 }
               } catch (error) {
                 console.error("SSE event handling error:", eventName, error);
               }
             });
           }
-          // Update the state with our local messages (don't reload and lose tool chips)
-          state.activeMessages = localMessages;
+          // Update active state only if user is still on this conversation.
+          if (state.activeConversationId === streamConversationId) {
+            state.activeMessages = localMessages;
+          }
           await loadConversations();
           // Don't reload the conversation - we already have the latest state with tool chips
         } finally {
@@ -2302,6 +2342,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           delete state.approvalRequestsInFlight[approvalId];
         }
       });
+
+      elements.messages.addEventListener("scroll", () => {
+        state.isMessagesPinnedToBottom = isNearBottom(elements.messages);
+      }, { passive: true });
 
       document.addEventListener("click", (event) => {
         if (!(event.target instanceof Node)) {
