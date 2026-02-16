@@ -236,6 +236,11 @@ description: Simple math scripts
       "utf8",
     );
     await writeFile(
+      join(dir, "skills", "math", "fetch-page.ts"),
+      "export default async function run() { return { ok: true, root: true }; }\n",
+      "utf8",
+    );
+    await writeFile(
       join(dir, "skills", "math", "scripts", "README.md"),
       "# not executable\n",
       "utf8",
@@ -249,7 +254,7 @@ description: Simple math scripts
     const result = await listScripts!.handler({ skill: "math" });
     expect(result).toEqual({
       skill: "math",
-      scripts: ["scripts/add.ts", "scripts/nested/multiply.js"],
+      scripts: ["./fetch-page.ts", "scripts/add.ts", "scripts/nested/multiply.js"],
     });
   });
 
@@ -290,6 +295,14 @@ description: Simple math scripts
 `,
       "utf8",
     );
+    await writeFile(
+      join(dir, "skills", "math", "fetch-page.ts"),
+      `export default async function run() {
+  return { kind: "root-script" };
+}
+`,
+      "utf8",
+    );
 
     const harness = new AgentHarness({ workingDir: dir });
     await harness.initialize();
@@ -298,13 +311,22 @@ description: Simple math scripts
     expect(runner).toBeDefined();
     const result = await runner!.handler({
       skill: "math",
-      script: "add.ts",
+      script: "scripts/add.ts",
       input: { a: 2, b: 3 },
     });
     expect(result).toEqual({
       skill: "math",
       script: "./scripts/add.ts",
       output: { sum: 5 },
+    });
+    const rootResult = await runner!.handler({
+      skill: "math",
+      script: "./fetch-page.ts",
+    });
+    expect(rootResult).toEqual({
+      skill: "math",
+      script: "./fetch-page.ts",
+      output: { kind: "root-script" },
     });
   });
 
@@ -333,7 +355,7 @@ model:
     await harness.initialize();
     const runner = harness.listTools().find((tool) => tool.name === "run_skill_script");
     expect(runner).toBeDefined();
-    const result = await runner!.handler({ script: "ping.ts" });
+    const result = await runner!.handler({ script: "scripts/ping.ts" });
     expect(result).toEqual({
       skill: null,
       script: "./scripts/ping.ts",
@@ -429,8 +451,11 @@ allowed-tools:
     expect(listScripts).toBeDefined();
     expect(runScript).toBeDefined();
     const listed = await listScripts!.handler({ skill: "math" });
-    expect(listed).toEqual({ skill: "math", scripts: ["scripts/add.ts"] });
-    const result = await runScript!.handler({ skill: "math", script: "add.ts" });
+    expect(listed).toEqual({
+      skill: "math",
+      scripts: ["scripts/add.ts", "tools/multiply.ts"],
+    });
+    const result = await runScript!.handler({ skill: "math", script: "scripts/add.ts" });
     expect(result).toMatchObject({ output: { ok: true } });
     const toolsResult = await runScript!.handler({
       skill: "math",

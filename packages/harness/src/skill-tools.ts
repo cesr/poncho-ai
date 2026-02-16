@@ -1,5 +1,5 @@
 import { defineTool, type ToolDefinition } from "@poncho-ai/sdk";
-import { access, readdir } from "node:fs/promises";
+import { access, readdir, stat } from "node:fs/promises";
 import { extname, normalize, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createJiti } from "jiti";
@@ -163,7 +163,7 @@ export const createSkillTools = (
     defineTool({
       name: "list_skill_scripts",
       description:
-        "List JavaScript/TypeScript script files available under a skill's scripts directory. " +
+        "List JavaScript/TypeScript script files available under a skill directory (recursive). " +
         `Available skills: ${knownNames}`,
       inputSchema: {
         type: "object",
@@ -214,7 +214,7 @@ export const createSkillTools = (
           script: {
             type: "string",
             description:
-              "Relative script path (e.g. ./scripts/summarize.ts, scripts/summarize.ts, or summarize.ts)",
+              "Relative script path from the skill/project root (e.g. ./fetch-page.ts, scripts/summarize.ts, tools/multiply.ts)",
           },
           input: {
             type: "object",
@@ -244,7 +244,7 @@ export const createSkillTools = (
                 error: `Unknown skill: "${name}". Available skills: ${knownNames}`,
               };
             }
-            const resolved = resolveScriptPath(skill.skillDir, script, "scripts");
+            const resolved = resolveScriptPath(skill.skillDir, script);
             if (
               options?.isScriptAllowed &&
               !options.isScriptAllowed(name, resolved.relativePath)
@@ -267,7 +267,7 @@ export const createSkillTools = (
             };
           }
           const baseDir = options?.workingDir ?? process.cwd();
-          const resolved = resolveScriptPath(baseDir, script, "scripts");
+          const resolved = resolveScriptPath(baseDir, script);
           if (
             options?.isRootScriptAllowed &&
             !options.isRootScriptAllowed(resolved.relativePath)
@@ -305,16 +305,13 @@ const listSkillScripts = async (
   skill: SkillMetadata,
   isScriptAllowed?: (skill: string, scriptPath: string) => boolean,
 ): Promise<string[]> => {
-  const scriptsRoot = resolve(skill.skillDir, "scripts");
-  try {
-    await access(scriptsRoot);
-  } catch {
-    return [];
-  }
-
-  const scripts = await collectScriptFiles(scriptsRoot);
+  const scripts = await collectScriptFiles(skill.skillDir);
   return scripts
-    .map((fullPath) => `scripts/${fullPath.slice(scriptsRoot.length + 1).split(sep).join("/")}`)
+    .map((fullPath) => fullPath.slice(skill.skillDir.length + 1).split(sep).join("/"))
+    .filter((relativePath) => relativePath.toLowerCase() !== "skill.md")
+    .map((relativePath) =>
+      relativePath.includes("/") ? relativePath : `./${relativePath}`,
+    )
     .filter((path) => (isScriptAllowed ? isScriptAllowed(skill.name, path) : true))
     .sort();
 };
@@ -324,12 +321,30 @@ const collectScriptFiles = async (directory: string): Promise<string[]> => {
   const files: string[] = [];
 
   for (const entry of entries) {
+    if (entry.name === "node_modules") {
+      continue;
+    }
     const fullPath = resolve(directory, entry.name);
-    if (entry.isDirectory()) {
+
+    let isDir = entry.isDirectory();
+    let isFile = entry.isFile();
+
+    // Dirent reports symlinks separately; resolve target type via stat()
+    if (entry.isSymbolicLink()) {
+      try {
+        const s = await stat(fullPath);
+        isDir = s.isDirectory();
+        isFile = s.isFile();
+      } catch {
+        continue; // broken symlink — skip
+      }
+    }
+
+    if (isDir) {
       files.push(...(await collectScriptFiles(fullPath)));
       continue;
     }
-    if (entry.isFile()) {
+    if (isFile) {
       const extension = extname(fullPath).toLowerCase();
       if (SCRIPT_EXTENSIONS.has(extension)) {
         files.push(fullPath);
@@ -339,11 +354,9 @@ const collectScriptFiles = async (directory: string): Promise<string[]> => {
   return files;
 };
 
-export const normalizeScriptPolicyPath = (
-  relativePath: string,
-  defaultDirectory: string,
-): string => {
-  const normalized = normalize(relativePath).split(sep).join("/");
+export const normalizeScriptPolicyPath = (relativePath: string): string => {
+  const trimmed = relativePath.trim();
+  const normalized = normalize(trimmed).split(sep).join("/");
   if (normalized.startsWith("..") || normalized.startsWith("/")) {
     throw new Error("Script path must be relative and within the allowed directory");
   }
@@ -351,18 +364,14 @@ export const normalizeScriptPolicyPath = (
   if (withoutDotPrefix.length === 0 || withoutDotPrefix === ".") {
     throw new Error("Script path must point to a file");
   }
-  if (!withoutDotPrefix.includes("/")) {
-    return `${defaultDirectory}/${withoutDotPrefix}`;
-  }
   return withoutDotPrefix;
 };
 
 const resolveScriptPath = (
   baseDir: string,
   relativePath: string,
-  defaultDirectory: string,
 ): { fullPath: string; relativePath: string } => {
-  const normalized = normalizeScriptPolicyPath(relativePath, defaultDirectory);
+  const normalized = normalizeScriptPolicyPath(relativePath);
   const fullPath = resolve(baseDir, normalized);
   if (!fullPath.startsWith(`${resolve(baseDir)}${sep}`) && fullPath !== resolve(baseDir)) {
     throw new Error("Script path must stay inside the allowed directory");

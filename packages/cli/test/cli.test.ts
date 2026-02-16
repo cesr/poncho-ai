@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -151,11 +151,14 @@ vi.mock("@poncho-ai/harness", () => ({
 
 import {
   buildTarget,
+  copySkillsFromPackage,
   initProject,
+  listInstalledSkills,
   listTools,
   mcpAdd,
   mcpList,
   mcpRemove,
+  removeSkillsFromPackage,
   runTests,
   startDevServer,
   updateAgentGuidance,
@@ -276,6 +279,203 @@ describe("cli", () => {
       }),
     });
     expect(intro).toBeUndefined();
+  });
+
+  it("copies discovered skill folders into local skills directory", async () => {
+    const projectDir = join(tempDir, "copy-skills-agent");
+    const packageDir = join(tempDir, "mock-skill-package");
+    await mkdir(projectDir, { recursive: true });
+    await mkdir(join(projectDir, "skills"), { recursive: true });
+    await mkdir(join(packageDir, "alpha"), { recursive: true });
+    await mkdir(join(packageDir, "nested", "beta"), { recursive: true });
+    await mkdir(join(packageDir, "nested", "beta", "scripts"), { recursive: true });
+
+    await writeFile(
+      join(packageDir, "alpha", "SKILL.md"),
+      "---\nname: alpha\n---\nAlpha skill\n",
+      "utf8",
+    );
+    await writeFile(
+      join(packageDir, "nested", "beta", "SKILL.md"),
+      "---\nname: beta\n---\nBeta skill\n",
+      "utf8",
+    );
+    await writeFile(
+      join(packageDir, "nested", "beta", "scripts", "run.ts"),
+      "export default async function run() { return { ok: true }; }\n",
+      "utf8",
+    );
+
+    const copied = await copySkillsFromPackage(projectDir, packageDir);
+
+    expect(copied).toEqual([
+      "skills/mock-skill-package/alpha",
+      "skills/mock-skill-package/beta",
+    ]);
+    const alphaSkill = await readFile(
+      join(projectDir, "skills", "mock-skill-package", "alpha", "SKILL.md"),
+      "utf8",
+    );
+    const betaScript = await readFile(
+      join(projectDir, "skills", "mock-skill-package", "beta", "scripts", "run.ts"),
+      "utf8",
+    );
+    expect(alphaSkill).toContain("name: alpha");
+    expect(betaScript).toContain("export default async function run");
+  });
+
+  it("fails when skill destination already exists", async () => {
+    const projectDir = join(tempDir, "collision-agent");
+    const packageDir = join(tempDir, "collision-package");
+    await mkdir(join(projectDir, "skills", "collision-package", "alpha"), { recursive: true });
+    await mkdir(join(packageDir, "alpha"), { recursive: true });
+    await writeFile(
+      join(packageDir, "alpha", "SKILL.md"),
+      "---\nname: alpha\n---\nCollision skill\n",
+      "utf8",
+    );
+
+    await expect(copySkillsFromPackage(projectDir, packageDir)).rejects.toThrow(
+      /destination already exists/i,
+    );
+  });
+
+  it("copies a specific skill when --path style option is used", async () => {
+    const projectDir = join(tempDir, "single-skill-agent");
+    const packageDir = join(tempDir, "single-skill-package");
+    await mkdir(projectDir, { recursive: true });
+    await mkdir(join(packageDir, "alpha"), { recursive: true });
+    await mkdir(join(packageDir, "nested", "beta"), { recursive: true });
+    await writeFile(
+      join(packageDir, "alpha", "SKILL.md"),
+      "---\nname: alpha\n---\nAlpha skill\n",
+      "utf8",
+    );
+    await writeFile(
+      join(packageDir, "nested", "beta", "SKILL.md"),
+      "---\nname: beta\n---\nBeta skill\n",
+      "utf8",
+    );
+
+    const copied = await copySkillsFromPackage(projectDir, packageDir, { path: "nested/beta" });
+    expect(copied).toEqual(["skills/single-skill-package/beta"]);
+    await expect(
+      readFile(join(projectDir, "skills", "single-skill-package", "alpha", "SKILL.md"), "utf8"),
+    ).rejects.toThrow();
+    const betaSkill = await readFile(
+      join(projectDir, "skills", "single-skill-package", "beta", "SKILL.md"),
+      "utf8",
+    );
+    expect(betaSkill).toContain("name: beta");
+  });
+
+  it("removes all copied skills for a package in one call", async () => {
+    const projectDir = join(tempDir, "remove-skills-agent");
+    const packageDir = join(tempDir, "remove-skills-package");
+    await mkdir(join(projectDir, "skills", "remove-skills-package", "alpha"), { recursive: true });
+    await mkdir(join(projectDir, "skills", "remove-skills-package", "beta"), { recursive: true });
+    await writeFile(
+      join(projectDir, "skills", "remove-skills-package", "alpha", "SKILL.md"),
+      "alpha\n",
+      "utf8",
+    );
+    await writeFile(
+      join(projectDir, "skills", "remove-skills-package", "beta", "SKILL.md"),
+      "beta\n",
+      "utf8",
+    );
+
+    await mkdir(join(packageDir, "alpha"), { recursive: true });
+    await mkdir(join(packageDir, "nested", "beta"), { recursive: true });
+    await writeFile(
+      join(packageDir, "alpha", "SKILL.md"),
+      "---\nname: alpha\n---\nAlpha skill\n",
+      "utf8",
+    );
+    await writeFile(
+      join(packageDir, "nested", "beta", "SKILL.md"),
+      "---\nname: beta\n---\nBeta skill\n",
+      "utf8",
+    );
+
+    const result = await removeSkillsFromPackage(projectDir, packageDir);
+    expect(result.removed).toEqual(["skills/remove-skills-package"]);
+    expect(result.missing).toEqual([]);
+    await expect(lstat(join(projectDir, "skills", "remove-skills-package"))).rejects.toThrow();
+  });
+
+  it("removes a specific skill path from namespaced folder", async () => {
+    const projectDir = join(tempDir, "remove-single-skill-agent");
+    const packageDir = join(tempDir, "remove-single-skill-package");
+    await mkdir(
+      join(projectDir, "skills", "remove-single-skill-package", "alpha"),
+      { recursive: true },
+    );
+    await mkdir(
+      join(projectDir, "skills", "remove-single-skill-package", "beta"),
+      { recursive: true },
+    );
+    await writeFile(
+      join(projectDir, "skills", "remove-single-skill-package", "alpha", "SKILL.md"),
+      "alpha\n",
+      "utf8",
+    );
+    await writeFile(
+      join(projectDir, "skills", "remove-single-skill-package", "beta", "SKILL.md"),
+      "beta\n",
+      "utf8",
+    );
+    await mkdir(join(packageDir, "alpha"), { recursive: true });
+    await mkdir(join(packageDir, "nested", "beta"), { recursive: true });
+    await writeFile(join(packageDir, "alpha", "SKILL.md"), "---\nname: alpha\n---\n", "utf8");
+    await writeFile(
+      join(packageDir, "nested", "beta", "SKILL.md"),
+      "---\nname: beta\n---\n",
+      "utf8",
+    );
+
+    const result = await removeSkillsFromPackage(projectDir, packageDir, { path: "nested/beta" });
+    expect(result.removed).toEqual(["skills/remove-single-skill-package/beta"]);
+    await expect(
+      lstat(join(projectDir, "skills", "remove-single-skill-package", "beta")),
+    ).rejects.toThrow();
+    const alphaStillExists = await readFile(
+      join(projectDir, "skills", "remove-single-skill-package", "alpha", "SKILL.md"),
+      "utf8",
+    );
+    expect(alphaStillExists).toContain("alpha");
+  });
+
+  it("lists installed skills with and without source filter", async () => {
+    const projectDir = join(tempDir, "list-skills-agent");
+    await mkdir(join(projectDir, "skills", "agent-skills", "alpha"), { recursive: true });
+    await mkdir(join(projectDir, "skills", "agent-skills", "beta"), { recursive: true });
+    await mkdir(join(projectDir, "skills", "other-source", "gamma"), { recursive: true });
+    await writeFile(
+      join(projectDir, "skills", "agent-skills", "alpha", "SKILL.md"),
+      "---\nname: alpha\n---\n",
+      "utf8",
+    );
+    await writeFile(
+      join(projectDir, "skills", "agent-skills", "beta", "SKILL.md"),
+      "---\nname: beta\n---\n",
+      "utf8",
+    );
+    await writeFile(
+      join(projectDir, "skills", "other-source", "gamma", "SKILL.md"),
+      "---\nname: gamma\n---\n",
+      "utf8",
+    );
+
+    const all = await listInstalledSkills(projectDir);
+    const filtered = await listInstalledSkills(projectDir, "vercel-labs/agent-skills");
+
+    expect(all).toEqual([
+      "skills/agent-skills/alpha",
+      "skills/agent-skills/beta",
+      "skills/other-source/gamma",
+    ]);
+    expect(filtered).toEqual(["skills/agent-skills/alpha", "skills/agent-skills/beta"]);
   });
 
   it("supports smoke flow init -> dev -> api conversation endpoint", async () => {
@@ -632,6 +832,37 @@ describe("cli", () => {
     const result = await runTests(projectDir, join(testsDir, "basic.yaml"));
     expect(result.passed).toBe(1);
     expect(result.failed).toBe(0);
+  });
+
+  it("materializes symlinked skills into vercel build output", async () => {
+    const projectDir = join(tempDir, "symlink-skill-agent");
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(join(projectDir, "AGENT.md"), "---\nname: symlink-agent\n---\n", "utf8");
+    await mkdir(join(projectDir, "skills"), { recursive: true });
+
+    const sourceSkillDir = join(projectDir, ".agents", "skills", "linked-skill");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      join(sourceSkillDir, "SKILL.md"),
+      "---\nname: linked-skill\n---\nLinked skill\n",
+      "utf8",
+    );
+
+    await symlink(sourceSkillDir, join(projectDir, "skills", "linked-skill"));
+    await buildTarget(projectDir, "vercel");
+
+    const builtSkillDir = join(
+      projectDir,
+      ".poncho-build",
+      "vercel",
+      "skills",
+      "linked-skill",
+    );
+    const builtSkillDirStat = await lstat(builtSkillDir);
+    const builtSkill = await readFile(join(builtSkillDir, "SKILL.md"), "utf8");
+
+    expect(builtSkillDirStat.isSymbolicLink()).toBe(false);
+    expect(builtSkill).toContain("name: linked-skill");
   });
 
   it("seeds bearer token placeholders in env files when adding mcp auth", async () => {

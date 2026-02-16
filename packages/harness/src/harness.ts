@@ -308,7 +308,10 @@ export class AgentHarness {
       scriptPath,
       "run_skill_script input.script",
     );
-    if (isSiblingScriptsPattern(normalizedScriptPath)) {
+    const isSkillRootScript =
+      normalizedScriptPath.startsWith("./") &&
+      !normalizedScriptPath.slice(2).includes("/");
+    if (isSiblingScriptsPattern(normalizedScriptPath) || isSkillRootScript) {
       return true;
     }
     const skillPatterns =
@@ -347,7 +350,7 @@ export class AgentHarness {
         return false;
       }
       const canonicalPath = normalizeRelativeScriptPattern(
-        `./${normalizeScriptPolicyPath(rawScript, "scripts")}`,
+        `./${normalizeScriptPolicyPath(rawScript)}`,
         "run_skill_script input.script",
       );
       const scriptPatterns = this.getRequestedScriptApprovalPatterns();
@@ -697,7 +700,7 @@ ${boundedMainMemory.trim()}`
 
         const modelName = agent.frontmatter.model?.name ?? "claude-opus-4-5";
         const temperature = agent.frontmatter.model?.temperature ?? 0.2;
-        const maxTokens = agent.frontmatter.model?.maxTokens ?? 1024;
+        const maxTokens = agent.frontmatter.model?.maxTokens;
 
         // Stream response using Vercel AI SDK with telemetry enabled
         const telemetryEnabled = this.loadedConfig?.telemetry?.enabled !== false;
@@ -709,7 +712,7 @@ ${boundedMainMemory.trim()}`
           messages: coreMessages,
           tools,
           temperature,
-          maxTokens,
+          ...(typeof maxTokens === "number" ? { maxTokens } : {}),
           experimental_telemetry: {
             isEnabled: telemetryEnabled && !!latitudeApiKey,
           },

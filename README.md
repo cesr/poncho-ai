@@ -254,14 +254,36 @@ Skills give your agent new capabilities (tools). They live in your project's `sk
 ### Install a skill
 
 ```bash
-# From a GitHub skill repo
-poncho add vercel-labs/agent-skills
+# From a GitHub skill repo (all skills)
+poncho skills add vercel-labs/agent-skills
 
-# From a local path
-poncho add ./my-skills/custom-tool
+# From a local path (all skills)
+poncho skills add ./my-skills/custom-tool
+
+# Add one specific skill directory from the source
+poncho skills add vercel-labs/agent-skills writing/meta-description
 ```
 
-`poncho add` downloads the repo, finds all `SKILL.md` files, and copies them into `skills/`.
+`poncho skills add` installs the package, discovers `SKILL.md` files, and copies each skill folder into `skills/<source>/...` (for example `skills/agent-skills/seo-auditor`).
+Use the optional second positional argument to copy only one specific skill directory from the package.
+If a destination folder already exists, the command fails with a clear collision error instead of overwriting files.
+
+### Remove skills from a package
+
+```bash
+# Remove all copied skills that came from a package/repo
+poncho skills remove vercel-labs/agent-skills
+
+# Remove only one copied skill directory from that package
+poncho skills remove vercel-labs/agent-skills writing/meta-description
+
+# List installed skills (optionally by source)
+poncho skills list
+poncho skills list vercel-labs/agent-skills
+```
+
+`poncho skills remove` removes matching directories from `skills/<source>/...` in one shot.
+`poncho add` / `poncho remove` remain available as aliases.
 
 ### Available capabilities
 
@@ -273,7 +295,7 @@ By default, Poncho includes built-in filesystem tools from the harness:
 | `read_file` | Read UTF-8 text file contents |
 | `write_file` | Write UTF-8 text file contents (create or overwrite; gated by environment/policy) |
 
-Additional skills can be installed via `poncho add <repo-or-path>`.
+Additional skills can be installed via `poncho skills add <repo-or-path>` (or the `poncho add` alias).
 
 ### How skill discovery works
 

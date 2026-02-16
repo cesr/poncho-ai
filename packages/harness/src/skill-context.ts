@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { dirname, resolve, normalize } from "node:path";
 import YAML from "yaml";
 import {
@@ -164,11 +164,26 @@ const collectSkillManifests = async (directory: string): Promise<string[]> => {
 
   for (const entry of entries) {
     const fullPath = resolve(directory, entry.name);
-    if (entry.isDirectory()) {
+
+    let isDir = entry.isDirectory();
+    let isFile = entry.isFile();
+
+    // Dirent reports symlinks separately; resolve target type via stat()
+    if (entry.isSymbolicLink()) {
+      try {
+        const s = await stat(fullPath);
+        isDir = s.isDirectory();
+        isFile = s.isFile();
+      } catch {
+        continue; // broken symlink — skip
+      }
+    }
+
+    if (isDir) {
       files.push(...(await collectSkillManifests(fullPath)));
       continue;
     }
-    if (entry.isFile() && entry.name.toLowerCase() === "skill.md") {
+    if (isFile && entry.name.toLowerCase() === "skill.md") {
       files.push(fullPath);
     }
   }

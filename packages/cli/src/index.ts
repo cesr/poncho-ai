@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { access, cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import {
   createServer,
@@ -7,7 +7,7 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { dirname, relative, resolve } from "node:path";
+import { basename, dirname, normalize, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
@@ -328,12 +328,28 @@ poncho tools
 Install skills from a local path or remote repository, then verify discovery:
 
 \`\`\`bash
-# Install skills into ./skills
-poncho add <repo-or-path>
+# Install all skills from a source package/repo
+poncho skills add <repo-or-path>
+
+# Install one specific skill path from a source
+poncho skills add <repo-or-path> <relative-skill-path>
+
+# Remove all installed skills from a source
+poncho skills remove <repo-or-path>
+
+# Remove one installed skill path from a source
+poncho skills remove <repo-or-path> <relative-skill-path>
+
+# List installed skills
+poncho skills list
 
 # Verify loaded tools
 poncho tools
 \`\`\`
+
+\`poncho skills add\` copies discovered skill directories (folders that contain \`SKILL.md\`) into \`skills/<source>/...\`.
+If a destination folder already exists, the command fails instead of overwriting files.
+\`poncho add\` and \`poncho remove\` remain available as aliases.
 
 After adding skills, run \`poncho dev\` or \`poncho run --interactive\` and ask the agent to use them.
 
@@ -520,7 +536,9 @@ const copyIfExists = async (sourcePath: string, destinationPath: string): Promis
     return;
   }
   await mkdir(dirname(destinationPath), { recursive: true });
-  await cp(sourcePath, destinationPath, { recursive: true });
+  // Build outputs should contain materialized files, not symlinks to paths
+  // that may not exist inside deployment artifacts (e.g. .agents/skills/*).
+  await cp(sourcePath, destinationPath, { recursive: true, dereference: true });
 };
 
 const resolveCliEntrypoint = async (): Promise<string> => {
@@ -1798,48 +1816,278 @@ const resolveSkillRoot = (
   }
 };
 
-/**
- * Recursively check whether a directory (or any immediate sub-directory
- * tree) contains at least one SKILL.md file.
- */
-const findSkillManifest = async (dir: string, depth = 2): Promise<boolean> => {
+const normalizeSkillSourceName = (value: string): string => {
+  const normalized = value
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^@/, "")
+    .replace(/[\/\s]+/g, "-")
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return normalized.length > 0 ? normalized : "skills";
+};
+
+const collectSkillManifests = async (dir: string, depth = 2): Promise<string[]> => {
+  const manifests: string[] = [];
+  const localManifest = resolve(dir, "SKILL.md");
   try {
-    await access(resolve(dir, "SKILL.md"));
-    return true;
+    await access(localManifest);
+    manifests.push(localManifest);
   } catch {
     // Not found at this level — look one level deeper (e.g. skills/<name>/SKILL.md)
   }
-  if (depth <= 0) return false;
+
+  if (depth <= 0) return manifests;
+
   try {
-    const { readdir } = await import("node:fs/promises");
     const entries = await readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules") {
-        const found = await findSkillManifest(resolve(dir, entry.name), depth - 1);
-        if (found) return true;
+      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+
+      let isDir = entry.isDirectory();
+      // Dirent reports symlinks separately; resolve target type via stat()
+      if (!isDir && entry.isSymbolicLink()) {
+        try {
+          const s = await stat(resolve(dir, entry.name));
+          isDir = s.isDirectory();
+        } catch {
+          continue; // broken symlink — skip
+        }
+      }
+
+      if (isDir) {
+        manifests.push(...(await collectSkillManifests(resolve(dir, entry.name), depth - 1)));
       }
     }
   } catch {
     // ignore read errors
   }
-  return false;
+
+  return manifests;
 };
 
 const validateSkillPackage = async (
   workingDir: string,
   packageNameOrPath: string,
-): Promise<void> => {
+): Promise<{ skillRoot: string; manifests: string[] }> => {
   const skillRoot = resolveSkillRoot(workingDir, packageNameOrPath);
-  const hasSkill = await findSkillManifest(skillRoot);
-  if (!hasSkill) {
+  const manifests = await collectSkillManifests(skillRoot);
+  if (manifests.length === 0) {
     throw new Error(`Skill validation failed: no SKILL.md found in ${skillRoot}`);
+  }
+  return { skillRoot, manifests };
+};
+
+const selectSkillManifests = async (
+  skillRoot: string,
+  manifests: string[],
+  relativeSkillPath?: string,
+): Promise<string[]> => {
+  if (!relativeSkillPath) return manifests;
+
+  const normalized = normalize(relativeSkillPath);
+  if (normalized.startsWith("..") || normalized.startsWith("/")) {
+    throw new Error(`Invalid skill path "${relativeSkillPath}": path must be within package root.`);
+  }
+
+  const candidate = resolve(skillRoot, normalized);
+  const relativeToRoot = relative(skillRoot, candidate).split("\\").join("/");
+  if (relativeToRoot.startsWith("..") || relativeToRoot.startsWith("/")) {
+    throw new Error(`Invalid skill path "${relativeSkillPath}": path escapes package root.`);
+  }
+
+  const candidateAsFile = candidate.toLowerCase().endsWith("skill.md")
+    ? candidate
+    : resolve(candidate, "SKILL.md");
+  if (!existsSync(candidateAsFile)) {
+    throw new Error(
+      `Skill path "${relativeSkillPath}" does not point to a directory (or file) containing SKILL.md.`,
+    );
+  }
+
+  const selected = manifests.filter((manifest) => resolve(manifest) === resolve(candidateAsFile));
+  if (selected.length === 0) {
+    throw new Error(`Skill path "${relativeSkillPath}" was not discovered as a valid skill manifest.`);
+  }
+  return selected;
+};
+
+const copySkillsIntoProject = async (
+  workingDir: string,
+  manifests: string[],
+  sourceName: string,
+): Promise<string[]> => {
+  const skillsDir = resolve(workingDir, "skills", normalizeSkillSourceName(sourceName));
+  await mkdir(skillsDir, { recursive: true });
+
+  const destinations = new Map<string, string>();
+  for (const manifest of manifests) {
+    const sourceSkillDir = dirname(manifest);
+    const skillFolderName = basename(sourceSkillDir);
+    if (destinations.has(skillFolderName)) {
+      throw new Error(
+        `Skill copy failed: multiple skill directories map to "skills/${skillFolderName}" (${destinations.get(skillFolderName)} and ${sourceSkillDir}).`,
+      );
+    }
+    destinations.set(skillFolderName, sourceSkillDir);
+  }
+
+  const copied: string[] = [];
+  for (const [skillFolderName, sourceSkillDir] of destinations.entries()) {
+    const destinationSkillDir = resolve(skillsDir, skillFolderName);
+    if (existsSync(destinationSkillDir)) {
+      throw new Error(
+        `Skill copy failed: destination already exists at ${destinationSkillDir}. Remove or rename it and try again.`,
+      );
+    }
+    await cp(sourceSkillDir, destinationSkillDir, {
+      recursive: true,
+      dereference: true,
+      force: false,
+      errorOnExist: true,
+    });
+    copied.push(relative(workingDir, destinationSkillDir).split("\\").join("/"));
+  }
+
+  return copied.sort();
+};
+
+export const copySkillsFromPackage = async (
+  workingDir: string,
+  packageNameOrPath: string,
+  options?: { path?: string },
+): Promise<string[]> => {
+  const { skillRoot, manifests } = await validateSkillPackage(workingDir, packageNameOrPath);
+  const selected = await selectSkillManifests(skillRoot, manifests, options?.path);
+  const sourceName = resolveInstalledPackageName(packageNameOrPath) ?? basename(skillRoot);
+  return await copySkillsIntoProject(workingDir, selected, sourceName);
+};
+
+export const addSkill = async (
+  workingDir: string,
+  packageNameOrPath: string,
+  options?: { path?: string },
+): Promise<void> => {
+  await runInstallCommand(workingDir, packageNameOrPath);
+  const copiedSkills = await copySkillsFromPackage(workingDir, packageNameOrPath, options);
+  process.stdout.write(
+    `Added ${copiedSkills.length} skill${copiedSkills.length === 1 ? "" : "s"} from ${packageNameOrPath}:\n`,
+  );
+  for (const copied of copiedSkills) {
+    process.stdout.write(`- ${copied}\n`);
   }
 };
 
-export const addSkill = async (workingDir: string, packageNameOrPath: string): Promise<void> => {
-  await runInstallCommand(workingDir, packageNameOrPath);
-  await validateSkillPackage(workingDir, packageNameOrPath);
-  process.stdout.write(`Added skill: ${packageNameOrPath}\n`);
+const getSkillFolderNames = (manifests: string[]): string[] => {
+  const names = new Set<string>();
+  for (const manifest of manifests) {
+    names.add(basename(dirname(manifest)));
+  }
+  return Array.from(names).sort();
+};
+
+export const removeSkillsFromPackage = async (
+  workingDir: string,
+  packageNameOrPath: string,
+  options?: { path?: string },
+): Promise<{ removed: string[]; missing: string[] }> => {
+  const { skillRoot, manifests } = await validateSkillPackage(workingDir, packageNameOrPath);
+  const selected = await selectSkillManifests(skillRoot, manifests, options?.path);
+  const skillsDir = resolve(workingDir, "skills");
+  const sourceName = normalizeSkillSourceName(
+    resolveInstalledPackageName(packageNameOrPath) ?? basename(skillRoot),
+  );
+  const sourceSkillsDir = resolve(skillsDir, sourceName);
+  const skillNames = getSkillFolderNames(selected);
+
+  const removed: string[] = [];
+  const missing: string[] = [];
+
+  if (!options?.path && existsSync(sourceSkillsDir)) {
+    await rm(sourceSkillsDir, { recursive: true, force: false });
+    removed.push(`skills/${sourceName}`);
+    return { removed, missing };
+  }
+
+  for (const skillName of skillNames) {
+    const destinationSkillDir = resolve(sourceSkillsDir, skillName);
+    const normalized = relative(skillsDir, destinationSkillDir).split("\\").join("/");
+    if (normalized.startsWith("..") || normalized.startsWith("/")) {
+      throw new Error(`Refusing to remove path outside skills directory: ${destinationSkillDir}`);
+    }
+
+    if (!existsSync(destinationSkillDir)) {
+      missing.push(`skills/${sourceName}/${skillName}`);
+      continue;
+    }
+
+    await rm(destinationSkillDir, { recursive: true, force: false });
+    removed.push(`skills/${sourceName}/${skillName}`);
+  }
+
+  return { removed, missing };
+};
+
+export const removeSkillPackage = async (
+  workingDir: string,
+  packageNameOrPath: string,
+  options?: { path?: string },
+): Promise<void> => {
+  const result = await removeSkillsFromPackage(workingDir, packageNameOrPath, options);
+  process.stdout.write(
+    `Removed ${result.removed.length} skill${result.removed.length === 1 ? "" : "s"} from ${packageNameOrPath}:\n`,
+  );
+  for (const removed of result.removed) {
+    process.stdout.write(`- ${removed}\n`);
+  }
+  if (result.missing.length > 0) {
+    process.stdout.write(
+      `Skipped ${result.missing.length} missing skill${result.missing.length === 1 ? "" : "s"}:\n`,
+    );
+    for (const missing of result.missing) {
+      process.stdout.write(`- ${missing}\n`);
+    }
+  }
+};
+
+export const listInstalledSkills = async (
+  workingDir: string,
+  sourceName?: string,
+): Promise<string[]> => {
+  const skillsRoot = resolve(workingDir, "skills");
+  const resolvedSourceName = sourceName
+    ? resolveInstalledPackageName(sourceName) ?? sourceName
+    : undefined;
+  const targetRoot = sourceName
+    ? resolve(skillsRoot, normalizeSkillSourceName(resolvedSourceName ?? sourceName))
+    : skillsRoot;
+  if (!existsSync(targetRoot)) {
+    return [];
+  }
+  const manifests = await collectSkillManifests(targetRoot, sourceName ? 1 : 2);
+  return manifests
+    .map((manifest) => relative(workingDir, dirname(manifest)).split("\\").join("/"))
+    .sort();
+};
+
+export const listSkills = async (workingDir: string, sourceName?: string): Promise<void> => {
+  const skills = await listInstalledSkills(workingDir, sourceName);
+  if (skills.length === 0) {
+    process.stdout.write("No installed skills found.\n");
+    return;
+  }
+  const resolvedSourceName = sourceName
+    ? resolveInstalledPackageName(sourceName) ?? sourceName
+    : undefined;
+  process.stdout.write(
+    sourceName
+      ? `Installed skills for ${normalizeSkillSourceName(resolvedSourceName ?? sourceName)}:\n`
+      : "Installed skills:\n",
+  );
+  for (const skill of skills) {
+    process.stdout.write(`- ${skill}\n`);
+  }
 };
 
 export const runTests = async (
@@ -2390,12 +2638,49 @@ export const buildCli = (): Command => {
       await listTools(process.cwd());
     });
 
+  const skillsCommand = program.command("skills").description("Manage installed skills");
+  skillsCommand
+    .command("add")
+    .argument("<source>", "skill package name/path")
+    .argument("[skillPath]", "optional path to one specific skill within source")
+    .description("Install and copy skills into ./skills/<source>/...")
+    .action(async (source: string, skillPath?: string) => {
+      await addSkill(process.cwd(), source, { path: skillPath });
+    });
+
+  skillsCommand
+    .command("remove")
+    .argument("<source>", "skill package name/path")
+    .argument("[skillPath]", "optional path to one specific skill within source")
+    .description("Remove installed skills from ./skills/<source>/...")
+    .action(async (source: string, skillPath?: string) => {
+      await removeSkillPackage(process.cwd(), source, { path: skillPath });
+    });
+
+  skillsCommand
+    .command("list")
+    .argument("[source]", "optional source package/folder")
+    .description("List installed skills")
+    .action(async (source?: string) => {
+      await listSkills(process.cwd(), source);
+    });
+
   program
     .command("add")
     .argument("<packageOrPath>", "skill package name/path")
-    .description("Add a skill package and validate SKILL.md")
-    .action(async (packageOrPath: string) => {
-      await addSkill(process.cwd(), packageOrPath);
+    .option("--path <relativePath>", "only copy a specific skill path from the package")
+    .description("Alias for `poncho skills add <source> [skillPath]`")
+    .action(async (packageOrPath: string, options: { path?: string }) => {
+      await addSkill(process.cwd(), packageOrPath, { path: options.path });
+    });
+
+  program
+    .command("remove")
+    .argument("<packageOrPath>", "skill package name/path")
+    .option("--path <relativePath>", "only remove a specific skill path from the package")
+    .description("Alias for `poncho skills remove <source> [skillPath]`")
+    .action(async (packageOrPath: string, options: { path?: string }) => {
+      await removeSkillPackage(process.cwd(), packageOrPath, { path: options.path });
     });
 
   program
