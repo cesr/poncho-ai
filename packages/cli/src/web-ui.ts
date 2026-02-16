@@ -1748,7 +1748,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
               if (
                 isStreaming &&
                 isLastAssistant &&
-                !hasPendingApprovals
+                !hasPendingApprovals &&
+                (!m._currentText || m._currentText.length === 0)
               ) {
                 const waitIndicator = document.createElement("div");
                 waitIndicator.appendChild(createThinkingIndicator(getThinkingStatusLabel(m)));
