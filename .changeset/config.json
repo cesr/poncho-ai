@@ -2,7 +2,7 @@
   "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
   "changelog": [
     "@changesets/changelog-github",
-    { "repo": "latitude-dev/poncho-ai" }
+    { "repo": "cesr/poncho-ai" }
   ],
   "commit": false,
   "fixed": [],

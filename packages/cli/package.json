@@ -4,7 +4,7 @@
   "description": "CLI for building and deploying AI agents",
   "repository": {
     "type": "git",
-    "url": "https://github.com/latitude-dev/poncho-ai.git",
+    "url": "https://github.com/cesr/poncho-ai.git",
     "directory": "packages/cli"
   },
   "publishConfig": {
