@@ -1,6 +1,6 @@
 # Poncho
 
-A general agent harness built for the web.
+Poncho is a general agent harness built for the web.
 
 Develop locally with `poncho dev`, then deploy the same agent to production with your skills and scripts, tools and MCP servers, OpenTelemetry traces, and testing workflows.
 
