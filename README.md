@@ -569,8 +569,6 @@ Your deployed agent exposes these endpoints:
 | `DELETE /api/conversations/:conversationId` | Delete conversation |
 | `POST /api/conversations/:conversationId/messages` | Stream a new assistant response |
 
-> Legacy runtime routes (`/run`, `/run/sync`, `/continue`) were removed in favor of the conversation-centric `/api/conversations/*` surface.
-
 ### POST /api/conversations/:conversationId/messages (streaming)
 
 ```bash
@@ -613,13 +611,26 @@ Typical flow:
 3. Repeat step 2 for follow-up turns
 4. `GET /api/conversations/:conversationId` to fetch full transcript
 
-## Persistent Memory (MVP)
+## Persistent Memory
 
 When `memory.enabled` is true in `poncho.config.js`, the harness enables a simple memory model:
 
 - A single persistent main memory document is loaded at run start and interpolated into the system prompt under `## Persistent Memory`.
 - `memory_main_update` can replace or append to that document. The tool description instructs the model to proactively evaluate each turn whether durable memory should be updated.
 - `conversation_recall` can search recent prior conversations (keyword scoring) when historical context is relevant (`as we discussed`, `last time`, etc.).
+
+```javascript
+// poncho.config.js
+export default {
+  storage: {
+    provider: 'local',           // 'local' | 'memory' | 'redis' | 'upstash' | 'dynamodb'
+    memory: {
+      enabled: true,
+      maxRecallConversations: 20, // Bounds conversation_recall scan size
+    },
+  },
+}
+```
 
 Available memory tools:
 
@@ -846,28 +857,18 @@ export default {
 
 ### Require approval for dangerous tools
 
-```typescript
-defineTool({
-  name: 'delete-file',
-  requiresApproval: true,  // Pauses and emits approval event
-  // ...
-})
+Use `approval-required` in your `AGENT.md` or `SKILL.md` frontmatter to gate specific tools:
+
+```yaml
+---
+allowed-tools:
+  - mcp:linear/*
+approval-required:
+  - mcp:linear/list_initiatives
+---
 ```
 
-### Limit external access
-
-```javascript
-export default {
-  skills: {
-    '@poncho-ai/web-fetch': {
-      allowedDomains: ['api.github.com', 'docs.example.com']
-    },
-    '@poncho-ai/code-execution': {
-      allowedLanguages: ['javascript', 'typescript']
-    }
-  }
-}
-```
+When a gated tool is called, the harness emits a `tool:approval:required` event and pauses until approval is granted or denied. In the web UI and interactive CLI, the user is prompted before execution continues.
 
 ## Examples
 
@@ -879,6 +880,12 @@ name: ops-assistant
 model:
   provider: anthropic
   name: claude-opus-4-5
+allowed-tools:
+  - mcp:linear/*
+  - mcp:github/list_issues
+  - mcp:github/create_issue
+approval-required:
+  - mcp:linear/create_initiative
 ---
 
 # Operations Assistant
@@ -901,6 +908,8 @@ name: research-assistant
 model:
   provider: anthropic
   name: claude-opus-4-5
+allowed-tools:
+  - research/scripts/*
 ---
 
 # Research Assistant
@@ -926,6 +935,12 @@ model:
   temperature: 0.3
 limits:
   maxSteps: 10
+allowed-tools:
+  - mcp:zendesk/search_tickets
+  - mcp:zendesk/get_ticket
+  - support/scripts/lookup-order.ts
+approval-required:
+  - mcp:zendesk/update_ticket
 ---
 
 # Support Bot
@@ -1009,17 +1024,6 @@ Make sure you have a `.env` file with your API key:
 echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
 ```
 
-### "Tool not found: xyz"
-
-Add or create a skill that provides the tool:
-
-```bash
-# Install from npm/git/path
-poncho add <package-or-path>
-
-# Or create a local skill in ./skills/<skill-name>/ with SKILL.md and scripts/
-```
-
 ### "MCP server failed to connect"
 
 Check that:
@@ -1043,7 +1047,7 @@ limits:
 ## Getting Help
 
 - [GitHub Issues](https://github.com/cesr/poncho-ai/issues) - Bug reports and feature requests
-- [Latitude Discord](https://discord.gg/latitude) - Community support and discussion
+- [Poncho Discord](https://discord.gg/92QanAxYcf) - Community support and discussion
 
 ## License
 
