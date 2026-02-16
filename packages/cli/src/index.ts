@@ -817,20 +817,92 @@ export const createRequestHandler = async (options?: {
     }
   } catch {}
   const runOwners = new Map<string, string>();
-  const pendingApprovals = new Map<
-    string,
-    { ownerId: string; resolve: (approved: boolean) => void }
-  >();
+  const runConversations = new Map<string, string>();
+  type PendingApproval = {
+    ownerId: string;
+    runId: string;
+    conversationId: string | null;
+    tool: string;
+    input: Record<string, unknown>;
+    resolve: (approved: boolean) => void;
+  };
+  const pendingApprovals = new Map<string, PendingApproval>();
+
+  // Per-conversation event streaming: buffer events and allow SSE subscribers
+  type ConversationEventStream = {
+    buffer: AgentEvent[];
+    subscribers: Set<ServerResponse>;
+    finished: boolean;
+  };
+  const conversationEventStreams = new Map<string, ConversationEventStream>();
+  const broadcastEvent = (conversationId: string, event: AgentEvent): void => {
+    let stream = conversationEventStreams.get(conversationId);
+    if (!stream) {
+      stream = { buffer: [], subscribers: new Set(), finished: false };
+      conversationEventStreams.set(conversationId, stream);
+    }
+    stream.buffer.push(event);
+    for (const subscriber of stream.subscribers) {
+      try {
+        subscriber.write(formatSseEvent(event));
+      } catch {
+        stream.subscribers.delete(subscriber);
+      }
+    }
+  };
+  const finishConversationStream = (conversationId: string): void => {
+    const stream = conversationEventStreams.get(conversationId);
+    if (stream) {
+      stream.finished = true;
+      for (const subscriber of stream.subscribers) {
+        try {
+          subscriber.write("event: stream:end\ndata: {}\n\n");
+          subscriber.end();
+        } catch {
+          // Already closed.
+        }
+      }
+      stream.subscribers.clear();
+      // Keep buffer for a short time so late-joining clients get replay
+      setTimeout(() => conversationEventStreams.delete(conversationId), 30_000);
+    }
+  };
+  const persistConversationPendingApprovals = async (conversationId: string): Promise<void> => {
+    const conversation = await conversationStore.get(conversationId);
+    if (!conversation) {
+      return;
+    }
+    conversation.pendingApprovals = Array.from(pendingApprovals.entries())
+      .filter(
+        ([, pending]) =>
+          pending.ownerId === conversation.ownerId && pending.conversationId === conversationId,
+      )
+      .map(([approvalId, pending]) => ({
+        approvalId,
+        runId: pending.runId,
+        tool: pending.tool,
+        input: pending.input,
+      }));
+    await conversationStore.update(conversation);
+  };
   const harness = new AgentHarness({
     workingDir,
     environment: resolveHarnessEnvironment(),
     approvalHandler: async (request) =>
       new Promise<boolean>((resolveApproval) => {
         const ownerIdForRun = runOwners.get(request.runId) ?? "local-owner";
+        const conversationIdForRun = runConversations.get(request.runId) ?? null;
         pendingApprovals.set(request.approvalId, {
           ownerId: ownerIdForRun,
+          runId: request.runId,
+          conversationId: conversationIdForRun,
+          tool: request.tool,
+          input: request.input,
           resolve: resolveApproval,
         });
+        if (conversationIdForRun) {
+          void persistConversationPendingApprovals(conversationIdForRun);
+        }
       }),
   });
   await harness.initialize();
@@ -1058,17 +1130,86 @@ export const createRequestHandler = async (options?: {
       const approvalId = decodeURIComponent(approvalMatch[1] ?? "");
       const pending = pendingApprovals.get(approvalId);
       if (!pending || pending.ownerId !== ownerId) {
+        // If the server restarted, an old pending approval can remain in
+        // conversation history without an active resolver. Prune stale entries.
+        const conversations = await conversationStore.list(ownerId);
+        let prunedStale = false;
+        for (const conversation of conversations) {
+          if (!Array.isArray(conversation.pendingApprovals)) {
+            continue;
+          }
+          const next = conversation.pendingApprovals.filter(
+            (approval) => approval.approvalId !== approvalId,
+          );
+          if (next.length !== conversation.pendingApprovals.length) {
+            conversation.pendingApprovals = next;
+            await conversationStore.update(conversation);
+            prunedStale = true;
+          }
+        }
         writeJson(response, 404, {
           code: "APPROVAL_NOT_FOUND",
-          message: "Approval request not found",
+          message: prunedStale
+            ? "Approval request is no longer active"
+            : "Approval request not found",
         });
         return;
       }
       const body = (await readRequestBody(request)) as { approved?: boolean };
       const approved = body.approved === true;
       pendingApprovals.delete(approvalId);
+      if (pending.conversationId) {
+        await persistConversationPendingApprovals(pending.conversationId);
+      }
       pending.resolve(approved);
       writeJson(response, 200, { ok: true, approvalId, approved });
+      return;
+    }
+
+    const conversationEventsMatch = pathname.match(
+      /^\/api\/conversations\/([^/]+)\/events$/,
+    );
+    if (conversationEventsMatch && request.method === "GET") {
+      const conversationId = decodeURIComponent(conversationEventsMatch[1] ?? "");
+      const conversation = await conversationStore.get(conversationId);
+      if (!conversation || conversation.ownerId !== ownerId) {
+        writeJson(response, 404, {
+          code: "CONVERSATION_NOT_FOUND",
+          message: "Conversation not found",
+        });
+        return;
+      }
+      response.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+      const stream = conversationEventStreams.get(conversationId);
+      if (!stream) {
+        // No active run — close immediately
+        response.write("event: stream:end\ndata: {}\n\n");
+        response.end();
+        return;
+      }
+      // Replay buffered events
+      for (const bufferedEvent of stream.buffer) {
+        try {
+          response.write(formatSseEvent(bufferedEvent));
+        } catch {
+          response.end();
+          return;
+        }
+      }
+      if (stream.finished) {
+        response.write("event: stream:end\ndata: {}\n\n");
+        response.end();
+        return;
+      }
+      // Subscribe to live events
+      stream.subscribers.add(response);
+      request.on("close", () => {
+        stream.subscribers.delete(response);
+      });
       return;
     }
 
@@ -1084,7 +1225,35 @@ export const createRequestHandler = async (options?: {
         return;
       }
       if (request.method === "GET") {
-        writeJson(response, 200, { conversation });
+        const storedPending = Array.isArray(conversation.pendingApprovals)
+          ? conversation.pendingApprovals
+          : [];
+        const livePending = Array.from(pendingApprovals.entries())
+          .filter(
+            ([, pending]) =>
+              pending.ownerId === ownerId && pending.conversationId === conversationId,
+          )
+          .map(([approvalId, pending]) => ({
+            approvalId,
+            runId: pending.runId,
+            tool: pending.tool,
+            input: pending.input,
+          }));
+        const mergedPendingById = new Map<string, (typeof livePending)[number]>();
+        for (const approval of storedPending) {
+          if (approval && typeof approval.approvalId === "string") {
+            mergedPendingById.set(approval.approvalId, approval);
+          }
+        }
+        for (const approval of livePending) {
+          mergedPendingById.set(approval.approvalId, approval);
+        }
+        writeJson(response, 200, {
+          conversation: {
+            ...conversation,
+            pendingApprovals: Array.from(mergedPendingById.values()),
+          },
+        });
         return;
       }
       if (request.method === "PATCH") {
@@ -1141,6 +1310,7 @@ export const createRequestHandler = async (options?: {
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       });
+      const historyMessages = [...conversation.messages];
       let latestRunId = conversation.runtimeRunId ?? "";
       let assistantResponse = "";
       const toolTimeline: string[] = [];
@@ -1148,6 +1318,48 @@ export const createRequestHandler = async (options?: {
       let currentText = "";
       let currentTools: string[] = [];
       try {
+        // Persist the user turn immediately so refreshing mid-run keeps chat context.
+        conversation.messages = [...historyMessages, { role: "user", content: messageText }];
+        conversation.updatedAt = Date.now();
+        await conversationStore.update(conversation);
+
+        const persistDraftAssistantTurn = async (): Promise<void> => {
+          const draftSections: Array<{ type: "text" | "tools"; content: string | string[] }> = [
+            ...sections.map((section) => ({
+              type: section.type,
+              content: Array.isArray(section.content) ? [...section.content] : section.content,
+            })),
+          ];
+          if (currentTools.length > 0) {
+            draftSections.push({ type: "tools", content: [...currentTools] });
+          }
+          if (currentText.length > 0) {
+            draftSections.push({ type: "text", content: currentText });
+          }
+          const hasDraftContent =
+            assistantResponse.length > 0 || toolTimeline.length > 0 || draftSections.length > 0;
+          if (!hasDraftContent) {
+            return;
+          }
+          conversation.messages = [
+            ...historyMessages,
+            { role: "user", content: messageText },
+            {
+              role: "assistant",
+              content: assistantResponse,
+              metadata:
+                toolTimeline.length > 0 || draftSections.length > 0
+                  ? ({
+                      toolActivity: [...toolTimeline],
+                      sections: draftSections.length > 0 ? draftSections : undefined,
+                    } as Message["metadata"])
+                  : undefined,
+            },
+          ];
+          conversation.updatedAt = Date.now();
+          await conversationStore.update(conversation);
+        };
+
         const recallCorpus = (await conversationStore.list(ownerId))
           .filter((item) => item.conversationId !== conversationId)
           .slice(0, 20)
@@ -1170,11 +1382,12 @@ export const createRequestHandler = async (options?: {
             __conversationRecallCorpus: recallCorpus,
             __activeConversationId: conversationId,
           },
-          messages: conversation.messages,
+          messages: historyMessages,
         })) {
           if (event.type === "run:started") {
             latestRunId = event.runId;
             runOwners.set(event.runId, ownerId);
+            runConversations.set(event.runId, conversationId);
           }
           if (event.type === "model:chunk") {
             // If we have tools accumulated and text starts again, push tools as a section
@@ -1209,16 +1422,19 @@ export const createRequestHandler = async (options?: {
             const toolText = `- approval required \`${event.tool}\``;
             toolTimeline.push(toolText);
             currentTools.push(toolText);
+            await persistDraftAssistantTurn();
           }
           if (event.type === "tool:approval:granted") {
             const toolText = `- approval granted (${event.approvalId})`;
             toolTimeline.push(toolText);
             currentTools.push(toolText);
+            await persistDraftAssistantTurn();
           }
           if (event.type === "tool:approval:denied") {
             const toolText = `- approval denied (${event.approvalId})`;
             toolTimeline.push(toolText);
             currentTools.push(toolText);
+            await persistDraftAssistantTurn();
           }
           if (
             event.type === "run:completed" &&
@@ -1228,7 +1444,13 @@ export const createRequestHandler = async (options?: {
             assistantResponse = event.result.response;
           }
           await telemetry.emit(event);
-          response.write(formatSseEvent(event));
+          broadcastEvent(conversationId, event);
+          try {
+            response.write(formatSseEvent(event));
+          } catch {
+            // Client disconnected (e.g. browser refresh). Continue processing
+            // so the run completes and conversation is persisted.
+          }
         }
         // Finalize sections
         if (currentTools.length > 0) {
@@ -1238,7 +1460,7 @@ export const createRequestHandler = async (options?: {
           sections.push({ type: "text", content: currentText });
         }
         conversation.messages = [
-          ...conversation.messages,
+          ...historyMessages,
           { role: "user", content: messageText },
           {
             role: "assistant",
@@ -1253,24 +1475,62 @@ export const createRequestHandler = async (options?: {
           },
         ];
         conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
+        conversation.pendingApprovals = [];
         conversation.updatedAt = Date.now();
         await conversationStore.update(conversation);
       } catch (error) {
-        response.write(
-          formatSseEvent({
-            type: "run:error",
-            runId: latestRunId || "run_unknown",
-            error: {
-              code: "RUN_ERROR",
-              message: error instanceof Error ? error.message : "Unknown error",
-            },
-          }),
-        );
+        try {
+          response.write(
+            formatSseEvent({
+              type: "run:error",
+              runId: latestRunId || "run_unknown",
+              error: {
+                code: "RUN_ERROR",
+                message: error instanceof Error ? error.message : "Unknown error",
+              },
+            }),
+          );
+        } catch {
+          // Client already disconnected; persist whatever we accumulated.
+          const fallbackSections = [...sections];
+          if (currentTools.length > 0) {
+            fallbackSections.push({ type: "tools", content: [...currentTools] });
+          }
+          if (currentText.length > 0) {
+            fallbackSections.push({ type: "text", content: currentText });
+          }
+          if (assistantResponse.length > 0 || toolTimeline.length > 0 || fallbackSections.length > 0) {
+            conversation.messages = [
+              ...historyMessages,
+              { role: "user", content: messageText },
+              {
+                role: "assistant",
+                content: assistantResponse,
+                metadata:
+                  toolTimeline.length > 0 || fallbackSections.length > 0
+                    ? ({
+                        toolActivity: [...toolTimeline],
+                        sections: fallbackSections.length > 0 ? fallbackSections : undefined,
+                      } as Message["metadata"])
+                    : undefined,
+              },
+            ];
+            conversation.updatedAt = Date.now();
+            await conversationStore.update(conversation);
+          }
+        }
       } finally {
+        finishConversationStream(conversationId);
+        await persistConversationPendingApprovals(conversationId);
         if (latestRunId) {
           runOwners.delete(latestRunId);
+          runConversations.delete(latestRunId);
         }
-        response.end();
+        try {
+          response.end();
+        } catch {
+          // Already closed.
+        }
       }
       return;
     }

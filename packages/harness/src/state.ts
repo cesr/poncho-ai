@@ -21,6 +21,12 @@ export interface Conversation {
   title: string;
   messages: Message[];
   runtimeRunId?: string;
+  pendingApprovals?: Array<{
+    approvalId: string;
+    runId: string;
+    tool: string;
+    input: Record<string, unknown>;
+  }>;
   ownerId: string;
   tenantId: string | null;
   createdAt: number;

@@ -1448,6 +1448,69 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         return false;
       };
 
+      const toUiPendingApprovals = (pendingApprovals) => {
+        if (!Array.isArray(pendingApprovals)) {
+          return [];
+        }
+        return pendingApprovals
+          .map((item) => {
+            const approvalId =
+              item && typeof item.approvalId === "string" ? item.approvalId : "";
+            if (!approvalId) {
+              return null;
+            }
+            const toolName = item && typeof item.tool === "string" ? item.tool : "tool";
+            const preview = safeJsonPreview(item?.input ?? {});
+            const inputPreview = preview.length > 600 ? preview.slice(0, 600) + "..." : preview;
+            return {
+              approvalId,
+              tool: toolName,
+              inputPreview,
+              state: "pending",
+            };
+          })
+          .filter(Boolean);
+      };
+
+      const hydratePendingApprovals = (messages, pendingApprovals) => {
+        const nextMessages = Array.isArray(messages) ? [...messages] : [];
+        const pending = toUiPendingApprovals(pendingApprovals);
+        if (pending.length === 0) {
+          return nextMessages;
+        }
+        const toolLines = pending.map((request) => "- approval required \\x60" + request.tool + "\\x60");
+        for (let idx = nextMessages.length - 1; idx >= 0; idx -= 1) {
+          const message = nextMessages[idx];
+          if (!message || message.role !== "assistant") {
+            continue;
+          }
+          const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
+          const existingTimeline = Array.isArray(metadata.toolActivity) ? metadata.toolActivity : [];
+          const mergedTimeline = [...existingTimeline];
+          toolLines.forEach((line) => {
+            if (!mergedTimeline.includes(line)) {
+              mergedTimeline.push(line);
+            }
+          });
+          nextMessages[idx] = {
+            ...message,
+            metadata: {
+              ...metadata,
+              toolActivity: mergedTimeline,
+            },
+            _pendingApprovals: pending,
+          };
+          return nextMessages;
+        }
+        nextMessages.push({
+          role: "assistant",
+          content: "",
+          metadata: { toolActivity: toolLines },
+          _pendingApprovals: pending,
+        });
+        return nextMessages;
+      };
+
       const formatDate = (epoch) => {
         try {
           const date = new Date(epoch);
@@ -1528,6 +1591,19 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       };
 
       const renderMessages = (messages, isStreaming = false) => {
+        const createThinkingIndicator = () => {
+          const spinner = document.createElement("span");
+          spinner.className = "thinking-indicator";
+          const starFrames = ["✶", "✸", "✹", "✺", "✹", "✷"];
+          let frame = 0;
+          spinner.textContent = starFrames[0];
+          spinner._interval = setInterval(() => {
+            frame = (frame + 1) % starFrames.length;
+            spinner.textContent = starFrames[frame];
+          }, 70);
+          return spinner;
+        };
+
         elements.messages.innerHTML = "";
         if (!messages || !messages.length) {
           elements.messages.innerHTML = '<div class="empty-state"><div class="assistant-avatar">' + agentInitial + '</div><div>How can I help you today?</div></div>';
@@ -1545,40 +1621,54 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             const content = document.createElement("div");
             content.className = "assistant-content";
             const text = String(m.content || "");
+            const isLastAssistant = i === messages.length - 1;
+            const hasPendingApprovals =
+              Array.isArray(m._pendingApprovals) && m._pendingApprovals.length > 0;
+            const shouldRenderEmptyStreamingIndicator =
+              isStreaming &&
+              isLastAssistant &&
+              !text &&
+              (!Array.isArray(m._sections) || m._sections.length === 0) &&
+              (!Array.isArray(m._currentTools) || m._currentTools.length === 0) &&
+              !hasPendingApprovals;
 
             if (m._error) {
               const errorEl = document.createElement("div");
               errorEl.className = "message-error";
               errorEl.innerHTML = "<strong>Error</strong><br>" + escapeHtml(m._error);
               content.appendChild(errorEl);
-            } else if (
-              isStreaming &&
-              i === messages.length - 1 &&
-              !text &&
-              (!Array.isArray(m._sections) || m._sections.length === 0) &&
-              (!Array.isArray(m._currentTools) || m._currentTools.length === 0) &&
-              (!Array.isArray(m._pendingApprovals) || m._pendingApprovals.length === 0)
-            ) {
-              const spinner = document.createElement("span");
-              spinner.className = "thinking-indicator";
-              const starFrames = ["✶","✸","✹","✺","✹","✷"];
-              let frame = 0;
-              spinner.textContent = starFrames[0];
-              spinner._interval = setInterval(() => { frame = (frame + 1) % starFrames.length; spinner.textContent = starFrames[frame]; }, 70);
-              content.appendChild(spinner);
+            } else if (shouldRenderEmptyStreamingIndicator) {
+              content.appendChild(createThinkingIndicator());
             } else {
               // Check for sections in _sections (streaming) or metadata.sections (stored)
               const sections = m._sections || (m.metadata && m.metadata.sections);
+              const pendingApprovals = Array.isArray(m._pendingApprovals) ? m._pendingApprovals : [];
 
               if (sections && sections.length > 0) {
+                let lastToolsSectionIndex = -1;
+                for (let sectionIdx = sections.length - 1; sectionIdx >= 0; sectionIdx -= 1) {
+                  if (sections[sectionIdx] && sections[sectionIdx].type === "tools") {
+                    lastToolsSectionIndex = sectionIdx;
+                    break;
+                  }
+                }
                 // Render sections interleaved
-                sections.forEach(section => {
+                sections.forEach((section, sectionIdx) => {
                   if (section.type === "text") {
                     const textDiv = document.createElement("div");
                     textDiv.innerHTML = renderAssistantMarkdown(section.content);
                     content.appendChild(textDiv);
                   } else if (section.type === "tools") {
-                    content.insertAdjacentHTML("beforeend", renderToolActivity(section.content));
+                    const sectionApprovals =
+                      !isStreaming &&
+                      pendingApprovals.length > 0 &&
+                      sectionIdx === lastToolsSectionIndex
+                        ? pendingApprovals
+                        : [];
+                    content.insertAdjacentHTML(
+                      "beforeend",
+                      renderToolActivity(section.content, sectionApprovals),
+                    );
                   }
                 });
                 // While streaming, show current tools if any
@@ -1587,6 +1677,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                     "beforeend",
                     renderToolActivity(m._currentTools, m._pendingApprovals || []),
                   );
+                }
+                // When reloading with unresolved approvals, show them even when not streaming
+                if (!isStreaming && pendingApprovals.length > 0 && lastToolsSectionIndex < 0) {
+                  content.insertAdjacentHTML("beforeend", renderToolActivity([], m._pendingApprovals));
                 }
                 // Show current text being typed
                 if (isStreaming && i === messages.length - 1 && m._currentText) {
@@ -1604,15 +1698,22 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                   m.metadata && Array.isArray(m.metadata.toolActivity)
                     ? m.metadata.toolActivity
                     : [];
-                if (metadataToolActivity.length > 0) {
+                if (metadataToolActivity.length > 0 || pendingApprovals.length > 0) {
                   content.insertAdjacentHTML(
                     "beforeend",
-                    renderToolActivity(
-                      metadataToolActivity,
-                      isStreaming && i === messages.length - 1 ? m._pendingApprovals || [] : [],
-                    ),
+                    renderToolActivity(metadataToolActivity, pendingApprovals),
                   );
                 }
+              }
+              if (
+                isStreaming &&
+                isLastAssistant &&
+                !hasPendingApprovals &&
+                (!m._currentText || m._currentText.length === 0)
+              ) {
+                const waitIndicator = document.createElement("div");
+                waitIndicator.appendChild(createThinkingIndicator());
+                content.appendChild(waitIndicator);
               }
             }
             wrap.appendChild(content);
@@ -1635,9 +1736,153 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       const loadConversation = async (conversationId) => {
         const payload = await api("/api/conversations/" + encodeURIComponent(conversationId));
         elements.chatTitle.textContent = payload.conversation.title;
-        state.activeMessages = payload.conversation.messages || [];
+        state.activeMessages = hydratePendingApprovals(
+          payload.conversation.messages || [],
+          payload.conversation.pendingApprovals || payload.pendingApprovals || [],
+        );
         renderMessages(state.activeMessages);
         elements.prompt.focus();
+      };
+
+      const streamConversationEvents = (conversationId) => {
+        return new Promise((resolve) => {
+          const localMessages = state.activeMessages || [];
+          let assistantMessage = localMessages[localMessages.length - 1];
+          if (!assistantMessage || assistantMessage.role !== "assistant") {
+            assistantMessage = {
+              role: "assistant",
+              content: "",
+              _sections: [],
+              _currentText: "",
+              _currentTools: [],
+              _pendingApprovals: [],
+              metadata: { toolActivity: [] },
+            };
+            localMessages.push(assistantMessage);
+            state.activeMessages = localMessages;
+          }
+          if (!assistantMessage._sections) assistantMessage._sections = [];
+          if (!assistantMessage._currentText) assistantMessage._currentText = "";
+          if (!assistantMessage._currentTools) assistantMessage._currentTools = [];
+          if (!assistantMessage._pendingApprovals) assistantMessage._pendingApprovals = [];
+          if (!assistantMessage.metadata) assistantMessage.metadata = {};
+          if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+
+          const url = "/api/conversations/" + encodeURIComponent(conversationId) + "/events";
+          fetch(url, { credentials: "include" }).then((response) => {
+            if (!response.ok || !response.body) {
+              resolve(undefined);
+              return;
+            }
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            const processChunks = async () => {
+              while (true) {
+                const { value, done } = await reader.read();
+                if (done) {
+                  break;
+                }
+                buffer += decoder.decode(value, { stream: true });
+                buffer = parseSseChunk(buffer, (eventName, payload) => {
+                  try {
+                    if (eventName === "stream:end") {
+                      return;
+                    }
+                    if (eventName === "model:chunk") {
+                      const chunk = String(payload.content || "");
+                      if (assistantMessage._currentTools.length > 0 && chunk.length > 0) {
+                        assistantMessage._sections.push({
+                          type: "tools",
+                          content: assistantMessage._currentTools,
+                        });
+                        assistantMessage._currentTools = [];
+                      }
+                      assistantMessage.content += chunk;
+                      assistantMessage._currentText += chunk;
+                      renderMessages(localMessages, true);
+                    }
+                    if (eventName === "tool:started") {
+                      const toolName = payload.tool || "tool";
+                      if (assistantMessage._currentText.length > 0) {
+                        assistantMessage._sections.push({
+                          type: "text",
+                          content: assistantMessage._currentText,
+                        });
+                        assistantMessage._currentText = "";
+                      }
+                      const toolText = "- start \\x60" + toolName + "\\x60";
+                      assistantMessage._currentTools.push(toolText);
+                      assistantMessage.metadata.toolActivity.push(toolText);
+                      renderMessages(localMessages, true);
+                    }
+                    if (eventName === "tool:completed") {
+                      const toolName = payload.tool || "tool";
+                      const duration =
+                        typeof payload.duration === "number" ? payload.duration : null;
+                      const toolText =
+                        "- done \\x60" +
+                        toolName +
+                        "\\x60" +
+                        (duration !== null ? " (" + duration + "ms)" : "");
+                      assistantMessage._currentTools.push(toolText);
+                      assistantMessage.metadata.toolActivity.push(toolText);
+                      renderMessages(localMessages, true);
+                    }
+                    if (eventName === "tool:error") {
+                      const toolName = payload.tool || "tool";
+                      const errorMsg = payload.error || "unknown error";
+                      const toolText = "- error \\x60" + toolName + "\\x60: " + errorMsg;
+                      assistantMessage._currentTools.push(toolText);
+                      assistantMessage.metadata.toolActivity.push(toolText);
+                      renderMessages(localMessages, true);
+                    }
+                    if (eventName === "run:completed") {
+                      if (
+                        !assistantMessage.content ||
+                        assistantMessage.content.length === 0
+                      ) {
+                        assistantMessage.content = String(
+                          payload.result?.response || "",
+                        );
+                      }
+                      if (assistantMessage._currentTools.length > 0) {
+                        assistantMessage._sections.push({
+                          type: "tools",
+                          content: assistantMessage._currentTools,
+                        });
+                        assistantMessage._currentTools = [];
+                      }
+                      if (assistantMessage._currentText.length > 0) {
+                        assistantMessage._sections.push({
+                          type: "text",
+                          content: assistantMessage._currentText,
+                        });
+                        assistantMessage._currentText = "";
+                      }
+                      renderMessages(localMessages, false);
+                    }
+                    if (eventName === "run:error") {
+                      const errMsg =
+                        payload.error?.message || "Something went wrong";
+                      assistantMessage.content = "";
+                      assistantMessage._error = errMsg;
+                      renderMessages(localMessages, false);
+                    }
+                  } catch (error) {
+                    console.error("SSE reconnect event error:", eventName, error);
+                  }
+                });
+              }
+            };
+            processChunks().finally(() => {
+              state.activeMessages = localMessages;
+              resolve(undefined);
+            });
+          }).catch(() => {
+            resolve(undefined);
+          });
+        });
       };
 
       const createConversation = async (title, options = {}) => {
@@ -2020,6 +2265,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           return;
         }
         state.approvalRequestsInFlight[approvalId] = true;
+        const wasStreaming = state.isStreaming;
+        if (!wasStreaming) {
+          setStreaming(true);
+        }
         updatePendingApproval(approvalId, (request) => ({
           ...request,
           state: "submitting",
@@ -2031,6 +2280,11 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             method: "POST",
             body: JSON.stringify({ approved: decision === "approve" }),
           });
+          updatePendingApproval(approvalId, () => null);
+          renderMessages(state.activeMessages, state.isStreaming);
+          if (!wasStreaming && state.activeConversationId) {
+            await streamConversationEvents(state.activeConversationId);
+          }
         } catch (error) {
           const errMsg = error instanceof Error ? error.message : String(error);
           updatePendingApproval(approvalId, (request) => ({
@@ -2041,6 +2295,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           }));
           renderMessages(state.activeMessages, state.isStreaming);
         } finally {
+          if (!wasStreaming) {
+            setStreaming(false);
+            renderMessages(state.activeMessages, false);
+          }
           delete state.approvalRequestsInFlight[approvalId];
         }
       });
