@@ -1025,6 +1025,23 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       color: #ededed;
       opacity: 0.5;
     }
+    .thinking-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 2px;
+      color: #8a8a8a;
+      font-size: 14px;
+      line-height: 1.65;
+      font-weight: 400;
+    }
+    .thinking-status-label {
+      color: #8a8a8a;
+      font-size: 14px;
+      line-height: 1.65;
+      font-weight: 400;
+      white-space: nowrap;
+    }
 
     /* Composer */
     .composer {
@@ -1604,7 +1621,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         const shouldStickToBottom =
           options.forceScrollBottom === true || state.isMessagesPinnedToBottom;
 
-        const createThinkingIndicator = () => {
+        const createThinkingIndicator = (label) => {
+          const status = document.createElement("div");
+          status.className = "thinking-status";
           const spinner = document.createElement("span");
           spinner.className = "thinking-indicator";
           const starFrames = ["✶", "✸", "✹", "✺", "✹", "✷"];
@@ -1614,7 +1633,14 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             frame = (frame + 1) % starFrames.length;
             spinner.textContent = starFrames[frame];
           }, 70);
-          return spinner;
+          status.appendChild(spinner);
+          if (label) {
+            const text = document.createElement("span");
+            text.className = "thinking-status-label";
+            text.textContent = label;
+            status.appendChild(text);
+          }
+          return status;
         };
 
         elements.messages.innerHTML = "";
@@ -1652,7 +1678,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
               errorEl.innerHTML = "<strong>Error</strong><br>" + escapeHtml(m._error);
               content.appendChild(errorEl);
             } else if (shouldRenderEmptyStreamingIndicator) {
-              content.appendChild(createThinkingIndicator());
+              content.appendChild(createThinkingIndicator(getThinkingStatusLabel(m)));
             } else {
               // Check for sections in _sections (streaming) or metadata.sections (stored)
               const sections = m._sections || (m.metadata && m.metadata.sections);
@@ -1722,11 +1748,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
               if (
                 isStreaming &&
                 isLastAssistant &&
-                !hasPendingApprovals &&
-                (!m._currentText || m._currentText.length === 0)
+                !hasPendingApprovals
               ) {
                 const waitIndicator = document.createElement("div");
-                waitIndicator.appendChild(createThinkingIndicator());
+                waitIndicator.appendChild(createThinkingIndicator(getThinkingStatusLabel(m)));
                 content.appendChild(waitIndicator);
               }
             }
@@ -1792,6 +1817,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           if (!assistantMessage._sections) assistantMessage._sections = [];
           if (!assistantMessage._currentText) assistantMessage._currentText = "";
           if (!assistantMessage._currentTools) assistantMessage._currentTools = [];
+          if (!assistantMessage._activeActivities) assistantMessage._activeActivities = [];
           if (!assistantMessage._pendingApprovals) assistantMessage._pendingApprovals = [];
           if (!assistantMessage.metadata) assistantMessage.metadata = {};
           if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
@@ -1832,6 +1858,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                     }
                     if (eventName === "tool:started") {
                       const toolName = payload.tool || "tool";
+                      const startedActivity = addActiveActivityFromToolStart(
+                        assistantMessage,
+                        payload,
+                      );
                       if (assistantMessage._currentText.length > 0) {
                         assistantMessage._sections.push({
                           type: "text",
@@ -1839,33 +1869,67 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                         });
                         assistantMessage._currentText = "";
                       }
-                      const toolText = "- start \\x60" + toolName + "\\x60";
+                      const detail =
+                        startedActivity && typeof startedActivity.detail === "string"
+                          ? startedActivity.detail.trim()
+                          : "";
+                      const toolText =
+                        "- start \\x60" +
+                        toolName +
+                        "\\x60" +
+                        (detail ? " (" + detail + ")" : "");
                       assistantMessage._currentTools.push(toolText);
                       assistantMessage.metadata.toolActivity.push(toolText);
                       renderIfActiveConversation(true);
                     }
                     if (eventName === "tool:completed") {
                       const toolName = payload.tool || "tool";
+                      const activeActivity = removeActiveActivityForTool(
+                        assistantMessage,
+                        toolName,
+                      );
                       const duration =
                         typeof payload.duration === "number" ? payload.duration : null;
+                      const detail =
+                        activeActivity && typeof activeActivity.detail === "string"
+                          ? activeActivity.detail.trim()
+                          : "";
+                      const meta = [];
+                      if (duration !== null) meta.push(duration + "ms");
+                      if (detail) meta.push(detail);
                       const toolText =
                         "- done \\x60" +
                         toolName +
                         "\\x60" +
-                        (duration !== null ? " (" + duration + "ms)" : "");
+                        (meta.length > 0 ? " (" + meta.join(", ") + ")" : "");
                       assistantMessage._currentTools.push(toolText);
                       assistantMessage.metadata.toolActivity.push(toolText);
                       renderIfActiveConversation(true);
                     }
                     if (eventName === "tool:error") {
                       const toolName = payload.tool || "tool";
+                      const activeActivity = removeActiveActivityForTool(
+                        assistantMessage,
+                        toolName,
+                      );
                       const errorMsg = payload.error || "unknown error";
-                      const toolText = "- error \\x60" + toolName + "\\x60: " + errorMsg;
+                      const detail =
+                        activeActivity && typeof activeActivity.detail === "string"
+                          ? activeActivity.detail.trim()
+                          : "";
+                      const toolText =
+                        "- error \\x60" +
+                        toolName +
+                        "\\x60" +
+                        (detail ? " (" + detail + ")" : "") +
+                        ": " +
+                        errorMsg;
                       assistantMessage._currentTools.push(toolText);
                       assistantMessage.metadata.toolActivity.push(toolText);
                       renderIfActiveConversation(true);
                     }
                     if (eventName === "run:completed") {
+                      assistantMessage._activeActivities = [];
                       if (
                         !assistantMessage.content ||
                         assistantMessage.content.length === 0
@@ -1891,6 +1955,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                       renderIfActiveConversation(false);
                     }
                     if (eventName === "run:error") {
+                      assistantMessage._activeActivities = [];
                       const errMsg =
                         payload.error?.message || "Something went wrong";
                       assistantMessage.content = "";
@@ -1981,6 +2046,159 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         assistantMessage.metadata.toolActivity.push(line);
       };
 
+      const ensureActiveActivities = (assistantMessage) => {
+        if (!Array.isArray(assistantMessage._activeActivities)) {
+          assistantMessage._activeActivities = [];
+        }
+        return assistantMessage._activeActivities;
+      };
+
+      const getStringInputField = (input, key) => {
+        if (!input || typeof input !== "object") {
+          return "";
+        }
+        const value = input[key];
+        return typeof value === "string" ? value.trim() : "";
+      };
+
+      const describeToolStart = (payload) => {
+        const toolName = payload && typeof payload.tool === "string" ? payload.tool : "tool";
+        const input = payload && payload.input && typeof payload.input === "object" ? payload.input : {};
+
+        if (toolName === "activate_skill") {
+          const skillName = getStringInputField(input, "name") || "skill";
+          return {
+            kind: "skill",
+            tool: toolName,
+            label: "Activating " + skillName + " skill",
+            detail: "skill: " + skillName,
+          };
+        }
+
+        if (toolName === "run_skill_script") {
+          const scriptPath = getStringInputField(input, "script");
+          const skillName = getStringInputField(input, "skill");
+          if (scriptPath && skillName) {
+            return {
+              kind: "tool",
+              tool: toolName,
+              label: "Running script " + scriptPath + " in " + skillName + " skill",
+              detail: "script: " + scriptPath + ", skill: " + skillName,
+            };
+          }
+          if (scriptPath) {
+            return {
+              kind: "tool",
+              tool: toolName,
+              label: "Running script " + scriptPath,
+              detail: "script: " + scriptPath,
+            };
+          }
+        }
+
+        if (toolName === "read_skill_resource") {
+          const resourcePath = getStringInputField(input, "path");
+          const skillName = getStringInputField(input, "skill");
+          if (resourcePath && skillName) {
+            return {
+              kind: "tool",
+              tool: toolName,
+              label: "Reading " + resourcePath + " from " + skillName + " skill",
+              detail: "path: " + resourcePath + ", skill: " + skillName,
+            };
+          }
+          if (resourcePath) {
+            return {
+              kind: "tool",
+              tool: toolName,
+              label: "Reading " + resourcePath,
+              detail: "path: " + resourcePath,
+            };
+          }
+        }
+
+        if (toolName === "read_file") {
+          const path = getStringInputField(input, "path");
+          if (path) {
+            return {
+              kind: "tool",
+              tool: toolName,
+              label: "Reading " + path,
+              detail: "path: " + path,
+            };
+          }
+        }
+
+        return {
+          kind: "tool",
+          tool: toolName,
+          label: "Running " + toolName + " tool",
+          detail: "",
+        };
+      };
+
+      const addActiveActivityFromToolStart = (assistantMessage, payload) => {
+        const activities = ensureActiveActivities(assistantMessage);
+        const activity = describeToolStart(payload);
+        activities.push(activity);
+        return activity;
+      };
+
+      const removeActiveActivityForTool = (assistantMessage, toolName) => {
+        if (!toolName || !Array.isArray(assistantMessage._activeActivities)) {
+          return null;
+        }
+        const activities = assistantMessage._activeActivities;
+        const idx = activities.findIndex((item) => item && item.tool === toolName);
+        if (idx >= 0) {
+          return activities.splice(idx, 1)[0] || null;
+        }
+        return null;
+      };
+
+      const getThinkingStatusLabel = (assistantMessage) => {
+        const activities = Array.isArray(assistantMessage?._activeActivities)
+          ? assistantMessage._activeActivities
+          : [];
+        const labels = [];
+        activities.forEach((item) => {
+          if (!item || typeof item.label !== "string") {
+            return;
+          }
+          const label = item.label.trim();
+          if (!label || labels.includes(label)) {
+            return;
+          }
+          labels.push(label);
+        });
+        if (labels.length === 1) {
+          return labels[0];
+        }
+        if (labels.length === 2) {
+          return labels[0] + ", " + labels[1];
+        }
+        if (labels.length > 2) {
+          return labels[0] + ", " + labels[1] + " +" + (labels.length - 2) + " more";
+        }
+
+        if (Array.isArray(assistantMessage?._currentTools)) {
+          const tick = String.fromCharCode(96);
+          const startPrefix = "- start " + tick;
+          for (let idx = assistantMessage._currentTools.length - 1; idx >= 0; idx -= 1) {
+            const item = String(assistantMessage._currentTools[idx] || "");
+            if (item.startsWith(startPrefix)) {
+              const rest = item.slice(startPrefix.length);
+              const endIdx = rest.indexOf(tick);
+              const toolName = (endIdx >= 0 ? rest.slice(0, endIdx) : rest).trim();
+              if (toolName) {
+                return "Running " + toolName + " tool";
+              }
+            }
+          }
+        }
+        return "Thinking...";
+      };
+
       const autoResizePrompt = () => {
         const el = elements.prompt;
         el.style.height = "auto";
@@ -2002,6 +2220,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           _sections: [], // Array of {type: 'text'|'tools', content: string|array}
           _currentText: "",
           _currentTools: [],
+          _activeActivities: [],
           _pendingApprovals: [],
           metadata: { toolActivity: [] }
         };
@@ -2055,12 +2274,21 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                 }
                 if (eventName === "tool:started") {
                   const toolName = payload.tool || "tool";
+                  const startedActivity = addActiveActivityFromToolStart(
+                    assistantMessage,
+                    payload,
+                  );
                   // If we have text accumulated, push it as a text section
                   if (assistantMessage._currentText.length > 0) {
                     assistantMessage._sections.push({ type: "text", content: assistantMessage._currentText });
                     assistantMessage._currentText = "";
                   }
-                  const toolText = "- start \\x60" + toolName + "\\x60";
+                  const detail =
+                    startedActivity && typeof startedActivity.detail === "string"
+                      ? startedActivity.detail.trim()
+                      : "";
+                  const toolText =
+                    "- start \\x60" + toolName + "\\x60" + (detail ? " (" + detail + ")" : "");
                   assistantMessage._currentTools.push(toolText);
                   if (!assistantMessage.metadata) assistantMessage.metadata = {};
                   if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
@@ -2069,8 +2297,20 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                 }
                 if (eventName === "tool:completed") {
                   const toolName = payload.tool || "tool";
+                  const activeActivity = removeActiveActivityForTool(
+                    assistantMessage,
+                    toolName,
+                  );
                   const duration = typeof payload.duration === "number" ? payload.duration : null;
-                  const toolText = "- done \\x60" + toolName + "\\x60" + (duration !== null ? " (" + duration + "ms)" : "");
+                  const detail =
+                    activeActivity && typeof activeActivity.detail === "string"
+                      ? activeActivity.detail.trim()
+                      : "";
+                  const meta = [];
+                  if (duration !== null) meta.push(duration + "ms");
+                  if (detail) meta.push(detail);
+                  const toolText =
+                    "- done \\x60" + toolName + "\\x60" + (meta.length > 0 ? " (" + meta.join(", ") + ")" : "");
                   assistantMessage._currentTools.push(toolText);
                   if (!assistantMessage.metadata) assistantMessage.metadata = {};
                   if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
@@ -2079,8 +2319,22 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                 }
                 if (eventName === "tool:error") {
                   const toolName = payload.tool || "tool";
+                  const activeActivity = removeActiveActivityForTool(
+                    assistantMessage,
+                    toolName,
+                  );
                   const errorMsg = payload.error || "unknown error";
-                  const toolText = "- error \\x60" + toolName + "\\x60: " + errorMsg;
+                  const detail =
+                    activeActivity && typeof activeActivity.detail === "string"
+                      ? activeActivity.detail.trim()
+                      : "";
+                  const toolText =
+                    "- error \\x60" +
+                    toolName +
+                    "\\x60" +
+                    (detail ? " (" + detail + ")" : "") +
+                    ": " +
+                    errorMsg;
                   assistantMessage._currentTools.push(toolText);
                   if (!assistantMessage.metadata) assistantMessage.metadata = {};
                   if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
@@ -2089,7 +2343,23 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                 }
                 if (eventName === "tool:approval:required") {
                   const toolName = payload.tool || "tool";
-                  const toolText = "- approval required \\x60" + toolName + "\\x60";
+                  const activeActivity = removeActiveActivityForTool(
+                    assistantMessage,
+                    toolName,
+                  );
+                  const detailFromPayload = describeToolStart(payload);
+                  const detail =
+                    (activeActivity && typeof activeActivity.detail === "string"
+                      ? activeActivity.detail.trim()
+                      : "") ||
+                    (detailFromPayload && typeof detailFromPayload.detail === "string"
+                      ? detailFromPayload.detail.trim()
+                      : "");
+                  const toolText =
+                    "- approval required \\x60" +
+                    toolName +
+                    "\\x60" +
+                    (detail ? " (" + detail + ")" : "");
                   assistantMessage._currentTools.push(toolText);
                   if (!assistantMessage.metadata) assistantMessage.metadata = {};
                   if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
@@ -2147,6 +2417,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                   renderIfActiveConversation(true);
                 }
                 if (eventName === "run:completed") {
+                  assistantMessage._activeActivities = [];
                   if (!assistantMessage.content || assistantMessage.content.length === 0) {
                     assistantMessage.content = String(payload.result?.response || "");
                   }
@@ -2162,6 +2433,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                   renderIfActiveConversation(false);
                 }
                 if (eventName === "run:error") {
+                  assistantMessage._activeActivities = [];
                   const errMsg = payload.error?.message || "Something went wrong";
                   assistantMessage.content = "";
                   assistantMessage._error = errMsg;
