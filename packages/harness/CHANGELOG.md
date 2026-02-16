@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.7.1
+
+### Patch Changes
+
+- Persist pending approvals on conversation state and add SSE reconnect endpoint so Web UI approvals survive page refresh and stream responses in real-time.
+
 ## 0.7.0
 
 ### Minor Changes

@@ -1,5 +1,16 @@
 # @poncho-ai/cli
 
+## 0.6.0
+
+### Minor Changes
+
+- Persist pending approvals on conversation state and add SSE reconnect endpoint so Web UI approvals survive page refresh and stream responses in real-time.
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @poncho-ai/harness@0.7.1
+
 ## 0.5.1
 
 ### Patch Changes
