@@ -879,7 +879,7 @@ When a gated tool is called, the harness emits a `tool:approval:required` event 
 name: ops-assistant
 model:
   provider: anthropic
-  name: claude-opus-4-5
+  name: claude-opus-4-6
 allowed-tools:
   - mcp:linear/*
   - mcp:github/list_issues
@@ -906,8 +906,8 @@ You help teams with operational workflows by using approved tools and skills.
 ---
 name: research-assistant
 model:
-  provider: anthropic
-  name: claude-opus-4-5
+  provider: openai
+  name: gpt-5.2
 allowed-tools:
   - research/scripts/*
 ---
@@ -931,7 +931,7 @@ You help users research topics by searching the web and summarizing findings.
 name: support-bot
 model:
   provider: anthropic
-  name: claude-haiku-4
+  name: claude-sonnet-4-5
   temperature: 0.3
 limits:
   maxSteps: 10
