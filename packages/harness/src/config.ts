@@ -1,5 +1,6 @@
 import { access } from "node:fs/promises";
 import { resolve } from "node:path";
+import { createJiti } from "jiti";
 import type { MemoryConfig } from "./memory.js";
 import type { McpConfig } from "./mcp.js";
 import type { StateConfig } from "./state.js";
@@ -133,9 +134,22 @@ export const loadPonchoConfig = async (
     return undefined;
   }
 
-  const imported = (await import(`${filePath}?t=${Date.now()}`)) as {
-    default?: PonchoConfig;
-  };
-
-  return imported.default;
+  try {
+    const imported = (await import(`${filePath}?t=${Date.now()}`)) as {
+      default?: PonchoConfig;
+    };
+    return imported.default;
+  } catch (error) {
+    // Some serverless packagers load project code as CommonJS and reject ESM
+    // config files. Fall back to jiti so both ESM and CJS configs are accepted.
+    const jiti = createJiti(import.meta.url, { interopDefault: true, moduleCache: false });
+    const imported = (await jiti.import(filePath)) as PonchoConfig | { default?: PonchoConfig };
+    if (imported && typeof imported === "object" && "default" in imported) {
+      return imported.default;
+    }
+    if (imported && typeof imported === "object") {
+      return imported as PonchoConfig;
+    }
+    throw error;
+  }
 };

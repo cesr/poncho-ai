@@ -42,6 +42,7 @@ import {
 import { createInterface } from "node:readline/promises";
 import {
   runInitOnboarding,
+  type DeployTarget,
   type InitOnboardingOptions,
 } from "./init-onboarding.js";
 import {
@@ -493,12 +494,20 @@ ${name}/
 \`\`\`bash
 # Build for Vercel
 poncho build vercel
-cd .poncho-build/vercel && vercel deploy --prod
+vercel deploy --prod
 
 # Build for Docker
 poncho build docker
 docker build -t ${name} .
 \`\`\`
+
+## Troubleshooting
+
+### Vercel deploy issues
+
+- After upgrading \`@poncho-ai/cli\`, re-run \`poncho build vercel --force\` to refresh generated deploy files.
+- If Vercel fails during \`pnpm install\` due to a lockfile mismatch, run \`pnpm install --no-frozen-lockfile\` locally and commit \`pnpm-lock.yaml\`.
+- Deploy from the project root: \`vercel deploy --prod\`.
 
 For full reference:
 https://github.com/cesr/poncho-ai
@@ -506,19 +515,7 @@ https://github.com/cesr/poncho-ai
 
 const ENV_TEMPLATE = "ANTHROPIC_API_KEY=sk-ant-...\n";
 const GITIGNORE_TEMPLATE =
-  ".env\nnode_modules\ndist\n.poncho-build\n.poncho/\ninteractive-session.json\n";
-const VERCEL_RUNTIME_DEPENDENCIES: Record<string, string> = {
-  "@anthropic-ai/sdk": "^0.74.0",
-  "@aws-sdk/client-dynamodb": "^3.988.0",
-  "@latitude-data/telemetry": "^2.0.2",
-  commander: "^12.0.0",
-  dotenv: "^16.4.0",
-  jiti: "^2.6.1",
-  mustache: "^4.2.0",
-  openai: "^6.3.0",
-  redis: "^5.10.0",
-  yaml: "^2.8.1",
-};
+  ".env\nnode_modules\ndist\n.poncho/\ninteractive-session.json\n.vercel\n";
 const TEST_TEMPLATE = `tests:
   - name: "Basic sanity"
     task: "What is 2 + 2?"
@@ -617,35 +614,126 @@ const ensureFile = async (path: string, content: string): Promise<void> => {
   await writeFile(path, content, { encoding: "utf8", flag: "wx" });
 };
 
-const copyIfExists = async (sourcePath: string, destinationPath: string): Promise<void> => {
-  try {
-    await access(sourcePath);
-  } catch {
-    return;
+type DeployScaffoldTarget = Exclude<DeployTarget, "none">;
+
+const normalizeDeployTarget = (target: string): DeployScaffoldTarget => {
+  const normalized = target.toLowerCase();
+  if (
+    normalized === "vercel" ||
+    normalized === "docker" ||
+    normalized === "lambda" ||
+    normalized === "fly"
+  ) {
+    return normalized;
   }
-  await mkdir(dirname(destinationPath), { recursive: true });
-  // Build outputs should contain materialized files, not symlinks to paths
-  // that may not exist inside deployment artifacts (e.g. .agents/skills/*).
-  await cp(sourcePath, destinationPath, { recursive: true, dereference: true });
+  throw new Error(`Unsupported build target: ${target}`);
 };
 
-const resolveCliEntrypoint = async (): Promise<string> => {
-  const sourceEntrypoint = resolve(packageRoot, "src", "index.ts");
+const readCliVersion = async (): Promise<string> => {
+  const fallback = "0.1.0";
   try {
-    await access(sourceEntrypoint);
-    return sourceEntrypoint;
+    const packageJsonPath = resolve(packageRoot, "package.json");
+    const content = await readFile(packageJsonPath, "utf8");
+    const parsed = JSON.parse(content) as { version?: unknown };
+    if (typeof parsed.version === "string" && parsed.version.trim().length > 0) {
+      return parsed.version;
+    }
   } catch {
-    return resolve(packageRoot, "dist", "index.js");
+    // Use fallback when package metadata cannot be read.
   }
+  return fallback;
 };
 
-const buildVercelHandlerBundle = async (outDir: string): Promise<void> => {
-  const { build: esbuild } = await import("esbuild");
-  const cliEntrypoint = await resolveCliEntrypoint();
-  const tempEntry = resolve(outDir, "api", "_entry.js");
-  await writeFile(
-    tempEntry,
-    `import { createRequestHandler } from ${JSON.stringify(cliEntrypoint)};
+const readCliDependencyVersion = async (
+  dependencyName: string,
+  fallback: string,
+): Promise<string> => {
+  try {
+    const packageJsonPath = resolve(packageRoot, "package.json");
+    const content = await readFile(packageJsonPath, "utf8");
+    const parsed = JSON.parse(content) as { dependencies?: Record<string, unknown> };
+    const value = parsed.dependencies?.[dependencyName];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  } catch {
+    // Use fallback when package metadata cannot be read.
+  }
+  return fallback;
+};
+
+const writeScaffoldFile = async (
+  filePath: string,
+  content: string,
+  options: { force?: boolean; writtenPaths: string[]; baseDir: string },
+): Promise<void> => {
+  if (!options.force) {
+    try {
+      await access(filePath);
+      throw new Error(
+        `Refusing to overwrite existing file: ${relative(options.baseDir, filePath)}. Re-run with --force to overwrite.`,
+      );
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("Refusing to overwrite")) {
+        // File does not exist, safe to continue.
+      } else {
+        throw error;
+      }
+    }
+  }
+  await mkdir(dirname(filePath), { recursive: true });
+  await writeFile(filePath, content, "utf8");
+  options.writtenPaths.push(relative(options.baseDir, filePath));
+};
+
+const ensureRuntimeCliDependency = async (
+  projectDir: string,
+  cliVersion: string,
+): Promise<string[]> => {
+  const packageJsonPath = resolve(projectDir, "package.json");
+  const content = await readFile(packageJsonPath, "utf8");
+  const parsed = JSON.parse(content) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  const dependencies = { ...(parsed.dependencies ?? {}) };
+  const isLocalOnlySpecifier = (value: string | undefined): boolean =>
+    typeof value === "string" &&
+    (value.startsWith("link:") || value.startsWith("workspace:") || value.startsWith("file:"));
+
+  // Deployment projects should not depend on local monorepo paths.
+  if (isLocalOnlySpecifier(dependencies["@poncho-ai/harness"])) {
+    delete dependencies["@poncho-ai/harness"];
+  }
+  if (isLocalOnlySpecifier(dependencies["@poncho-ai/sdk"])) {
+    delete dependencies["@poncho-ai/sdk"];
+  }
+  dependencies.marked = await readCliDependencyVersion("marked", "^17.0.2");
+  dependencies["@poncho-ai/cli"] = `^${cliVersion}`;
+  parsed.dependencies = dependencies;
+  await writeFile(packageJsonPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+  return [relative(projectDir, packageJsonPath)];
+};
+
+const scaffoldDeployTarget = async (
+  projectDir: string,
+  target: DeployScaffoldTarget,
+  options?: { force?: boolean },
+): Promise<string[]> => {
+  const writtenPaths: string[] = [];
+  const cliVersion = await readCliVersion();
+  const sharedServerEntrypoint = `import { startDevServer } from "@poncho-ai/cli";
+
+const port = Number.parseInt(process.env.PORT ?? "3000", 10);
+await startDevServer(Number.isNaN(port) ? 3000 : port, { workingDir: process.cwd() });
+`;
+
+  if (target === "vercel") {
+    const entryPath = resolve(projectDir, "api", "index.mjs");
+    await writeScaffoldFile(
+      entryPath,
+      `import "marked";
+import { createRequestHandler } from "@poncho-ai/cli";
 let handlerPromise;
 export default async function handler(req, res) {
   try {
@@ -663,68 +751,115 @@ export default async function handler(req, res) {
   }
 }
 `,
-    "utf8",
-  );
-  await esbuild({
-    entryPoints: [tempEntry],
-    bundle: true,
-    platform: "node",
-    format: "esm",
-    target: "node20",
-    outfile: resolve(outDir, "api", "index.js"),
-    sourcemap: false,
-    legalComments: "none",
-    external: [
-      ...Object.keys(VERCEL_RUNTIME_DEPENDENCIES),
-      "@anthropic-ai/sdk/*",
-      "child_process",
-      "fs",
-      "fs/promises",
-      "http",
-      "https",
-      "path",
-      "module",
-      "url",
-      "readline",
-      "readline/promises",
-      "crypto",
-      "stream",
-      "events",
-      "util",
-      "os",
-      "zlib",
-      "net",
-      "tls",
-      "dns",
-      "assert",
-      "buffer",
-      "timers",
-      "timers/promises",
-      "node:child_process",
-      "node:fs",
-      "node:fs/promises",
-      "node:http",
-      "node:https",
-      "node:path",
-      "node:module",
-      "node:url",
-      "node:readline",
-      "node:readline/promises",
-      "node:crypto",
-      "node:stream",
-      "node:events",
-      "node:util",
-      "node:os",
-      "node:zlib",
-      "node:net",
-      "node:tls",
-      "node:dns",
-      "node:assert",
-      "node:buffer",
-      "node:timers",
-      "node:timers/promises",
-    ],
+      { force: options?.force, writtenPaths, baseDir: projectDir },
+    );
+    const vercelConfigPath = resolve(projectDir, "vercel.json");
+    await writeScaffoldFile(
+      vercelConfigPath,
+      `${JSON.stringify(
+        {
+          version: 2,
+          functions: {
+            "api/index.mjs": {
+              includeFiles:
+                "{AGENT.md,poncho.config.js,skills/**,tests/**,node_modules/.pnpm/marked@*/node_modules/marked/lib/marked.umd.js}",
+            },
+          },
+          routes: [{ src: "/(.*)", dest: "/api/index.mjs" }],
+        },
+        null,
+        2,
+      )}\n`,
+      { force: options?.force, writtenPaths, baseDir: projectDir },
+    );
+  } else if (target === "docker") {
+    const dockerfilePath = resolve(projectDir, "Dockerfile");
+    await writeScaffoldFile(
+      dockerfilePath,
+      `FROM node:20-slim
+WORKDIR /app
+COPY package.json package.json
+COPY AGENT.md AGENT.md
+COPY poncho.config.js poncho.config.js
+COPY skills skills
+COPY tests tests
+COPY .env.example .env.example
+RUN corepack enable && npm install -g @poncho-ai/cli@^${cliVersion}
+COPY server.js server.js
+EXPOSE 3000
+CMD ["node","server.js"]
+`,
+      { force: options?.force, writtenPaths, baseDir: projectDir },
+    );
+    await writeScaffoldFile(resolve(projectDir, "server.js"), sharedServerEntrypoint, {
+      force: options?.force,
+      writtenPaths,
+      baseDir: projectDir,
+    });
+  } else if (target === "lambda") {
+    await writeScaffoldFile(
+      resolve(projectDir, "lambda-handler.js"),
+      `import { startDevServer } from "@poncho-ai/cli";
+let serverPromise;
+export const handler = async (event = {}) => {
+  if (!serverPromise) {
+    serverPromise = startDevServer(0, { workingDir: process.cwd() });
+  }
+  const body = JSON.stringify({
+    status: "ready",
+    route: event.rawPath ?? event.path ?? "/",
   });
+  return { statusCode: 200, headers: { "content-type": "application/json" }, body };
+};
+`,
+      { force: options?.force, writtenPaths, baseDir: projectDir },
+    );
+  } else if (target === "fly") {
+    await writeScaffoldFile(
+      resolve(projectDir, "fly.toml"),
+      `app = "poncho-app"
+[env]
+  PORT = "3000"
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_start_machines = true
+  auto_stop_machines = "stop"
+  min_machines_running = 0
+`,
+      { force: options?.force, writtenPaths, baseDir: projectDir },
+    );
+    await writeScaffoldFile(
+      resolve(projectDir, "Dockerfile"),
+      `FROM node:20-slim
+WORKDIR /app
+COPY package.json package.json
+COPY AGENT.md AGENT.md
+COPY poncho.config.js poncho.config.js
+COPY skills skills
+COPY tests tests
+RUN npm install -g @poncho-ai/cli@^${cliVersion}
+COPY server.js server.js
+EXPOSE 3000
+CMD ["node","server.js"]
+`,
+      { force: options?.force, writtenPaths, baseDir: projectDir },
+    );
+    await writeScaffoldFile(resolve(projectDir, "server.js"), sharedServerEntrypoint, {
+      force: options?.force,
+      writtenPaths,
+      baseDir: projectDir,
+    });
+  }
+
+  const packagePaths = await ensureRuntimeCliDependency(projectDir, cliVersion);
+  for (const path of packagePaths) {
+    if (!writtenPaths.includes(path)) {
+      writtenPaths.push(path);
+    }
+  }
+
+  return writtenPaths;
 };
 
 const renderConfigFile = (config: PonchoConfig): string =>
@@ -842,6 +977,13 @@ export const initProject = async (
   for (const file of scaffoldFiles) {
     await ensureFile(resolve(projectDir, file.path), file.content);
     process.stdout.write(`  ${D}+${R} ${D}${file.path}${R}\n`);
+  }
+
+  if (onboarding.deployTarget !== "none") {
+    const deployFiles = await scaffoldDeployTarget(projectDir, onboarding.deployTarget);
+    for (const filePath of deployFiles) {
+      process.stdout.write(`  ${D}+${R} ${D}${filePath}${R}\n`);
+    }
   }
 
   await initializeOnboardingMarker(projectDir, {
@@ -2415,150 +2557,19 @@ export const runTests = async (
   return { passed, failed };
 };
 
-export const buildTarget = async (workingDir: string, target: string): Promise<void> => {
-  const outDir = resolve(workingDir, ".poncho-build", target);
-  await mkdir(outDir, { recursive: true });
-  const serverEntrypoint = `import { startDevServer } from "@poncho-ai/cli";
-
-const port = Number.parseInt(process.env.PORT ?? "3000", 10);
-await startDevServer(Number.isNaN(port) ? 3000 : port, { workingDir: process.cwd() });
-`;
-  const runtimePackageJson = JSON.stringify(
-    {
-      name: "poncho-runtime-bundle",
-      private: true,
-      type: "module",
-      scripts: {
-        start: "node server.js",
-      },
-      dependencies: {
-        "@poncho-ai/cli": "^0.1.0",
-      },
-    },
-    null,
-    2,
-  );
-
-  if (target === "vercel") {
-    await mkdir(resolve(outDir, "api"), { recursive: true });
-    await copyIfExists(resolve(workingDir, "AGENT.md"), resolve(outDir, "AGENT.md"));
-    await copyIfExists(
-      resolve(workingDir, "poncho.config.js"),
-      resolve(outDir, "poncho.config.js"),
-    );
-    await copyIfExists(resolve(workingDir, "skills"), resolve(outDir, "skills"));
-    await copyIfExists(resolve(workingDir, "tests"), resolve(outDir, "tests"));
-    await writeFile(
-      resolve(outDir, "vercel.json"),
-      JSON.stringify(
-        {
-          version: 2,
-          functions: {
-            "api/index.js": {
-              includeFiles: "{AGENT.md,poncho.config.js,skills/**,tests/**}",
-            },
-          },
-          routes: [{ src: "/(.*)", dest: "/api/index.js" }],
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-    await buildVercelHandlerBundle(outDir);
-    await writeFile(
-      resolve(outDir, "package.json"),
-      JSON.stringify(
-        {
-          private: true,
-          type: "module",
-          engines: {
-            node: "20.x",
-          },
-          dependencies: VERCEL_RUNTIME_DEPENDENCIES,
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-  } else if (target === "docker") {
-    await writeFile(
-      resolve(outDir, "Dockerfile"),
-      `FROM node:20-slim
-WORKDIR /app
-COPY package.json package.json
-COPY AGENT.md AGENT.md
-COPY poncho.config.js poncho.config.js
-COPY skills skills
-COPY tests tests
-COPY .env.example .env.example
-RUN corepack enable && npm install -g @poncho-ai/cli
-COPY server.js server.js
-EXPOSE 3000
-CMD ["node","server.js"]
-`,
-      "utf8",
-    );
-    await writeFile(resolve(outDir, "server.js"), serverEntrypoint, "utf8");
-    await writeFile(resolve(outDir, "package.json"), runtimePackageJson, "utf8");
-  } else if (target === "lambda") {
-    await writeFile(
-      resolve(outDir, "lambda-handler.js"),
-      `import { startDevServer } from "@poncho-ai/cli";
-let serverPromise;
-export const handler = async (event = {}) => {
-  if (!serverPromise) {
-    serverPromise = startDevServer(0, { workingDir: process.cwd() });
-  }
-  const body = JSON.stringify({
-    status: "ready",
-    route: event.rawPath ?? event.path ?? "/",
+export const buildTarget = async (
+  workingDir: string,
+  target: string,
+  options?: { force?: boolean },
+): Promise<void> => {
+  const normalizedTarget = normalizeDeployTarget(target);
+  const writtenPaths = await scaffoldDeployTarget(workingDir, normalizedTarget, {
+    force: options?.force,
   });
-  return { statusCode: 200, headers: { "content-type": "application/json" }, body };
-};
-`,
-      "utf8",
-    );
-    await writeFile(resolve(outDir, "package.json"), runtimePackageJson, "utf8");
-  } else if (target === "fly") {
-    await writeFile(
-      resolve(outDir, "fly.toml"),
-      `app = "poncho-app"
-[env]
-  PORT = "3000"
-[http_service]
-  internal_port = 3000
-  force_https = true
-  auto_start_machines = true
-  auto_stop_machines = "stop"
-  min_machines_running = 0
-`,
-      "utf8",
-    );
-    await writeFile(
-      resolve(outDir, "Dockerfile"),
-      `FROM node:20-slim
-WORKDIR /app
-COPY package.json package.json
-COPY AGENT.md AGENT.md
-COPY poncho.config.js poncho.config.js
-COPY skills skills
-COPY tests tests
-RUN npm install -g @poncho-ai/cli
-COPY server.js server.js
-EXPOSE 3000
-CMD ["node","server.js"]
-`,
-      "utf8",
-    );
-    await writeFile(resolve(outDir, "server.js"), serverEntrypoint, "utf8");
-    await writeFile(resolve(outDir, "package.json"), runtimePackageJson, "utf8");
-  } else {
-    throw new Error(`Unsupported build target: ${target}`);
+  process.stdout.write(`Scaffolded deploy files for ${normalizedTarget}:\n`);
+  for (const filePath of writtenPaths) {
+    process.stdout.write(`  - ${filePath}\n`);
   }
-
-  process.stdout.write(`Build artifacts generated at ${outDir}\n`);
 };
 
 const normalizeMcpName = (entry: { url?: string; name?: string }): string =>
@@ -2950,9 +2961,10 @@ export const buildCli = (): Command => {
   program
     .command("build")
     .argument("<target>", "vercel|docker|lambda|fly")
-    .description("Generate build artifacts for deployment target")
-    .action(async (target: string) => {
-      await buildTarget(process.cwd(), target);
+    .option("--force", "overwrite existing deployment files")
+    .description("Scaffold deployment files for a target")
+    .action(async (target: string, options: { force?: boolean }) => {
+      await buildTarget(process.cwd(), target, { force: options.force });
     });
 
   const mcpCommand = program.command("mcp").description("Manage MCP servers");

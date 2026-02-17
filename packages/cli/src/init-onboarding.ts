@@ -21,6 +21,7 @@ const bold = (s: string): string => `${C.bold}${s}${C.reset}`;
 const INPUT_CARET = "»";
 
 type OnboardingAnswers = Record<string, string | number | boolean>;
+export type DeployTarget = "none" | "vercel" | "docker" | "fly" | "lambda";
 
 export type InitOnboardingOptions = {
   yes?: boolean;
@@ -33,6 +34,7 @@ export type InitOnboardingResult = {
   envExample: string;
   envFile: string;
   envNeedsUserInput: boolean;
+  deployTarget: DeployTarget;
   agentModel: {
     provider: "anthropic" | "openai";
     name: string;
@@ -276,6 +278,14 @@ const askOnboardingQuestions = async (options: InitOnboardingOptions): Promise<O
 const getProviderModelName = (provider: string): string =>
   provider === "openai" ? "gpt-4.1" : "claude-opus-4-5";
 
+const normalizeDeployTarget = (value: unknown): DeployTarget => {
+  const target = typeof value === "string" ? value.toLowerCase() : "";
+  if (target === "vercel" || target === "docker" || target === "fly" || target === "lambda") {
+    return target;
+  }
+  return "none";
+};
+
 const maybeSet = (
   target: object,
   key: string,
@@ -506,6 +516,7 @@ export const runInitOnboarding = async (
 ): Promise<InitOnboardingResult> => {
   const answers = await askOnboardingQuestions(options);
   const provider = String(answers["model.provider"] ?? "anthropic");
+  const deployTarget = normalizeDeployTarget(answers["deploy.target"]);
   const config = buildConfigFromOnboardingAnswers(answers);
   const envExampleLines = collectEnvVars(answers);
   const envFileLines = collectEnvFileLines(answers);
@@ -522,6 +533,7 @@ export const runInitOnboarding = async (
     envExample: `${envExampleLines.join("\n")}\n`,
     envFile: envFileLines.length > 0 ? `${envFileLines.join("\n")}\n` : "",
     envNeedsUserInput,
+    deployTarget,
     agentModel: {
       provider: provider === "openai" ? "openai" : "anthropic",
       name: getProviderModelName(provider),

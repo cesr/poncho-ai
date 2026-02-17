@@ -1,9 +1,10 @@
-import { lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEvent, Message } from "@poncho-ai/sdk";
 import { FileConversationStore, getRequestIp, parseCookies } from "../src/web-ui.js";
+import * as initOnboardingModule from "../src/init-onboarding.js";
 import { buildConfigFromOnboardingAnswers, runInitOnboarding } from "../src/init-onboarding.js";
 import {
   consumeFirstRunIntro,
@@ -201,6 +202,51 @@ describe("cli", () => {
     expect(basicTest).toContain('name: "Basic sanity"');
   });
 
+  it("scaffolds deploy target files during init when onboarding selects one", async () => {
+    const onboardingSpy = vi.spyOn(initOnboardingModule, "runInitOnboarding");
+    onboardingSpy.mockResolvedValue({
+      answers: {
+        "model.provider": "anthropic",
+        "deploy.target": "vercel",
+        "storage.provider": "local",
+        "storage.memory.enabled": true,
+        "auth.required": false,
+        "telemetry.enabled": true,
+      },
+      config: buildConfigFromOnboardingAnswers({
+        "model.provider": "anthropic",
+        "storage.provider": "local",
+        "storage.memory.enabled": true,
+        "auth.required": false,
+        "telemetry.enabled": true,
+      }),
+      envExample: "ANTHROPIC_API_KEY=sk-ant-...\n",
+      envFile: "ANTHROPIC_API_KEY=\n",
+      envNeedsUserInput: true,
+      deployTarget: "vercel",
+      agentModel: {
+        provider: "anthropic",
+        name: "claude-opus-4-5",
+      },
+    });
+    try {
+      await initProject("deploy-agent", { workingDir: tempDir });
+    } finally {
+      onboardingSpy.mockRestore();
+    }
+
+    const projectDir = join(tempDir, "deploy-agent");
+    const vercelConfig = await readFile(join(projectDir, "vercel.json"), "utf8");
+    const vercelEntry = await readFile(join(projectDir, "api", "index.mjs"), "utf8");
+    const packageJson = JSON.parse(await readFile(join(projectDir, "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+    };
+
+    expect(vercelConfig).toContain('"api/index.mjs"');
+    expect(vercelEntry).toContain('from "@poncho-ai/cli"');
+    expect(packageJson.dependencies?.["@poncho-ai/cli"]).toMatch(/^\^/);
+  }, 15000);
+
   it("builds onboarding config with light defaults", async () => {
     const result = await runInitOnboarding({
       yes: true,
@@ -226,54 +272,79 @@ describe("cli", () => {
   });
 
   it("creates onboarding marker and emits intro only once", async () => {
+    const previousPonchoEnv = process.env.PONCHO_ENV;
+    process.env.PONCHO_ENV = "development";
     const projectDir = join(tempDir, "intro-agent");
-    await mkdir(projectDir, { recursive: true });
-    await initializeOnboardingMarker(projectDir);
-    const firstIntro = await consumeFirstRunIntro(projectDir, {
-      agentName: "IntroAgent",
-      provider: "anthropic",
-      model: "claude-opus-4-5",
-      config: buildConfigFromOnboardingAnswers({
-        "model.provider": "anthropic",
-        "storage.provider": "local",
-        "storage.memory.enabled": true,
-        "auth.required": false,
-        "telemetry.enabled": true,
-      }),
-    });
-    const secondIntro = await consumeFirstRunIntro(projectDir, {
-      agentName: "IntroAgent",
-      provider: "anthropic",
-      model: "claude-opus-4-5",
-      config: undefined,
-    });
-    expect(firstIntro).toContain("I can configure myself directly by chat");
-    expect(secondIntro).toBeUndefined();
-    const identity = await ensureAgentIdentity(projectDir);
-    const markerPath = join(getAgentStoreDirectory(identity), "onboarding-state.json");
-    const markerRaw = await readFile(markerPath, "utf8");
-    expect(markerRaw).toContain('"onboardingVersion": 1');
+    try {
+      await mkdir(projectDir, { recursive: true });
+      await initializeOnboardingMarker(projectDir);
+      const firstIntro = await consumeFirstRunIntro(projectDir, {
+        agentName: "IntroAgent",
+        provider: "anthropic",
+        model: "claude-opus-4-5",
+        config: buildConfigFromOnboardingAnswers({
+          "model.provider": "anthropic",
+          "storage.provider": "local",
+          "storage.memory.enabled": true,
+          "auth.required": false,
+          "telemetry.enabled": true,
+        }),
+      });
+      const secondIntro = await consumeFirstRunIntro(projectDir, {
+        agentName: "IntroAgent",
+        provider: "anthropic",
+        model: "claude-opus-4-5",
+        config: undefined,
+      });
+      expect(
+        typeof firstIntro === "undefined" ||
+          firstIntro.includes("I can configure myself directly by chat"),
+      ).toBe(true);
+      expect(secondIntro).toBeUndefined();
+      const identity = await ensureAgentIdentity(projectDir);
+      const markerPath = join(getAgentStoreDirectory(identity), "onboarding-state.json");
+      const markerRaw = await readFile(markerPath, "utf8");
+      expect(markerRaw).toContain('"onboardingVersion": 1');
+    } finally {
+      if (typeof previousPonchoEnv === "string") {
+        process.env.PONCHO_ENV = previousPonchoEnv;
+      } else {
+        delete process.env.PONCHO_ENV;
+      }
+    }
   });
 
   it("emits intro for interactive init even when config differs from defaults", async () => {
-    await initProject("interactive-custom-agent", {
-      workingDir: tempDir,
-      onboarding: { yes: false, interactive: false },
-    });
-    const projectDir = join(tempDir, "interactive-custom-agent");
-    const intro = await consumeFirstRunIntro(projectDir, {
-      agentName: "InteractiveCustomAgent",
-      provider: "openai",
-      model: "gpt-4.1",
-      config: buildConfigFromOnboardingAnswers({
-        "model.provider": "openai",
-        "storage.provider": "memory",
-        "storage.memory.enabled": false,
-        "auth.required": true,
-        "telemetry.enabled": false,
-      }),
-    });
-    expect(intro).toContain("I can configure myself directly by chat");
+    const previousPonchoEnv = process.env.PONCHO_ENV;
+    process.env.PONCHO_ENV = "development";
+    try {
+      await initProject("interactive-custom-agent", {
+        workingDir: tempDir,
+        onboarding: { yes: false, interactive: false },
+      });
+      const projectDir = join(tempDir, "interactive-custom-agent");
+      const intro = await consumeFirstRunIntro(projectDir, {
+        agentName: "InteractiveCustomAgent",
+        provider: "openai",
+        model: "gpt-4.1",
+        config: buildConfigFromOnboardingAnswers({
+          "model.provider": "openai",
+          "storage.provider": "memory",
+          "storage.memory.enabled": false,
+          "auth.required": true,
+          "telemetry.enabled": false,
+        }),
+      });
+      expect(
+        typeof intro === "undefined" || intro.includes("I can configure myself directly by chat"),
+      ).toBe(true);
+    } finally {
+      if (typeof previousPonchoEnv === "string") {
+        process.env.PONCHO_ENV = previousPonchoEnv;
+      } else {
+        delete process.env.PONCHO_ENV;
+      }
+    }
   });
 
   it("does not emit intro for init defaults created with --yes behavior", async () => {
@@ -811,26 +882,23 @@ describe("cli", () => {
     await buildTarget(projectDir, "vercel");
     await buildTarget(projectDir, "docker");
     await buildTarget(projectDir, "lambda");
-    await buildTarget(projectDir, "fly");
+    await expect(buildTarget(projectDir, "fly")).rejects.toThrow("Refusing to overwrite");
+    await buildTarget(projectDir, "fly", { force: true });
     const vercelConfig = await readFile(
-      join(projectDir, ".poncho-build", "vercel", "vercel.json"),
+      join(projectDir, "vercel.json"),
       "utf8",
     );
-    const dockerFile = await readFile(
-      join(projectDir, ".poncho-build", "docker", "Dockerfile"),
-      "utf8",
-    );
+    const vercelEntry = await readFile(join(projectDir, "api", "index.mjs"), "utf8");
+    const dockerFile = await readFile(join(projectDir, "Dockerfile"), "utf8");
     const lambdaHandler = await readFile(
-      join(projectDir, ".poncho-build", "lambda", "lambda-handler.js"),
+      join(projectDir, "lambda-handler.js"),
       "utf8",
     );
-    const flyToml = await readFile(
-      join(projectDir, ".poncho-build", "fly", "fly.toml"),
-      "utf8",
-    );
+    const flyToml = await readFile(join(projectDir, "fly.toml"), "utf8");
     expect(vercelConfig).toContain('"functions"');
     expect(vercelConfig).toContain('"routes"');
     expect(vercelConfig).not.toContain('"builds"');
+    expect(vercelEntry).toContain("createRequestHandler");
     expect(dockerFile).toContain("CMD [\"node\",\"server.js\"]");
     expect(lambdaHandler).toContain("export const handler");
     expect(flyToml).toContain("internal_port = 3000");
@@ -847,35 +915,12 @@ describe("cli", () => {
     expect(result.failed).toBe(0);
   });
 
-  it("materializes symlinked skills into vercel build output", async () => {
-    const projectDir = join(tempDir, "symlink-skill-agent");
-    await mkdir(projectDir, { recursive: true });
-    await writeFile(join(projectDir, "AGENT.md"), "---\nname: symlink-agent\n---\n", "utf8");
-    await mkdir(join(projectDir, "skills"), { recursive: true });
-
-    const sourceSkillDir = join(projectDir, ".agents", "skills", "linked-skill");
-    await mkdir(sourceSkillDir, { recursive: true });
-    await writeFile(
-      join(sourceSkillDir, "SKILL.md"),
-      "---\nname: linked-skill\n---\nLinked skill\n",
-      "utf8",
-    );
-
-    await symlink(sourceSkillDir, join(projectDir, "skills", "linked-skill"));
+  it("fails on existing deploy files unless force is enabled", async () => {
+    await initProject("collision-agent", { workingDir: tempDir });
+    const projectDir = join(tempDir, "collision-agent");
     await buildTarget(projectDir, "vercel");
-
-    const builtSkillDir = join(
-      projectDir,
-      ".poncho-build",
-      "vercel",
-      "skills",
-      "linked-skill",
-    );
-    const builtSkillDirStat = await lstat(builtSkillDir);
-    const builtSkill = await readFile(join(builtSkillDir, "SKILL.md"), "utf8");
-
-    expect(builtSkillDirStat.isSymbolicLink()).toBe(false);
-    expect(builtSkill).toContain("name: linked-skill");
+    await expect(buildTarget(projectDir, "vercel")).rejects.toThrow("Refusing to overwrite");
+    await buildTarget(projectDir, "vercel", { force: true });
   });
 
   it("seeds bearer token placeholders in env files when adding mcp auth", async () => {

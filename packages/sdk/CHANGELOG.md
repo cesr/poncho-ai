@@ -1,5 +1,13 @@
 # @poncho-ai/sdk
 
+## 0.5.0
+
+### Minor Changes
+
+- Improve deployment scaffolding and init onboarding for production targets.
+
+  The CLI now scaffolds deployment files directly in project roots (including Vercel `api/index.mjs` + `vercel.json`), adds safer overwrite behavior with `--force`, and normalizes runtime dependencies for deployable projects. Onboarding now captures `deploy.target` so new projects can scaffold the selected platform during `poncho init`.
+
 ## 0.2.0
 
 ### Minor Changes

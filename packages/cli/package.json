@@ -1,6 +1,6 @@
 {
   "name": "@poncho-ai/cli",
-  "version": "0.8.3",
+  "version": "0.9.4",
   "description": "CLI for building and deploying AI agents",
   "repository": {
     "type": "git",
@@ -28,7 +28,6 @@
     "@poncho-ai/sdk": "workspace:*",
     "commander": "^12.0.0",
     "dotenv": "^16.4.0",
-    "esbuild": "^0.25.9",
     "ink": "^6.7.0",
     "marked": "^17.0.2",
     "react": "^19.2.4",

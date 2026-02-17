@@ -1,5 +1,57 @@
 # @poncho-ai/cli
 
+## 0.9.4
+
+### Patch Changes
+
+- Reduce serverless warnings when loading TypeScript skill scripts.
+
+  The harness now uses `jiti` first for `.ts/.mts/.cts` scripts in `run_skill_script`, avoiding Node's native ESM warning spam for TypeScript files in deployed environments.
+
+- Updated dependencies []:
+  - @poncho-ai/harness@0.10.3
+
+## 0.9.3
+
+### Patch Changes
+
+- Improve runtime loading of `poncho.config.js` in serverless environments.
+
+  The harness now falls back to `jiti` when native ESM import of `poncho.config.js` fails, allowing deploys where bundlers/runtime packaging treat project `.js` files as CommonJS. The CLI patch picks up the updated harness runtime.
+
+- Updated dependencies []:
+  - @poncho-ai/harness@0.10.2
+
+## 0.9.2
+
+### Patch Changes
+
+- Fix Vercel tracing of `marked` by statically importing it in generated `api/index.mjs`.
+
+  This ensures `marked` is included in serverless bundles when using pnpm and avoids runtime `Cannot find module 'marked'` errors in Vercel deployments.
+
+## 0.9.1
+
+### Patch Changes
+
+- Fix Vercel runtime packaging for Markdown rendering in deployed agents.
+
+  When scaffolding Vercel deploy files, ensure `marked` is added as a direct project dependency and include the `marked.umd.js` file from pnpm's store path in `vercel.json` `includeFiles` so runtime resolution works in serverless builds.
+
+## 0.9.0
+
+### Minor Changes
+
+- Improve deployment scaffolding and init onboarding for production targets.
+
+  The CLI now scaffolds deployment files directly in project roots (including Vercel `api/index.mjs` + `vercel.json`), adds safer overwrite behavior with `--force`, and normalizes runtime dependencies for deployable projects. Onboarding now captures `deploy.target` so new projects can scaffold the selected platform during `poncho init`.
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @poncho-ai/sdk@0.5.0
+  - @poncho-ai/harness@0.10.1
+
 ## 0.8.3
 
 ### Patch Changes

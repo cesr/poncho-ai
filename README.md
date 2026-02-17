@@ -163,7 +163,6 @@ On the first interactive session (`poncho dev` chat UI or `poncho run --interact
 ```bash
 # Build for Vercel
 poncho build vercel
-cd .poncho-build/vercel
 vercel deploy --prod
 
 # Or build for Docker
@@ -552,7 +551,6 @@ tests:
 ```bash
 # Vercel (serverless)
 poncho build vercel
-cd .poncho-build/vercel
 vercel deploy --prod
 
 # Docker
@@ -562,14 +560,14 @@ docker run -p 3000:3000 -e ANTHROPIC_API_KEY=sk-ant-... my-agent
 
 # AWS Lambda
 poncho build lambda
-# Outputs lambda.zip - deploy via AWS Console or CLI
+# Outputs lambda-handler.js - deploy with your preferred Lambda packaging workflow
 
 # Fly.io
 poncho build fly
 fly deploy
 ```
 
-The build bundles everything needed: your AGENT.md, the harness, all skills (including local ones from `./skills/`), and configuration.
+The build command scaffolds deployment files directly in your project root and ensures `@poncho-ai/cli` is available as a runtime dependency.
 
 ### Set environment variables
 
@@ -1107,6 +1105,12 @@ limits:
   timeout: 60  # 1 minute (in seconds)
 ---
 ```
+
+### Vercel deploy issues
+
+- After upgrading `@poncho-ai/cli`, re-run `poncho build vercel --force` to refresh generated deploy files.
+- If Vercel fails during `pnpm install` due to a lockfile mismatch, run `pnpm install --no-frozen-lockfile` locally and commit `pnpm-lock.yaml`.
+- Deploy from the project root: `vercel deploy --prod`.
 
 ## Getting Help
 

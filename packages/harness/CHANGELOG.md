@@ -1,5 +1,28 @@
 # @poncho-ai/harness
 
+## 0.10.3
+
+### Patch Changes
+
+- Reduce serverless warnings when loading TypeScript skill scripts.
+
+  The harness now uses `jiti` first for `.ts/.mts/.cts` scripts in `run_skill_script`, avoiding Node's native ESM warning spam for TypeScript files in deployed environments.
+
+## 0.10.2
+
+### Patch Changes
+
+- Improve runtime loading of `poncho.config.js` in serverless environments.
+
+  The harness now falls back to `jiti` when native ESM import of `poncho.config.js` fails, allowing deploys where bundlers/runtime packaging treat project `.js` files as CommonJS. The CLI patch picks up the updated harness runtime.
+
+## 0.10.1
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @poncho-ai/sdk@0.5.0
+
 ## 0.7.1
 
 ### Patch Changes

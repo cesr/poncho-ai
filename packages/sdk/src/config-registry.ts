@@ -2,6 +2,7 @@ export type OnboardingScope = "light" | "full";
 
 export type FeatureDomain =
   | "model"
+  | "deploy"
   | "storage"
   | "memory"
   | "auth"
@@ -85,6 +86,24 @@ export const ONBOARDING_FIELDS = [
     placeholder: "sk-...",
     secret: true,
     dependsOn: { fieldId: "model.provider", equals: "openai" },
+  },
+  {
+    id: "deploy.target",
+    domain: "deploy",
+    target: "agent",
+    path: "deploy.target",
+    kind: "select",
+    scopes: ["light", "full"],
+    label: "Deploy target",
+    prompt: "Choose a deploy target (optional)",
+    defaultValue: "none",
+    options: [
+      { value: "none", label: "None (local dev only)" },
+      { value: "vercel", label: "Vercel" },
+      { value: "docker", label: "Docker" },
+      { value: "fly", label: "Fly.io" },
+      { value: "lambda", label: "AWS Lambda" },
+    ],
   },
   {
     id: "storage.provider",
@@ -250,6 +269,7 @@ export const ONBOARDING_FIELDS = [
 
 export const FEATURE_DOMAIN_ORDER: readonly FeatureDomain[] = [
   "model",
+  "deploy",
   "storage",
   "memory",
   "auth",
