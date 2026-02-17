@@ -354,15 +354,29 @@ export const runInteractiveInk = async ({
 
   // --- Print header ----------------------------------------------------------
 
+  const mascot = [
+    `${C.yellow}      ⣀⣀⣀⣀⣀⣀${C.reset}`,
+    `${C.yellow}    ⠠⠾⠛⠛⠛⠛⠛⠛⠷⠄${C.reset}`,
+    `${C.gray}     ⡇${C.cyan} ⠶  ⠶ ${C.gray}⢸${C.reset}`,
+    `${C.gray}     ⠣⡀${C.cyan}  ⠒⠚${C.gray}⢀⠜${C.reset}`,
+    `${C.yellow}      ⣿⣿⣿⣿⣿⣿${C.reset}`,
+    `${C.gray}       ⠃  ⠘${C.reset}`,
+  ];
+  console.log("");
+  for (const line of mascot) {
+    console.log(line);
+  }
+  console.log(`${C.bold}${C.cyan}      poncho${C.reset}`);
+  console.log("");
   console.log(
     gray(
-      `\n${metadata.agentName} | ${metadata.provider}/${metadata.model} | ${metadata.environment}`,
+      `  ${metadata.agentName} · ${metadata.provider}/${metadata.model} · ${metadata.environment}`,
     ),
   );
-  console.log(gray('Type "exit" to quit, "/help" for commands'));
-  console.log(gray("Press Ctrl+C during a run to stop streaming output."));
+  console.log(gray('  Type "exit" to quit, "/help" for commands'));
+  console.log(gray("  Press Ctrl+C during a run to stop streaming output."));
   console.log(
-    gray("Conversation controls: /list /open <id> /new [title] /delete [id] /continue /reset [all]\n"),
+    gray("  Conversation controls: /list /open <id> /new [title] /delete [id] /continue /reset [all]\n"),
   );
   const intro = await consumeFirstRunIntro(workingDir, {
     agentName: metadata.agentName,
