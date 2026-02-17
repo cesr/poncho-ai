@@ -54,6 +54,14 @@ export interface HarnessRunOutput {
 
 const now = (): number => Date.now();
 const MAX_CONTEXT_MESSAGES = 40;
+const SKILL_TOOL_NAMES = [
+  "activate_skill",
+  "deactivate_skill",
+  "list_active_skills",
+  "read_skill_resource",
+  "list_skill_scripts",
+  "run_skill_script",
+] as const;
 
 const trimMessageWindow = (messages: Message[]): Message[] =>
   messages.length <= MAX_CONTEXT_MESSAGES
@@ -160,6 +168,7 @@ export class AgentHarness {
   private memoryStore?: MemoryStore;
   private loadedConfig?: PonchoConfig;
   private loadedSkills: SkillMetadata[] = [];
+  private skillFingerprint = "";
   private readonly activeSkillNames = new Set<string>();
   private readonly registeredMcpToolNames = new Set<string>();
 
@@ -403,24 +412,25 @@ export class AgentHarness {
     );
   }
 
-  async initialize(): Promise<void> {
-    this.parsedAgent = await parseAgentFile(this.workingDir);
-    const config = await loadPonchoConfig(this.workingDir);
-    this.loadedConfig = config;
-    this.registerConfiguredBuiltInTools(config);
-    const provider = this.parsedAgent.frontmatter.model?.provider ?? "anthropic";
-    const memoryConfig = resolveMemoryConfig(config);
-    // Only create modelProvider if one wasn't injected (for production use)
-    // Tests can inject a mock modelProvider via constructor options
-    if (!this.modelProviderInjected) {
-      this.modelProvider = createModelProvider(provider);
-    }
-    const bridge = new LocalMcpBridge(config);
-    this.mcpBridge = bridge;
-    const extraSkillPaths = config?.skillPaths;
-    const skillMetadata = await loadSkillMetadata(this.workingDir, extraSkillPaths);
-    this.loadedSkills = skillMetadata;
-    this.skillContextWindow = buildSkillContextWindow(skillMetadata);
+  private buildSkillFingerprint(skills: SkillMetadata[]): string {
+    return skills
+      .map((skill) =>
+        JSON.stringify({
+          name: skill.name,
+          description: skill.description,
+          skillPath: skill.skillPath,
+          allowedMcp: [...skill.allowedTools.mcp].sort(),
+          allowedScripts: [...skill.allowedTools.scripts].sort(),
+          approvalMcp: [...skill.approvalRequired.mcp].sort(),
+          approvalScripts: [...skill.approvalRequired.scripts].sort(),
+        }),
+      )
+      .sort()
+      .join("\n");
+  }
+
+  private registerSkillTools(skillMetadata: SkillMetadata[]): void {
+    this.dispatcher.unregisterMany(SKILL_TOOL_NAMES);
     this.dispatcher.registerMany(
       createSkillTools(skillMetadata, {
         onActivateSkill: async (name: string) => {
@@ -441,6 +451,58 @@ export class AgentHarness {
         workingDir: this.workingDir,
       }),
     );
+  }
+
+  private async refreshSkillsIfChanged(): Promise<void> {
+    if (this.environment !== "development") {
+      return;
+    }
+    try {
+      const latestSkills = await loadSkillMetadata(
+        this.workingDir,
+        this.loadedConfig?.skillPaths,
+      );
+      const nextFingerprint = this.buildSkillFingerprint(latestSkills);
+      if (nextFingerprint === this.skillFingerprint) {
+        return;
+      }
+      this.loadedSkills = latestSkills;
+      this.skillContextWindow = buildSkillContextWindow(latestSkills);
+      this.skillFingerprint = nextFingerprint;
+      this.registerSkillTools(latestSkills);
+      // Skill metadata or layout changed; force re-activation to avoid stale
+      // instructions/tooling when files are renamed or moved during development.
+      this.activeSkillNames.clear();
+      await this.refreshMcpTools("skills:changed");
+    } catch (error) {
+      console.warn(
+        `[poncho][skills] Failed to refresh skills in development mode: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  async initialize(): Promise<void> {
+    this.parsedAgent = await parseAgentFile(this.workingDir);
+    const config = await loadPonchoConfig(this.workingDir);
+    this.loadedConfig = config;
+    this.registerConfiguredBuiltInTools(config);
+    const provider = this.parsedAgent.frontmatter.model?.provider ?? "anthropic";
+    const memoryConfig = resolveMemoryConfig(config);
+    // Only create modelProvider if one wasn't injected (for production use)
+    // Tests can inject a mock modelProvider via constructor options
+    if (!this.modelProviderInjected) {
+      this.modelProvider = createModelProvider(provider);
+    }
+    const bridge = new LocalMcpBridge(config);
+    this.mcpBridge = bridge;
+    const extraSkillPaths = config?.skillPaths;
+    const skillMetadata = await loadSkillMetadata(this.workingDir, extraSkillPaths);
+    this.loadedSkills = skillMetadata;
+    this.skillContextWindow = buildSkillContextWindow(skillMetadata);
+    this.skillFingerprint = this.buildSkillFingerprint(skillMetadata);
+    this.registerSkillTools(skillMetadata);
     if (memoryConfig?.enabled) {
       this.memoryStore = createMemoryStore(
         this.parsedAgent.frontmatter.name,
@@ -539,6 +601,7 @@ export class AgentHarness {
     if (!this.parsedAgent) {
       await this.initialize();
     }
+    await this.refreshSkillsIfChanged();
 
     const agent = this.parsedAgent as ParsedAgent;
     const runId = `run_${randomUUID()}`;

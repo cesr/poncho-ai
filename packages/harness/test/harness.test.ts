@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "path";
@@ -196,6 +196,216 @@ export default defineTool({
 
     expect(names).not.toContain("summarize_text");
     expect(names).toContain("run_skill_script");
+  });
+
+  it("refreshes skill metadata and tools in development mode", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-skill-refresh-dev-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: skill-refresh-dev-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Skill Refresh Dev Agent
+`,
+      "utf8",
+    );
+    await mkdir(join(dir, "skills", "alpha"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "alpha", "SKILL.md"),
+      `---
+name: alpha
+description: Alpha skill
+---
+
+# Alpha
+`,
+      "utf8",
+    );
+
+    const harness = new AgentHarness({ workingDir: dir, environment: "development" });
+    await harness.initialize();
+    const activateBefore = harness.listTools().find((tool) => tool.name === "activate_skill");
+    expect(activateBefore).toBeDefined();
+    const unknownBefore = await activateBefore!.handler({ name: "beta" }, {} as any);
+    expect(unknownBefore).toMatchObject({
+      error: expect.stringContaining('Unknown skill: "beta"'),
+    });
+
+    await mkdir(join(dir, "skills", "beta"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "beta", "SKILL.md"),
+      `---
+name: beta
+description: Beta skill
+---
+
+# Beta
+`,
+      "utf8",
+    );
+    await (harness as any).refreshSkillsIfChanged();
+
+    const activateAfter = harness.listTools().find((tool) => tool.name === "activate_skill");
+    expect(activateAfter).toBeDefined();
+    const activated = await activateAfter!.handler({ name: "beta" }, {} as any);
+    expect(activated).toMatchObject({ skill: "beta" });
+  });
+
+  it("prunes removed active skills after refresh in development mode", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-skill-refresh-prune-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: skill-refresh-prune-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Skill Refresh Prune Agent
+`,
+      "utf8",
+    );
+    await mkdir(join(dir, "skills", "obsolete"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "obsolete", "SKILL.md"),
+      `---
+name: obsolete
+description: Obsolete skill
+---
+
+# Obsolete
+`,
+      "utf8",
+    );
+
+    const harness = new AgentHarness({ workingDir: dir, environment: "development" });
+    await harness.initialize();
+    const activate = harness.listTools().find((tool) => tool.name === "activate_skill");
+    const listActive = harness.listTools().find((tool) => tool.name === "list_active_skills");
+    expect(activate).toBeDefined();
+    expect(listActive).toBeDefined();
+    await activate!.handler({ name: "obsolete" }, {} as any);
+    expect(await listActive!.handler({}, {} as any)).toEqual({ activeSkills: ["obsolete"] });
+
+    await rm(join(dir, "skills", "obsolete"), { recursive: true, force: true });
+    await (harness as any).refreshSkillsIfChanged();
+    expect(await listActive!.handler({}, {} as any)).toEqual({ activeSkills: [] });
+
+    const activateAfter = harness.listTools().find((tool) => tool.name === "activate_skill");
+    const afterRemoval = await activateAfter!.handler({ name: "obsolete" }, {} as any);
+    expect(afterRemoval).toMatchObject({
+      error: expect.stringContaining('Unknown skill: "obsolete"'),
+    });
+  });
+
+  it("does not refresh skills outside development mode", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-skill-refresh-prod-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: skill-refresh-prod-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Skill Refresh Prod Agent
+`,
+      "utf8",
+    );
+    await mkdir(join(dir, "skills", "alpha"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "alpha", "SKILL.md"),
+      `---
+name: alpha
+description: Alpha skill
+---
+
+# Alpha
+`,
+      "utf8",
+    );
+
+    const harness = new AgentHarness({ workingDir: dir, environment: "production" });
+    await harness.initialize();
+    await mkdir(join(dir, "skills", "beta"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "beta", "SKILL.md"),
+      `---
+name: beta
+description: Beta skill
+---
+
+# Beta
+`,
+      "utf8",
+    );
+
+    await (harness as any).refreshSkillsIfChanged();
+    const activate = harness.listTools().find((tool) => tool.name === "activate_skill");
+    expect(activate).toBeDefined();
+    const unknown = await activate!.handler({ name: "beta" }, {} as any);
+    expect(unknown).toMatchObject({
+      error: expect.stringContaining('Unknown skill: "beta"'),
+    });
+  });
+
+  it("clears active skills when skill metadata changes in development mode", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-skill-refresh-clear-active-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: skill-refresh-clear-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Skill Refresh Clear Agent
+`,
+      "utf8",
+    );
+    await mkdir(join(dir, "skills", "alpha"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "alpha", "SKILL.md"),
+      `---
+name: alpha
+description: Alpha skill
+---
+
+# Alpha
+`,
+      "utf8",
+    );
+
+    const harness = new AgentHarness({ workingDir: dir, environment: "development" });
+    await harness.initialize();
+    const activate = harness.listTools().find((tool) => tool.name === "activate_skill");
+    const listActive = harness.listTools().find((tool) => tool.name === "list_active_skills");
+    expect(activate).toBeDefined();
+    expect(listActive).toBeDefined();
+
+    await activate!.handler({ name: "alpha" }, {} as any);
+    expect(await listActive!.handler({}, {} as any)).toEqual({ activeSkills: ["alpha"] });
+
+    await writeFile(
+      join(dir, "skills", "alpha", "SKILL.md"),
+      `---
+name: alpha
+description: Alpha skill updated
+---
+
+# Alpha Updated
+`,
+      "utf8",
+    );
+    await (harness as any).refreshSkillsIfChanged();
+    expect(await listActive!.handler({}, {} as any)).toEqual({ activeSkills: [] });
   });
 
   it("lists skill scripts through list_skill_scripts", async () => {

@@ -475,12 +475,15 @@ Interactive mode uses native terminal I/O (readline + stdout), so it behaves lik
 
 ### Hot reload
 
-The dev server watches for changes to:
-- `AGENT.md` - Agent definition
-- `skills/` - Custom skills
-- `poncho.config.js` - Configuration
+In development mode, skill metadata is refreshed automatically between runs/turns, so
+changes under `skills/` (including newly added `SKILL.md` files) are picked up without
+restarting `poncho dev` or `poncho run --interactive`.
 
-Changes are applied automatically without restart.
+When skill metadata changes, active skills are reset so renamed/moved skill files do not
+keep stale active state.
+
+This refresh behavior is development-only; non-development environments keep static
+startup loading.
 
 ## Testing Your Agent
 
