@@ -525,6 +525,8 @@ const TEST_TEMPLATE = `tests:
 const SKILL_TEMPLATE = `---
 name: starter-skill
 description: Starter local skill template
+allowed-tools:
+  - ./scripts/starter-echo.ts
 ---
 
 # Starter Skill

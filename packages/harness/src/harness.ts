@@ -18,7 +18,7 @@ import {
 import { LocalMcpBridge } from "./mcp.js";
 import { createModelProvider, type ModelProviderFactory } from "./model-factory.js";
 import { buildSkillContextWindow, loadSkillMetadata } from "./skill-context.js";
-import { streamText, type CoreMessage } from "ai";
+import { streamText, type ModelMessage } from "ai";
 import { jsonSchemaToZod } from "./schema-converter.js";
 import type { SkillMetadata } from "./skill-context.js";
 import { createSkillTools, normalizeScriptPolicyPath } from "./skill-tools.js";
@@ -55,6 +55,7 @@ export interface HarnessRunOutput {
 
 const now = (): number => Date.now();
 const MAX_CONTEXT_MESSAGES = 40;
+const FIRST_CHUNK_TIMEOUT_MS = 30_000; // 30s to receive the first chunk from the model
 const SKILL_TOOL_NAMES = [
   "activate_skill",
   "deactivate_skill",
@@ -728,16 +729,16 @@ ${boundedMainMemory.trim()}`
       });
 
       // Convert tools to Vercel AI SDK format
-      const tools: Record<string, { description: string; parameters: any }> = {};
+      const tools: Record<string, { description: string; inputSchema: any }> = {};
       for (const tool of modelTools) {
         tools[tool.name] = {
           description: tool.description,
-          parameters: jsonSchemaToZod(tool.inputSchema),
+          inputSchema: jsonSchemaToZod(tool.inputSchema),
         };
       }
 
-        // Convert messages to CoreMessage format
-        const coreMessages: CoreMessage[] = trimMessageWindow(messages).map((msg) => {
+        // Convert messages to ModelMessage format
+        const coreMessages: ModelMessage[] = trimMessageWindow(messages).map((msg) => {
           if (msg.role === "tool") {
             // Tool messages need special handling - parse and transform to Vercel AI SDK format
             const toolResults: Array<{
@@ -751,22 +752,30 @@ ${boundedMainMemory.trim()}`
               role: "tool" as const,
               content: toolResults.map((tr) => {
                 // Parse JSON content for successful results, keep error messages as strings
-                let result: unknown;
                 if (tr.content.startsWith("Tool error:")) {
-                  result = tr.content;
-                } else {
-                  try {
-                    result = JSON.parse(tr.content);
-                  } catch {
-                    result = tr.content;
-                  }
+                  return {
+                    type: "tool-result" as const,
+                    toolCallId: tr.tool_use_id,
+                    toolName: tr.tool_name,
+                    output: { type: "text" as const, value: tr.content },
+                  };
                 }
-                return {
-                  type: "tool-result" as const,
-                  toolCallId: tr.tool_use_id,
-                  toolName: tr.tool_name,
-                  result,
-                };
+                try {
+                  const parsed = JSON.parse(tr.content);
+                  return {
+                    type: "tool-result" as const,
+                    toolCallId: tr.tool_use_id,
+                    toolName: tr.tool_name,
+                    output: { type: "json" as const, value: parsed },
+                  };
+                } catch {
+                  return {
+                    type: "tool-result" as const,
+                    toolCallId: tr.tool_use_id,
+                    toolName: tr.tool_name,
+                    output: { type: "text" as const, value: tr.content },
+                  };
+                }
               }),
             };
           }
@@ -785,7 +794,7 @@ ${boundedMainMemory.trim()}`
                       type: "tool-call" as const,
                       toolCallId: tc.id,
                       toolName: tc.name,
-                      args: tc.input,
+                      input: tc.input,
                     })),
                   ],
                 };
@@ -821,18 +830,76 @@ ${boundedMainMemory.trim()}`
             isEnabled: telemetryEnabled && !!latitudeApiKey,
           },
         });
-
-        // Stream text chunks
-        let streamedAnyChunk = false;
+        // Stream text chunks — enforce overall run timeout per chunk.
+        // The top-of-step timeout check cannot fire while we are
+        // blocked inside the textStream async iterator, so we race
+        // each next() call against the remaining time budget.
         let fullText = "";
-        for await (const chunk of result.textStream) {
-          if (isCancelled()) {
-            yield emitCancellation();
-            return;
+        let chunkCount = 0;
+        const streamDeadline = start + timeoutMs;
+        const textIterator = result.textStream[Symbol.asyncIterator]();
+        try {
+          while (true) {
+            if (isCancelled()) {
+              yield emitCancellation();
+              return;
+            }
+            const remaining = streamDeadline - now();
+            if (remaining <= 0) {
+              yield pushEvent({
+                type: "run:error",
+                runId,
+                error: {
+                  code: "TIMEOUT",
+                  message: `Model "${modelName}" did not respond within the ${Math.floor(timeoutMs / 1000)}s run timeout.`,
+                },
+              });
+              console.error(
+                `[poncho][harness] Stream timeout: model="${modelName}", step=${step}, elapsed=${now() - start}ms`,
+              );
+              return;
+            }
+            // Use a shorter timeout for the first chunk to detect
+            // non-responsive models quickly instead of waiting minutes.
+            const timeout = chunkCount === 0
+              ? Math.min(remaining, FIRST_CHUNK_TIMEOUT_MS)
+              : remaining;
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const nextChunk = await Promise.race([
+              textIterator.next(),
+              new Promise<null>((resolve) => {
+                timer = setTimeout(() => resolve(null), timeout);
+              }),
+            ]);
+            clearTimeout(timer);
+
+            if (nextChunk === null) {
+              const isFirstChunk = chunkCount === 0;
+              const errorMessage = isFirstChunk
+                ? `Model "${modelName}" did not respond within ${Math.floor(FIRST_CHUNK_TIMEOUT_MS / 1000)}s. The model may not be supported by the current provider SDK, or the API is unreachable. Check that the model name is correct and that your provider SDK is up to date.`
+                : `Model "${modelName}" stopped responding during streaming (run timeout ${Math.floor(timeoutMs / 1000)}s exceeded).`;
+              yield pushEvent({
+                type: "run:error",
+                runId,
+                error: {
+                  code: isFirstChunk ? "MODEL_TIMEOUT" : "TIMEOUT",
+                  message: errorMessage,
+                },
+              });
+              console.error(
+                `[poncho][harness] Stream timeout waiting for ${isFirstChunk ? "first" : "next"} chunk: model="${modelName}", step=${step}, chunks=${chunkCount}, elapsed=${now() - start}ms`,
+              );
+              return;
+            }
+
+            if (nextChunk.done) break;
+            chunkCount += 1;
+            fullText += nextChunk.value;
+            yield pushEvent({ type: "model:chunk", content: nextChunk.value });
           }
-          streamedAnyChunk = true;
-          fullText += chunk;
-          yield pushEvent({ type: "model:chunk", content: chunk });
+        } finally {
+          // Best-effort cleanup of the underlying stream/connection.
+          textIterator.return?.(undefined)?.catch?.(() => {});
         }
 
         if (isCancelled()) {
@@ -840,20 +907,52 @@ ${boundedMainMemory.trim()}`
           return;
         }
 
+      // Check finish reason for error / abnormal completions.
+      // textStream silently swallows model-level errors – they only
+      // surface through finishReason (or fullStream, which we don't use).
+      const finishReason = await result.finishReason;
+
+      if (finishReason === "error") {
+        yield pushEvent({
+          type: "run:error",
+          runId,
+          error: {
+            code: "MODEL_ERROR",
+            message: `Model "${modelName}" returned an error. This may indicate the model is not supported by the current provider SDK version, or the API returned an error response.`,
+          },
+        });
+        console.error(
+          `[poncho][harness] Model error: finishReason="error", model="${modelName}", step=${step}`,
+        );
+        return;
+      }
+
+      if (finishReason === "content-filter") {
+        yield pushEvent({
+          type: "run:error",
+          runId,
+          error: {
+            code: "CONTENT_FILTER",
+            message: `Response was blocked by the provider's content filter (model: ${modelName}).`,
+          },
+        });
+        return;
+      }
+
       // Get full response with usage and tool calls
       const fullResult = await result.response;
       const usage = await result.usage;
       const toolCallsResult = await result.toolCalls;
 
       // Update token usage
-      totalInputTokens += usage.promptTokens;
-      totalOutputTokens += usage.completionTokens;
+      totalInputTokens += usage.inputTokens ?? 0;
+      totalOutputTokens += usage.outputTokens ?? 0;
 
       yield pushEvent({
         type: "model:response",
         usage: {
-          input: usage.promptTokens,
-          output: usage.completionTokens,
+          input: usage.inputTokens ?? 0,
+          output: usage.outputTokens ?? 0,
           cached: 0,
         },
       });
@@ -862,10 +961,33 @@ ${boundedMainMemory.trim()}`
       const toolCalls = toolCallsResult.map((tc) => ({
         id: tc.toolCallId,
         name: tc.toolName,
-        input: tc.args as Record<string, unknown>,
+        input: (tc as any).input as Record<string, unknown>,
       }));
 
       if (toolCalls.length === 0) {
+        // Detect silent empty responses — likely an SDK or model
+        // compatibility issue, or an unexpected provider error that
+        // the SDK didn't surface through finishReason.
+        if (fullText.length === 0) {
+          const isExpectedEmpty = finishReason === "stop";
+          if (!isExpectedEmpty) {
+            yield pushEvent({
+              type: "run:error",
+              runId,
+              error: {
+                code: "EMPTY_RESPONSE",
+                message: `Model "${modelName}" returned no content (finish reason: ${finishReason}). The model may not be supported by the current provider SDK version.`,
+              },
+            });
+            console.error(
+              `[poncho][harness] Empty response: finishReason="${finishReason}", model="${modelName}", step=${step}`,
+            );
+            return;
+          }
+          console.warn(
+            `[poncho][harness] Model "${modelName}" returned an empty response with finishReason="stop" on step ${step}.`,
+          );
+        }
         responseText = fullText;
         yield pushEvent({
           type: "step:completed",

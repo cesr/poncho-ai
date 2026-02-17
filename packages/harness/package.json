@@ -26,12 +26,12 @@
     "lint": "eslint src/"
   },
   "dependencies": {
-    "@poncho-ai/sdk": "workspace:*",
-    "@ai-sdk/anthropic": "^1.0.0",
-    "@ai-sdk/openai": "^1.0.0",
+    "@ai-sdk/anthropic": "^3.0.44",
+    "@ai-sdk/openai": "^3.0.29",
     "@aws-sdk/client-dynamodb": "^3.988.0",
     "@latitude-data/telemetry": "^2.0.2",
-    "ai": "^4.0.0",
+    "@poncho-ai/sdk": "workspace:*",
+    "ai": "^6.0.86",
     "jiti": "^2.6.1",
     "mustache": "^4.2.0",
     "redis": "^5.10.0",
