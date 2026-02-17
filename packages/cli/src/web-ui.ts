@@ -1124,6 +1124,40 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       font-size: 12px;
       margin-top: 10px;
     }
+    .poncho-badge {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      margin-top: calc(env(safe-area-inset-top, 0px) / 2);
+      z-index: 10;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: #777;
+      text-decoration: none;
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 9999px;
+      padding: 4px 10px 4px 6px;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .poncho-badge:hover {
+      color: #ededed;
+      border-color: rgba(255, 255, 255, 0.25);
+      background: rgba(0, 0, 0, 0.75);
+    }
+    .poncho-badge-avatar {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      object-fit: cover;
+      display: block;
+      flex-shrink: 0;
+    }
 
     /* Scrollbar */
     ::-webkit-scrollbar { width: 6px; }
@@ -1146,6 +1180,16 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       .shell.sidebar-open .sidebar { transform: translateX(0); }
       .sidebar-toggle { display: grid; place-items: center; }
       .topbar-new-chat { display: grid; place-items: center; }
+      .poncho-badge {
+        display: none;
+        position: fixed;
+        top: calc(12px + env(safe-area-inset-top, 0px));
+        right: 12px;
+        transform: none;
+        margin-top: 0;
+        z-index: 200;
+      }
+      .shell.sidebar-open .poncho-badge { display: inline-flex; }
       .sidebar-backdrop {
         position: fixed;
         inset: 0;
@@ -1207,6 +1251,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         <button id="topbar-new-chat" class="topbar-new-chat">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
         </button>
+        <a class="poncho-badge" href="https://github.com/cesr/poncho-ai" target="_blank" rel="noopener noreferrer"><img class="poncho-badge-avatar" src="data:image/jpeg;base64,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" alt="" aria-hidden="true">Built with Poncho</a>
       </div>
       <div id="messages" class="messages">
         <div class="empty-state">
