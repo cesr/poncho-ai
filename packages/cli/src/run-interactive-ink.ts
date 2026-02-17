@@ -189,9 +189,14 @@ const handleSlash = async (
     for (const conversation of conversations) {
       const activeMarker =
         state.activeConversationId === conversation.conversationId ? "*" : " ";
+      const maxTitleLen = 40;
+      const title =
+        conversation.title.length > maxTitleLen
+          ? conversation.title.slice(0, maxTitleLen - 1) + "…"
+          : conversation.title;
       console.log(
         gray(
-          `${activeMarker} ${conversation.conversationId} | ${conversation.title} | ${formatDate(conversation.updatedAt)}`,
+          `${activeMarker} ${conversation.conversationId} | ${title} | ${formatDate(conversation.updatedAt)}`,
         ),
       );
     }
