@@ -1074,9 +1074,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     .composer-shell {
       background: #0a0a0a;
       border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 9999px;
+      border-radius: 24px;
       display: flex;
-      align-items: center;
+      align-items: end;
       padding: 4px 6px 4px 18px;
       transition: border-color 0.15s;
     }
@@ -1093,7 +1093,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       padding: 10px 0 8px;
       font-size: 14px;
       line-height: 1.5;
-      margin-top: -2px;
+      margin-top: -4px;
     }
     .composer-input::placeholder { color: #444; }
     .send-btn {
