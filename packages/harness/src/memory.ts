@@ -1,9 +1,13 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
-import { homedir } from "node:os";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { defineTool, type ToolDefinition } from "@poncho-ai/sdk";
 import type { StateProviderName } from "./state.js";
+import {
+  ensureAgentIdentity,
+  getAgentStoreDirectory,
+  slugifyStorageComponent,
+  STORAGE_SCHEMA_VERSION,
+} from "./agent-identity.js";
 
 export interface MainMemory {
   content: string;
@@ -41,32 +45,13 @@ const DEFAULT_MAIN_MEMORY: MainMemory = {
   content: "",
   updatedAt: 0,
 };
-const LOCAL_MEMORY_FILE = "local-memory.json";
+const LOCAL_MEMORY_FILE = "memory.json";
 
-const getStateDirectory = (): string => {
-  const cwd = process.cwd();
-  const home = homedir();
-  const isServerless =
-    process.env.VERCEL === "1" ||
-    process.env.VERCEL_ENV !== undefined ||
-    process.env.VERCEL_URL !== undefined ||
-    process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined ||
-    process.env.AWS_EXECUTION_ENV?.includes("AWS_Lambda") === true ||
-    process.env.LAMBDA_TASK_ROOT !== undefined ||
-    process.env.NOW_REGION !== undefined ||
-    cwd.startsWith("/var/task") ||
-    home.startsWith("/var/task") ||
-    process.env.SERVERLESS === "1";
-  if (isServerless) {
-    return "/tmp/.poncho/state";
-  }
-  return resolve(homedir(), ".poncho", "state");
-};
-
-const projectScopedMemoryPath = (workingDir: string): string => {
-  const projectName = basename(workingDir).replace(/[^a-zA-Z0-9_-]+/g, "-") || "project";
-  const projectHash = createHash("sha256").update(workingDir).digest("hex").slice(0, 12);
-  return resolve(getStateDirectory(), `${projectName}-${projectHash}-${LOCAL_MEMORY_FILE}`);
+const writeJsonAtomic = async (filePath: string, payload: unknown): Promise<void> => {
+  await mkdir(dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.tmp`;
+  await writeFile(tmpPath, JSON.stringify(payload, null, 2), "utf8");
+  await rename(tmpPath, filePath);
 };
 
 const scoreText = (text: string, query: string): number => {
@@ -123,15 +108,24 @@ class InMemoryMemoryStore implements MemoryStore {
 }
 
 class FileMainMemoryStore implements MemoryStore {
-  private readonly filePath: string;
+  private readonly workingDir: string;
+  private filePath = "";
   private readonly ttlMs?: number;
   private loaded = false;
   private writing = Promise.resolve();
   private mainMemory: MainMemory = { ...DEFAULT_MAIN_MEMORY };
 
   constructor(workingDir: string, ttlSeconds?: number) {
-    this.filePath = projectScopedMemoryPath(workingDir);
+    this.workingDir = workingDir;
     this.ttlMs = typeof ttlSeconds === "number" ? ttlSeconds * 1000 : undefined;
+  }
+
+  private async ensureFilePath(): Promise<void> {
+    if (this.filePath) {
+      return;
+    }
+    const identity = await ensureAgentIdentity(this.workingDir);
+    this.filePath = resolve(getAgentStoreDirectory(identity), LOCAL_MEMORY_FILE);
   }
 
   private isExpired(updatedAt: number): boolean {
@@ -139,6 +133,7 @@ class FileMainMemoryStore implements MemoryStore {
   }
 
   private async ensureLoaded(): Promise<void> {
+    await this.ensureFilePath();
     if (this.loaded) {
       return;
     }
@@ -157,8 +152,7 @@ class FileMainMemoryStore implements MemoryStore {
   private async persist(): Promise<void> {
     const payload: MainMemoryPayload = { main: this.mainMemory };
     this.writing = this.writing.then(async () => {
-      await mkdir(dirname(this.filePath), { recursive: true });
-      await writeFile(this.filePath, JSON.stringify(payload, null, 2), "utf8");
+      await writeJsonAtomic(this.filePath, payload);
     });
     await this.writing;
   }
@@ -490,7 +484,9 @@ export const createMemoryStore = (
 ): MemoryStore => {
   const provider = config?.provider ?? "local";
   const ttl = config?.ttl;
-  const storageKey = `poncho:memory:${agentId}:main`;
+  const storageKey = `poncho:${STORAGE_SCHEMA_VERSION}:${slugifyStorageComponent(
+    agentId,
+  )}:memory:main`;
   const workingDir = options?.workingDir ?? process.cwd();
   if (provider === "local") {
     return new FileMainMemoryStore(workingDir, ttl);

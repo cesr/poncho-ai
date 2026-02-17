@@ -15,6 +15,8 @@ import {
   LocalMcpBridge,
   TelemetryEmitter,
   createConversationStore,
+  ensureAgentIdentity,
+  generateAgentId,
   loadPonchoConfig,
   resolveStateConfig,
   type PonchoConfig,
@@ -201,9 +203,11 @@ const parseParams = (values: string[]): Record<string, string> => {
 
 const AGENT_TEMPLATE = (
   name: string,
+  id: string,
   options: { modelProvider: "anthropic" | "openai"; modelName: string },
 ): string => `---
 name: ${name}
+id: ${id}
 description: A helpful Poncho assistant
 model:
   provider: ${options.modelProvider}
@@ -727,6 +731,7 @@ export const initProject = async (
     interactive: false,
   };
   const onboarding = await runInitOnboarding(onboardingOptions);
+  const agentId = generateAgentId();
 
   const G = "\x1b[32m";
   const D = "\x1b[2m";
@@ -738,7 +743,13 @@ export const initProject = async (
   process.stdout.write("\n");
 
   const scaffoldFiles: Array<{ path: string; content: string }> = [
-    { path: "AGENT.md", content: AGENT_TEMPLATE(projectName, { modelProvider: onboarding.agentModel.provider, modelName: onboarding.agentModel.name }) },
+    {
+      path: "AGENT.md",
+      content: AGENT_TEMPLATE(projectName, agentId, {
+        modelProvider: onboarding.agentModel.provider,
+        modelName: onboarding.agentModel.name,
+      }),
+    },
     { path: "poncho.config.js", content: renderConfigFile(onboarding.config) },
     { path: "package.json", content: PACKAGE_TEMPLATE(projectName, projectDir) },
     { path: "README.md", content: README_TEMPLATE(projectName) },
@@ -935,7 +946,11 @@ export const createRequestHandler = async (options?: {
   });
   await harness.initialize();
   const telemetry = new TelemetryEmitter(config?.telemetry);
-  const conversationStore = createConversationStore(resolveStateConfig(config), { workingDir });
+  const identity = await ensureAgentIdentity(workingDir);
+  const conversationStore = createConversationStore(resolveStateConfig(config), {
+    workingDir,
+    agentId: identity.id,
+  });
   const sessionStore = new SessionStore();
   const loginRateLimiter = new LoginRateLimiter();
 
@@ -1688,6 +1703,7 @@ export const runInteractive = async (
     approvalHandler,
   });
   await harness.initialize();
+  const identity = await ensureAgentIdentity(workingDir);
   try {
     const { runInteractiveInk } = await import("./run-interactive-ink.js");
     await (
@@ -1704,7 +1720,10 @@ export const runInteractive = async (
       params,
       workingDir,
       config,
-      conversationStore: createConversationStore(resolveStateConfig(config), { workingDir }),
+      conversationStore: createConversationStore(resolveStateConfig(config), {
+        workingDir,
+        agentId: identity.id,
+      }),
       onSetApprovalCallback: (cb: (req: ApprovalRequest) => void) => {
         onApprovalRequest = cb;
         // If there's already a pending request, fire it immediately

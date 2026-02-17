@@ -1,5 +1,9 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createConversationStore, createStateStore } from "../src/state.js";
+import { ensureAgentIdentity, getAgentStoreDirectory } from "../src/agent-identity.js";
 
 describe("state store factory", () => {
   it("uses memory provider when explicitly requested", async () => {
@@ -39,5 +43,31 @@ describe("conversation store factory", () => {
     const created = await store.create("owner-b", "fallback");
     const found = await store.get(created.conversationId);
     expect(found?.title).toBe("fallback");
+  });
+
+  it("stores local conversations per file with index", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-state-local-layout-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: local-layout-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Local layout
+`,
+      "utf8",
+    );
+    const store = createConversationStore({ provider: "local" }, { workingDir: dir });
+    const created = await store.create("owner-c", "layout");
+    const identity = await ensureAgentIdentity(dir);
+    const agentDir = getAgentStoreDirectory(identity);
+    const indexPath = resolve(agentDir, "conversations", "index.json");
+    const indexContent = await readFile(indexPath, "utf8");
+    expect(indexContent).toContain(created.conversationId);
+    expect(indexContent).toContain('"schemaVersion": "v1"');
+    await rm(agentDir, { recursive: true, force: true });
   });
 });

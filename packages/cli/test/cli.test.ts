@@ -144,6 +144,13 @@ vi.mock("@poncho-ai/harness", () => ({
     };
   },
   InMemoryStateStore: class {},
+  generateAgentId: () => "agent_testid1234567890abcdef12345678",
+  ensureAgentIdentity: async (workingDir: string) => ({
+    name: workingDir.split("/").pop() || "agent",
+    id: "agent_testid1234567890abcdef12345678",
+  }),
+  getAgentStoreDirectory: (identity: { name: string; id: string }) =>
+    join("/tmp/.poncho/store", `${identity.name}--${identity.id}`),
   TelemetryEmitter: class {
     async emit(): Promise<void> {}
   },
@@ -163,6 +170,7 @@ import {
   startDevServer,
   updateAgentGuidance,
 } from "../src/index.js";
+import { ensureAgentIdentity, getAgentStoreDirectory } from "@poncho-ai/harness";
 
 describe("cli", () => {
   let tempDir = "";
@@ -186,6 +194,7 @@ describe("cli", () => {
     const basicTest = await readFile(join(tempDir, "my-agent", "tests", "basic.yaml"), "utf8");
 
     expect(agentMarkdown).toContain("name: my-agent");
+    expect(agentMarkdown).toContain("id: agent_");
     expect(pkgJson).toContain('"name": "my-agent"');
     expect(skillManifest).toContain("name: starter-skill");
     expect(skillTool).toContain("export default async function run(input)");
@@ -240,6 +249,10 @@ describe("cli", () => {
     });
     expect(firstIntro).toContain("I can configure myself directly by chat");
     expect(secondIntro).toBeUndefined();
+    const identity = await ensureAgentIdentity(projectDir);
+    const markerPath = join(getAgentStoreDirectory(identity), "onboarding-state.json");
+    const markerRaw = await readFile(markerPath, "utf8");
+    expect(markerRaw).toContain('"onboardingVersion": 1');
   });
 
   it("emits intro for interactive init even when config differs from defaults", async () => {

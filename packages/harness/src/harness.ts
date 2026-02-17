@@ -30,6 +30,7 @@ import {
   normalizeRelativeScriptPattern,
 } from "./tool-policy.js";
 import { ToolDispatcher } from "./tool-dispatcher.js";
+import { ensureAgentIdentity } from "./agent-identity.js";
 
 export interface HarnessOptions {
   workingDir?: string;
@@ -485,6 +486,10 @@ export class AgentHarness {
 
   async initialize(): Promise<void> {
     this.parsedAgent = await parseAgentFile(this.workingDir);
+    const identity = await ensureAgentIdentity(this.workingDir);
+    if (!this.parsedAgent.frontmatter.id) {
+      this.parsedAgent.frontmatter.id = identity.id;
+    }
     const config = await loadPonchoConfig(this.workingDir);
     this.loadedConfig = config;
     this.registerConfiguredBuiltInTools(config);
@@ -504,8 +509,9 @@ export class AgentHarness {
     this.skillFingerprint = this.buildSkillFingerprint(skillMetadata);
     this.registerSkillTools(skillMetadata);
     if (memoryConfig?.enabled) {
+      const agentId = this.parsedAgent.frontmatter.id ?? this.parsedAgent.frontmatter.name;
       this.memoryStore = createMemoryStore(
-        this.parsedAgent.frontmatter.name,
+        agentId,
         memoryConfig,
         { workingDir: this.workingDir },
       );
@@ -615,7 +621,7 @@ export class AgentHarness {
       parameters: input.parameters,
       runtime: {
         runId,
-        agentId: agent.frontmatter.name,
+        agentId: agent.frontmatter.id ?? agent.frontmatter.name,
         environment: this.environment,
         workingDir: this.workingDir,
       },
@@ -656,7 +662,7 @@ ${boundedMainMemory.trim()}`
     yield pushEvent({
       type: "run:started",
       runId,
-      agentId: agent.frontmatter.name,
+      agentId: agent.frontmatter.id ?? agent.frontmatter.name,
     });
 
     messages.push({
@@ -851,7 +857,7 @@ ${boundedMainMemory.trim()}`
 
       const toolContext: ToolContext = {
         runId,
-        agentId: agent.frontmatter.name,
+        agentId: agent.frontmatter.id ?? agent.frontmatter.name,
         step,
         workingDir: this.workingDir,
         parameters: input.parameters ?? {},

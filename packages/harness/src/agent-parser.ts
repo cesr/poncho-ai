@@ -24,6 +24,7 @@ export interface AgentLimitsConfig {
 
 export interface AgentFrontmatter {
   name: string;
+  id?: string;
   description?: string;
   model?: AgentModelConfig;
   limits?: AgentLimitsConfig;
@@ -129,6 +130,7 @@ export const parseAgentMarkdown = (content: string): ParsedAgent => {
 
   const frontmatter: AgentFrontmatter = {
     name: parsed.name,
+    id: typeof parsed.id === "string" && parsed.id.trim() ? parsed.id.trim() : undefined,
     description:
       typeof parsed.description === "string" ? parsed.description : undefined,
     model:
@@ -196,7 +198,7 @@ export const renderAgentPrompt = (
     description: agent.frontmatter.description ?? "",
     runtime: {
       workingDir: context.runtime?.workingDir ?? process.cwd(),
-      agentId: context.runtime?.agentId ?? agent.frontmatter.name,
+      agentId: context.runtime?.agentId ?? agent.frontmatter.id ?? agent.frontmatter.name,
       runId: context.runtime?.runId ?? `run_${randomUUID()}`,
       environment: context.runtime?.environment ?? "development",
     },

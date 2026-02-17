@@ -1,8 +1,10 @@
-import { createHash } from "node:crypto";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
-import { homedir } from "node:os";
-import type { PonchoConfig } from "@poncho-ai/harness";
+import { dirname, resolve } from "node:path";
+import {
+  ensureAgentIdentity,
+  getAgentStoreDirectory,
+  type PonchoConfig,
+} from "@poncho-ai/harness";
 import { resolveHarnessEnvironment } from "./index.js";
 
 type IntroInput = {
@@ -22,26 +24,6 @@ type OnboardingMarkerState = {
 
 const ONBOARDING_VERSION = 1;
 
-const getStateDirectory = (): string => {
-  const cwd = process.cwd();
-  const home = homedir();
-  const isServerless =
-    process.env.VERCEL === "1" ||
-    process.env.VERCEL_ENV !== undefined ||
-    process.env.VERCEL_URL !== undefined ||
-    process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined ||
-    process.env.AWS_EXECUTION_ENV?.includes("AWS_Lambda") === true ||
-    process.env.LAMBDA_TASK_ROOT !== undefined ||
-    process.env.NOW_REGION !== undefined ||
-    cwd.startsWith("/var/task") ||
-    home.startsWith("/var/task") ||
-    process.env.SERVERLESS === "1";
-  if (isServerless) {
-    return "/tmp/.poncho/state";
-  }
-  return resolve(homedir(), ".poncho", "state");
-};
-
 const summarizeConfig = (config: PonchoConfig | undefined): string[] => {
   const provider = config?.storage?.provider ?? config?.state?.provider ?? "local";
   const memoryEnabled = config?.storage?.memory?.enabled ?? config?.memory?.enabled ?? false;
@@ -55,19 +37,15 @@ const summarizeConfig = (config: PonchoConfig | undefined): string[] => {
   ];
 };
 
-const getOnboardingMarkerPath = (workingDir: string): string =>
-  resolve(
-    getStateDirectory(),
-    `${basename(workingDir).replace(/[^a-zA-Z0-9_-]+/g, "-") || "project"}-${createHash("sha256")
-      .update(workingDir)
-      .digest("hex")
-      .slice(0, 12)}-onboarding.json`,
-  );
+const getOnboardingMarkerPath = async (workingDir: string): Promise<string> => {
+  const identity = await ensureAgentIdentity(workingDir);
+  return resolve(getAgentStoreDirectory(identity), "onboarding-state.json");
+};
 
 const readMarker = async (
   workingDir: string,
 ): Promise<OnboardingMarkerState | undefined> => {
-  const markerPath = getOnboardingMarkerPath(workingDir);
+  const markerPath = await getOnboardingMarkerPath(workingDir);
   try {
     await access(markerPath);
   } catch {
@@ -85,7 +63,7 @@ const writeMarker = async (
   workingDir: string,
   state: OnboardingMarkerState,
 ): Promise<void> => {
-  const markerPath = getOnboardingMarkerPath(workingDir);
+  const markerPath = await getOnboardingMarkerPath(workingDir);
   await mkdir(dirname(markerPath), { recursive: true });
   await writeFile(markerPath, JSON.stringify(state, null, 2), "utf8");
 };
