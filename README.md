@@ -627,6 +627,89 @@ curl -N -X POST https://my-agent.vercel.app/api/conversations/<conversation-id>/
 
 Response: Server-Sent Events (`run:started`, `model:chunk`, `tool:*`, `run:completed`).
 
+### Build a custom chat UI
+
+You can build your own chat frontend by calling Poncho's conversation endpoints directly.
+
+Typical UI flow:
+
+1. Create a conversation: `POST /api/conversations`
+2. Send a message and stream events: `POST /api/conversations/:conversationId/messages`
+3. Append `model:chunk` events into the in-progress assistant message
+4. Render `tool:*` events as activity status
+5. Finalize on `run:completed` (or handle `run:error` / `run:cancelled`)
+6. Reload full transcript on refresh: `GET /api/conversations/:conversationId`
+
+Minimal browser example (SSE parsing):
+
+```typescript
+async function streamMessage(conversationId: string, message: string) {
+  const response = await fetch(
+    `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+      credentials: "include", // keep for session auth
+    },
+  );
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Streaming request failed: HTTP ${response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+
+    for (const frame of frames) {
+      const lines = frame
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+      const eventLine = lines.find((line) => line.startsWith("event:"));
+      const dataLine = lines.find((line) => line.startsWith("data:"));
+      if (!eventLine || !dataLine) continue;
+
+      const eventName = eventLine.slice("event:".length).trim();
+      const payload = JSON.parse(dataLine.slice("data:".length).trim());
+
+      if (eventName === "model:chunk") {
+        // Append payload.content to the active assistant message
+      } else if (eventName === "tool:started") {
+        // Show "running tool" activity
+      } else if (eventName === "tool:completed") {
+        // Mark tool activity as complete
+      } else if (eventName === "run:completed") {
+        // Finalize assistant message
+      } else if (eventName === "run:error" || eventName === "run:cancelled") {
+        // Show interrupted/error state in UI
+      }
+    }
+  }
+}
+```
+
+Useful optional endpoints for richer UIs:
+
+- `POST /api/conversations/:conversationId/stop` with `{ "runId": "<run-id>" }` to cancel an in-flight run
+- `GET /api/conversations/:conversationId/events` to attach/re-attach to a live event stream
+- `POST /api/approvals/:approvalId` with `{ "approved": true|false }` to resolve `tool:approval:required`
+
+Auth notes for custom frontends:
+
+- Browser session mode: `GET /api/auth/session`, then `POST /api/auth/login`, and send `x-csrf-token` on mutating requests.
+- API token mode: send `Authorization: Bearer <PONCHO_AUTH_TOKEN>` on API requests.
+
 ### TypeScript/JavaScript Client
 
 Install the client SDK for type-safe access:
