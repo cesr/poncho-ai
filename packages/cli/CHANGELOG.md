@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.8.3
+
+### Patch Changes
+
+- Bundle fetch-page skill with init template
+
 ## 0.6.0
 
 ### Minor Changes
