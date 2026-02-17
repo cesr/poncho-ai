@@ -103,10 +103,14 @@ my-agent/
 ├── tests/
 │   └── basic.yaml     # Starter test suite
 ├── skills/
-│   └── starter/
+│   ├── starter/
+│   │   ├── SKILL.md
+│   │   └── scripts/
+│   │       └── starter-echo.ts
+│   └── fetch-page/
 │       ├── SKILL.md
 │       └── scripts/
-│           └── starter-echo.ts
+│           └── fetch-page.ts
 └── .gitignore
 ```
 
@@ -124,7 +128,7 @@ my-agent/
 ```
 
 - `@poncho-ai/harness` is the agent runtime - it handles the conversation loop, tool execution, and streaming.
-- A local starter skill scaffold is generated under `skills/starter/`.
+- Local skill scaffolds are generated under `skills/starter/` and `skills/fetch-page/`.
 
 ### 2. Configure your API key (if you skipped onboarding)
 
