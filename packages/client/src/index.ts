@@ -166,14 +166,30 @@ export class AgentClient {
       (event): event is Extract<AgentEvent, { type: "run:completed" }> =>
         event.type === "run:completed",
     );
-    if (!completed) {
-      throw new Error("Send message failed: missing run:completed event");
+    if (completed) {
+      return {
+        runId: runStarted?.runId ?? completed.runId,
+        status: completed.result.status,
+        result: completed.result,
+      };
     }
-    return {
-      runId: runStarted?.runId ?? completed.runId,
-      status: completed.result.status,
-      result: completed.result,
-    };
+    const cancelled = events.find(
+      (event): event is Extract<AgentEvent, { type: "run:cancelled" }> =>
+        event.type === "run:cancelled",
+    );
+    if (cancelled) {
+      return {
+        runId: runStarted?.runId ?? cancelled.runId,
+        status: "cancelled",
+        result: {
+          status: "cancelled",
+          steps: 0,
+          tokens: { input: 0, output: 0, cached: 0 },
+          duration: 0,
+        },
+      };
+    }
+    throw new Error("Send message failed: missing run:completed or run:cancelled event");
   }
 
   async run(input: RunInput): Promise<SyncRunResponse> {

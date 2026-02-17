@@ -1111,6 +1111,11 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       transition: background 0.15s, opacity 0.15s;
     }
     .send-btn:hover { background: #fff; }
+    .send-btn.stop-mode {
+      background: #4a4a4a;
+      color: #fff;
+    }
+    .send-btn.stop-mode:hover { background: #565656; }
     .send-btn:disabled { opacity: 0.2; cursor: default; }
     .send-btn:disabled:hover { background: #ededed; }
     .disclaimer {
@@ -1238,6 +1243,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         activeConversationId: null,
         activeMessages: [],
         isStreaming: false,
+        activeStreamAbortController: null,
+        activeStreamConversationId: null,
+        activeStreamRunId: null,
         isMessagesPinnedToBottom: true,
         confirmDeleteId: null,
         approvalRequestsInFlight: {}
@@ -1264,6 +1272,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         sidebarToggle: $("sidebar-toggle"),
         sidebarBackdrop: $("sidebar-backdrop")
       };
+      const sendIconMarkup =
+        '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 12V4M4 7l4-4 4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      const stopIconMarkup =
+        '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="4" y="4" width="8" height="8" rx="2" fill="currentColor"/></svg>';
 
       const pushConversationUrl = (conversationId) => {
         const target = conversationId ? "/c/" + encodeURIComponent(conversationId) : "/";
@@ -1950,6 +1962,24 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                       }
                       renderIfActiveConversation(false);
                     }
+                    if (eventName === "run:cancelled") {
+                      assistantMessage._activeActivities = [];
+                      if (assistantMessage._currentTools.length > 0) {
+                        assistantMessage._sections.push({
+                          type: "tools",
+                          content: assistantMessage._currentTools,
+                        });
+                        assistantMessage._currentTools = [];
+                      }
+                      if (assistantMessage._currentText.length > 0) {
+                        assistantMessage._sections.push({
+                          type: "text",
+                          content: assistantMessage._currentText,
+                        });
+                        assistantMessage._currentText = "";
+                      }
+                      renderIfActiveConversation(false);
+                    }
                     if (eventName === "run:error") {
                       assistantMessage._activeActivities = [];
                       const errMsg =
@@ -2023,7 +2053,15 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
 
       const setStreaming = (value) => {
         state.isStreaming = value;
-        elements.send.disabled = value;
+        const canStop = value && !!state.activeStreamRunId;
+        elements.send.disabled = value ? !canStop : false;
+        elements.send.innerHTML = value ? stopIconMarkup : sendIconMarkup;
+        elements.send.classList.toggle("stop-mode", value);
+        elements.send.setAttribute("aria-label", value ? "Stop response" : "Send message");
+        elements.send.setAttribute(
+          "title",
+          value ? (canStop ? "Stop response" : "Starting response...") : "Send message",
+        );
       };
 
       const pushToolActivity = (assistantMessage, line) => {
@@ -2204,6 +2242,36 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         el.style.overflowY = scrollHeight > 200 ? "auto" : "hidden";
       };
 
+      const stopActiveRun = async () => {
+        const stopRunId = state.activeStreamRunId;
+        if (!stopRunId) return;
+        const conversationId = state.activeStreamConversationId || state.activeConversationId;
+        if (!conversationId) return;
+        // Disable the stop button immediately so the user sees feedback.
+        state.activeStreamRunId = null;
+        setStreaming(state.isStreaming);
+        // Signal the server to cancel the run. The server will emit
+        // run:cancelled through the still-open SSE stream, which
+        // sendMessage() processes naturally – the stream ends on its own
+        // and cleanup happens in one finally block. No fetch abort needed.
+        try {
+          await api(
+            "/api/conversations/" + encodeURIComponent(conversationId) + "/stop",
+            {
+              method: "POST",
+              body: JSON.stringify({ runId: stopRunId }),
+            },
+          );
+        } catch (e) {
+          console.warn("Failed to stop conversation run:", e);
+          // Fallback: abort the local fetch so the UI at least stops.
+          const abortController = state.activeStreamAbortController;
+          if (abortController && !abortController.signal.aborted) {
+            abortController.abort();
+          }
+        }
+      };
+
       const sendMessage = async (text) => {
         const messageText = (text || "").trim();
         if (!messageText || state.isStreaming) {
@@ -2223,12 +2291,16 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         localMessages.push(assistantMessage);
         state.activeMessages = localMessages;
         renderMessages(localMessages, true, { forceScrollBottom: true });
-        setStreaming(true);
         let conversationId = state.activeConversationId;
+        const streamAbortController = new AbortController();
+        state.activeStreamAbortController = streamAbortController;
+        state.activeStreamRunId = null;
+        setStreaming(true);
         try {
           if (!conversationId) {
             conversationId = await createConversation(messageText, { loadConversation: false });
           }
+          state.activeStreamConversationId = conversationId;
           const streamConversationId = conversationId;
           const renderIfActiveConversation = (streaming) => {
             if (state.activeConversationId !== streamConversationId) {
@@ -2237,11 +2309,23 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             state.activeMessages = localMessages;
             renderMessages(localMessages, streaming);
           };
+          const finalizeAssistantMessage = () => {
+            assistantMessage._activeActivities = [];
+            if (assistantMessage._currentTools.length > 0) {
+              assistantMessage._sections.push({ type: "tools", content: assistantMessage._currentTools });
+              assistantMessage._currentTools = [];
+            }
+            if (assistantMessage._currentText.length > 0) {
+              assistantMessage._sections.push({ type: "text", content: assistantMessage._currentText });
+              assistantMessage._currentText = "";
+            }
+          };
           const response = await fetch("/api/conversations/" + encodeURIComponent(conversationId) + "/messages", {
             method: "POST",
             credentials: "include",
             headers: { "Content-Type": "application/json", "x-csrf-token": state.csrfToken },
-            body: JSON.stringify({ message: messageText })
+            body: JSON.stringify({ message: messageText }),
+            signal: streamAbortController.signal,
           });
           if (!response.ok || !response.body) {
             throw new Error("Failed to stream response");
@@ -2267,6 +2351,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                   assistantMessage.content += chunk;
                   assistantMessage._currentText += chunk;
                   renderIfActiveConversation(true);
+                }
+                if (eventName === "run:started") {
+                  state.activeStreamRunId = typeof payload.runId === "string" ? payload.runId : null;
+                  setStreaming(state.isStreaming);
                 }
                 if (eventName === "tool:started") {
                   const toolName = payload.tool || "tool";
@@ -2413,19 +2501,14 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                   renderIfActiveConversation(true);
                 }
                 if (eventName === "run:completed") {
-                  assistantMessage._activeActivities = [];
+                  finalizeAssistantMessage();
                   if (!assistantMessage.content || assistantMessage.content.length === 0) {
                     assistantMessage.content = String(payload.result?.response || "");
                   }
-                  // Finalize sections: push any remaining tools and text
-                  if (assistantMessage._currentTools.length > 0) {
-                    assistantMessage._sections.push({ type: "tools", content: assistantMessage._currentTools });
-                    assistantMessage._currentTools = [];
-                  }
-                  if (assistantMessage._currentText.length > 0) {
-                    assistantMessage._sections.push({ type: "text", content: assistantMessage._currentText });
-                    assistantMessage._currentText = "";
-                  }
+                  renderIfActiveConversation(false);
+                }
+                if (eventName === "run:cancelled") {
+                  finalizeAssistantMessage();
                   renderIfActiveConversation(false);
                 }
                 if (eventName === "run:error") {
@@ -2446,7 +2529,31 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           }
           await loadConversations();
           // Don't reload the conversation - we already have the latest state with tool chips
+        } catch (error) {
+          if (streamAbortController.signal.aborted) {
+            assistantMessage._activeActivities = [];
+            if (assistantMessage._currentTools.length > 0) {
+              assistantMessage._sections.push({ type: "tools", content: assistantMessage._currentTools });
+              assistantMessage._currentTools = [];
+            }
+            if (assistantMessage._currentText.length > 0) {
+              assistantMessage._sections.push({ type: "text", content: assistantMessage._currentText });
+              assistantMessage._currentText = "";
+            }
+            renderMessages(localMessages, false);
+          } else {
+            assistantMessage._activeActivities = [];
+            assistantMessage._error = error instanceof Error ? error.message : "Something went wrong";
+            renderMessages(localMessages, false);
+          }
         } finally {
+          if (state.activeStreamAbortController === streamAbortController) {
+            state.activeStreamAbortController = null;
+          }
+          if (state.activeStreamConversationId === conversationId) {
+            state.activeStreamConversationId = null;
+          }
+          state.activeStreamRunId = null;
           setStreaming(false);
           elements.prompt.focus();
         }
@@ -2549,6 +2656,13 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
 
       elements.composer.addEventListener("submit", async (event) => {
         event.preventDefault();
+        if (state.isStreaming) {
+          if (!state.activeStreamRunId) {
+            return;
+          }
+          await stopActiveRun();
+          return;
+        }
         const value = elements.prompt.value;
         elements.prompt.value = "";
         autoResizePrompt();

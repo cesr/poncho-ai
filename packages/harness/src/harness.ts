@@ -69,6 +69,18 @@ const trimMessageWindow = (messages: Message[]): Message[] =>
     ? messages
     : messages.slice(messages.length - MAX_CONTEXT_MESSAGES);
 
+const isAbortError = (error: unknown): boolean => {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const maybeName = "name" in error ? String(error.name ?? "") : "";
+  if (maybeName === "AbortError") {
+    return true;
+  }
+  const maybeMessage = "message" in error ? String(error.message ?? "") : "";
+  return maybeMessage.toLowerCase().includes("abort");
+};
+
 const MODEL_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
 
 const toProviderSafeToolName = (
@@ -658,6 +670,12 @@ ${boundedMainMemory.trim()}`
       events.push(event);
       return event;
     };
+    const isCancelled = (): boolean => input.abortSignal?.aborted === true;
+    let cancellationEmitted = false;
+    const emitCancellation = (): AgentEvent => {
+      cancellationEmitted = true;
+      return pushEvent({ type: "run:cancelled", runId });
+    };
 
     yield pushEvent({
       type: "run:started",
@@ -677,6 +695,10 @@ ${boundedMainMemory.trim()}`
 
     for (let step = 1; step <= maxSteps; step += 1) {
       try {
+        if (isCancelled()) {
+          yield emitCancellation();
+          return;
+        }
         if (now() - start > timeoutMs) {
           yield pushEvent({
             type: "run:error",
@@ -793,6 +815,7 @@ ${boundedMainMemory.trim()}`
           messages: coreMessages,
           tools,
           temperature,
+          abortSignal: input.abortSignal,
           ...(typeof maxTokens === "number" ? { maxTokens } : {}),
           experimental_telemetry: {
             isEnabled: telemetryEnabled && !!latitudeApiKey,
@@ -803,10 +826,19 @@ ${boundedMainMemory.trim()}`
         let streamedAnyChunk = false;
         let fullText = "";
         for await (const chunk of result.textStream) {
-        streamedAnyChunk = true;
-        fullText += chunk;
-        yield pushEvent({ type: "model:chunk", content: chunk });
-      }
+          if (isCancelled()) {
+            yield emitCancellation();
+            return;
+          }
+          streamedAnyChunk = true;
+          fullText += chunk;
+          yield pushEvent({ type: "model:chunk", content: chunk });
+        }
+
+        if (isCancelled()) {
+          yield emitCancellation();
+          return;
+        }
 
       // Get full response with usage and tool calls
       const fullResult = await result.response;
@@ -861,6 +893,7 @@ ${boundedMainMemory.trim()}`
         step,
         workingDir: this.workingDir,
         parameters: input.parameters ?? {},
+        abortSignal: input.abortSignal,
       };
 
       const toolResultsForModel: Array<{
@@ -877,6 +910,10 @@ ${boundedMainMemory.trim()}`
       }> = [];
 
       for (const call of toolCalls) {
+        if (isCancelled()) {
+          yield emitCancellation();
+          return;
+        }
         const runtimeToolName = exposedToolNames.get(call.name) ?? call.name;
         yield pushEvent({ type: "tool:started", tool: runtimeToolName, input: call.input });
         const requiresApproval = this.requiresApprovalForToolCall(
@@ -900,6 +937,10 @@ ${boundedMainMemory.trim()}`
                 approvalId,
               })
             : false;
+          if (isCancelled()) {
+            yield emitCancellation();
+            return;
+          }
           if (!approved) {
             yield pushEvent({
               type: "tool:approval:denied",
@@ -929,10 +970,19 @@ ${boundedMainMemory.trim()}`
         });
       }
       const batchStart = now();
+      if (isCancelled()) {
+        yield emitCancellation();
+        return;
+      }
       const batchResults =
         approvedCalls.length > 0
           ? await this.dispatcher.executeBatch(approvedCalls, toolContext)
           : [];
+
+      if (isCancelled()) {
+        yield emitCancellation();
+        return;
+      }
 
       for (const result of batchResults) {
         if (result.error) {
@@ -993,6 +1043,12 @@ ${boundedMainMemory.trim()}`
           duration: now() - stepStart,
         });
       } catch (error) {
+        if (isCancelled() || isAbortError(error)) {
+          if (!cancellationEmitted) {
+            yield emitCancellation();
+          }
+          return;
+        }
         yield pushEvent({
           type: "run:error",
           runId,
@@ -1039,6 +1095,14 @@ ${boundedMainMemory.trim()}`
         finalResult = {
           status: "error",
           response: event.error.message,
+          steps: 0,
+          tokens: { input: 0, output: 0, cached: 0 },
+          duration: 0,
+        };
+      }
+      if (event.type === "run:cancelled") {
+        finalResult = {
+          status: "cancelled",
           steps: 0,
           tokens: { input: 0, output: 0, cached: 0 },
           duration: 0,

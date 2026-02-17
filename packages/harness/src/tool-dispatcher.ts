@@ -45,6 +45,13 @@ export class ToolDispatcher {
   }
 
   async execute(call: ToolCall, context: ToolContext): Promise<ToolExecutionResult> {
+    if (context.abortSignal?.aborted) {
+      return {
+        callId: call.id,
+        tool: call.name,
+        error: "Tool execution cancelled",
+      };
+    }
     const definition = this.tools.get(call.name);
     if (!definition) {
       return {
@@ -56,12 +63,26 @@ export class ToolDispatcher {
 
     try {
       const output = await definition.handler(call.input, context);
+      if (context.abortSignal?.aborted) {
+        return {
+          callId: call.id,
+          tool: call.name,
+          error: "Tool execution cancelled",
+        };
+      }
       return {
         callId: call.id,
         tool: call.name,
         output,
       };
     } catch (error) {
+      if (context.abortSignal?.aborted) {
+        return {
+          callId: call.id,
+          tool: call.name,
+          error: "Tool execution cancelled",
+        };
+      }
       return {
         callId: call.id,
         tool: call.name,
@@ -74,6 +95,19 @@ export class ToolDispatcher {
     calls: ToolCall[],
     context: ToolContext,
   ): Promise<ToolExecutionResult[]> {
-    return Promise.all(calls.map(async (call) => this.execute(call, context)));
+    const results: ToolExecutionResult[] = [];
+    for (const call of calls) {
+      if (context.abortSignal?.aborted) {
+        results.push({
+          callId: call.id,
+          tool: call.name,
+          error: "Tool execution cancelled",
+        });
+        continue;
+      }
+      // eslint-disable-next-line no-await-in-loop
+      results.push(await this.execute(call, context));
+    }
+    return results;
   }
 }

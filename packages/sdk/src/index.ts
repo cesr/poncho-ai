@@ -30,6 +30,7 @@ export interface ToolContext {
   step: number;
   workingDir: string;
   parameters: Record<string, unknown>;
+  abortSignal?: AbortSignal;
 }
 
 export type ToolHandler<TInput extends Record<string, unknown>, TOutput> = (
@@ -64,6 +65,7 @@ export interface RunInput {
   task: string;
   parameters?: Record<string, unknown>;
   messages?: Message[];
+  abortSignal?: AbortSignal;
 }
 
 export interface TokenUsage {
@@ -89,6 +91,7 @@ export interface AgentFailure {
 export type AgentEvent =
   | { type: "run:started"; runId: string; agentId: string }
   | { type: "run:completed"; runId: string; result: RunResult }
+  | { type: "run:cancelled"; runId: string }
   | { type: "run:error"; runId: string; error: AgentFailure }
   | { type: "step:started"; step: number }
   | { type: "step:completed"; step: number; duration: number }

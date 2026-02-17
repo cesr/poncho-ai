@@ -307,6 +307,11 @@ poncho dev
 Open \`http://localhost:3000\` for the web UI.
 
 On your first interactive session, the agent introduces its configurable capabilities.
+While a response is streaming, you can stop it:
+- Web UI: click the send button again (it switches to a stop icon)
+- Interactive CLI: press \`Ctrl+C\`
+
+Stopping is best-effort and keeps partial assistant output/tool activity already produced.
 
 ## Common Commands
 
@@ -857,6 +862,12 @@ export const createRequestHandler = async (options?: {
   } catch {}
   const runOwners = new Map<string, string>();
   const runConversations = new Map<string, string>();
+  type ActiveConversationRun = {
+    ownerId: string;
+    abortController: AbortController;
+    runId: string | null;
+  };
+  const activeConversationRuns = new Map<string, ActiveConversationRun>();
   type PendingApproval = {
     ownerId: string;
     runId: string;
@@ -923,6 +934,16 @@ export const createRequestHandler = async (options?: {
         input: pending.input,
       }));
     await conversationStore.update(conversation);
+  };
+  const clearPendingApprovalsForConversation = async (conversationId: string): Promise<void> => {
+    for (const [approvalId, pending] of pendingApprovals.entries()) {
+      if (pending.conversationId !== conversationId) {
+        continue;
+      }
+      pendingApprovals.delete(approvalId);
+      pending.resolve(false);
+    }
+    await persistConversationPendingApprovals(conversationId);
   };
   const harness = new AgentHarness({
     workingDir,
@@ -1319,6 +1340,61 @@ export const createRequestHandler = async (options?: {
       }
     }
 
+    const conversationStopMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/stop$/);
+    if (conversationStopMatch && request.method === "POST") {
+      const conversationId = decodeURIComponent(conversationStopMatch[1] ?? "");
+      const body = (await readRequestBody(request)) as { runId?: string };
+      const requestedRunId = typeof body.runId === "string" ? body.runId.trim() : "";
+      const conversation = await conversationStore.get(conversationId);
+      if (!conversation || conversation.ownerId !== ownerId) {
+        writeJson(response, 404, {
+          code: "CONVERSATION_NOT_FOUND",
+          message: "Conversation not found",
+        });
+        return;
+      }
+      const activeRun = activeConversationRuns.get(conversationId);
+      if (!activeRun || activeRun.ownerId !== ownerId) {
+        writeJson(response, 200, {
+          ok: true,
+          stopped: false,
+        });
+        return;
+      }
+      if (activeRun.abortController.signal.aborted) {
+        activeConversationRuns.delete(conversationId);
+        writeJson(response, 200, {
+          ok: true,
+          stopped: false,
+        });
+        return;
+      }
+      if (requestedRunId && activeRun.runId !== requestedRunId) {
+        writeJson(response, 200, {
+          ok: true,
+          stopped: false,
+          runId: activeRun.runId ?? undefined,
+        });
+        return;
+      }
+      if (!requestedRunId) {
+        writeJson(response, 200, {
+          ok: true,
+          stopped: false,
+          runId: activeRun.runId ?? undefined,
+        });
+        return;
+      }
+      activeRun.abortController.abort();
+      await clearPendingApprovalsForConversation(conversationId);
+      writeJson(response, 200, {
+        ok: true,
+        stopped: true,
+        runId: activeRun.runId ?? undefined,
+      });
+      return;
+    }
+
     const conversationMessageMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
     if (conversationMessageMatch && request.method === "POST") {
       const conversationId = decodeURIComponent(conversationMessageMatch[1] ?? "");
@@ -1342,6 +1418,24 @@ export const createRequestHandler = async (options?: {
         });
         return;
       }
+      const activeRun = activeConversationRuns.get(conversationId);
+      if (activeRun && activeRun.ownerId === ownerId) {
+        if (activeRun.abortController.signal.aborted) {
+          activeConversationRuns.delete(conversationId);
+        } else {
+          writeJson(response, 409, {
+            code: "RUN_IN_PROGRESS",
+            message: "A run is already active for this conversation",
+          });
+          return;
+        }
+      }
+      const abortController = new AbortController();
+      activeConversationRuns.set(conversationId, {
+        ownerId,
+        abortController,
+        runId: null,
+      });
       if (
         conversation.messages.length === 0 &&
         (conversation.title === "New conversation" || conversation.title.trim().length === 0)
@@ -1360,6 +1454,7 @@ export const createRequestHandler = async (options?: {
       const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
       let currentText = "";
       let currentTools: string[] = [];
+      let runCancelled = false;
       try {
         // Persist the user turn immediately so refreshing mid-run keeps chat context.
         conversation.messages = [...historyMessages, { role: "user", content: messageText }];
@@ -1426,11 +1521,19 @@ export const createRequestHandler = async (options?: {
             __activeConversationId: conversationId,
           },
           messages: historyMessages,
+          abortSignal: abortController.signal,
         })) {
           if (event.type === "run:started") {
             latestRunId = event.runId;
             runOwners.set(event.runId, ownerId);
             runConversations.set(event.runId, conversationId);
+            const active = activeConversationRuns.get(conversationId);
+            if (active && active.abortController === abortController) {
+              active.runId = event.runId;
+            }
+          }
+          if (event.type === "run:cancelled") {
+            runCancelled = true;
           }
           if (event.type === "model:chunk") {
             // If we have tools accumulated and text starts again, push tools as a section
@@ -1502,26 +1605,60 @@ export const createRequestHandler = async (options?: {
         if (currentText.length > 0) {
           sections.push({ type: "text", content: currentText });
         }
-        conversation.messages = [
-          ...historyMessages,
-          { role: "user", content: messageText },
-          {
-            role: "assistant",
-            content: assistantResponse,
-            metadata:
-              toolTimeline.length > 0 || sections.length > 0
-                ? ({
-                    toolActivity: toolTimeline,
-                    sections: sections.length > 0 ? sections : undefined,
-                  } as Message["metadata"])
-                : undefined,
-          },
-        ];
+        const hasAssistantContent =
+          assistantResponse.length > 0 || toolTimeline.length > 0 || sections.length > 0;
+        conversation.messages = hasAssistantContent
+          ? [
+              ...historyMessages,
+              { role: "user", content: messageText },
+              {
+                role: "assistant",
+                content: assistantResponse,
+                metadata:
+                  toolTimeline.length > 0 || sections.length > 0
+                    ? ({
+                        toolActivity: toolTimeline,
+                        sections: sections.length > 0 ? sections : undefined,
+                      } as Message["metadata"])
+                    : undefined,
+              },
+            ]
+          : [...historyMessages, { role: "user", content: messageText }];
         conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
         conversation.pendingApprovals = [];
         conversation.updatedAt = Date.now();
         await conversationStore.update(conversation);
       } catch (error) {
+        if (abortController.signal.aborted || runCancelled) {
+          const fallbackSections = [...sections];
+          if (currentTools.length > 0) {
+            fallbackSections.push({ type: "tools", content: [...currentTools] });
+          }
+          if (currentText.length > 0) {
+            fallbackSections.push({ type: "text", content: currentText });
+          }
+          if (assistantResponse.length > 0 || toolTimeline.length > 0 || fallbackSections.length > 0) {
+            conversation.messages = [
+              ...historyMessages,
+              { role: "user", content: messageText },
+              {
+                role: "assistant",
+                content: assistantResponse,
+                metadata:
+                  toolTimeline.length > 0 || fallbackSections.length > 0
+                    ? ({
+                        toolActivity: [...toolTimeline],
+                        sections: fallbackSections.length > 0 ? fallbackSections : undefined,
+                      } as Message["metadata"])
+                    : undefined,
+              },
+            ];
+            conversation.updatedAt = Date.now();
+            await conversationStore.update(conversation);
+          }
+          await clearPendingApprovalsForConversation(conversationId);
+          return;
+        }
         try {
           response.write(
             formatSseEvent({
@@ -1563,6 +1700,10 @@ export const createRequestHandler = async (options?: {
           }
         }
       } finally {
+        const active = activeConversationRuns.get(conversationId);
+        if (active && active.abortController === abortController) {
+          activeConversationRuns.delete(conversationId);
+        }
         finishConversationStream(conversationId);
         await persistConversationPendingApprovals(conversationId);
         if (latestRunId) {
@@ -1653,6 +1794,10 @@ export const runOnce = async (
     }
     if (event.type === "run:completed") {
       process.stdout.write("\n");
+    }
+    if (event.type === "run:cancelled") {
+      process.stdout.write("\n");
+      process.stderr.write("Run cancelled.\n");
     }
   }
 };

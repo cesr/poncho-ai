@@ -473,7 +473,12 @@ Interactive mode uses native terminal I/O (readline + stdout), so it behaves lik
 - Tool events are printed inline during the turn (`tools> start`, `tools> done`, `tools> error`).
 - Approval-gated tools prompt for `y/n` confirmation when approval is required.
 - Input is line-based (`Enter` sends the prompt).
+- Press `Ctrl+C` during an active response to stop the current run and keep partial output.
 - Built-in commands: `/help`, `/clear`, `/tools`, `/exit`.
+
+In the web UI, click the send button while streaming (it changes to a stop icon) to stop
+the current run. Stopping is best-effort and preserves partial assistant output/tool activity
+already produced.
 
 ### Hot reload
 

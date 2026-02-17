@@ -355,6 +355,7 @@ export const runInteractiveInk = async ({
     ),
   );
   console.log(gray('Type "exit" to quit, "/help" for commands'));
+  console.log(gray("Press Ctrl+C during a run to stop streaming output."));
   console.log(
     gray("Conversation controls: /list /open <id> /new [title] /delete [id] /continue /reset [all]\n"),
   );
@@ -376,6 +377,17 @@ export const runInteractiveInk = async ({
   let turn = 1;
   let activeConversationId: string | null = null;
   let showToolPayloads = false;
+  let activeRunAbortController: AbortController | null = null;
+
+  rl.on("SIGINT", () => {
+    if (activeRunAbortController && !activeRunAbortController.signal.aborted) {
+      activeRunAbortController.abort();
+      process.stdout.write("\n");
+      console.log(gray("stop> cancelling current run..."));
+      return;
+    }
+    rl.close();
+  });
 
   // --- Main loop -------------------------------------------------------------
 
@@ -447,15 +459,18 @@ export const runInteractiveInk = async ({
     let currentText = "";
     let currentTools: string[] = [];
     let runFailed = false;
+    let runCancelled = false;
     let usage: TokenUsage | undefined;
     let latestRunId = "";
     const startedAt = Date.now();
+    activeRunAbortController = new AbortController();
 
     try {
       for await (const event of harness.run({
         task: trimmed,
         parameters: params,
         messages,
+        abortSignal: activeRunAbortController.signal,
       })) {
         if (event.type === "run:started") {
           latestRunId = event.runId;
@@ -555,6 +570,9 @@ export const runInteractiveInk = async ({
           clearThinking();
           runFailed = true;
           console.log(red(`error> ${event.error.message}`));
+        } else if (event.type === "run:cancelled") {
+          clearThinking();
+          runCancelled = true;
         } else if (event.type === "model:response") {
           usage = event.usage;
         } else if (event.type === "run:completed" && !sawChunk) {
@@ -569,18 +587,24 @@ export const runInteractiveInk = async ({
       }
     } catch (error) {
       clearThinking();
-      runFailed = true;
-      console.log(
-        red(
-          `error> ${error instanceof Error ? error.message : "Unknown error"}`,
-        ),
-      );
+      if (activeRunAbortController.signal.aborted) {
+        runCancelled = true;
+      } else {
+        runFailed = true;
+        console.log(
+          red(
+            `error> ${error instanceof Error ? error.message : "Unknown error"}`,
+          ),
+        );
+      }
+    } finally {
+      activeRunAbortController = null;
     }
 
     // End the streaming line if needed
     if (sawChunk && streamedText.length > 0) {
       process.stdout.write("\n");
-    } else if (!sawChunk && !runFailed && responseText.length === 0) {
+    } else if (!sawChunk && !runFailed && !runCancelled && responseText.length === 0) {
       clearThinking();
       console.log(green("assistant> (no response)"));
     }
@@ -621,17 +645,20 @@ export const runInteractiveInk = async ({
     }
 
     messages.push({ role: "user", content: trimmed });
-    messages.push({
-      role: "assistant",
-      content: responseText,
-      metadata:
-        toolTimeline.length > 0 || sections.length > 0
-          ? ({
-              toolActivity: toolTimeline,
-              sections: sections.length > 0 ? sections : undefined,
-            } as Message["metadata"])
-          : undefined,
-    });
+    const hasAssistantContent = responseText.length > 0 || toolTimeline.length > 0 || sections.length > 0;
+    if (hasAssistantContent) {
+      messages.push({
+        role: "assistant",
+        content: responseText,
+        metadata:
+          toolTimeline.length > 0 || sections.length > 0
+            ? ({
+                toolActivity: toolTimeline,
+                sections: sections.length > 0 ? sections : undefined,
+              } as Message["metadata"])
+            : undefined,
+      });
+    }
     turn = computeTurn(messages);
 
     const conversation = await conversationStore.get(activeConversationId);
