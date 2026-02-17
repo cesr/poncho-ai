@@ -1745,12 +1745,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                   );
                 }
               }
-              if (
-                isStreaming &&
-                isLastAssistant &&
-                !hasPendingApprovals &&
-                (!m._currentText || m._currentText.length === 0)
-              ) {
+              if (isStreaming && isLastAssistant && !hasPendingApprovals) {
                 const waitIndicator = document.createElement("div");
                 waitIndicator.appendChild(createThinkingIndicator(getThinkingStatusLabel(m)));
                 content.appendChild(waitIndicator);
@@ -2197,7 +2192,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             }
           }
         }
-        return "Thinking...";
+        return "";
       };
 
       const autoResizePrompt = () => {
