@@ -127,12 +127,14 @@ my-agent/
   "private": true,
   "type": "module",
   "dependencies": {
-    "@poncho-ai/harness": "^0.1.0"
+    "@poncho-ai/harness": "^0.6.0",
+    "@poncho-ai/sdk": "^0.6.0"
   }
 }
 ```
 
 - `@poncho-ai/harness` is the agent runtime - it handles the conversation loop, tool execution, and streaming.
+- `@poncho-ai/sdk` provides shared runtime contracts used by the scaffold.
 - Local skill scaffolds are generated under `skills/starter/` and `skills/fetch-page/`.
 
 ### 2. Configure your API key (if you skipped onboarding)

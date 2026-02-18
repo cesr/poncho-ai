@@ -56,6 +56,7 @@ export interface HarnessRunOutput {
 const now = (): number => Date.now();
 const MAX_CONTEXT_MESSAGES = 40;
 const FIRST_CHUNK_TIMEOUT_MS = 180_000; // 180s to receive the first chunk from the model
+const MAX_TRANSIENT_STEP_RETRIES = 2;
 const SKILL_TOOL_NAMES = [
   "activate_skill",
   "deactivate_skill",
@@ -80,6 +81,84 @@ const isAbortError = (error: unknown): boolean => {
   }
   const maybeMessage = "message" in error ? String(error.message ?? "") : "";
   return maybeMessage.toLowerCase().includes("abort");
+};
+
+const isNoOutputGeneratedError = (error: unknown): boolean => {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const maybeName = "name" in error ? String(error.name ?? "") : "";
+  if (maybeName === "AI_NoOutputGeneratedError") {
+    return true;
+  }
+  const maybeMessage = "message" in error ? String(error.message ?? "") : "";
+  return maybeMessage.toLowerCase().includes("no output generated");
+};
+
+const getErrorStatusCode = (error: unknown): number | undefined => {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+  const fromTopLevel = "statusCode" in error ? (error as { statusCode?: unknown }).statusCode : undefined;
+  if (typeof fromTopLevel === "number") {
+    return fromTopLevel;
+  }
+  if ("cause" in error && error.cause && typeof error.cause === "object") {
+    const fromCause = "statusCode" in error.cause
+      ? (error.cause as { statusCode?: unknown }).statusCode
+      : undefined;
+    if (typeof fromCause === "number") {
+      return fromCause;
+    }
+  }
+  return undefined;
+};
+
+const isRetryableModelError = (error: unknown): boolean => {
+  if (isNoOutputGeneratedError(error)) {
+    return true;
+  }
+  const statusCode = getErrorStatusCode(error);
+  if (typeof statusCode === "number") {
+    return statusCode === 429 || statusCode >= 500;
+  }
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const maybeMessage = "message" in error ? String(error.message ?? "").toLowerCase() : "";
+  return (
+    maybeMessage.includes("internal server error") ||
+    maybeMessage.includes("service unavailable") ||
+    maybeMessage.includes("gateway timeout") ||
+    maybeMessage.includes("rate limit")
+  );
+};
+
+const toRunError = (error: unknown): { code: string; message: string; details?: Record<string, unknown> } => {
+  const statusCode = getErrorStatusCode(error);
+  if (isNoOutputGeneratedError(error)) {
+    return {
+      code: "MODEL_NO_OUTPUT",
+      message:
+        "The provider returned no output for this step. This is often transient (for example, a provider 5xx). Try the run again.",
+    };
+  }
+  if (typeof statusCode === "number") {
+    return {
+      code: statusCode >= 500 ? "PROVIDER_UNAVAILABLE" : "PROVIDER_API_ERROR",
+      message:
+        statusCode >= 500
+          ? `The model provider returned a temporary server error (${statusCode}). Try again in a moment.`
+          : error instanceof Error
+            ? error.message
+            : String(error),
+      details: { statusCode },
+    };
+  }
+  return {
+    code: "STEP_ERROR",
+    message: error instanceof Error ? error.message : String(error),
+  };
 };
 
 const MODEL_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -693,6 +772,7 @@ ${boundedMainMemory.trim()}`
     let responseText = "";
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
+    let transientStepRetryCount = 0;
 
     for (let step = 1; step <= maxSteps; step += 1) {
       try {
@@ -738,76 +818,121 @@ ${boundedMainMemory.trim()}`
       }
 
         // Convert messages to ModelMessage format
-        const coreMessages: ModelMessage[] = trimMessageWindow(messages).map((msg) => {
+        const coreMessages: ModelMessage[] = trimMessageWindow(messages).flatMap(
+          (msg): ModelMessage[] => {
           if (msg.role === "tool") {
-            // Tool messages need special handling - parse and transform to Vercel AI SDK format
-            const toolResults: Array<{
-              type: "tool_result";
-              tool_use_id: string;
-              tool_name: string;
-              content: string;
-            }> = JSON.parse(msg.content);
-
-            return {
-              role: "tool" as const,
-              content: toolResults.map((tr) => {
-                // Parse JSON content for successful results, keep error messages as strings
-                if (tr.content.startsWith("Tool error:")) {
-                  return {
-                    type: "tool-result" as const,
-                    toolCallId: tr.tool_use_id,
-                    toolName: tr.tool_name,
-                    output: { type: "text" as const, value: tr.content },
-                  };
-                }
-                try {
-                  const parsed = JSON.parse(tr.content);
-                  return {
-                    type: "tool-result" as const,
-                    toolCallId: tr.tool_use_id,
-                    toolName: tr.tool_name,
-                    output: { type: "json" as const, value: parsed },
-                  };
-                } catch {
-                  return {
-                    type: "tool-result" as const,
-                    toolCallId: tr.tool_use_id,
-                    toolName: tr.tool_name,
-                    output: { type: "text" as const, value: tr.content },
-                  };
-                }
-              }),
-            };
-          }
-
-          if (msg.role === "assistant") {
-            // Check if this assistant message has tool calls
+            // Tool messages are provider-sensitive; skip malformed historical records
+            // instead of failing the entire run continuation.
             try {
-              const parsed = JSON.parse(msg.content);
-              if (parsed.tool_calls && Array.isArray(parsed.tool_calls)) {
-                // Assistant message with tool calls
-                return {
-                  role: "assistant" as const,
-                  content: [
-                    ...(parsed.text ? [{ type: "text" as const, text: parsed.text }] : []),
-                    ...parsed.tool_calls.map((tc: any) => ({
-                      type: "tool-call" as const,
-                      toolCallId: tc.id,
-                      toolName: tc.name,
-                      input: tc.input,
-                    })),
-                  ],
-                };
+              const parsed: unknown = JSON.parse(msg.content);
+              if (!Array.isArray(parsed)) {
+                return [];
               }
+              const toolResults = parsed
+                .filter((item: unknown): item is { tool_use_id: string; tool_name: string; content: string } => {
+                  if (typeof item !== "object" || item === null) {
+                    return false;
+                  }
+                  const row = item as Record<string, unknown>;
+                  return (
+                    typeof row.tool_use_id === "string" &&
+                    typeof row.tool_name === "string" &&
+                    typeof row.content === "string"
+                  );
+                });
+              if (toolResults.length === 0) {
+                return [];
+              }
+              return [{
+                role: "tool" as const,
+                content: toolResults.map((tr) => {
+                  // Parse JSON content for successful results, keep error messages as strings.
+                  if (tr.content.startsWith("Tool error:")) {
+                    return {
+                      type: "tool-result" as const,
+                      toolCallId: tr.tool_use_id,
+                      toolName: tr.tool_name,
+                      output: { type: "text" as const, value: tr.content },
+                    };
+                  }
+                  try {
+                    const resultValue = JSON.parse(tr.content);
+                    return {
+                      type: "tool-result" as const,
+                      toolCallId: tr.tool_use_id,
+                      toolName: tr.tool_name,
+                      output: { type: "json" as const, value: resultValue },
+                    };
+                  } catch {
+                    return {
+                      type: "tool-result" as const,
+                      toolCallId: tr.tool_use_id,
+                      toolName: tr.tool_name,
+                      output: { type: "text" as const, value: tr.content },
+                    };
+                  }
+                }),
+              }];
             } catch {
-              // Not JSON, treat as regular text
+              return [];
             }
           }
 
-          return {
-            role: msg.role as "user" | "assistant" | "system",
-            content: msg.content,
-          };
+          if (msg.role === "assistant") {
+            // Assistant messages may contain serialized tool calls from previous runs.
+            // Keep only valid tool-call records to avoid broken continuation payloads.
+            try {
+              const parsed: unknown = JSON.parse(msg.content);
+              if (typeof parsed === "object" && parsed !== null) {
+                const parsedRecord = parsed as { text?: unknown; tool_calls?: unknown };
+                if (!Array.isArray(parsedRecord.tool_calls)) {
+                  return [{ role: "assistant" as const, content: msg.content }];
+                }
+                const textPart = typeof parsedRecord.text === "string" ? parsedRecord.text : "";
+                const validToolCalls = parsedRecord.tool_calls
+                  .filter((tc: unknown): tc is { id: string; name: string; input: Record<string, unknown> } => {
+                    if (typeof tc !== "object" || tc === null) {
+                      return false;
+                    }
+                    const toolCall = tc as Record<string, unknown>;
+                    return (
+                      typeof toolCall.id === "string" &&
+                      typeof toolCall.name === "string" &&
+                      toolCall.input !== null &&
+                      typeof toolCall.input === "object"
+                    );
+                  })
+                  .map((tc: { id: string; name: string; input: Record<string, unknown> }) => ({
+                    type: "tool-call" as const,
+                    toolCallId: tc.id,
+                    toolName: tc.name,
+                    input: tc.input,
+                  }));
+                if (textPart.length === 0 && validToolCalls.length === 0) {
+                  return [];
+                }
+                return [{
+                  role: "assistant" as const,
+                  content: [
+                    ...(textPart.length > 0 ? [{ type: "text" as const, text: textPart }] : []),
+                    ...validToolCalls,
+                  ],
+                }];
+              }
+            } catch {
+              // Not JSON, treat as regular assistant text.
+            }
+            return [{ role: "assistant" as const, content: msg.content }];
+          }
+
+          if (msg.role === "user" || msg.role === "system") {
+            return [{
+              role: msg.role,
+              content: msg.content,
+            }];
+          }
+
+          return [];
         });
 
         const modelName = agent.frontmatter.model?.name ?? "claude-opus-4-5";
@@ -1164,6 +1289,7 @@ ${boundedMainMemory.trim()}`
           step,
           duration: now() - stepStart,
         });
+        transientStepRetryCount = 0;
       } catch (error) {
         if (isCancelled() || isAbortError(error)) {
           if (!cancellationEmitted) {
@@ -1171,13 +1297,22 @@ ${boundedMainMemory.trim()}`
           }
           return;
         }
+        if (isRetryableModelError(error) && transientStepRetryCount < MAX_TRANSIENT_STEP_RETRIES) {
+          transientStepRetryCount += 1;
+          const statusCode = getErrorStatusCode(error);
+          console.warn(
+            `[poncho][harness] Retrying step ${step} after transient model error (attempt ${transientStepRetryCount}/${MAX_TRANSIENT_STEP_RETRIES})${
+              typeof statusCode === "number" ? ` status=${statusCode}` : ""
+            }: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          step -= 1;
+          continue;
+        }
+        const runError = toRunError(error);
         yield pushEvent({
           type: "run:error",
           runId,
-          error: {
-            code: "STEP_ERROR",
-            message: error instanceof Error ? error.message : String(error),
-          },
+          error: runError,
         });
         console.error(`[poncho][harness] Step ${step} error:`, error);
         return;

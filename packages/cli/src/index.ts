@@ -253,9 +253,9 @@ const resolveLocalPackagesRoot = (): string | null => {
  * In dev mode we use `file:` paths so pnpm can resolve local packages;
  * in production we point at the npm registry.
  */
-const resolveCoreDeps = (
+const resolveCoreDeps = async (
   projectDir: string,
-): { harness: string; sdk: string } => {
+): Promise<{ harness: string; sdk: string }> => {
   const packagesRoot = resolveLocalPackagesRoot();
   if (packagesRoot) {
     const harnessAbs = resolve(packagesRoot, "harness");
@@ -265,11 +265,14 @@ const resolveCoreDeps = (
       sdk: `link:${relative(projectDir, sdkAbs)}`,
     };
   }
-  return { harness: "^0.1.0", sdk: "^0.1.0" };
+  return {
+    harness: await readCliDependencyVersion("@poncho-ai/harness", "^0.6.0"),
+    sdk: await readCliDependencyVersion("@poncho-ai/sdk", "^0.6.0"),
+  };
 };
 
-const PACKAGE_TEMPLATE = (name: string, projectDir: string): string => {
-  const deps = resolveCoreDeps(projectDir);
+const PACKAGE_TEMPLATE = async (name: string, projectDir: string): Promise<string> => {
+  const deps = await resolveCoreDeps(projectDir);
   return JSON.stringify(
     {
       name,
@@ -960,7 +963,7 @@ export const initProject = async (
       }),
     },
     { path: "poncho.config.js", content: renderConfigFile(onboarding.config) },
-    { path: "package.json", content: PACKAGE_TEMPLATE(projectName, projectDir) },
+    { path: "package.json", content: await PACKAGE_TEMPLATE(projectName, projectDir) },
     { path: "README.md", content: README_TEMPLATE(projectName) },
     { path: ".env.example", content: options?.envExampleOverride ?? onboarding.envExample ?? ENV_TEMPLATE },
     { path: ".gitignore", content: GITIGNORE_TEMPLATE },
