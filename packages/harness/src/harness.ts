@@ -55,7 +55,7 @@ export interface HarnessRunOutput {
 
 const now = (): number => Date.now();
 const MAX_CONTEXT_MESSAGES = 40;
-const FIRST_CHUNK_TIMEOUT_MS = 30_000; // 30s to receive the first chunk from the model
+const FIRST_CHUNK_TIMEOUT_MS = 180_000; // 180s to receive the first chunk from the model
 const SKILL_TOOL_NAMES = [
   "activate_skill",
   "deactivate_skill",
