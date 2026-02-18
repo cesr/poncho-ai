@@ -1,16 +1,16 @@
-# Poncho
+# poncho
 
-Poncho is a general agent harness built for the web.
+poncho is a general agent harness built for the web.
 
 Develop locally with `poncho dev`, then deploy the same agent to production as a stateless endpoint (Vercel/Lambda/Docker/etc) with your skills and scripts, tools and MCP servers, OpenTelemetry traces, and testing workflows.
 
 Deployed agents are accessible via web UI, REST API, or the TypeScript SDK.
 
-> **Beta**: Poncho is under active development. Expect breaking changes, and please open an issue if you hit anything confusing or sharp.
+> **Beta**: poncho is under active development. Expect breaking changes, and please open an issue if you hit anything confusing or sharp.
 
 [Issues](https://github.com/cesr/poncho-ai/issues) · [Discord](https://discord.gg/92QanAxYcf) · [Marketing Agent Demo](https://github.com/cesr/marketing-agent) · [Product Agent Demo](https://github.com/cesr/product-agent)
 
-![Poncho CLI and Web UI](assets/poncho.png)
+![poncho CLI and Web UI](assets/poncho.png)
 
 ```bash
 npm install -g @poncho-ai/cli
@@ -22,17 +22,17 @@ poncho dev
 
 ## Demos
 
-- [Marketing Agent](https://github.com/cesr/marketing-agent) - A specialized marketing AI agent built with Poncho, equipped with 25+ marketing skills for SaaS and software companies.
-- [Product Agent](https://github.com/cesr/product-agent) - A specialized product AI agent built with Poncho, equipped with 80+ product management, growth, strategy, and leadership skills.
+- [Marketing Agent](https://github.com/cesr/marketing-agent) - A specialized marketing AI agent built with poncho, equipped with 25+ marketing skills for SaaS and software companies.
+- [Product Agent](https://github.com/cesr/product-agent) - A specialized product AI agent built with poncho, equipped with 80+ product management, growth, strategy, and leadership skills.
 
-## What is Poncho?
+## What is poncho?
 
-Poncho is a framework for building custom AI agents that are version-controlled in git, developed locally, and deployed as isolated endpoints (serverless-friendly by default). You define behavior in `AGENT.md`, iterate by chatting with the agent on your machine, and expose the same agent safely through a UI/API in production. In production, agents can only act through the skills and tools you configure.
+poncho is a framework for building custom AI agents that are version-controlled in git, developed locally, and deployed as isolated endpoints (serverless-friendly by default). You define behavior in `AGENT.md`, iterate by chatting with the agent on your machine, and expose the same agent safely through a UI/API in production. In production, agents can only act through the skills and tools you configure.
 
-Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` folder) and implements the [Agent Skills open standard](https://agentskills.io/home). Skills are portable across 25+ platforms including GitHub Copilot, Cursor, and VS Code.
+poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` folder) and implements the [Agent Skills open standard](https://agentskills.io/home). Skills are portable across 25+ platforms including GitHub Copilot, Cursor, and VS Code.
 
 ### Getting Started
-- [Why Poncho?](#why-poncho)
+- [Why poncho?](#why-poncho)
 - [Quick Start](#quick-start)
 
 ### Core Concepts
@@ -60,7 +60,7 @@ Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` 
 - [Error Handling](#error-handling)
 - [Troubleshooting](#troubleshooting)
 
-## Why Poncho?
+## Why poncho?
 
 1. ### Local-first development
    Chat with your agent via `poncho dev` (web UI + API) or `poncho run --interactive` (terminal UI), with tool calls streaming as they run.
@@ -297,7 +297,7 @@ poncho skills list vercel-labs/agent-skills
 
 ### Available capabilities
 
-By default, Poncho includes built-in filesystem tools from the harness:
+By default, poncho includes built-in filesystem tools from the harness:
 
 | Tool | Description |
 |------|-------------|
@@ -309,7 +309,7 @@ Additional skills can be installed via `poncho skills add <repo-or-path>` (or th
 
 ### How skill discovery works
 
-At startup, Poncho recursively scans the `skills/` directory for `SKILL.md` files and loads their metadata.
+At startup, poncho recursively scans the `skills/` directory for `SKILL.md` files and loads their metadata.
 
 - Script tools are available through built-in wrappers (`list_skill_scripts`, `run_skill_script`) and are accessible by default for files under a sibling `scripts/` directory next to `AGENT.md`/`SKILL.md`.
 - MCP tools declared in `SKILL.md` are activated on demand via `activate_skill` and removed via `deactivate_skill`.
@@ -327,13 +327,13 @@ export default {
 
 ### Compatibility with `npx skills`
 
-Poncho skills use the same `SKILL.md` format as the [open agent skills ecosystem](https://github.com/vercel-labs/skills). Poncho is compatible with JavaScript/TypeScript-based skills; Python-native skills are not supported directly. You can install skills from any compatible repo with `poncho add`, or use `npx skills` and point `skillPaths` at the directory it installs to.
+poncho skills use the same `SKILL.md` format as the [open agent skills ecosystem](https://github.com/vercel-labs/skills). poncho is compatible with JavaScript/TypeScript-based skills; Python-native skills are not supported directly. You can install skills from any compatible repo with `poncho add`, or use `npx skills` and point `skillPaths` at the directory it installs to.
 
 ### Create a custom skill
 
 The Agent Skills spec only requires `SKILL.md`. To stay spec-aligned, use `scripts/` for executable helpers.
 
-Poncho executes JavaScript/TypeScript skill scripts through built-in tools: `list_skill_scripts` (discovery) and `run_skill_script` (execution). No Poncho-specific tool export is required.
+poncho executes JavaScript/TypeScript skill scripts through built-in tools: `list_skill_scripts` (discovery) and `run_skill_script` (execution). No poncho-specific tool export is required.
 
 Skill authoring rules:
 
@@ -533,7 +533,7 @@ tests:
       refusal: true
 
   - name: "Uses correct tool"
-    task: "Search the web for Poncho documentation"
+    task: "Search the web for poncho documentation"
     expect:
       toolCalled: "search"
 ```
@@ -634,7 +634,7 @@ Response: Server-Sent Events (`run:started`, `model:chunk`, `tool:*`, `run:compl
 
 ### Build a custom chat UI
 
-You can build your own chat frontend by calling Poncho's conversation endpoints directly.
+You can build your own chat frontend by calling poncho's conversation endpoints directly.
 
 Typical UI flow:
 
@@ -1203,7 +1203,7 @@ limits:
 ## Getting Help
 
 - [GitHub Issues](https://github.com/cesr/poncho-ai/issues) - Bug reports and feature requests
-- [Poncho Discord](https://discord.gg/92QanAxYcf) - Community support and discussion
+- [poncho Discord](https://discord.gg/92QanAxYcf) - Community support and discussion
 
 ## License
 
