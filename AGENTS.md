@@ -79,6 +79,15 @@ A markdown file is created in `.changeset/` — commit it with your PR.
 
 ### Publishing a release
 
+Default flow (CI via GitHub Actions):
+
+1. Add and commit a changeset in your PR (`pnpm changeset`).
+2. Merge the PR to `main`.
+3. The `Release` workflow opens/updates a release PR (`chore: release packages`) using `changeset version`.
+4. Merge the release PR to publish packages and create GitHub Releases.
+
+Manual fallback (when CI release is unavailable):
+
 ```bash
 pnpm changeset version   # Consumes changesets, bumps versions, generates CHANGELOGs
 pnpm release             # Builds all packages and publishes to npm
