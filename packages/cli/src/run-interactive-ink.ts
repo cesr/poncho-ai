@@ -18,6 +18,7 @@ import type { AgentEvent, Message, TokenUsage } from "@poncho-ai/sdk";
 import { inferConversationTitle } from "./web-ui.js";
 import { consumeFirstRunIntro } from "./init-feature-context.js";
 import { resolveHarnessEnvironment } from "./index.js";
+import { getMascotLines } from "./mascot.js";
 
 // Re-export types that index.ts references
 export type ApprovalRequest = {
@@ -354,19 +355,11 @@ export const runInteractiveInk = async ({
 
   // --- Print header ----------------------------------------------------------
 
-  const mascot = [
-    `${C.yellow}      ⣀⣀⣀⣀⣀⣀${C.reset}`,
-    `${C.yellow}    ⠠⠾⠛⠛⠛⠛⠛⠛⠷⠄${C.reset}`,
-    `${C.gray}     ⡇${C.cyan} ⠶  ⠶ ${C.gray}⢸${C.reset}`,
-    `${C.gray}     ⠣⡀${C.cyan}  ⠒⠚${C.gray}⢀⠜${C.reset}`,
-    `${C.yellow}      ⣿⣿⣿⣿⣿⣿${C.reset}`,
-    `${C.gray}       ⠃  ⠘${C.reset}`,
-  ];
   console.log("");
-  for (const line of mascot) {
+  for (const line of getMascotLines()) {
     console.log(line);
   }
-  console.log(`${C.bold}${C.cyan}      poncho${C.reset}`);
+  console.log(`${C.bold}${C.cyan}                             poncho${C.reset}`);
   console.log("");
   console.log(
     gray(
