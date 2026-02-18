@@ -1,6 +1,5 @@
 ---
-"@poncho-ai/harness": minor
-"@poncho-ai/cli": patch
+"@poncho-ai/harness": patch
 ---
 
-Upgrade AI SDK to v6 with Responses API support and streaming error handling
+Increase the first model response timeout from 30s to 180s to reduce premature model timeout errors on slower providers.
