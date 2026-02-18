@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.11.1
+
+### Patch Changes
+
+- [`8a3937e`](https://github.com/cesr/poncho-ai/commit/8a3937e95bfb7f269e8fe46dd41640eacb30af43) Thanks [@cesr](https://github.com/cesr)! - Increase the first model response timeout from 30s to 180s to reduce premature model timeout errors on slower providers.
+
 ## 0.11.0
 
 ### Minor Changes
