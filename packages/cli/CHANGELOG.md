@@ -1,5 +1,23 @@
 # @poncho-ai/cli
 
+## 0.10.0
+
+### Minor Changes
+
+- [`a1df23f`](https://github.com/cesr/poncho-ai/commit/a1df23f339d815c30948ebcd275209366a3d2a72) Thanks [@cesr](https://github.com/cesr)! - Add cooperative run cancellation: stop active runs via Ctrl+C (CLI), stop button (Web UI), or the /stop API endpoint. Partial output is preserved and empty assistant messages are skipped to prevent conversation corruption.
+
+### Patch Changes
+
+- [`a95290e`](https://github.com/cesr/poncho-ai/commit/a95290e1bde10aa1dd2f668a5bcdb5201891552e) Thanks [@cesr](https://github.com/cesr)! - Render the interactive CLI mascot with high-fidelity truecolor terminal art and move mascot data into a dedicated module for maintainability.
+
+- [`e61f479`](https://github.com/cesr/poncho-ai/commit/e61f479a839cf52db9b1a24d05d4eea637b0f4c5) Thanks [@cesr](https://github.com/cesr)! - Docs: highlight serverless-first positioning and clarify deployed agents run as stateless endpoints.
+
+- [`a95290e`](https://github.com/cesr/poncho-ai/commit/a95290e1bde10aa1dd2f668a5bcdb5201891552e) Thanks [@cesr](https://github.com/cesr)! - Truncate long conversation titles in CLI /list output
+
+- Updated dependencies [[`a1df23f`](https://github.com/cesr/poncho-ai/commit/a1df23f339d815c30948ebcd275209366a3d2a72)]:
+  - @poncho-ai/sdk@0.6.0
+  - @poncho-ai/harness@0.11.0
+
 ## 0.9.4
 
 ### Patch Changes

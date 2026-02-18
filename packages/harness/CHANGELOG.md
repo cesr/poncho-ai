@@ -1,5 +1,16 @@
 # @poncho-ai/harness
 
+## 0.11.0
+
+### Minor Changes
+
+- [`a1df23f`](https://github.com/cesr/poncho-ai/commit/a1df23f339d815c30948ebcd275209366a3d2a72) Thanks [@cesr](https://github.com/cesr)! - Add cooperative run cancellation: stop active runs via Ctrl+C (CLI), stop button (Web UI), or the /stop API endpoint. Partial output is preserved and empty assistant messages are skipped to prevent conversation corruption.
+
+### Patch Changes
+
+- Updated dependencies [[`a1df23f`](https://github.com/cesr/poncho-ai/commit/a1df23f339d815c30948ebcd275209366a3d2a72)]:
+  - @poncho-ai/sdk@0.6.0
+
 ## 0.10.3
 
 ### Patch Changes
