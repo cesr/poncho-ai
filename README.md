@@ -2,7 +2,7 @@
 
 Poncho is a general agent harness built for the web.
 
-Develop locally with `poncho dev`, then deploy the same agent to production with your skills and scripts, tools and MCP servers, OpenTelemetry traces, and testing workflows.
+Develop locally with `poncho dev`, then deploy the same agent to production as a stateless endpoint (Vercel/Lambda/Docker/etc) with your skills and scripts, tools and MCP servers, OpenTelemetry traces, and testing workflows.
 
 Deployed agents are accessible via web UI, REST API, or the TypeScript SDK.
 
@@ -27,7 +27,7 @@ poncho dev
 
 ## What is Poncho?
 
-Poncho is a framework for building custom AI agents that are version-controlled in git, developed locally, and deployed in isolated cloud environments. You define behavior in `AGENT.md`, iterate by chatting with the agent on your machine, and expose the same agent safely through a UI/API in production. In production, agents can only act through the skills and tools you configure.
+Poncho is a framework for building custom AI agents that are version-controlled in git, developed locally, and deployed as isolated endpoints (serverless-friendly by default). You define behavior in `AGENT.md`, iterate by chatting with the agent on your machine, and expose the same agent safely through a UI/API in production. In production, agents can only act through the skills and tools you configure.
 
 Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` folder) and implements the [Agent Skills open standard](https://agentskills.io/home). Skills are portable across 25+ platforms including GitHub Copilot, Cursor, and VS Code.
 
