@@ -1,5 +1,16 @@
 # @poncho-ai/cli
 
+## 0.10.2
+
+### Patch Changes
+
+- [`3dcb914`](https://github.com/cesr/poncho-ai/commit/3dcb914acd22c403ff5372d94a0fc2152a2574b3) Thanks [@cesr](https://github.com/cesr)! - Fix scaffolded dependency versions during `poncho init` so npm installs no longer request unavailable `^0.1.0` packages.
+
+  Improve runtime resilience by retrying transient provider/model failures, returning clearer provider error codes, and sanitizing malformed conversation history so interrupted/bad-state chats can continue.
+
+- Updated dependencies [[`3dcb914`](https://github.com/cesr/poncho-ai/commit/3dcb914acd22c403ff5372d94a0fc2152a2574b3)]:
+  - @poncho-ai/harness@0.11.2
+
 ## 0.10.1
 
 ### Patch Changes
