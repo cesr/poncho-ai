@@ -2,7 +2,14 @@
 
 Poncho is a general agent harness built for the web.
 
-Develop locally with `poncho dev`, then deploy the same agent to production (serverless functions, long-lived servers, containers, or edge) with your skills and scripts, tools and MCP servers, OpenTelemetry traces, and testing workflows.
+Develop locally with `poncho dev`, then deploy the same agent to production (serverless functions, long-lived servers, containers, or edge) with your own:
+
+- Skills and scripts
+- Tools and MCP servers
+- Guardrails and approval policies
+- Persistence and memory
+- Telemetry and observability
+- Testing workflows
 
 Deployed agents are accessible via web UI, REST API, or the TypeScript SDK.
 
