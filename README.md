@@ -2,7 +2,7 @@
 
 Poncho is a general agent harness built for the web.
 
-Develop locally with `poncho dev`, then deploy the same agent to production as a stateless endpoint (Vercel/Lambda/Docker/etc) with your skills and scripts, tools and MCP servers, OpenTelemetry traces, and testing workflows.
+Develop locally with `poncho dev`, then deploy the same agent to production (serverless functions, long-lived servers, containers, or edge) with your skills and scripts, tools and MCP servers, OpenTelemetry traces, and testing workflows.
 
 Deployed agents are accessible via web UI, REST API, or the TypeScript SDK.
 
@@ -27,7 +27,7 @@ poncho dev
 
 ## What is Poncho?
 
-Poncho is a framework for building custom AI agents that are version-controlled in git, developed locally, and deployed as isolated endpoints (serverless-friendly by default). You define behavior in `AGENT.md`, iterate by chatting with the agent on your machine, and expose the same agent safely through a UI/API in production. In production, agents can only act through the skills and tools you configure.
+Poncho is a framework for building custom AI agents that are version-controlled in git, developed locally, and deployed as standard web endpoints. It works equally well on serverless platforms (Vercel, Lambda), long-lived servers (Docker, Fly.io), or anything in between. You define behavior in `AGENT.md`, iterate by chatting with the agent on your machine, and expose the same agent safely through a UI/API in production. In production, agents can only act through the skills and tools you configure.
 
 Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` folder) and implements the [Agent Skills open standard](https://agentskills.io/home). Skills are portable across 25+ platforms including GitHub Copilot, Cursor, and VS Code.
 
@@ -576,6 +576,19 @@ fly deploy
 
 The build command scaffolds deployment files directly in your project root and ensures `@poncho-ai/cli` is available as a runtime dependency.
 
+### Choosing a deployment model
+
+Poncho is deployment-agnostic — the same agent code runs on any platform. Pick the model that fits your workload:
+
+| | Serverless (Vercel, Lambda) | Long-lived server (Docker, Fly.io) |
+|---|---|---|
+| **Best for** | Request-response agents, low/bursty traffic, zero-ops | Persistent/background agents, long tasks, steady traffic |
+| **Scales** | Automatically per-request | Manually or via platform autoscaler |
+| **Timeouts** | Platform-imposed (use `PONCHO_MAX_DURATION` for auto-continuation) | Controlled by you (`limits.timeout` in `AGENT.md`) |
+| **Trade-off** | Cold starts, execution time limits | You manage uptime and capacity |
+
+**Rule of thumb:** if every agent interaction is a short request-response cycle (Q&A, triage, lookup), serverless is the simplest path. If your agent performs multi-minute tasks, runs background jobs, or benefits from warm connections (databases, MCP servers), a long-lived server gives you more headroom and fewer moving parts.
+
 ### Set environment variables
 
 On your deployment platform, set:
@@ -583,14 +596,17 @@ On your deployment platform, set:
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...   # Required
 AGENT_API_KEY=your-secret      # Optional: protect your endpoint
-PONCHO_MAX_DURATION=55         # Optional: platform timeout in seconds (enables auto-continuation)
+PONCHO_MAX_DURATION=55         # Optional: serverless timeout in seconds (enables auto-continuation)
 ```
 
-### Long-running tasks (auto-continuation)
+### Auto-continuation (serverless timeout handling)
 
-On platforms with function timeouts (Vercel, Lambda, etc.), agent runs that need many steps may
-exceed the platform limit. Set `PONCHO_MAX_DURATION` to the platform timeout (in seconds) and
-poncho will automatically checkpoint between steps and resume:
+Serverless platforms impose function timeouts (e.g. 60s on Vercel Pro, 15 min on Lambda).
+When an agent run needs more time than the platform allows, Poncho can automatically
+checkpoint and resume across request cycles. This is a serverless-specific feature — on
+long-lived servers, agents simply run to completion without interruption.
+
+Set `PONCHO_MAX_DURATION` to your platform's timeout (in seconds) to enable it:
 
 1. The harness checks a soft deadline (80% of `PONCHO_MAX_DURATION`) between steps.
 2. When the deadline is reached, the run completes with `continuation: true` in the result.
@@ -605,6 +621,10 @@ For example, on Vercel Pro (60s max):
 ```bash
 PONCHO_MAX_DURATION=55   # Leave headroom for persistence
 ```
+
+On a long-lived server (Docker, Fly.io), you typically don't need `PONCHO_MAX_DURATION` at
+all — the agent runs uninterrupted within the limits you set in `AGENT.md` (`limits.timeout`,
+`limits.maxSteps`).
 
 The `run:completed` SSE event includes `continuation: true` when the agent exited early,
 so custom API clients can implement the same loop.
@@ -636,9 +656,10 @@ curl -N -X POST https://my-agent.vercel.app/api/conversations/<conversation-id>/
 
 Response: Server-Sent Events (`run:started`, `model:chunk`, `tool:*`, `run:completed`).
 
-When `PONCHO_MAX_DURATION` is set, the `run:completed` event may include `continuation: true`
-in `result`, indicating the agent stopped early and the client should send another message
-(e.g., `"Continue"`) on the same conversation to resume.
+On serverless deployments with `PONCHO_MAX_DURATION` set, the `run:completed` event may
+include `continuation: true` in `result`, indicating the agent stopped early due to a
+platform timeout and the client should send another message (e.g., `"Continue"`) on the
+same conversation to resume.
 
 ### Build a custom chat UI
 
