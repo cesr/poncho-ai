@@ -2365,11 +2365,16 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
               assistantMessage._currentText = "";
             }
           };
+          let _continuationMessage = messageText;
+          let _totalSteps = 0;
+          let _maxSteps = 0;
+          while (_continuationMessage) {
+          let _shouldContinue = false;
           const response = await fetch("/api/conversations/" + encodeURIComponent(conversationId) + "/messages", {
             method: "POST",
             credentials: "include",
             headers: { "Content-Type": "application/json", "x-csrf-token": state.csrfToken },
-            body: JSON.stringify({ message: messageText }),
+            body: JSON.stringify({ message: _continuationMessage }),
             signal: streamAbortController.signal,
           });
           if (!response.ok || !response.body) {
@@ -2546,11 +2551,17 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                   renderIfActiveConversation(true);
                 }
                 if (eventName === "run:completed") {
-                  finalizeAssistantMessage();
-                  if (!assistantMessage.content || assistantMessage.content.length === 0) {
-                    assistantMessage.content = String(payload.result?.response || "");
+                  _totalSteps += typeof payload.result?.steps === "number" ? payload.result.steps : 0;
+                  if (typeof payload.result?.maxSteps === "number") _maxSteps = payload.result.maxSteps;
+                  if (payload.result?.continuation === true && (_maxSteps <= 0 || _totalSteps < _maxSteps)) {
+                    _shouldContinue = true;
+                  } else {
+                    finalizeAssistantMessage();
+                    if (!assistantMessage.content || assistantMessage.content.length === 0) {
+                      assistantMessage.content = String(payload.result?.response || "");
+                    }
+                    renderIfActiveConversation(false);
                   }
-                  renderIfActiveConversation(false);
                 }
                 if (eventName === "run:cancelled") {
                   finalizeAssistantMessage();
@@ -2567,6 +2578,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                 console.error("SSE event handling error:", eventName, error);
               }
             });
+          }
+          if (!_shouldContinue) break;
+          _continuationMessage = "Continue";
           }
           // Update active state only if user is still on this conversation.
           if (state.activeConversationId === streamConversationId) {

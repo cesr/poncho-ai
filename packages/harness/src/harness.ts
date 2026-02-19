@@ -706,6 +706,10 @@ export class AgentHarness {
     const start = now();
     const maxSteps = agent.frontmatter.limits?.maxSteps ?? 50;
     const timeoutMs = (agent.frontmatter.limits?.timeout ?? 300) * 1000;
+    const platformMaxDurationSec = Number(process.env.PONCHO_MAX_DURATION) || 0;
+    const softDeadlineMs = platformMaxDurationSec > 0
+      ? platformMaxDurationSec * 800
+      : 0;
     const messages: Message[] = [...(input.messages ?? [])];
     const events: AgentEvent[] = [];
 
@@ -789,6 +793,19 @@ ${boundedMainMemory.trim()}`
               message: `Run exceeded timeout of ${Math.floor(timeoutMs / 1000)}s`,
             },
           });
+          return;
+        }
+        if (softDeadlineMs > 0 && now() - start > softDeadlineMs) {
+          const result: RunResult = {
+            status: "completed",
+            response: responseText,
+            steps: step - 1,
+            tokens: { input: totalInputTokens, output: totalOutputTokens, cached: 0 },
+            duration: now() - start,
+            continuation: true,
+            maxSteps,
+          };
+          yield pushEvent({ type: "run:completed", runId, result });
           return;
         }
 
@@ -1319,14 +1336,16 @@ ${boundedMainMemory.trim()}`
       }
     }
 
-    yield {
-      type: "run:error",
-      runId,
-      error: {
-        code: "MAX_STEPS_EXCEEDED",
-        message: `Run reached maximum of ${maxSteps} steps`,
-      },
+    const result: RunResult = {
+      status: "completed",
+      response: responseText,
+      steps: maxSteps,
+      tokens: { input: totalInputTokens, output: totalOutputTokens, cached: 0 },
+      duration: now() - start,
+      continuation: true,
+      maxSteps,
     };
+    yield pushEvent({ type: "run:completed", runId, result });
   }
 
   async runToCompletion(input: RunInput): Promise<HarnessRunOutput> {
