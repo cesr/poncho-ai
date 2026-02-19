@@ -38,6 +38,16 @@ Poncho is a framework for building custom AI agents that are version-controlled 
 
 Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` folder) and implements the [Agent Skills open standard](https://agentskills.io/home). Skills are portable across 25+ platforms including GitHub Copilot, Cursor, and VS Code.
 
+**Key features:**
+
+- **Git-native**: agent behavior, skills, and tests live in your repository (reviewable diffs + easy rollbacks).
+- **Single-file agent definition**: define runtime config + instructions in `AGENT.md` (YAML frontmatter + prompt content).
+- **Skills you can ship**: AgentSkills-style `skills/*/SKILL.md` plus TypeScript/JavaScript scripts under `scripts/`.
+- **MCP support**: connect remote tool servers and inject required environment variables through config.
+- **Conversation-first API + streaming**: stored conversations with SSE streaming responses and tool events.
+- **Pluggable storage + memory**: local files for dev or hosted stores (e.g. Upstash), with optional persistent memory + recall.
+- **Testing + observability**: `poncho test` workflows and OpenTelemetry traces/events.
+
 ### Getting Started
 - [Why Poncho?](#why-poncho)
 - [Quick Start](#quick-start)
@@ -80,16 +90,6 @@ Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` 
 
 4. ### Deployable + observable
    Build once and run on Vercel, Docker, Lambda, Fly.io, and more, with OpenTelemetry traces and `poncho test` workflows.
-
-**Key features:**
-
-- **Git-native**: agent behavior, skills, and tests live in your repository (reviewable diffs + easy rollbacks).
-- **Single-file agent definition**: define runtime config + instructions in `AGENT.md` (YAML frontmatter + prompt content).
-- **Skills you can ship**: AgentSkills-style `skills/*/SKILL.md` plus TypeScript/JavaScript scripts under `scripts/`.
-- **MCP support**: connect remote tool servers and inject required environment variables through config.
-- **Conversation-first API + streaming**: stored conversations with SSE streaming responses and tool events.
-- **Pluggable storage + memory**: local files for dev or hosted stores (e.g. Upstash), with optional persistent memory + recall.
-- **Testing + observability**: `poncho test` workflows and OpenTelemetry traces/events.
 
 ## Quick Start
 
