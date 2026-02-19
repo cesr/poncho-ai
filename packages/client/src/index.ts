@@ -146,50 +146,78 @@ export class AgentClient {
     message: string,
     parameters?: Record<string, unknown>,
   ): Promise<SyncRunResponse> {
-    const response = await this.fetchImpl(
-      `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}/messages`,
-      {
-        method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({ message, parameters }),
-      },
-    );
-    if (!response.ok) {
-      throw new Error(`Send message failed: HTTP ${response.status}`);
-    }
-    const events = await this.parseSse(response);
-    const runStarted = events.find(
-      (event): event is Extract<AgentEvent, { type: "run:started" }> =>
-        event.type === "run:started",
-    );
-    const completed = events.find(
-      (event): event is Extract<AgentEvent, { type: "run:completed" }> =>
-        event.type === "run:completed",
-    );
-    if (completed) {
-      return {
-        runId: runStarted?.runId ?? completed.runId,
-        status: completed.result.status,
-        result: completed.result,
-      };
-    }
-    const cancelled = events.find(
-      (event): event is Extract<AgentEvent, { type: "run:cancelled" }> =>
-        event.type === "run:cancelled",
-    );
-    if (cancelled) {
-      return {
-        runId: runStarted?.runId ?? cancelled.runId,
-        status: "cancelled",
-        result: {
-          status: "cancelled",
-          steps: 0,
-          tokens: { input: 0, output: 0, cached: 0 },
-          duration: 0,
+    let currentMessage = message;
+    let totalSteps = 0;
+    let stepBudget = 0;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalDuration = 0;
+    let latestRunId = "";
+
+    while (true) {
+      const response = await this.fetchImpl(
+        `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+        {
+          method: "POST",
+          headers: this.headers(),
+          body: JSON.stringify({ message: currentMessage, parameters }),
         },
-      };
+      );
+      if (!response.ok) {
+        throw new Error(`Send message failed: HTTP ${response.status}`);
+      }
+      const events = await this.parseSse(response);
+      const runStarted = events.find(
+        (event): event is Extract<AgentEvent, { type: "run:started" }> =>
+          event.type === "run:started",
+      );
+      if (runStarted) {
+        latestRunId = runStarted.runId;
+      }
+      const completed = events.find(
+        (event): event is Extract<AgentEvent, { type: "run:completed" }> =>
+          event.type === "run:completed",
+      );
+      if (completed) {
+        totalSteps += completed.result.steps;
+        totalInputTokens += completed.result.tokens.input;
+        totalOutputTokens += completed.result.tokens.output;
+        totalDuration += completed.result.duration;
+        if (typeof completed.result.maxSteps === "number") stepBudget = completed.result.maxSteps;
+
+        if (completed.result.continuation && (stepBudget <= 0 || totalSteps < stepBudget)) {
+          currentMessage = "Continue";
+          continue;
+        }
+        return {
+          runId: latestRunId || completed.runId,
+          status: completed.result.status,
+          result: {
+            ...completed.result,
+            steps: totalSteps,
+            tokens: { input: totalInputTokens, output: totalOutputTokens, cached: 0 },
+            duration: totalDuration,
+          },
+        };
+      }
+      const cancelled = events.find(
+        (event): event is Extract<AgentEvent, { type: "run:cancelled" }> =>
+          event.type === "run:cancelled",
+      );
+      if (cancelled) {
+        return {
+          runId: latestRunId || cancelled.runId,
+          status: "cancelled",
+          result: {
+            status: "cancelled",
+            steps: totalSteps,
+            tokens: { input: totalInputTokens, output: totalOutputTokens, cached: 0 },
+            duration: totalDuration,
+          },
+        };
+      }
+      throw new Error("Send message failed: missing run:completed or run:cancelled event");
     }
-    throw new Error("Send message failed: missing run:completed or run:cancelled event");
   }
 
   async run(input: RunInput): Promise<SyncRunResponse> {
@@ -237,47 +265,65 @@ export class AgentClient {
       );
     }
     const conversation = await this.createConversation({ title: input.task });
-    const response = await this.fetchImpl(
-      `${this.baseUrl}/api/conversations/${encodeURIComponent(conversation.conversationId)}/messages`,
-      {
-      method: "POST",
-      headers: this.headers(),
-      body: JSON.stringify({ message: input.task, parameters: input.parameters }),
-    });
-
-    if (!response.ok || !response.body) {
-      throw new Error(`Streaming request failed: HTTP ${response.status}`);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
+    let currentMessage = input.task;
+    let totalSteps = 0;
+    let stepBudget = 0;
 
     while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
+      const response = await this.fetchImpl(
+        `${this.baseUrl}/api/conversations/${encodeURIComponent(conversation.conversationId)}/messages`,
+        {
+          method: "POST",
+          headers: this.headers(),
+          body: JSON.stringify({ message: currentMessage, parameters: input.parameters }),
+        },
+      );
+
+      if (!response.ok || !response.body) {
+        throw new Error(`Streaming request failed: HTTP ${response.status}`);
       }
 
-      buffer += decoder.decode(value, { stream: true });
-      const frames = buffer.split("\n\n");
-      buffer = frames.pop() ?? "";
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let shouldContinue = false;
 
-      for (const frame of frames) {
-        const lines = frame
-          .split("\n")
-          .map((line) => line.trim())
-          .filter(Boolean);
-
-        const eventType = lines.find((line) => line.startsWith("event:"));
-        const dataLine = lines.find((line) => line.startsWith("data:"));
-        if (!eventType || !dataLine) {
-          continue;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
         }
 
-        const payload = JSON.parse(dataLine.slice("data:".length).trim()) as AgentEvent;
-        yield payload;
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+
+        for (const frame of frames) {
+          const lines = frame
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean);
+
+          const eventType = lines.find((line) => line.startsWith("event:"));
+          const dataLine = lines.find((line) => line.startsWith("data:"));
+          if (!eventType || !dataLine) {
+            continue;
+          }
+
+          const payload = JSON.parse(dataLine.slice("data:".length).trim()) as AgentEvent;
+          if (payload.type === "run:completed") {
+            totalSteps += payload.result.steps;
+            if (typeof payload.result.maxSteps === "number") stepBudget = payload.result.maxSteps;
+            if (payload.result.continuation && (stepBudget <= 0 || totalSteps < stepBudget)) {
+              shouldContinue = true;
+            }
+          }
+          yield payload;
+        }
       }
+
+      if (!shouldContinue) break;
+      currentMessage = "Continue";
     }
   }
 }

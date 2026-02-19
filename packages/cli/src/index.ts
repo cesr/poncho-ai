@@ -1780,6 +1780,9 @@ export const createRequestHandler = async (options?: {
             toolTimeline.push(toolText);
             currentTools.push(toolText);
           }
+          if (event.type === "step:completed") {
+            await persistDraftAssistantTurn();
+          }
           if (event.type === "tool:approval:required") {
             const toolText = `- approval required \`${event.tool}\``;
             toolTimeline.push(toolText);

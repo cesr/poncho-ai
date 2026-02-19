@@ -80,6 +80,8 @@ export interface RunResult {
   steps: number;
   tokens: TokenUsage;
   duration: number;
+  continuation?: boolean;
+  maxSteps?: number;
 }
 
 export interface AgentFailure {
