@@ -1336,16 +1336,27 @@ ${boundedMainMemory.trim()}`
       }
     }
 
-    const result: RunResult = {
-      status: "completed",
-      response: responseText,
-      steps: maxSteps,
-      tokens: { input: totalInputTokens, output: totalOutputTokens, cached: 0 },
-      duration: now() - start,
-      continuation: true,
-      maxSteps,
-    };
-    yield pushEvent({ type: "run:completed", runId, result });
+    if (softDeadlineMs > 0) {
+      const result: RunResult = {
+        status: "completed",
+        response: responseText,
+        steps: maxSteps,
+        tokens: { input: totalInputTokens, output: totalOutputTokens, cached: 0 },
+        duration: now() - start,
+        continuation: true,
+        maxSteps,
+      };
+      yield pushEvent({ type: "run:completed", runId, result });
+    } else {
+      yield pushEvent({
+        type: "run:error",
+        runId,
+        error: {
+          code: "MAX_STEPS_EXCEEDED",
+          message: `Run reached maximum of ${maxSteps} steps`,
+        },
+      });
+    }
   }
 
   async runToCompletion(input: RunInput): Promise<HarnessRunOutput> {
