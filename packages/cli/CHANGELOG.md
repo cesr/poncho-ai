@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.11.1
+
+### Patch Changes
+
+- [`0d943e5`](https://github.com/cesr/poncho-ai/commit/0d943e5b709acfe7c390bc84f1f0d10299fcc56e) Thanks [@cesr](https://github.com/cesr)! - Support paste-to-attach: pasting images or files from the clipboard into the web UI input box now adds them as attachments.
+
 ## 0.11.0
 
 ### Minor Changes
