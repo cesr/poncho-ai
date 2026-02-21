@@ -23,6 +23,15 @@ export interface StorageConfig {
   };
 }
 
+export interface UploadsConfig {
+  provider?: "local" | "vercel-blob" | "s3";
+  /** Vercel Blob access mode. Must match the store's configuration. Defaults to "public". */
+  access?: "public" | "private";
+  bucket?: string;
+  region?: string;
+  endpoint?: string;
+}
+
 export type BuiltInToolToggles = {
   list_directory?: boolean;
   read_file?: boolean;
@@ -67,6 +76,7 @@ export interface PonchoConfig extends McpConfig {
   /** Extra directories (relative to project root) to scan for skills.
    *  `skills/` and `.poncho/skills/` are always scanned. */
   skillPaths?: string[];
+  uploads?: UploadsConfig;
   build?: {
     vercel?: Record<string, unknown>;
     docker?: Record<string, unknown>;

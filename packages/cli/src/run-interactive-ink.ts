@@ -7,6 +7,8 @@
  * produces reliable output with native scroll and text selection.
  */
 import * as readline from "node:readline";
+import { readFile } from "node:fs/promises";
+import { resolve, basename } from "node:path";
 import { stdout } from "node:process";
 import {
   parseAgentFile,
@@ -14,7 +16,7 @@ import {
   type AgentHarness,
   type ConversationStore,
 } from "@poncho-ai/harness";
-import type { AgentEvent, Message, TokenUsage } from "@poncho-ai/sdk";
+import type { AgentEvent, FileInput, Message, TokenUsage } from "@poncho-ai/sdk";
 import { inferConversationTitle } from "./web-ui.js";
 import { consumeFirstRunIntro } from "./init-feature-context.js";
 import { resolveHarnessEnvironment } from "./index.js";
@@ -136,6 +138,40 @@ const streamTextAsTokens = async (text: string): Promise<void> => {
 };
 
 // ---------------------------------------------------------------------------
+// File helpers
+// ---------------------------------------------------------------------------
+
+const EXT_MIME: Record<string, string> = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+  gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
+  pdf: "application/pdf", mp4: "video/mp4", webm: "video/webm",
+  mp3: "audio/mpeg", wav: "audio/wav", txt: "text/plain",
+  json: "application/json", csv: "text/csv", html: "text/html",
+};
+
+const extToMime = (ext: string): string => EXT_MIME[ext] ?? "application/octet-stream";
+
+const readPendingFiles = async (
+  files: Array<{ path: string; resolved: string }>,
+): Promise<FileInput[]> => {
+  const results: FileInput[] = [];
+  for (const f of files) {
+    try {
+      const buf = await readFile(f.resolved);
+      const ext = f.resolved.split(".").pop()?.toLowerCase() ?? "";
+      results.push({
+        data: buf.toString("base64"),
+        mediaType: extToMime(ext),
+        filename: basename(f.path),
+      });
+    } catch {
+      console.log(`${C.yellow}warn: could not read ${f.path}, skipping${C.reset}`);
+    }
+  }
+  return results;
+};
+
+// ---------------------------------------------------------------------------
 // Slash commands
 // ---------------------------------------------------------------------------
 
@@ -145,6 +181,7 @@ type InteractiveState = {
   messages: Message[];
   turn: number;
   activeConversationId: string | null;
+  pendingFiles: Array<{ path: string; resolved: string }>;
 };
 
 const computeTurn = (messages: Message[]): number =>
@@ -168,7 +205,7 @@ const handleSlash = async (
   if (norm === "/help") {
     console.log(
       gray(
-        "commands> /help /clear /exit /tools /list /open <id> /new [title] /delete [id] /continue /reset [all]",
+        "commands> /help /clear /exit /tools /attach <path> /files /list /open <id> /new [title] /delete [id] /continue /reset [all]",
       ),
     );
     return { shouldExit: false };
@@ -296,6 +333,33 @@ const handleSlash = async (
     console.log(gray(`conversations> reset ${conversation.conversationId}`));
     return { shouldExit: false };
   }
+  if (norm === "/attach") {
+    const filePath = args.join(" ").trim();
+    if (!filePath) {
+      console.log(yellow("usage> /attach <path>"));
+      return { shouldExit: false };
+    }
+    const resolvedPath = resolve(process.cwd(), filePath);
+    try {
+      await readFile(resolvedPath);
+      state.pendingFiles.push({ path: filePath, resolved: resolvedPath });
+      console.log(gray(`attached> ${filePath} [${state.pendingFiles.length} file(s) queued]`));
+    } catch {
+      console.log(yellow(`attach> file not found: ${filePath}`));
+    }
+    return { shouldExit: false };
+  }
+  if (norm === "/files") {
+    if (state.pendingFiles.length === 0) {
+      console.log(gray("files> none attached"));
+    } else {
+      console.log(gray("files>"));
+      for (const f of state.pendingFiles) {
+        console.log(gray(`  ${f.path}`));
+      }
+    }
+    return { shouldExit: false };
+  }
   console.log(yellow(`Unknown command: ${command}`));
   return { shouldExit: false };
 };
@@ -369,7 +433,10 @@ export const runInteractiveInk = async ({
   console.log(gray('  Type "exit" to quit, "/help" for commands'));
   console.log(gray("  Press Ctrl+C during a run to stop streaming output."));
   console.log(
-    gray("  Conversation controls: /list /open <id> /new [title] /delete [id] /continue /reset [all]\n"),
+    gray("  Conversation: /list /open <id> /new [title] /delete [id] /continue /reset [all]"),
+  );
+  console.log(
+    gray("  Files: /attach <path> /files\n"),
   );
   const intro = await consumeFirstRunIntro(workingDir, {
     agentName: metadata.agentName,
@@ -390,6 +457,7 @@ export const runInteractiveInk = async ({
   let activeConversationId: string | null = null;
   let showToolPayloads = false;
   let activeRunAbortController: AbortController | null = null;
+  let pendingFiles: Array<{ path: string; resolved: string }> = [];
 
   rl.on("SIGINT", () => {
     if (activeRunAbortController && !activeRunAbortController.signal.aborted) {
@@ -403,10 +471,12 @@ export const runInteractiveInk = async ({
 
   // --- Main loop -------------------------------------------------------------
 
-  const prompt = `${C.cyan}you> ${C.reset}`;
-
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    const filesTag = pendingFiles.length > 0
+      ? `${C.dim}[${pendingFiles.length} file(s)] ${C.reset}`
+      : "";
+    const prompt = `${filesTag}${C.cyan}you> ${C.reset}`;
     let task: string;
     try {
       task = await ask(rl, prompt);
@@ -431,6 +501,7 @@ export const runInteractiveInk = async ({
         messages,
         turn,
         activeConversationId,
+        pendingFiles,
       };
       const slashResult = await handleSlash(
         trimmed,
@@ -443,6 +514,7 @@ export const runInteractiveInk = async ({
       messages = interactiveState.messages;
       turn = interactiveState.turn;
       activeConversationId = interactiveState.activeConversationId;
+      pendingFiles = interactiveState.pendingFiles;
       continue;
     }
 
@@ -477,11 +549,18 @@ export const runInteractiveInk = async ({
     const startedAt = Date.now();
     activeRunAbortController = new AbortController();
 
+    const turnFiles = pendingFiles.length > 0 ? await readPendingFiles(pendingFiles) : [];
+    if (pendingFiles.length > 0) {
+      console.log(gray(`  sending ${turnFiles.length} file(s)`));
+      pendingFiles = [];
+    }
+
     try {
       for await (const event of harness.run({
         task: trimmed,
         parameters: params,
         messages,
+        files: turnFiles.length > 0 ? turnFiles : undefined,
         abortSignal: activeRunAbortController.signal,
       })) {
         if (event.type === "run:started") {

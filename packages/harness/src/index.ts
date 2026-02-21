@@ -11,6 +11,7 @@ export * from "./schema-converter.js";
 export * from "./skill-context.js";
 export * from "./skill-tools.js";
 export * from "./state.js";
+export * from "./upload-store.js";
 export * from "./telemetry.js";
 export * from "./tool-dispatcher.js";
 export { defineTool } from "@poncho-ai/sdk";
