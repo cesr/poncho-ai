@@ -29,6 +29,13 @@ import {
 } from "@poncho-ai/harness";
 import type { AgentEvent, FileInput, Message, RunInput } from "@poncho-ai/sdk";
 import { getTextContent } from "@poncho-ai/sdk";
+import {
+  AgentBridge,
+  SlackAdapter,
+  type AgentRunner,
+  type MessagingAdapter,
+  type RouteRegistrar,
+} from "@poncho-ai/messaging";
 import Busboy from "busboy";
 import { Command } from "commander";
 import dotenv from "dotenv";
@@ -566,6 +573,24 @@ cron:
 - \`poncho build vercel\`: generates \`vercel.json\` cron entries.
 - Docker/Fly.io: scheduler runs automatically.
 - Trigger manually: \`curl http://localhost:3000/api/cron/daily-report\`
+
+## Messaging (Slack)
+
+Connect your agent to Slack so it responds to @mentions:
+
+1. Create a Slack App at [api.slack.com/apps](https://api.slack.com/apps)
+2. Add Bot Token Scopes: \`app_mentions:read\`, \`chat:write\`, \`reactions:write\`
+3. Enable Event Subscriptions, set Request URL to \`https://<your-url>/api/messaging/slack\`, subscribe to \`app_mention\`
+4. Install to workspace, copy Bot Token and Signing Secret
+5. Set env vars:
+   \`\`\`
+   SLACK_BOT_TOKEN=xoxb-...
+   SLACK_SIGNING_SECRET=...
+   \`\`\`
+6. Add to \`poncho.config.js\`:
+   \`\`\`javascript
+   messaging: [{ platform: 'slack' }]
+   \`\`\`
 
 ## Deployment
 
@@ -1371,6 +1396,100 @@ export const createRequestHandler = async (options?: {
     workingDir,
     agentId: identity.id,
   });
+  // ---------------------------------------------------------------------------
+  // Messaging adapters (Slack, etc.) — routes bypass Poncho auth; each
+  // adapter handles its own request verification (e.g. Slack signing secret).
+  // ---------------------------------------------------------------------------
+  const messagingRoutes = new Map<string, Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>>();
+  const messagingRouteRegistrar: RouteRegistrar = (method, path, routeHandler) => {
+    let byMethod = messagingRoutes.get(path);
+    if (!byMethod) {
+      byMethod = new Map();
+      messagingRoutes.set(path, byMethod);
+    }
+    byMethod.set(method, routeHandler);
+  };
+
+  const messagingRunner: AgentRunner = {
+    async getOrCreateConversation(conversationId, meta) {
+      const existing = await conversationStore.get(conversationId);
+      if (existing) {
+        return { messages: existing.messages };
+      }
+      const now = Date.now();
+      const conversation = {
+        conversationId,
+        title: meta.title ?? `${meta.platform} thread`,
+        messages: [] as Message[],
+        ownerId: meta.ownerId,
+        tenantId: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await conversationStore.update(conversation);
+      return { messages: [] };
+    },
+    async run(conversationId, input) {
+      const output = await harness.runToCompletion({
+        task: input.task,
+        messages: input.messages,
+      });
+      const response = output.result.response ?? "";
+
+      const conversation = await conversationStore.get(conversationId);
+      if (conversation) {
+        conversation.messages = [
+          ...input.messages,
+          { role: "user" as const, content: input.task },
+          { role: "assistant" as const, content: response },
+        ];
+        await conversationStore.update(conversation);
+      }
+
+      return { response };
+    },
+  };
+
+  const messagingBridges: AgentBridge[] = [];
+  if (config?.messaging && config.messaging.length > 0) {
+    let waitUntilHook: ((promise: Promise<unknown>) => void) | undefined;
+    if (process.env.VERCEL) {
+      try {
+        // Dynamic require via variable so TypeScript doesn't attempt static
+        // resolution of @vercel/functions (only present in Vercel deployments).
+        const modName = "@vercel/functions";
+        const mod = await import(/* webpackIgnore: true */ modName);
+        waitUntilHook = mod.waitUntil;
+      } catch {
+        // @vercel/functions not installed -- fall through to no-op.
+      }
+    }
+
+    for (const channelConfig of config.messaging) {
+      if (channelConfig.platform === "slack") {
+        const adapter = new SlackAdapter({
+          botTokenEnv: channelConfig.botTokenEnv,
+          signingSecretEnv: channelConfig.signingSecretEnv,
+        });
+        const bridge = new AgentBridge({
+          adapter,
+          runner: messagingRunner,
+          waitUntil: waitUntilHook,
+        });
+        adapter.registerRoutes(messagingRouteRegistrar);
+        try {
+          await bridge.start();
+          messagingBridges.push(bridge);
+          console.log(`  Slack messaging enabled at /api/messaging/slack`);
+        } catch (err) {
+          console.warn(
+            `  Slack messaging disabled: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
+  }
+
   const sessionStore = new SessionStore();
   const loginRateLimiter = new LoginRateLimiter();
 
@@ -1440,6 +1559,17 @@ export const createRequestHandler = async (options?: {
     if (pathname === "/health" && request.method === "GET") {
       writeJson(response, 200, { status: "ok" });
       return;
+    }
+
+    // Messaging adapter routes bypass Poncho auth (they verify requests
+    // using platform-specific mechanisms, e.g. Slack signing secret).
+    const messagingByMethod = messagingRoutes.get(pathname ?? "");
+    if (messagingByMethod) {
+      const routeHandler = messagingByMethod.get(request.method ?? "");
+      if (routeHandler) {
+        await routeHandler(request, response);
+        return;
+      }
     }
 
     const cookies = parseCookies(request);

@@ -25,6 +25,7 @@
   "dependencies": {
     "@inquirer/prompts": "^8.2.0",
     "@poncho-ai/harness": "workspace:*",
+    "@poncho-ai/messaging": "workspace:*",
     "@poncho-ai/sdk": "workspace:*",
     "busboy": "^1.6.0",
     "commander": "^12.0.0",

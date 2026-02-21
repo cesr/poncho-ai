@@ -7,7 +7,8 @@ export type FeatureDomain =
   | "memory"
   | "auth"
   | "telemetry"
-  | "mcp";
+  | "mcp"
+  | "messaging";
 
 export type OnboardingFieldTarget = "agent" | "config" | "env";
 
@@ -265,6 +266,48 @@ export const ONBOARDING_FIELDS = [
     defaultValue: "",
     dependsOn: { fieldId: "telemetry.enabled", equals: true },
   },
+  {
+    id: "messaging.platform",
+    domain: "messaging",
+    target: "agent",
+    path: "messaging.platform",
+    kind: "select",
+    scopes: ["full"],
+    label: "Messaging platform",
+    prompt: "Connect to a messaging platform? (optional)",
+    defaultValue: "none",
+    options: [
+      { value: "none", label: "None" },
+      { value: "slack", label: "Slack" },
+    ],
+  },
+  {
+    id: "env.SLACK_BOT_TOKEN",
+    domain: "messaging",
+    target: "env",
+    path: "SLACK_BOT_TOKEN",
+    kind: "string",
+    scopes: ["full"],
+    label: "Slack Bot Token",
+    prompt: "Slack Bot Token (from OAuth & Permissions)",
+    defaultValue: "",
+    placeholder: "xoxb-...",
+    secret: true,
+    dependsOn: { fieldId: "messaging.platform", equals: "slack" },
+  },
+  {
+    id: "env.SLACK_SIGNING_SECRET",
+    domain: "messaging",
+    target: "env",
+    path: "SLACK_SIGNING_SECRET",
+    kind: "string",
+    scopes: ["full"],
+    label: "Slack Signing Secret",
+    prompt: "Slack Signing Secret (from Basic Information)",
+    defaultValue: "",
+    secret: true,
+    dependsOn: { fieldId: "messaging.platform", equals: "slack" },
+  },
 ] as const satisfies readonly OnboardingField[];
 
 export const FEATURE_DOMAIN_ORDER: readonly FeatureDomain[] = [
@@ -275,6 +318,7 @@ export const FEATURE_DOMAIN_ORDER: readonly FeatureDomain[] = [
   "auth",
   "telemetry",
   "mcp",
+  "messaging",
 ] as const;
 
 export const fieldsForScope = (scope: OnboardingScope): OnboardingField[] =>

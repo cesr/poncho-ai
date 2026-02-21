@@ -1,0 +1,42 @@
+{
+  "name": "@poncho-ai/messaging",
+  "version": "0.1.0",
+  "description": "Messaging platform adapters for Poncho agents (Slack, Telegram, etc.)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cesr/poncho-ai.git",
+    "directory": "packages/messaging"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "dev": "tsup src/index.ts --format esm --dts --watch",
+    "test": "vitest",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "@poncho-ai/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "vitest": "^1.4.0"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "messaging",
+    "slack"
+  ],
+  "license": "MIT"
+}
