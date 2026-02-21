@@ -339,12 +339,20 @@ export const buildConfigFromOnboardingAnswers = (
   };
   maybeSet(telemetry, "otlp", answers["telemetry.otlp"]);
 
-  return {
+  const messagingPlatform = String(answers["messaging.platform"] ?? "none");
+
+  const config: PonchoConfig = {
     mcp: [],
     auth,
     storage,
     telemetry,
   };
+
+  if (messagingPlatform !== "none") {
+    config.messaging = [{ platform: messagingPlatform as "slack" }];
+  }
+
+  return config;
 };
 
 export const isDefaultOnboardingConfig = (
@@ -354,7 +362,7 @@ export const isDefaultOnboardingConfig = (
     return true;
   }
   const topLevelKeys = Object.keys(config);
-  const allowedTopLevel = new Set(["mcp", "auth", "storage", "telemetry"]);
+  const allowedTopLevel = new Set(["mcp", "auth", "storage", "telemetry", "messaging"]);
   if (topLevelKeys.some((key) => !allowedTopLevel.has(key))) {
     return false;
   }

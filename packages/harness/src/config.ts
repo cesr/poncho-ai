@@ -38,8 +38,15 @@ export type BuiltInToolToggles = {
   write_file?: boolean;
 };
 
+export interface MessagingChannelConfig {
+  platform: "slack";
+  botTokenEnv?: string;
+  signingSecretEnv?: string;
+}
+
 export interface PonchoConfig extends McpConfig {
   harness?: string;
+  messaging?: MessagingChannelConfig[];
   tools?: {
     defaults?: BuiltInToolToggles;
     byEnvironment?: {

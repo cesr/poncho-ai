@@ -29,11 +29,15 @@ const summarizeConfig = (config: PonchoConfig | undefined): string[] => {
   const memoryEnabled = config?.storage?.memory?.enabled ?? config?.memory?.enabled ?? false;
   const authRequired = config?.auth?.required ?? false;
   const telemetryEnabled = config?.telemetry?.enabled ?? true;
+  const messagingPlatforms = (config?.messaging ?? []).map((m) => m.platform);
   return [
     `storage: ${provider}`,
     `memory tools: ${memoryEnabled ? "enabled" : "disabled"}`,
     `auth: ${authRequired ? "required" : "not required"}`,
     `telemetry: ${telemetryEnabled ? "enabled" : "disabled"}`,
+    ...(messagingPlatforms.length > 0
+      ? [`messaging: ${messagingPlatforms.join(", ")}`]
+      : []),
   ];
 };
 
@@ -127,6 +131,7 @@ export const consumeFirstRunIntro = async (
     "- **Turn on telemetry**: Track usage with OpenTelemetry/OTLP",
     "- **Add MCP servers**: Connect external tool servers",
     "- **Schedule cron jobs**: Set up recurring tasks in AGENT.md frontmatter",
+    "- **Connect to Slack**: Set up messaging so users can @mention this agent in Slack",
     "",
     "Just let me know what you'd like to work on!\n",
   ].join("\n");

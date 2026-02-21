@@ -714,6 +714,78 @@ If your `vercel.json` crons fall out of sync with `AGENT.md` (e.g. you change a 
 
 Vercel Hobby allows 1 cron job with daily minimum granularity. Vercel Pro allows more jobs and finer schedules. See [Vercel Cron Jobs docs](https://vercel.com/docs/cron-jobs) for details.
 
+## Messaging Integrations
+
+Connect your Poncho agent to messaging platforms so it responds to @mentions.
+
+### Slack
+
+#### 1. Create a Slack App
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) and create a new app "From scratch"
+2. Under **OAuth & Permissions**, add these Bot Token Scopes:
+   - `app_mentions:read`
+   - `chat:write`
+   - `reactions:write`
+3. Under **Event Subscriptions**, enable events:
+   - Set the Request URL to `https://<your-deployed-agent>/api/messaging/slack`
+   - Subscribe to the `app_mention` bot event
+4. Install the app to your workspace (generates a Bot Token `xoxb-...`)
+5. Copy the **Signing Secret** from the Basic Information page
+
+#### 2. Configure your agent
+
+Add environment variables to `.env`:
+
+```
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_SIGNING_SECRET=...
+```
+
+Add messaging to `poncho.config.js`:
+
+```javascript
+export default {
+  // ... your existing config ...
+  messaging: [
+    { platform: 'slack' }
+  ]
+}
+```
+
+#### 3. Deploy
+
+The messaging endpoint works on all deployment targets (Vercel, Docker, Fly.io, etc.). For local development with Slack, use a tunnel like [ngrok](https://ngrok.com) to expose your local server.
+
+**Vercel deployments:** install `@vercel/functions` so Poncho can keep the serverless function alive while the agent processes messages:
+
+```bash
+npm install @vercel/functions
+```
+
+This is detected automatically at runtime -- no extra configuration needed.
+
+#### How it works
+
+- When a user @mentions your bot in Slack, the agent receives the message and responds in the same thread.
+- Each Slack thread maps to a separate Poncho conversation with persistent history.
+- The bot adds an "eyes" reaction while processing and removes it when done.
+- Long responses are automatically split into multiple messages.
+
+#### Custom environment variable names
+
+If you need different env var names (e.g., running multiple Slack integrations):
+
+```javascript
+messaging: [
+  {
+    platform: 'slack',
+    botTokenEnv: 'MY_SLACK_BOT_TOKEN',
+    signingSecretEnv: 'MY_SLACK_SIGNING_SECRET',
+  }
+]
+```
+
 ## HTTP API
 
 Your deployed agent exposes these endpoints:
@@ -1026,6 +1098,12 @@ export default {
     },
   },
 
+  // Messaging platform integrations
+  messaging: [
+    { platform: 'slack' },                                 // Uses SLACK_BOT_TOKEN + SLACK_SIGNING_SECRET
+    // { platform: 'slack', botTokenEnv: 'MY_BOT_TOKEN' }, // Custom env var names
+  ],
+
 }
 ```
 
@@ -1061,6 +1139,8 @@ Remote storage keys are namespaced and versioned, for example `poncho:v1:<agentI
 | `UPSTASH_REDIS_REST_URL` | No | Upstash REST URL (direct Upstash naming) |
 | `UPSTASH_REDIS_REST_TOKEN` | No | Upstash REST write token (direct Upstash naming) |
 | `REDIS_URL` | No | For Redis state storage |
+| `SLACK_BOT_TOKEN` | No | Slack Bot Token (for messaging integration) |
+| `SLACK_SIGNING_SECRET` | No | Slack Signing Secret (for messaging integration) |
 
 *Required if using Anthropic models (default).
 

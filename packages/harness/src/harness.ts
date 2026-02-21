@@ -255,6 +255,31 @@ cron:
 - To carry context across cron runs, enable memory.
 - **IMPORTANT**: When adding a new cron job, always PRESERVE all existing cron jobs. Never remove or overwrite existing jobs unless the user explicitly asks you to replace or delete them. Read the full current \`cron:\` block before editing, and append the new job alongside the existing ones.
 
+## Messaging Integrations (Slack, etc.)
+
+Users can connect this agent to messaging platforms so it responds to @mentions.
+
+### Slack Setup
+
+1. Create a Slack App at https://api.slack.com/apps ("From scratch")
+2. Under **OAuth & Permissions**, add Bot Token Scopes: \`app_mentions:read\`, \`chat:write\`, \`reactions:write\`
+3. Under **Event Subscriptions**, enable events, set the Request URL to \`https://<deployed-url>/api/messaging/slack\`, and subscribe to \`app_mention\`
+4. Install the app to the workspace (generates Bot Token \`xoxb-...\`)
+5. Copy the **Signing Secret** from the Basic Information page
+6. Add env vars:
+   \`\`\`
+   SLACK_BOT_TOKEN=xoxb-...
+   SLACK_SIGNING_SECRET=...
+   \`\`\`
+7. Add to \`poncho.config.js\`:
+   \`\`\`javascript
+   messaging: [{ platform: 'slack' }]
+   \`\`\`
+8. Deploy (or use a tunnel like ngrok for local dev)
+9. **Vercel only:** install \`@vercel/functions\` so the serverless function stays alive while processing messages (\`npm install @vercel/functions\`)
+
+The agent will respond in Slack threads when @mentioned. Each Slack thread maps to a separate Poncho conversation.
+
 ## When users ask about customization:
 
 - Explain and edit \`poncho.config.js\` for model/provider, storage+memory, auth, telemetry, and MCP settings.
