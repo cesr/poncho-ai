@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { access, cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, watch as fsWatch } from "node:fs";
 import {
   createServer,
   type IncomingMessage,
@@ -20,7 +20,9 @@ import {
   ensureAgentIdentity,
   generateAgentId,
   loadPonchoConfig,
+  parseAgentMarkdown,
   resolveStateConfig,
+  type CronJobConfig,
   type PonchoConfig,
   type ConversationStore,
   type UploadStore,
@@ -549,6 +551,22 @@ ${name}/
             └── fetch-page.ts
 \`\`\`
 
+## Cron Jobs
+
+Define scheduled tasks in \`AGENT.md\` frontmatter:
+
+\`\`\`yaml
+cron:
+  daily-report:
+    schedule: "0 9 * * *"
+    task: "Generate the daily sales report"
+\`\`\`
+
+- \`poncho dev\`: jobs run via an in-process scheduler.
+- \`poncho build vercel\`: generates \`vercel.json\` cron entries.
+- Docker/Fly.io: scheduler runs automatically.
+- Trigger manually: \`curl http://localhost:3000/api/cron/daily-report\`
+
 ## Deployment
 
 \`\`\`bash
@@ -796,6 +814,54 @@ const ensureRuntimeCliDependency = async (
   return { paths: [relative(projectDir, packageJsonPath)], addedDeps };
 };
 
+const checkVercelCronDrift = async (projectDir: string): Promise<void> => {
+  const vercelJsonPath = resolve(projectDir, "vercel.json");
+  try {
+    await access(vercelJsonPath);
+  } catch {
+    return;
+  }
+  let agentCrons: Record<string, CronJobConfig> = {};
+  try {
+    const agentMd = await readFile(resolve(projectDir, "AGENT.md"), "utf8");
+    const parsed = parseAgentMarkdown(agentMd);
+    agentCrons = parsed.frontmatter.cron ?? {};
+  } catch {
+    return;
+  }
+  let vercelCrons: Array<{ path: string; schedule: string }> = [];
+  try {
+    const raw = await readFile(vercelJsonPath, "utf8");
+    const vercelConfig = JSON.parse(raw) as { crons?: Array<{ path: string; schedule: string }> };
+    vercelCrons = vercelConfig.crons ?? [];
+  } catch {
+    return;
+  }
+  const vercelCronMap = new Map(
+    vercelCrons
+      .filter((c) => c.path.startsWith("/api/cron/"))
+      .map((c) => [decodeURIComponent(c.path.replace("/api/cron/", "")), c.schedule]),
+  );
+  const diffs: string[] = [];
+  for (const [jobName, job] of Object.entries(agentCrons)) {
+    const existing = vercelCronMap.get(jobName);
+    if (!existing) {
+      diffs.push(`  + missing job "${jobName}" (${job.schedule})`);
+    } else if (existing !== job.schedule) {
+      diffs.push(`  ~ "${jobName}" schedule changed: "${existing}" → "${job.schedule}"`);
+    }
+    vercelCronMap.delete(jobName);
+  }
+  for (const [jobName, schedule] of vercelCronMap) {
+    diffs.push(`  - removed job "${jobName}" (${schedule})`);
+  }
+  if (diffs.length > 0) {
+    process.stderr.write(
+      `\u26A0 vercel.json crons are out of sync with AGENT.md:\n${diffs.join("\n")}\n  Run \`poncho build vercel --force\` to update.\n\n`,
+    );
+  }
+};
+
 const scaffoldDeployTarget = async (
   projectDir: string,
   target: DeployScaffoldTarget,
@@ -835,22 +901,37 @@ export default async function handler(req, res) {
       { force: options?.force, writtenPaths, baseDir: projectDir },
     );
     const vercelConfigPath = resolve(projectDir, "vercel.json");
+    let vercelCrons: Array<{ path: string; schedule: string }> | undefined;
+    try {
+      const agentMd = await readFile(resolve(projectDir, "AGENT.md"), "utf8");
+      const parsed = parseAgentMarkdown(agentMd);
+      if (parsed.frontmatter.cron) {
+        vercelCrons = Object.entries(parsed.frontmatter.cron).map(
+          ([jobName, job]) => ({
+            path: `/api/cron/${encodeURIComponent(jobName)}`,
+            schedule: job.schedule,
+          }),
+        );
+      }
+    } catch {
+      // AGENT.md may not exist yet during init; skip cron generation
+    }
+    const vercelConfig: Record<string, unknown> = {
+      version: 2,
+      functions: {
+        "api/index.mjs": {
+          includeFiles:
+            "{AGENT.md,poncho.config.js,skills/**,tests/**,node_modules/.pnpm/marked@*/node_modules/marked/lib/marked.umd.js}",
+        },
+      },
+      routes: [{ src: "/(.*)", dest: "/api/index.mjs" }],
+    };
+    if (vercelCrons && vercelCrons.length > 0) {
+      vercelConfig.crons = vercelCrons;
+    }
     await writeScaffoldFile(
       vercelConfigPath,
-      `${JSON.stringify(
-        {
-          version: 2,
-          functions: {
-            "api/index.mjs": {
-              includeFiles:
-                "{AGENT.md,poncho.config.js,skills/**,tests/**,node_modules/.pnpm/marked@*/node_modules/marked/lib/marked.umd.js}",
-            },
-          },
-          routes: [{ src: "/(.*)", dest: "/api/index.mjs" }],
-        },
-        null,
-        2,
-      )}\n`,
+      `${JSON.stringify(vercelConfig, null, 2)}\n`,
       { force: options?.force, writtenPaths, baseDir: projectDir },
     );
   } else if (target === "docker") {
@@ -892,6 +973,11 @@ export const handler = async (event = {}) => {
   });
   return { statusCode: 200, headers: { "content-type": "application/json" }, body };
 };
+
+// Cron jobs: use AWS EventBridge (CloudWatch Events) to trigger scheduled invocations.
+// Create a rule for each cron job defined in AGENT.md that sends a GET request to:
+//   /api/cron/<jobName>
+// Include the Authorization header with your PONCHO_AUTH_TOKEN as a Bearer token.
 `,
       { force: options?.force, writtenPaths, baseDir: projectDir },
     );
@@ -1131,10 +1217,14 @@ export const updateAgentGuidance = async (workingDir: string): Promise<boolean> 
 const formatSseEvent = (event: AgentEvent): string =>
   `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 
-export type RequestHandler = (
+export type RequestHandler = ((
   request: IncomingMessage,
   response: ServerResponse,
-) => Promise<void>;
+) => Promise<void>) & {
+  _harness?: AgentHarness;
+  _cronJobs?: Record<string, CronJobConfig>;
+  _conversationStore?: ConversationStore;
+};
 
 export const createRequestHandler = async (options?: {
   workingDir?: string;
@@ -1145,6 +1235,7 @@ export const createRequestHandler = async (options?: {
   let agentName = "Agent";
   let agentModelProvider = "anthropic";
   let agentModelName = "claude-opus-4-5";
+  let cronJobs: Record<string, CronJobConfig> = {};
   try {
     const agentMd = await readFile(resolve(workingDir, "AGENT.md"), "utf8");
     const nameMatch = agentMd.match(/^name:\s*(.+)$/m);
@@ -1158,6 +1249,12 @@ export const createRequestHandler = async (options?: {
     }
     if (modelMatch?.[1]) {
       agentModelName = modelMatch[1].trim().replace(/^["']|["']$/g, "");
+    }
+    try {
+      const parsed = parseAgentMarkdown(agentMd);
+      cronJobs = parsed.frontmatter.cron ?? {};
+    } catch {
+      // Cron parsing failure should not block the server
     }
   } catch {}
   const runOwners = new Map<string, string>();
@@ -1300,7 +1397,7 @@ export const createRequestHandler = async (options?: {
     return verifyPassphrase(match[1], authToken);
   };
 
-  return async (request: IncomingMessage, response: ServerResponse) => {
+  const handler: RequestHandler = async (request: IncomingMessage, response: ServerResponse) => {
     if (!request.url || !request.method) {
       writeJson(response, 404, { error: "Not found" });
       return;
@@ -2105,14 +2202,214 @@ export const createRequestHandler = async (options?: {
       return;
     }
 
+    // ── Cron job endpoint ──────────────────────────────────────────
+    const cronMatch = pathname.match(/^\/api\/cron\/([^/]+)$/);
+    if (cronMatch && (request.method === "GET" || request.method === "POST")) {
+      const jobName = decodeURIComponent(cronMatch[1] ?? "");
+      const cronJob = cronJobs[jobName];
+      if (!cronJob) {
+        writeJson(response, 404, {
+          code: "CRON_JOB_NOT_FOUND",
+          message: `Cron job "${jobName}" is not defined in AGENT.md`,
+        });
+        return;
+      }
+
+      const urlObj = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+      const continueConversationId = urlObj.searchParams.get("continue");
+      const continuationCount = Number(urlObj.searchParams.get("continuation") ?? "0");
+      const maxContinuations = 5;
+
+      if (continuationCount >= maxContinuations) {
+        writeJson(response, 200, {
+          conversationId: continueConversationId,
+          status: "max_continuations_reached",
+          continuations: continuationCount,
+        });
+        return;
+      }
+
+      const cronOwnerId = ownerId;
+      const start = Date.now();
+
+      try {
+        let conversation;
+        let historyMessages: Message[] = [];
+
+        if (continueConversationId) {
+          conversation = await conversationStore.get(continueConversationId);
+          if (!conversation) {
+            writeJson(response, 404, {
+              code: "CONVERSATION_NOT_FOUND",
+              message: "Continuation conversation not found",
+            });
+            return;
+          }
+          historyMessages = [...conversation.messages];
+        } else {
+          const timestamp = new Date().toISOString();
+          conversation = await conversationStore.create(
+            cronOwnerId,
+            `[cron] ${jobName} ${timestamp}`,
+          );
+        }
+
+        const abortController = new AbortController();
+        let assistantResponse = "";
+        let latestRunId = "";
+        const toolTimeline: string[] = [];
+        const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
+        let currentTools: string[] = [];
+        let currentText = "";
+        let runResult: { status: string; steps: number; continuation?: boolean } = {
+          status: "completed",
+          steps: 0,
+        };
+
+        const platformMaxDurationSec = Number(process.env.PONCHO_MAX_DURATION) || 0;
+        const softDeadlineMs = platformMaxDurationSec > 0
+          ? platformMaxDurationSec * 800
+          : 0;
+
+        for await (const event of harness.runWithTelemetry({
+          task: cronJob.task,
+          parameters: { __activeConversationId: conversation.conversationId },
+          messages: historyMessages,
+          abortSignal: abortController.signal,
+        })) {
+          if (event.type === "run:started") {
+            latestRunId = event.runId;
+          }
+          if (event.type === "model:chunk") {
+            if (currentTools.length > 0) {
+              sections.push({ type: "tools", content: currentTools });
+              currentTools = [];
+            }
+            assistantResponse += event.content;
+            currentText += event.content;
+          }
+          if (event.type === "tool:started") {
+            if (currentText.length > 0) {
+              sections.push({ type: "text", content: currentText });
+              currentText = "";
+            }
+            const toolText = `- start \`${event.tool}\``;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
+          }
+          if (event.type === "tool:completed") {
+            const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
+          }
+          if (event.type === "tool:error") {
+            const toolText = `- error \`${event.tool}\`: ${event.error}`;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
+          }
+          if (event.type === "run:completed") {
+            runResult = {
+              status: event.result.status,
+              steps: event.result.steps,
+              continuation: event.result.continuation,
+            };
+            if (!assistantResponse && event.result.response) {
+              assistantResponse = event.result.response;
+            }
+          }
+          await telemetry.emit(event);
+        }
+
+        if (currentTools.length > 0) {
+          sections.push({ type: "tools", content: currentTools });
+        }
+        if (currentText.length > 0) {
+          sections.push({ type: "text", content: currentText });
+          currentText = "";
+        }
+
+        // Persist the conversation
+        const hasContent = assistantResponse.length > 0 || toolTimeline.length > 0;
+        const assistantMetadata =
+          toolTimeline.length > 0 || sections.length > 0
+            ? ({
+                toolActivity: [...toolTimeline],
+                sections: sections.length > 0 ? sections : undefined,
+              } as Message["metadata"])
+            : undefined;
+        const messages: Message[] = [
+          ...historyMessages,
+          ...(continueConversationId
+            ? []
+            : [{ role: "user" as const, content: cronJob.task }]),
+          ...(hasContent
+            ? [{ role: "assistant" as const, content: assistantResponse, metadata: assistantMetadata }]
+            : []),
+        ];
+        conversation.messages = messages;
+        conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
+        conversation.updatedAt = Date.now();
+        await conversationStore.update(conversation);
+
+        // Self-continuation for serverless timeouts
+        if (runResult.continuation && softDeadlineMs > 0) {
+          const selfUrl = `http://${request.headers.host ?? "localhost"}${pathname}?continue=${encodeURIComponent(conversation.conversationId)}&continuation=${continuationCount + 1}`;
+          try {
+            const selfRes = await fetch(selfUrl, {
+              method: "GET",
+              headers: request.headers.authorization
+                ? { authorization: request.headers.authorization }
+                : {},
+            });
+            const selfBody = await selfRes.json() as Record<string, unknown>;
+            writeJson(response, 200, {
+              conversationId: conversation.conversationId,
+              status: "continued",
+              continuations: continuationCount + 1,
+              finalResult: selfBody,
+              duration: Date.now() - start,
+            });
+          } catch (continueError) {
+            writeJson(response, 200, {
+              conversationId: conversation.conversationId,
+              status: "continuation_failed",
+              error: continueError instanceof Error ? continueError.message : "Unknown error",
+              duration: Date.now() - start,
+              steps: runResult.steps,
+            });
+          }
+          return;
+        }
+
+        writeJson(response, 200, {
+          conversationId: conversation.conversationId,
+          status: runResult.status,
+          response: assistantResponse.slice(0, 500),
+          duration: Date.now() - start,
+          steps: runResult.steps,
+        });
+      } catch (error) {
+        writeJson(response, 500, {
+          code: "CRON_RUN_ERROR",
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+      return;
+    }
+
     writeJson(response, 404, { error: "Not found" });
   };
+  handler._harness = harness;
+  handler._cronJobs = cronJobs;
+  handler._conversationStore = conversationStore;
+  return handler;
 };
 
 export const startDevServer = async (
   port: number,
   options?: { workingDir?: string },
 ): Promise<Server> => {
+  const workingDir = options?.workingDir ?? process.cwd();
   const handler = await createRequestHandler(options);
   const server = createServer(handler);
   const actualPort = await listenOnAvailablePort(server, port);
@@ -2121,9 +2418,154 @@ export const startDevServer = async (
   }
   process.stdout.write(`Poncho dev server running at http://localhost:${actualPort}\n`);
 
+  await checkVercelCronDrift(workingDir);
+
+  // ── Cron scheduler ─────────────────────────────────────────────
+  const { Cron } = await import("croner");
+  type CronJob = InstanceType<typeof Cron>;
+  let activeJobs: CronJob[] = [];
+
+  const scheduleCronJobs = (jobs: Record<string, CronJobConfig>): void => {
+    for (const job of activeJobs) {
+      job.stop();
+    }
+    activeJobs = [];
+
+    const entries = Object.entries(jobs);
+    if (entries.length === 0) return;
+
+    const harness = handler._harness;
+    const store = handler._conversationStore;
+    if (!harness || !store) return;
+
+    for (const [jobName, config] of entries) {
+      const job = new Cron(
+        config.schedule,
+        { timezone: config.timezone ?? "UTC" },
+        async () => {
+          const timestamp = new Date().toISOString();
+          process.stdout.write(`[cron] ${jobName} started at ${timestamp}\n`);
+          const start = Date.now();
+          try {
+            const conversation = await store.create(
+              "local-owner",
+              `[cron] ${jobName} ${timestamp}`,
+            );
+            let assistantResponse = "";
+            let steps = 0;
+            const toolTimeline: string[] = [];
+            const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
+            let currentTools: string[] = [];
+            let currentText = "";
+            for await (const event of harness.runWithTelemetry({
+              task: config.task,
+              parameters: { __activeConversationId: conversation.conversationId },
+              messages: [],
+            })) {
+              if (event.type === "model:chunk") {
+                if (currentTools.length > 0) {
+                  sections.push({ type: "tools", content: currentTools });
+                  currentTools = [];
+                }
+                assistantResponse += event.content;
+                currentText += event.content;
+              }
+              if (event.type === "tool:started") {
+                if (currentText.length > 0) {
+                  sections.push({ type: "text", content: currentText });
+                  currentText = "";
+                }
+                const toolText = `- start \`${event.tool}\``;
+                toolTimeline.push(toolText);
+                currentTools.push(toolText);
+              }
+              if (event.type === "tool:completed") {
+                const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
+                toolTimeline.push(toolText);
+                currentTools.push(toolText);
+              }
+              if (event.type === "tool:error") {
+                const toolText = `- error \`${event.tool}\`: ${event.error}`;
+                toolTimeline.push(toolText);
+                currentTools.push(toolText);
+              }
+              if (event.type === "run:completed") {
+                steps = event.result.steps;
+                if (!assistantResponse && event.result.response) {
+                  assistantResponse = event.result.response;
+                }
+              }
+            }
+            if (currentTools.length > 0) {
+              sections.push({ type: "tools", content: currentTools });
+            }
+            if (currentText.length > 0) {
+              sections.push({ type: "text", content: currentText });
+            }
+            const hasContent = assistantResponse.length > 0 || toolTimeline.length > 0;
+            const assistantMetadata =
+              toolTimeline.length > 0 || sections.length > 0
+                ? ({
+                    toolActivity: [...toolTimeline],
+                    sections: sections.length > 0 ? sections : undefined,
+                  } as Message["metadata"])
+                : undefined;
+            conversation.messages = [
+              { role: "user", content: config.task },
+              ...(hasContent
+                ? [{ role: "assistant" as const, content: assistantResponse, metadata: assistantMetadata }]
+                : []),
+            ];
+            conversation.updatedAt = Date.now();
+            await store.update(conversation);
+            const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+            process.stdout.write(
+              `[cron] ${jobName} completed in ${elapsed}s (${steps} steps)\n`,
+            );
+          } catch (error) {
+            const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+            const msg = error instanceof Error ? error.message : String(error);
+            process.stderr.write(
+              `[cron] ${jobName} failed after ${elapsed}s: ${msg}\n`,
+            );
+          }
+        },
+      );
+      activeJobs.push(job);
+    }
+    process.stdout.write(
+      `[cron] Scheduled ${entries.length} job${entries.length === 1 ? "" : "s"}: ${entries.map(([n]) => n).join(", ")}\n`,
+    );
+  };
+
+  const initialCronJobs = handler._cronJobs ?? {};
+  scheduleCronJobs(initialCronJobs);
+
+  // Hot-reload cron config when AGENT.md changes
+  const agentMdPath = resolve(workingDir, "AGENT.md");
+  let reloadDebounce: ReturnType<typeof setTimeout> | null = null;
+  const watcher = fsWatch(agentMdPath, () => {
+    if (reloadDebounce) clearTimeout(reloadDebounce);
+    reloadDebounce = setTimeout(async () => {
+      try {
+        const agentMd = await readFile(agentMdPath, "utf8");
+        const parsed = parseAgentMarkdown(agentMd);
+        const newJobs = parsed.frontmatter.cron ?? {};
+        handler._cronJobs = newJobs;
+        scheduleCronJobs(newJobs);
+        process.stdout.write(`[cron] Reloaded: ${Object.keys(newJobs).length} jobs scheduled\n`);
+      } catch {
+        // Parse errors during editing are expected; ignore
+      }
+    }, 500);
+  });
+
   const shutdown = () => {
+    watcher.close();
+    for (const job of activeJobs) {
+      job.stop();
+    }
     server.close();
-    // Force-close any lingering connections so the port is freed immediately
     server.closeAllConnections?.();
     process.exit(0);
   };
@@ -2746,6 +3188,9 @@ export const buildTarget = async (
   options?: { force?: boolean },
 ): Promise<void> => {
   const normalizedTarget = normalizeDeployTarget(target);
+  if (normalizedTarget === "vercel" && !options?.force) {
+    await checkVercelCronDrift(workingDir);
+  }
   const writtenPaths = await scaffoldDeployTarget(workingDir, normalizedTarget, {
     force: options?.force,
   });

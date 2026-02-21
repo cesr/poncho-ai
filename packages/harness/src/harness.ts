@@ -13,7 +13,7 @@ import type {
 import { getTextContent } from "@poncho-ai/sdk";
 import type { UploadStore } from "./upload-store.js";
 import { PONCHO_UPLOAD_SCHEME, deriveUploadKey } from "./upload-store.js";
-import { parseAgentFile, renderAgentPrompt, type ParsedAgent } from "./agent-parser.js";
+import { parseAgentFile, renderAgentPrompt, type ParsedAgent, type AgentFrontmatter } from "./agent-parser.js";
 import { loadPonchoConfig, resolveMemoryConfig, type PonchoConfig } from "./config.js";
 import { createDefaultTools, createWriteTool } from "./default-tools.js";
 import {
@@ -236,6 +236,25 @@ You can extend your own capabilities by creating custom JavaScript/TypeScript sc
   - Script entries outside \`./scripts/\` must also appear in \`allowed-tools\`.
 - Keep MCP server connection details (\`url\`, auth env vars) in \`poncho.config.js\` only.
 
+## Cron Jobs
+
+Users can define scheduled tasks in \`AGENT.md\` frontmatter:
+
+\`\`\`yaml
+cron:
+  daily-report:
+    schedule: "0 9 * * *"        # Standard 5-field cron expression
+    timezone: "America/New_York" # Optional IANA timezone (default: UTC)
+    task: "Generate the daily sales report"
+\`\`\`
+
+- Each cron job triggers an autonomous agent run with the specified task, creating a fresh conversation.
+- In \`poncho dev\`, jobs run via an in-process scheduler and appear in the web UI sidebar (prefixed with \`[cron]\`).
+- For Vercel: \`poncho build vercel\` generates \`vercel.json\` cron entries. Set \`CRON_SECRET\` = \`PONCHO_AUTH_TOKEN\`.
+- Jobs can also be triggered manually: \`GET /api/cron/<jobName>\`.
+- To carry context across cron runs, enable memory.
+- **IMPORTANT**: When adding a new cron job, always PRESERVE all existing cron jobs. Never remove or overwrite existing jobs unless the user explicitly asks you to replace or delete them. Read the full current \`cron:\` block before editing, and append the new job alongside the existing ones.
+
 ## When users ask about customization:
 
 - Explain and edit \`poncho.config.js\` for model/provider, storage+memory, auth, telemetry, and MCP settings.
@@ -342,6 +361,10 @@ export class AgentHarness {
     if (options.toolDefinitions?.length) {
       this.dispatcher.registerMany(options.toolDefinitions);
     }
+  }
+
+  get frontmatter(): AgentFrontmatter | undefined {
+    return this.parsedAgent?.frontmatter;
   }
 
   private listActiveSkills(): string[] {
