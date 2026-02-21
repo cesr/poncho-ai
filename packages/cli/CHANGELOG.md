@@ -1,5 +1,16 @@
 # @poncho-ai/cli
 
+## 0.12.0
+
+### Minor Changes
+
+- [#8](https://github.com/cesr/poncho-ai/pull/8) [`658bc54`](https://github.com/cesr/poncho-ai/commit/658bc54d391cb0b58aa678a2b86cd617eebdd8aa) Thanks [@cesr](https://github.com/cesr)! - Add cron job support for scheduled agent tasks. Define recurring jobs in AGENT.md frontmatter with schedule, task, and optional timezone. Includes in-process scheduler for local dev with hot-reload, HTTP endpoint for Vercel/serverless with self-continuation, Vercel scaffold generation with drift detection, and full tool activity tracking in cron conversations.
+
+### Patch Changes
+
+- Updated dependencies [[`658bc54`](https://github.com/cesr/poncho-ai/commit/658bc54d391cb0b58aa678a2b86cd617eebdd8aa)]:
+  - @poncho-ai/harness@0.13.0
+
 ## 0.11.1
 
 ### Patch Changes
