@@ -3031,6 +3031,23 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         }
       });
 
+      // Paste files/images from clipboard
+      elements.prompt.addEventListener("paste", (e) => {
+        const items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        const files = [];
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].kind === "file") {
+            const f = items[i].getAsFile();
+            if (f) files.push(f);
+          }
+        }
+        if (files.length > 0) {
+          e.preventDefault();
+          addFiles(files);
+        }
+      });
+
       // Lightbox: open/close helpers
       const lightboxImg = elements.lightbox.querySelector("img");
       const openLightbox = (src) => {
