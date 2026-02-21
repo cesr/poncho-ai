@@ -22,6 +22,12 @@ export interface AgentLimitsConfig {
   timeout?: number;
 }
 
+export interface CronJobConfig {
+  schedule: string;
+  task: string;
+  timezone?: string;
+}
+
 export interface AgentFrontmatter {
   name: string;
   id?: string;
@@ -36,6 +42,7 @@ export interface AgentFrontmatter {
     mcp?: string[];
     scripts?: string[];
   };
+  cron?: Record<string, CronJobConfig>;
 }
 
 export interface ParsedAgent {
@@ -62,6 +69,74 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 
 const asNumberOrUndefined = (value: unknown): number | undefined =>
   typeof value === "number" ? value : undefined;
+
+const CRON_EXPRESSION_PATTERN = /^(\S+\s+){4}\S+$/;
+
+const validateCronExpression = (expr: string, path: string): void => {
+  if (!CRON_EXPRESSION_PATTERN.test(expr.trim())) {
+    throw new Error(
+      `Invalid cron expression at ${path}: "${expr}". Expected 5-field cron format (minute hour day month weekday).`,
+    );
+  }
+};
+
+const KNOWN_TIMEZONES: Set<string> | null = (() => {
+  try {
+    return new Set(Intl.supportedValuesOf("timeZone"));
+  } catch {
+    return null;
+  }
+})();
+
+const validateTimezone = (tz: string, path: string): void => {
+  if (KNOWN_TIMEZONES && !KNOWN_TIMEZONES.has(tz)) {
+    throw new Error(
+      `Invalid timezone at ${path}: "${tz}". Expected an IANA timezone string (e.g. "America/New_York", "UTC").`,
+    );
+  }
+};
+
+const parseCronJobs = (
+  value: unknown,
+): Record<string, CronJobConfig> | undefined => {
+  const raw = asRecord(value);
+  const keys = Object.keys(raw);
+  if (keys.length === 0) return undefined;
+
+  const jobs: Record<string, CronJobConfig> = {};
+  for (const jobName of keys) {
+    const jobValue = asRecord(raw[jobName]);
+    const path = `AGENT.md frontmatter cron.${jobName}`;
+
+    if (typeof jobValue.schedule !== "string" || jobValue.schedule.trim() === "") {
+      throw new Error(
+        `Invalid ${path}: "schedule" is required and must be a non-empty string.`,
+      );
+    }
+    if (typeof jobValue.task !== "string" || jobValue.task.trim() === "") {
+      throw new Error(
+        `Invalid ${path}: "task" is required and must be a non-empty string.`,
+      );
+    }
+
+    validateCronExpression(jobValue.schedule, path);
+
+    const timezone =
+      typeof jobValue.timezone === "string" && jobValue.timezone.trim()
+        ? jobValue.timezone.trim()
+        : undefined;
+    if (timezone) {
+      validateTimezone(timezone, path);
+    }
+
+    jobs[jobName] = {
+      schedule: jobValue.schedule.trim(),
+      task: jobValue.task,
+      timezone,
+    };
+  }
+  return jobs;
+};
 
 export const parseAgentMarkdown = (content: string): ParsedAgent => {
   const match = content.match(FRONTMATTER_PATTERN);
@@ -175,6 +250,7 @@ export const parseAgentMarkdown = (content: string): ParsedAgent => {
                 : undefined,
           }
         : undefined,
+    cron: parseCronJobs(parsed.cron),
   };
 
   return {

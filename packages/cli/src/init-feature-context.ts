@@ -126,6 +126,7 @@ export const consumeFirstRunIntro = async (
     "- **Enable auth**: Add bearer tokens or custom authentication",
     "- **Turn on telemetry**: Track usage with OpenTelemetry/OTLP",
     "- **Add MCP servers**: Connect external tool servers",
+    "- **Schedule cron jobs**: Set up recurring tasks in AGENT.md frontmatter",
     "",
     "Just let me know what you'd like to work on!\n",
   ].join("\n");

@@ -28,6 +28,7 @@
     "@poncho-ai/sdk": "workspace:*",
     "busboy": "^1.6.0",
     "commander": "^12.0.0",
+    "croner": "^10.0.1",
     "dotenv": "^16.4.0",
     "ink": "^6.7.0",
     "marked": "^17.0.2",

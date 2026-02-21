@@ -223,6 +223,13 @@ limits:
 allowed-tools:
   - mcp:github/list_issues    # MCP: mcp:server/tool or mcp:server/*
   - triage/scripts/*           # Scripts: skill/scripts/file.ts or skill/scripts/*
+
+# Scheduled tasks (see Cron Jobs section below)
+cron:
+  daily-report:
+    schedule: "0 9 * * *"     # Standard 5-field cron expression
+    timezone: "America/New_York" # Optional IANA timezone (default: UTC)
+    task: "Generate the daily sales report and email it to the team"
 ---
 ```
 
@@ -636,6 +643,77 @@ all — the agent runs uninterrupted within the limits you set in `AGENT.md` (`l
 The `run:completed` SSE event includes `continuation: true` when the agent exited early,
 so custom API clients can implement the same loop.
 
+## Cron Jobs
+
+Poncho agents support scheduled cron jobs defined in `AGENT.md` frontmatter. Each job triggers an autonomous agent run with a specified task, creating a fresh conversation every time.
+
+### Defining cron jobs
+
+Add a `cron` block to your `AGENT.md` frontmatter:
+
+```yaml
+---
+name: my-agent
+cron:
+  daily-report:
+    schedule: "0 9 * * *"
+    task: "Generate the daily sales report and email it to the team"
+  health-check:
+    schedule: "*/30 * * * *"
+    timezone: "UTC"
+    task: "Check all upstream APIs and alert if any are degraded"
+---
+```
+
+Each key under `cron` is the job name. Fields per job:
+
+| Field | Required | Description |
+|---|---|---|
+| `schedule` | Yes | Standard 5-field cron expression (minute hour day month weekday) |
+| `task` | Yes | The prompt sent to the agent as the initial message |
+| `timezone` | No | IANA timezone string (default: `"UTC"`) |
+
+### How cron jobs run
+
+- **Local dev** (`poncho dev`): An in-process scheduler runs cron jobs directly. Jobs are logged to the console and their conversations appear in the web UI.
+- **Vercel**: `poncho build vercel` adds a `crons` array to `vercel.json`. Vercel's infrastructure calls `GET /api/cron/<jobName>` on schedule. Set `CRON_SECRET` to the same value as `PONCHO_AUTH_TOKEN` so Vercel can authenticate.
+- **Docker / Fly.io**: The in-process scheduler activates automatically since these use `startDevServer()`.
+- **Lambda**: Use AWS EventBridge (CloudWatch Events) to trigger `GET /api/cron/<jobName>` on schedule. Include the `Authorization: Bearer <token>` header.
+
+Each cron invocation creates a **fresh conversation** (no accumulated history). To carry context between runs, enable [memory](#memory).
+
+### Manual triggers
+
+You can trigger any cron job manually:
+
+```bash
+# Local (no auth needed in dev)
+curl http://localhost:3000/api/cron/daily-report
+
+# Production (auth required)
+curl https://my-agent.vercel.app/api/cron/daily-report \
+  -H "Authorization: Bearer your-token"
+```
+
+### Hot reload in dev
+
+When you edit the `cron` block in `AGENT.md` while `poncho dev` is running, the scheduler automatically reloads.
+
+### Vercel cron drift detection
+
+If your `vercel.json` crons fall out of sync with `AGENT.md` (e.g. you change a schedule but forget to rebuild), Poncho warns you at `poncho dev` startup and during `poncho build vercel`:
+
+```
+⚠ vercel.json crons are out of sync with AGENT.md:
+  + missing job "health-check" (*/30 * * * *)
+  ~ "daily-report" schedule changed: "0 9 * * *" → "0 8 * * *"
+  Run `poncho build vercel --force` to update.
+```
+
+### Vercel plan limits
+
+Vercel Hobby allows 1 cron job with daily minimum granularity. Vercel Pro allows more jobs and finer schedules. See [Vercel Cron Jobs docs](https://vercel.com/docs/cron-jobs) for details.
+
 ## HTTP API
 
 Your deployed agent exposes these endpoints:
@@ -652,6 +730,7 @@ Your deployed agent exposes these endpoints:
 | `PATCH /api/conversations/:conversationId` | Rename conversation |
 | `DELETE /api/conversations/:conversationId` | Delete conversation |
 | `POST /api/conversations/:conversationId/messages` | Stream a new assistant response |
+| `GET\|POST /api/cron/:jobName` | Trigger a cron job (see [Cron Jobs](#cron-jobs)) |
 
 ### POST /api/conversations/:conversationId/messages (streaming)
 

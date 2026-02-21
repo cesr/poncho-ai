@@ -11,7 +11,10 @@ import {
   initializeOnboardingMarker,
 } from "../src/init-feature-context.js";
 
-vi.mock("@poncho-ai/harness", () => ({
+vi.mock("@poncho-ai/harness", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@poncho-ai/harness")>();
+  return {
+  parseAgentMarkdown: actual.parseAgentMarkdown,
   AgentHarness: class MockHarness {
     async initialize(): Promise<void> {}
     listTools(): Array<{ name: string; description: string }> {
@@ -160,7 +163,7 @@ vi.mock("@poncho-ai/harness", () => ({
     get: async () => Buffer.from(""),
     delete: async () => {},
   }),
-}));
+};});
 
 import {
   buildTarget,
@@ -918,6 +921,43 @@ describe("cli", () => {
     const result = await runTests(projectDir, join(testsDir, "basic.yaml"));
     expect(result.passed).toBe(1);
     expect(result.failed).toBe(0);
+  });
+
+  it("includes crons in vercel.json when AGENT.md has cron jobs", async () => {
+    await initProject("cron-agent", { workingDir: tempDir });
+    const projectDir = join(tempDir, "cron-agent");
+    const agentMdPath = join(projectDir, "AGENT.md");
+    const agentMd = await readFile(agentMdPath, "utf8");
+    // Insert cron block before the closing --- of frontmatter
+    const updatedAgentMd = agentMd.replace(
+      /^(---\n[\s\S]*?)(---\n)/m,
+      `$1cron:\n  daily-report:\n    schedule: "0 9 * * *"\n    task: "Generate the daily report"\n  health-check:\n    schedule: "*/30 * * * *"\n    task: "Check all APIs"\n$2`,
+    );
+    await writeFile(agentMdPath, updatedAgentMd, "utf8");
+    await buildTarget(projectDir, "vercel", { force: true });
+    const vercelConfig = JSON.parse(
+      await readFile(join(projectDir, "vercel.json"), "utf8"),
+    ) as { crons?: Array<{ path: string; schedule: string }> };
+    expect(vercelConfig.crons).toBeDefined();
+    expect(vercelConfig.crons).toHaveLength(2);
+    expect(vercelConfig.crons).toContainEqual({
+      path: "/api/cron/daily-report",
+      schedule: "0 9 * * *",
+    });
+    expect(vercelConfig.crons).toContainEqual({
+      path: "/api/cron/health-check",
+      schedule: "*/30 * * * *",
+    });
+  });
+
+  it("omits crons from vercel.json when AGENT.md has no cron jobs", async () => {
+    await initProject("no-cron-agent", { workingDir: tempDir });
+    const projectDir = join(tempDir, "no-cron-agent");
+    await buildTarget(projectDir, "vercel", { force: true });
+    const vercelConfig = JSON.parse(
+      await readFile(join(projectDir, "vercel.json"), "utf8"),
+    ) as { crons?: unknown };
+    expect(vercelConfig.crons).toBeUndefined();
   });
 
   it("fails on existing deploy files unless force is enabled", async () => {
