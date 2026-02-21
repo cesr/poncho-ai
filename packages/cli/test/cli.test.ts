@@ -155,6 +155,11 @@ vi.mock("@poncho-ai/harness", () => ({
   TelemetryEmitter: class {
     async emit(): Promise<void> {}
   },
+  createUploadStore: async () => ({
+    put: async () => "poncho-upload://test",
+    get: async () => Buffer.from(""),
+    delete: async () => {},
+  }),
 }));
 
 import {

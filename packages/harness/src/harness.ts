@@ -1,12 +1,18 @@
 import { randomUUID } from "node:crypto";
 import type {
   AgentEvent,
+  ContentPart,
+  FileContentPart,
   Message,
   RunInput,
   RunResult,
+  TextContentPart,
   ToolContext,
   ToolDefinition,
 } from "@poncho-ai/sdk";
+import { getTextContent } from "@poncho-ai/sdk";
+import type { UploadStore } from "./upload-store.js";
+import { PONCHO_UPLOAD_SCHEME, deriveUploadKey } from "./upload-store.js";
 import { parseAgentFile, renderAgentPrompt, type ParsedAgent } from "./agent-parser.js";
 import { loadPonchoConfig, resolveMemoryConfig, type PonchoConfig } from "./config.js";
 import { createDefaultTools, createWriteTool } from "./default-tools.js";
@@ -44,6 +50,7 @@ export interface HarnessOptions {
     approvalId: string;
   }) => Promise<boolean> | boolean;
   modelProvider?: ModelProviderFactory;
+  uploadStore?: UploadStore;
 }
 
 export interface HarnessRunOutput {
@@ -257,6 +264,7 @@ export class AgentHarness {
   private readonly modelProviderInjected: boolean;
   private readonly dispatcher = new ToolDispatcher();
   private readonly approvalHandler?: HarnessOptions["approvalHandler"];
+  readonly uploadStore?: UploadStore;
   private skillContextWindow = "";
   private memoryStore?: MemoryStore;
   private loadedConfig?: PonchoConfig;
@@ -329,6 +337,7 @@ export class AgentHarness {
     this.modelProviderInjected = !!options.modelProvider;
     this.modelProvider = options.modelProvider ?? createModelProvider("anthropic");
     this.approvalHandler = options.approvalHandler;
+    this.uploadStore = options.uploadStore;
 
     if (options.toolDefinitions?.length) {
       this.dispatcher.registerMany(options.toolDefinitions);
@@ -767,11 +776,42 @@ ${boundedMainMemory.trim()}`
       agentId: agent.frontmatter.id ?? agent.frontmatter.name,
     });
 
-    messages.push({
-      role: "user",
-      content: input.task,
-      metadata: { timestamp: now(), id: randomUUID() },
-    });
+    if (input.files && input.files.length > 0) {
+      const parts: ContentPart[] = [
+        { type: "text", text: input.task } satisfies TextContentPart,
+      ];
+      for (const file of input.files) {
+        if (this.uploadStore) {
+          const buf = Buffer.from(file.data, "base64");
+          const key = deriveUploadKey(buf, file.mediaType);
+          const ref = await this.uploadStore.put(key, buf, file.mediaType);
+          parts.push({
+            type: "file",
+            data: ref,
+            mediaType: file.mediaType,
+            filename: file.filename,
+          } satisfies FileContentPart);
+        } else {
+          parts.push({
+            type: "file",
+            data: file.data,
+            mediaType: file.mediaType,
+            filename: file.filename,
+          } satisfies FileContentPart);
+        }
+      }
+      messages.push({
+        role: "user",
+        content: parts,
+        metadata: { timestamp: now(), id: randomUUID() },
+      });
+    } else {
+      messages.push({
+        role: "user",
+        content: input.task,
+        metadata: { timestamp: now(), id: randomUUID() },
+      });
+    }
 
     let responseText = "";
     let totalInputTokens = 0;
@@ -835,13 +875,13 @@ ${boundedMainMemory.trim()}`
       }
 
         // Convert messages to ModelMessage format
-        const coreMessages: ModelMessage[] = trimMessageWindow(messages).flatMap(
-          (msg): ModelMessage[] => {
+        const convertMessage = async (msg: Message): Promise<ModelMessage[]> => {
           if (msg.role === "tool") {
             // Tool messages are provider-sensitive; skip malformed historical records
             // instead of failing the entire run continuation.
+            const textContent = typeof msg.content === "string" ? msg.content : getTextContent(msg);
             try {
-              const parsed: unknown = JSON.parse(msg.content);
+              const parsed: unknown = JSON.parse(textContent);
               if (!Array.isArray(parsed)) {
                 return [];
               }
@@ -898,12 +938,13 @@ ${boundedMainMemory.trim()}`
           if (msg.role === "assistant") {
             // Assistant messages may contain serialized tool calls from previous runs.
             // Keep only valid tool-call records to avoid broken continuation payloads.
+            const assistantText = typeof msg.content === "string" ? msg.content : getTextContent(msg);
             try {
-              const parsed: unknown = JSON.parse(msg.content);
+              const parsed: unknown = JSON.parse(assistantText);
               if (typeof parsed === "object" && parsed !== null) {
                 const parsedRecord = parsed as { text?: unknown; tool_calls?: unknown };
                 if (!Array.isArray(parsedRecord.tool_calls)) {
-                  return [{ role: "assistant" as const, content: msg.content }];
+                  return [{ role: "assistant" as const, content: assistantText }];
                 }
                 const textPart = typeof parsedRecord.text === "string" ? parsedRecord.text : "";
                 const validToolCalls = parsedRecord.tool_calls
@@ -939,18 +980,115 @@ ${boundedMainMemory.trim()}`
             } catch {
               // Not JSON, treat as regular assistant text.
             }
-            return [{ role: "assistant" as const, content: msg.content }];
+            return [{ role: "assistant" as const, content: assistantText }];
           }
 
-          if (msg.role === "user" || msg.role === "system") {
+          if (msg.role === "system") {
             return [{
-              role: msg.role,
-              content: msg.content,
+              role: "system" as const,
+              content: typeof msg.content === "string" ? msg.content : getTextContent(msg),
             }];
           }
 
+          if (msg.role === "user") {
+            if (typeof msg.content === "string") {
+              return [{ role: "user" as const, content: msg.content }];
+            }
+            // Convert ContentPart[] to Vercel AI SDK UserContent.
+            // Only specific media types can be sent as binary attachments —
+            // everything else is inlined as text or skipped gracefully.
+            const MODEL_IMAGE_TYPES = new Set([
+              "image/jpeg", "image/png", "image/gif", "image/webp",
+            ]);
+            const MODEL_FILE_TYPES = new Set([
+              "application/pdf",
+            ]);
+            const isTextBasedMime = (mt: string): boolean =>
+              mt.startsWith("text/") ||
+              mt === "application/json" ||
+              mt === "application/xml" ||
+              mt === "application/x-yaml" ||
+              mt.endsWith("+json") ||
+              mt.endsWith("+xml");
+
+            const userContent = await Promise.all(
+              msg.content.map(async (part) => {
+                if (part.type === "text") {
+                  return { type: "text" as const, text: part.text };
+                }
+
+                const isSupportedImage = MODEL_IMAGE_TYPES.has(part.mediaType);
+                const isSupportedFile = MODEL_FILE_TYPES.has(part.mediaType);
+
+                // Text-based files: inline the content so the model can read it
+                if (!isSupportedImage && !isSupportedFile && isTextBasedMime(part.mediaType)) {
+                  let textContent: string;
+                  try {
+                    if (part.data.startsWith(PONCHO_UPLOAD_SCHEME) && this.uploadStore) {
+                      const buf = await this.uploadStore.get(part.data);
+                      textContent = buf.toString("utf8");
+                    } else if (part.data.startsWith("https://") || part.data.startsWith("http://")) {
+                      const resp = await fetch(part.data);
+                      textContent = await resp.text();
+                    } else {
+                      textContent = Buffer.from(part.data, "base64").toString("utf8");
+                    }
+                  } catch {
+                    textContent = "(could not read file)";
+                  }
+                  const label = part.filename ?? part.mediaType;
+                  return { type: "text" as const, text: `[File: ${label}]\n${textContent}` };
+                }
+
+                // Unsupported binary formats (e.g. AVIF, HEIC, MP4): skip with a note
+                if (!isSupportedImage && !isSupportedFile) {
+                  const label = part.filename ?? part.mediaType;
+                  return {
+                    type: "text" as const,
+                    text: `[Attached file: ${label} (${part.mediaType}) — this format is not supported by the model and was skipped]`,
+                  };
+                }
+
+                // Always resolve to base64 so the model doesn't need to
+                // fetch URLs itself (which fails for private blob stores).
+                let resolvedData: string;
+                if (part.data.startsWith(PONCHO_UPLOAD_SCHEME) && this.uploadStore) {
+                  const buf = await this.uploadStore.get(part.data);
+                  resolvedData = buf.toString("base64");
+                } else if (part.data.startsWith("https://") || part.data.startsWith("http://")) {
+                  if (this.uploadStore) {
+                    const buf = await this.uploadStore.get(part.data);
+                    resolvedData = buf.toString("base64");
+                  } else {
+                    const resp = await fetch(part.data);
+                    resolvedData = Buffer.from(await resp.arrayBuffer()).toString("base64");
+                  }
+                } else {
+                  resolvedData = part.data;
+                }
+                if (isSupportedImage) {
+                  return {
+                    type: "image" as const,
+                    image: resolvedData,
+                    mediaType: part.mediaType,
+                  };
+                }
+                return {
+                  type: "file" as const,
+                  data: resolvedData,
+                  mediaType: part.mediaType,
+                  filename: part.filename,
+                };
+              }),
+            );
+            return [{ role: "user" as const, content: userContent }];
+          }
+
           return [];
-        });
+        };
+        const coreMessages: ModelMessage[] = (
+          await Promise.all(trimMessageWindow(messages).map(convertMessage))
+        ).flat();
 
         const modelName = agent.frontmatter.model?.name ?? "claude-opus-4-5";
         const temperature = agent.frontmatter.model?.temperature ?? 0.2;

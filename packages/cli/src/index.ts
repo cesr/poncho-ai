@@ -15,14 +15,19 @@ import {
   LocalMcpBridge,
   TelemetryEmitter,
   createConversationStore,
+  createUploadStore,
+  deriveUploadKey,
   ensureAgentIdentity,
   generateAgentId,
   loadPonchoConfig,
   resolveStateConfig,
   type PonchoConfig,
   type ConversationStore,
+  type UploadStore,
 } from "@poncho-ai/harness";
-import type { AgentEvent, Message, RunInput } from "@poncho-ai/sdk";
+import type { AgentEvent, FileInput, Message, RunInput } from "@poncho-ai/sdk";
+import { getTextContent } from "@poncho-ai/sdk";
+import Busboy from "busboy";
 import { Command } from "commander";
 import dotenv from "dotenv";
 import YAML from "yaml";
@@ -63,6 +68,15 @@ const writeHtml = (response: ServerResponse, statusCode: number, payload: string
   response.end(payload);
 };
 
+const EXT_MIME_MAP: Record<string, string> = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+  gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
+  pdf: "application/pdf", mp4: "video/mp4", webm: "video/webm",
+  mp3: "audio/mpeg", wav: "audio/wav", txt: "text/plain",
+  json: "application/json", csv: "text/csv", html: "text/html",
+};
+const extToMime = (ext: string): string => EXT_MIME_MAP[ext] ?? "application/octet-stream";
+
 const readRequestBody = async (request: IncomingMessage): Promise<unknown> => {
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -71,6 +85,49 @@ const readRequestBody = async (request: IncomingMessage): Promise<unknown> => {
   const body = Buffer.concat(chunks).toString("utf8");
   return body.length > 0 ? (JSON.parse(body) as unknown) : {};
 };
+
+const MAX_UPLOAD_SIZE = 25 * 1024 * 1024; // 25MB per file
+
+interface ParsedMultipart {
+  message: string;
+  parameters?: Record<string, unknown>;
+  files: FileInput[];
+}
+
+const parseMultipartRequest = (request: IncomingMessage): Promise<ParsedMultipart> =>
+  new Promise((resolve, reject) => {
+    const result: ParsedMultipart = { message: "", files: [] };
+    const bb = Busboy({
+      headers: request.headers,
+      limits: { fileSize: MAX_UPLOAD_SIZE },
+    });
+
+    bb.on("field", (name: string, value: string) => {
+      if (name === "message") result.message = value;
+      if (name === "parameters") {
+        try {
+          result.parameters = JSON.parse(value) as Record<string, unknown>;
+        } catch { /* ignore malformed parameters */ }
+      }
+    });
+
+    bb.on("file", (_name: string, stream: NodeJS.ReadableStream, info: { filename: string; mimeType: string }) => {
+      const chunks: Buffer[] = [];
+      stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+      stream.on("end", () => {
+        const buf = Buffer.concat(chunks);
+        result.files.push({
+          data: buf.toString("base64"),
+          mediaType: info.mimeType,
+          filename: info.filename,
+        });
+      });
+    });
+
+    bb.on("finish", () => resolve(result));
+    bb.on("error", (err: Error) => reject(err));
+    request.pipe(bb);
+  });
 
 /**
  * Detects the runtime environment from platform-specific or standard environment variables.
@@ -689,10 +746,19 @@ const writeScaffoldFile = async (
   options.writtenPaths.push(relative(options.baseDir, filePath));
 };
 
+const UPLOAD_PROVIDER_DEPS: Record<string, Array<{ name: string; fallback: string }>> = {
+  "vercel-blob": [{ name: "@vercel/blob", fallback: "^2.3.0" }],
+  s3: [
+    { name: "@aws-sdk/client-s3", fallback: "^3.700.0" },
+    { name: "@aws-sdk/s3-request-presigner", fallback: "^3.700.0" },
+  ],
+};
+
 const ensureRuntimeCliDependency = async (
   projectDir: string,
   cliVersion: string,
-): Promise<string[]> => {
+  config?: PonchoConfig,
+): Promise<{ paths: string[]; addedDeps: string[] }> => {
   const packageJsonPath = resolve(projectDir, "package.json");
   const content = await readFile(packageJsonPath, "utf8");
   const parsed = JSON.parse(content) as {
@@ -713,9 +779,21 @@ const ensureRuntimeCliDependency = async (
   }
   dependencies.marked = await readCliDependencyVersion("marked", "^17.0.2");
   dependencies["@poncho-ai/cli"] = `^${cliVersion}`;
+
+  const addedDeps: string[] = [];
+  const uploadsProvider = config?.uploads?.provider;
+  if (uploadsProvider && UPLOAD_PROVIDER_DEPS[uploadsProvider]) {
+    for (const dep of UPLOAD_PROVIDER_DEPS[uploadsProvider]) {
+      if (!dependencies[dep.name]) {
+        dependencies[dep.name] = dep.fallback;
+        addedDeps.push(dep.name);
+      }
+    }
+  }
+
   parsed.dependencies = dependencies;
   await writeFile(packageJsonPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
-  return [relative(projectDir, packageJsonPath)];
+  return { paths: [relative(projectDir, packageJsonPath)], addedDeps };
 };
 
 const scaffoldDeployTarget = async (
@@ -855,10 +933,16 @@ CMD ["node","server.js"]
     });
   }
 
-  const packagePaths = await ensureRuntimeCliDependency(projectDir, cliVersion);
-  for (const path of packagePaths) {
-    if (!writtenPaths.includes(path)) {
-      writtenPaths.push(path);
+  const config = await loadPonchoConfig(projectDir);
+  const { paths: packagePaths, addedDeps } = await ensureRuntimeCliDependency(
+    projectDir,
+    cliVersion,
+    config,
+  );
+  const depNote = addedDeps.length > 0 ? ` (added ${addedDeps.join(", ")})` : "";
+  for (const p of packagePaths) {
+    if (!writtenPaths.includes(p)) {
+      writtenPaths.push(depNote ? `${p}${depNote}` : p);
     }
   }
 
@@ -1161,9 +1245,11 @@ export const createRequestHandler = async (options?: {
     }
     await persistConversationPendingApprovals(conversationId);
   };
+  const uploadStore = await createUploadStore(config?.uploads, workingDir);
   const harness = new AgentHarness({
     workingDir,
     environment: resolveHarnessEnvironment(),
+    uploadStore,
     approvalHandler: async (request) =>
       new Promise<boolean>((resolveApproval) => {
         const ownerIdForRun = runOwners.get(request.runId) ?? "local-owner";
@@ -1611,6 +1697,31 @@ export const createRequestHandler = async (options?: {
       return;
     }
 
+    const uploadMatch = pathname.match(/^\/api\/uploads\/(.+)$/);
+    if (uploadMatch && request.method === "GET") {
+      const key = decodeURIComponent(uploadMatch[1] ?? "");
+      try {
+        const data = await uploadStore.get(key);
+        const ext = key.split(".").pop() ?? "";
+        const mimeMap: Record<string, string> = {
+          jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+          gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
+          pdf: "application/pdf", mp4: "video/mp4", webm: "video/webm",
+          mp3: "audio/mpeg", wav: "audio/wav", txt: "text/plain",
+          json: "application/json", csv: "text/csv", html: "text/html",
+        };
+        response.writeHead(200, {
+          "Content-Type": mimeMap[ext] ?? "application/octet-stream",
+          "Content-Length": data.length,
+          "Cache-Control": "public, max-age=86400",
+        });
+        response.end(data);
+      } catch {
+        writeJson(response, 404, { code: "NOT_FOUND", message: "Upload not found" });
+      }
+      return;
+    }
+
     const conversationMessageMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
     if (conversationMessageMatch && request.method === "POST") {
       const conversationId = decodeURIComponent(conversationMessageMatch[1] ?? "");
@@ -1622,11 +1733,31 @@ export const createRequestHandler = async (options?: {
         });
         return;
       }
-      const body = (await readRequestBody(request)) as {
-        message?: string;
-        parameters?: Record<string, unknown>;
-      };
-      const messageText = body.message?.trim() ?? "";
+      let messageText = "";
+      let bodyParameters: Record<string, unknown> | undefined;
+      let files: FileInput[] = [];
+
+      const contentType = request.headers["content-type"] ?? "";
+      if (contentType.includes("multipart/form-data")) {
+        const parsed = await parseMultipartRequest(request);
+        messageText = parsed.message.trim();
+        bodyParameters = parsed.parameters;
+        files = parsed.files;
+      } else {
+        const body = (await readRequestBody(request)) as {
+          message?: string;
+          parameters?: Record<string, unknown>;
+          files?: Array<{ data?: string; mediaType?: string; filename?: string }>;
+        };
+        messageText = body.message?.trim() ?? "";
+        bodyParameters = body.parameters;
+        if (Array.isArray(body.files)) {
+          files = body.files
+            .filter((f): f is { data: string; mediaType: string; filename?: string } =>
+              typeof f.data === "string" && typeof f.mediaType === "string",
+            );
+        }
+      }
       if (!messageText) {
         writeJson(response, 400, {
           code: "VALIDATION_ERROR",
@@ -1671,9 +1802,44 @@ export const createRequestHandler = async (options?: {
       let currentText = "";
       let currentTools: string[] = [];
       let runCancelled = false;
+      let userContent: Message["content"] = messageText;
+      if (files.length > 0) {
+        try {
+          const uploadedParts = await Promise.all(
+            files.map(async (f) => {
+              const buf = Buffer.from(f.data, "base64");
+              const key = deriveUploadKey(buf, f.mediaType);
+              const ref = await uploadStore.put(key, buf, f.mediaType);
+              return {
+                type: "file" as const,
+                data: ref,
+                mediaType: f.mediaType,
+                filename: f.filename,
+              };
+            }),
+          );
+          userContent = [
+            { type: "text" as const, text: messageText },
+            ...uploadedParts,
+          ];
+        } catch (uploadErr) {
+          const errMsg = uploadErr instanceof Error ? uploadErr.message : String(uploadErr);
+          console.error("[poncho] File upload failed:", errMsg);
+          const errorEvent: AgentEvent = {
+            type: "run:error",
+            runId: "",
+            error: { code: "UPLOAD_ERROR", message: `File upload failed: ${errMsg}` },
+          };
+          broadcastEvent(conversationId, errorEvent);
+          finishConversationStream(conversationId);
+          activeConversationRuns.delete(conversationId);
+          response.end();
+          return;
+        }
+      }
       try {
         // Persist the user turn immediately so refreshing mid-run keeps chat context.
-        conversation.messages = [...historyMessages, { role: "user", content: messageText }];
+        conversation.messages = [...historyMessages, { role: "user", content: userContent }];
         conversation.updatedAt = Date.now();
         await conversationStore.update(conversation);
 
@@ -1697,7 +1863,7 @@ export const createRequestHandler = async (options?: {
           }
           conversation.messages = [
             ...historyMessages,
-            { role: "user", content: messageText },
+            { role: "user", content: userContent },
             {
               role: "assistant",
               content: assistantResponse,
@@ -1723,7 +1889,7 @@ export const createRequestHandler = async (options?: {
             updatedAt: item.updatedAt,
             content: item.messages
               .slice(-6)
-              .map((message) => `${message.role}: ${message.content}`)
+              .map((message) => `${message.role}: ${typeof message.content === "string" ? message.content : getTextContent(message)}`)
               .join("\n")
               .slice(0, 2000),
           }))
@@ -1732,11 +1898,12 @@ export const createRequestHandler = async (options?: {
         for await (const event of harness.runWithTelemetry({
           task: messageText,
           parameters: {
-            ...(body.parameters ?? {}),
+            ...(bodyParameters ?? {}),
             __conversationRecallCorpus: recallCorpus,
             __activeConversationId: conversationId,
           },
           messages: historyMessages,
+          files: files.length > 0 ? files : undefined,
           abortSignal: abortController.signal,
         })) {
           if (event.type === "run:started") {
@@ -1829,7 +1996,7 @@ export const createRequestHandler = async (options?: {
         conversation.messages = hasAssistantContent
           ? [
               ...historyMessages,
-              { role: "user", content: messageText },
+              { role: "user", content: userContent },
               {
                 role: "assistant",
                 content: assistantResponse,
@@ -1842,7 +2009,7 @@ export const createRequestHandler = async (options?: {
                     : undefined,
               },
             ]
-          : [...historyMessages, { role: "user", content: messageText }];
+          : [...historyMessages, { role: "user", content: userContent }];
         conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
         conversation.pendingApprovals = [];
         conversation.updatedAt = Date.now();
@@ -1859,7 +2026,7 @@ export const createRequestHandler = async (options?: {
           if (assistantResponse.length > 0 || toolTimeline.length > 0 || fallbackSections.length > 0) {
             conversation.messages = [
               ...historyMessages,
-              { role: "user", content: messageText },
+              { role: "user", content: userContent },
               {
                 role: "assistant",
                 content: assistantResponse,
@@ -1901,7 +2068,7 @@ export const createRequestHandler = async (options?: {
           if (assistantResponse.length > 0 || toolTimeline.length > 0 || fallbackSections.length > 0) {
             conversation.messages = [
               ...historyMessages,
-              { role: "user", content: messageText },
+              { role: "user", content: userContent },
               {
                 role: "assistant",
                 content: assistantResponse,
@@ -1978,20 +2145,28 @@ export const runOnce = async (
   const workingDir = options.workingDir ?? process.cwd();
   dotenv.config({ path: resolve(workingDir, ".env") });
   const config = await loadPonchoConfig(workingDir);
-  const harness = new AgentHarness({ workingDir });
+  const uploadStore = await createUploadStore(config?.uploads, workingDir);
+  const harness = new AgentHarness({ workingDir, uploadStore });
   const telemetry = new TelemetryEmitter(config?.telemetry);
   await harness.initialize();
 
-  const fileBlobs = await Promise.all(
-    options.filePaths.map(async (path) => {
-      const content = await readFile(resolve(workingDir, path), "utf8");
-      return `# File: ${path}\n${content}`;
+  const fileInputs: FileInput[] = await Promise.all(
+    options.filePaths.map(async (filePath) => {
+      const absPath = resolve(workingDir, filePath);
+      const buf = await readFile(absPath);
+      const ext = absPath.split(".").pop()?.toLowerCase() ?? "";
+      return {
+        data: buf.toString("base64"),
+        mediaType: extToMime(ext),
+        filename: basename(filePath),
+      };
     }),
   );
 
   const input: RunInput = {
-    task: fileBlobs.length > 0 ? `${task}\n\n${fileBlobs.join("\n\n")}` : task,
+    task,
     parameters: options.params,
+    files: fileInputs.length > 0 ? fileInputs : undefined,
   };
 
   if (options.json) {
@@ -2061,10 +2236,12 @@ export const runInteractive = async (
     });
   };
 
+  const uploadStore = await createUploadStore(config?.uploads, workingDir);
   const harness = new AgentHarness({
     workingDir,
     environment: resolveHarnessEnvironment(),
     approvalHandler,
+    uploadStore,
   });
   await harness.initialize();
   const identity = await ensureAgentIdentity(workingDir);

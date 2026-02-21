@@ -1,4 +1,4 @@
-import type { AgentEvent, RunInput, RunResult } from "@poncho-ai/sdk";
+import type { AgentEvent, ContentPart, RunInput, RunResult } from "@poncho-ai/sdk";
 
 export interface AgentClientOptions {
   url: string;
@@ -29,8 +29,15 @@ export interface ConversationSummary {
   messageCount: number;
 }
 
+export interface FileAttachment {
+  /** base64-encoded file data or a URL */
+  data: string;
+  mediaType: string;
+  filename?: string;
+}
+
 export interface ConversationRecord extends Omit<ConversationSummary, "messageCount"> {
-  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  messages: Array<{ role: "user" | "assistant"; content: string | ContentPart[] }>;
 }
 
 const trimTrailingSlash = (value: string): string => value.replace(/\/+$/, "");
@@ -144,23 +151,42 @@ export class AgentClient {
   async sendMessage(
     conversationId: string,
     message: string,
-    parameters?: Record<string, unknown>,
+    optionsOrParameters?: {
+      parameters?: Record<string, unknown>;
+      files?: FileAttachment[];
+    } | Record<string, unknown>,
   ): Promise<SyncRunResponse> {
     let currentMessage = message;
+    // Backward compat: third arg can be plain parameters Record or new options object
+    let parameters: Record<string, unknown> | undefined;
+    let files: FileAttachment[] | undefined;
+    if (optionsOrParameters && ("parameters" in optionsOrParameters || "files" in optionsOrParameters)) {
+      const opts = optionsOrParameters as { parameters?: Record<string, unknown>; files?: FileAttachment[] };
+      parameters = opts.parameters;
+      files = opts.files;
+    } else if (optionsOrParameters) {
+      parameters = optionsOrParameters as Record<string, unknown>;
+    }
     let totalSteps = 0;
     let stepBudget = 0;
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
     let totalDuration = 0;
     let latestRunId = "";
+    let isFirstRequest = true;
 
     while (true) {
+      const bodyPayload: Record<string, unknown> = { message: currentMessage };
+      if (parameters) bodyPayload.parameters = parameters;
+      if (files && files.length > 0 && isFirstRequest) bodyPayload.files = files;
+      isFirstRequest = false;
+
       const response = await this.fetchImpl(
         `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}/messages`,
         {
           method: "POST",
           headers: this.headers(),
-          body: JSON.stringify({ message: currentMessage, parameters }),
+          body: JSON.stringify(bodyPayload),
         },
       );
       if (!response.ok) {
@@ -220,7 +246,7 @@ export class AgentClient {
     }
   }
 
-  async run(input: RunInput): Promise<SyncRunResponse> {
+  async run(input: RunInput & { files?: FileAttachment[] }): Promise<SyncRunResponse> {
     if ((input.messages?.length ?? 0) > 0) {
       throw new Error(
         "run() with pre-seeded messages is no longer supported. Use createConversation/sendMessage.",
@@ -229,36 +255,48 @@ export class AgentClient {
     const conversation = await this.createConversation({
       title: input.task,
     });
-    return await this.sendMessage(conversation.conversationId, input.task, input.parameters);
+    return await this.sendMessage(conversation.conversationId, input.task, {
+      parameters: input.parameters,
+      files: input.files,
+    });
   }
 
-  async continue(input: ContinueInput): Promise<SyncRunResponse> {
-    return await this.sendMessage(input.runId, input.message, input.parameters);
+  async continue(input: ContinueInput & { files?: FileAttachment[] }): Promise<SyncRunResponse> {
+    return await this.sendMessage(input.runId, input.message, {
+      parameters: input.parameters,
+      files: input.files,
+    });
   }
 
   conversation(initialRunId?: string): {
-    send: (message: string, parameters?: Record<string, unknown>) => Promise<SyncRunResponse>;
+    send: (
+      message: string,
+      options?: { parameters?: Record<string, unknown>; files?: FileAttachment[] },
+    ) => Promise<SyncRunResponse>;
   } {
     let runId = initialRunId;
     return {
-      send: async (message: string, parameters?: Record<string, unknown>) => {
+      send: async (
+        message: string,
+        options?: { parameters?: Record<string, unknown>; files?: FileAttachment[] },
+      ) => {
         if (!runId) {
           const initialConversation = await this.createConversation({ title: message });
           const initial = await this.sendMessage(
             initialConversation.conversationId,
             message,
-            parameters,
+            options,
           );
           runId = initialConversation.conversationId;
           return initial;
         }
-        const next = await this.continue({ runId, message, parameters });
+        const next = await this.continue({ runId, message, ...options });
         return next;
       },
     };
   }
 
-  async *stream(input: RunInput): AsyncGenerator<AgentEvent> {
+  async *stream(input: RunInput & { files?: FileAttachment[] }): AsyncGenerator<AgentEvent> {
     if ((input.messages?.length ?? 0) > 0) {
       throw new Error(
         "stream() with pre-seeded messages is no longer supported. Use conversation APIs directly.",
@@ -268,14 +306,24 @@ export class AgentClient {
     let currentMessage = input.task;
     let totalSteps = 0;
     let stepBudget = 0;
+    let isFirstRequest = true;
 
     while (true) {
+      const bodyPayload: Record<string, unknown> = {
+        message: currentMessage,
+        parameters: input.parameters,
+      };
+      if (input.files && input.files.length > 0 && isFirstRequest) {
+        bodyPayload.files = input.files;
+      }
+      isFirstRequest = false;
+
       const response = await this.fetchImpl(
         `${this.baseUrl}/api/conversations/${encodeURIComponent(conversation.conversationId)}/messages`,
         {
           method: "POST",
           headers: this.headers(),
-          body: JSON.stringify({ message: currentMessage, parameters: input.parameters }),
+          body: JSON.stringify(bodyPayload),
         },
       );
 

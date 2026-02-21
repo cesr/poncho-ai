@@ -1077,7 +1077,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       border-radius: 24px;
       display: flex;
       align-items: end;
-      padding: 4px 6px 4px 18px;
+      padding: 4px 6px 4px 6px;
       transition: border-color 0.15s;
     }
     .composer-shell:focus-within { border-color: rgba(255,255,255,0.2); }
@@ -1090,7 +1090,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       min-height: 40px;
       max-height: 200px;
       resize: none;
-      padding: 10px 0 8px;
+      padding: 11px 0 8px;
       font-size: 14px;
       line-height: 1.5;
       margin-top: -4px;
@@ -1118,6 +1118,149 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     .send-btn.stop-mode:hover { background: #565656; }
     .send-btn:disabled { opacity: 0.2; cursor: default; }
     .send-btn:disabled:hover { background: #ededed; }
+    .attach-btn {
+      width: 32px;
+      height: 32px;
+      background: rgba(255,255,255,0.08);
+      border: 0;
+      border-radius: 50%;
+      color: #999;
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+      margin-bottom: 2px;
+      margin-right: 8px;
+      transition: color 0.15s, background 0.15s;
+    }
+    .attach-btn:hover { color: #ededed; background: rgba(255,255,255,0.14); }
+    .attachment-preview {
+      display: flex;
+      gap: 8px;
+      padding: 8px 0;
+      flex-wrap: wrap;
+    }
+    .attachment-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 9999px;
+      padding: 4px 10px 4px 6px;
+      font-size: 11px;
+      color: #777;
+      max-width: 200px;
+      cursor: pointer;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .attachment-chip:hover {
+      color: #ededed;
+      border-color: rgba(255, 255, 255, 0.25);
+      background: rgba(0, 0, 0, 0.75);
+    }
+    .attachment-chip img {
+      width: 20px;
+      height: 20px;
+      object-fit: cover;
+      border-radius: 50%;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+    .attachment-chip .file-icon {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.1);
+      display: grid;
+      place-items: center;
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+    .attachment-chip .remove-attachment {
+      cursor: pointer;
+      color: #555;
+      font-size: 14px;
+      margin-left: 2px;
+      line-height: 1;
+      transition: color 0.15s;
+    }
+    .attachment-chip .remove-attachment:hover { color: #fff; }
+    .attachment-chip .filename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100px; }
+    .user-bubble .user-file-attachments {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    .user-file-attachments img {
+      max-width: 200px;
+      max-height: 160px;
+      border-radius: 8px;
+      object-fit: cover;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .user-file-attachments img:hover { opacity: 0.85; }
+    .lightbox {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0);
+      backdrop-filter: blur(0px);
+      cursor: zoom-out;
+      transition: background 0.25s ease, backdrop-filter 0.25s ease;
+    }
+    .lightbox.active {
+      background: rgba(0,0,0,0.85);
+      backdrop-filter: blur(8px);
+    }
+    .lightbox img {
+      max-width: 90vw;
+      max-height: 90vh;
+      border-radius: 8px;
+      object-fit: contain;
+      transform: scale(0.4);
+      opacity: 0;
+      transition: transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94), opacity 0.25s ease;
+    }
+    .lightbox.active img {
+      transform: scale(1);
+      opacity: 1;
+    }
+    .user-file-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(0,0,0,0.2);
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 12px;
+      color: rgba(255,255,255,0.8);
+    }
+    .drag-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 9999;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+    }
+    .drag-overlay.active { display: flex; }
+    .drag-overlay-inner {
+      border: 2px dashed rgba(255,255,255,0.4);
+      border-radius: 16px;
+      padding: 40px 60px;
+      color: #fff;
+      font-size: 16px;
+    }
     .disclaimer {
       text-align: center;
       color: #333;
@@ -1261,7 +1404,12 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       </div>
       <form id="composer" class="composer">
         <div class="composer-inner">
+          <div id="attachment-preview" class="attachment-preview" style="display:none"></div>
           <div class="composer-shell">
+            <button id="attach-btn" class="attach-btn" type="button" title="Attach files">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
+            <input id="file-input" type="file" multiple accept="image/*,video/*,application/pdf,.txt,.csv,.json,.html" style="display:none" />
             <textarea id="prompt" class="composer-input" placeholder="Send a message..." rows="1"></textarea>
             <button id="send" class="send-btn" type="submit">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 12V4M4 7l4-4 4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -1271,6 +1419,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       </form>
     </main>
   </div>
+  <div id="drag-overlay" class="drag-overlay"><div class="drag-overlay-inner">Drop files to attach</div></div>
+  <div id="lightbox" class="lightbox" style="display:none"><img /></div>
 
     <script>
       // Marked library (inlined)
@@ -1293,7 +1443,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         activeStreamRunId: null,
         isMessagesPinnedToBottom: true,
         confirmDeleteId: null,
-        approvalRequestsInFlight: {}
+        approvalRequestsInFlight: {},
+        pendingFiles: [],
       };
 
       const agentInitial = document.body.dataset.agentInitial || "A";
@@ -1315,7 +1466,12 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         send: $("send"),
         shell: $("app"),
         sidebarToggle: $("sidebar-toggle"),
-        sidebarBackdrop: $("sidebar-backdrop")
+        sidebarBackdrop: $("sidebar-backdrop"),
+        attachBtn: $("attach-btn"),
+        fileInput: $("file-input"),
+        attachmentPreview: $("attachment-preview"),
+        dragOverlay: $("drag-overlay"),
+        lightbox: $("lightbox"),
       };
       const sendIconMarkup =
         '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 12V4M4 7l4-4 4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -1811,7 +1967,47 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             wrap.appendChild(content);
             row.appendChild(wrap);
           } else {
-            row.innerHTML = '<div class="user-bubble">' + escapeHtml(m.content) + '</div>';
+            const bubble = document.createElement("div");
+            bubble.className = "user-bubble";
+            if (typeof m.content === "string") {
+              bubble.textContent = m.content;
+            } else if (Array.isArray(m.content)) {
+              const textParts = m.content.filter(p => p.type === "text").map(p => p.text).join("");
+              if (textParts) {
+                const textEl = document.createElement("div");
+                textEl.textContent = textParts;
+                bubble.appendChild(textEl);
+              }
+              const fileParts = m.content.filter(p => p.type === "file");
+              if (fileParts.length > 0) {
+                const filesEl = document.createElement("div");
+                filesEl.className = "user-file-attachments";
+                fileParts.forEach(fp => {
+                  if (fp.mediaType && fp.mediaType.startsWith("image/")) {
+                    const img = document.createElement("img");
+                    if (fp._localBlob) {
+                      if (!fp._cachedUrl) fp._cachedUrl = URL.createObjectURL(fp._localBlob);
+                      img.src = fp._cachedUrl;
+                    } else if (fp.data && fp.data.startsWith("poncho-upload://")) {
+                      img.src = "/api/uploads/" + encodeURIComponent(fp.data.replace("poncho-upload://", ""));
+                    } else if (fp.data && (fp.data.startsWith("http://") || fp.data.startsWith("https://"))) {
+                      img.src = fp.data;
+                    } else if (fp.data) {
+                      img.src = "data:" + fp.mediaType + ";base64," + fp.data;
+                    }
+                    img.alt = fp.filename || "image";
+                    filesEl.appendChild(img);
+                  } else {
+                    const badge = document.createElement("span");
+                    badge.className = "user-file-badge";
+                    badge.textContent = "📎 " + (fp.filename || "file");
+                    filesEl.appendChild(badge);
+                  }
+                });
+                bubble.appendChild(filesEl);
+              }
+            }
+            row.appendChild(bubble);
           }
           col.appendChild(row);
         });
@@ -2317,12 +2513,62 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         }
       };
 
+      const renderAttachmentPreview = () => {
+        const el = elements.attachmentPreview;
+        if (state.pendingFiles.length === 0) {
+          el.style.display = "none";
+          el.innerHTML = "";
+          return;
+        }
+        el.style.display = "flex";
+        el.innerHTML = state.pendingFiles.map((f, i) => {
+          const isImage = f.type.startsWith("image/");
+          const thumbHtml = isImage
+            ? '<img src="' + URL.createObjectURL(f) + '" alt="" />'
+            : '<span class="file-icon">📎</span>';
+          return '<div class="attachment-chip" data-idx="' + i + '">'
+            + thumbHtml
+            + '<span class="filename">' + escapeHtml(f.name) + '</span>'
+            + '<span class="remove-attachment" data-idx="' + i + '">&times;</span>'
+            + '</div>';
+        }).join("");
+      };
+
+      const addFiles = (fileList) => {
+        for (const f of fileList) {
+          if (f.size > 25 * 1024 * 1024) {
+            alert("File too large: " + f.name + " (max 25MB)");
+            continue;
+          }
+          state.pendingFiles.push(f);
+        }
+        renderAttachmentPreview();
+      };
+
       const sendMessage = async (text) => {
         const messageText = (text || "").trim();
         if (!messageText || state.isStreaming) {
           return;
         }
-        const localMessages = [...(state.activeMessages || []), { role: "user", content: messageText }];
+        const filesToSend = [...state.pendingFiles];
+        state.pendingFiles = [];
+        renderAttachmentPreview();
+        let userContent;
+        if (filesToSend.length > 0) {
+          userContent = [{ type: "text", text: messageText }];
+          for (const f of filesToSend) {
+            userContent.push({
+              type: "file",
+              data: URL.createObjectURL(f),
+              mediaType: f.type,
+              filename: f.name,
+              _localBlob: f,
+            });
+          }
+        } else {
+          userContent = messageText;
+        }
+        const localMessages = [...(state.activeMessages || []), { role: "user", content: userContent }];
         let assistantMessage = {
           role: "assistant",
           content: "",
@@ -2370,13 +2616,33 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           let _maxSteps = 0;
           while (_continuationMessage) {
           let _shouldContinue = false;
-          const response = await fetch("/api/conversations/" + encodeURIComponent(conversationId) + "/messages", {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json", "x-csrf-token": state.csrfToken },
-            body: JSON.stringify({ message: _continuationMessage }),
-            signal: streamAbortController.signal,
-          });
+          let fetchOpts;
+          if (filesToSend.length > 0 && _continuationMessage === messageText) {
+            const formData = new FormData();
+            formData.append("message", _continuationMessage);
+            for (const f of filesToSend) {
+              formData.append("files", f, f.name);
+            }
+            fetchOpts = {
+              method: "POST",
+              credentials: "include",
+              headers: { "x-csrf-token": state.csrfToken },
+              body: formData,
+              signal: streamAbortController.signal,
+            };
+          } else {
+            fetchOpts = {
+              method: "POST",
+              credentials: "include",
+              headers: { "Content-Type": "application/json", "x-csrf-token": state.csrfToken },
+              body: JSON.stringify({ message: _continuationMessage }),
+              signal: streamAbortController.signal,
+            };
+          }
+          const response = await fetch(
+            "/api/conversations/" + encodeURIComponent(conversationId) + "/messages",
+            fetchOpts,
+          );
           if (!response.ok || !response.body) {
             throw new Error("Failed to stream response");
           }
@@ -2726,6 +2992,83 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         elements.prompt.value = "";
         autoResizePrompt();
         await sendMessage(value);
+      });
+
+      elements.attachBtn.addEventListener("click", () => elements.fileInput.click());
+      elements.fileInput.addEventListener("change", () => {
+        if (elements.fileInput.files && elements.fileInput.files.length > 0) {
+          addFiles(elements.fileInput.files);
+          elements.fileInput.value = "";
+        }
+      });
+      elements.attachmentPreview.addEventListener("click", (e) => {
+        const rm = e.target.closest(".remove-attachment");
+        if (rm) {
+          const idx = parseInt(rm.dataset.idx, 10);
+          state.pendingFiles.splice(idx, 1);
+          renderAttachmentPreview();
+        }
+      });
+
+      let dragCounter = 0;
+      document.addEventListener("dragenter", (e) => {
+        e.preventDefault();
+        dragCounter++;
+        if (dragCounter === 1) elements.dragOverlay.classList.add("active");
+      });
+      document.addEventListener("dragleave", (e) => {
+        e.preventDefault();
+        dragCounter--;
+        if (dragCounter <= 0) { dragCounter = 0; elements.dragOverlay.classList.remove("active"); }
+      });
+      document.addEventListener("dragover", (e) => e.preventDefault());
+      document.addEventListener("drop", (e) => {
+        e.preventDefault();
+        dragCounter = 0;
+        elements.dragOverlay.classList.remove("active");
+        if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+          addFiles(e.dataTransfer.files);
+        }
+      });
+
+      // Lightbox: open/close helpers
+      const lightboxImg = elements.lightbox.querySelector("img");
+      const openLightbox = (src) => {
+        lightboxImg.src = src;
+        elements.lightbox.style.display = "flex";
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => elements.lightbox.classList.add("active"));
+        });
+      };
+      const closeLightbox = () => {
+        elements.lightbox.classList.remove("active");
+        elements.lightbox.addEventListener("transitionend", function handler() {
+          elements.lightbox.removeEventListener("transitionend", handler);
+          elements.lightbox.style.display = "none";
+          lightboxImg.src = "";
+        });
+      };
+      elements.lightbox.addEventListener("click", closeLightbox);
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && elements.lightbox.style.display !== "none") closeLightbox();
+      });
+
+      // Lightbox from message images
+      elements.messages.addEventListener("click", (e) => {
+        const img = e.target;
+        if (!(img instanceof HTMLImageElement) || !img.closest(".user-file-attachments")) return;
+        openLightbox(img.src);
+      });
+
+      // Lightbox from attachment preview chips
+      elements.attachmentPreview.addEventListener("click", (e) => {
+        if (e.target.closest(".remove-attachment")) return;
+        const chip = e.target.closest(".attachment-chip");
+        if (!chip) return;
+        const img = chip.querySelector("img");
+        if (!img) return;
+        e.stopPropagation();
+        openLightbox(img.src);
       });
 
       elements.messages.addEventListener("click", async (event) => {
