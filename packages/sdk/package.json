@@ -1,6 +1,6 @@
 {
   "name": "@poncho-ai/sdk",
-  "version": "0.6.0",
+  "version": "1.0.0",
   "description": "Core types and utilities for building Poncho skills",
   "repository": {
     "type": "git",
