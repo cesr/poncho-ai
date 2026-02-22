@@ -53,6 +53,7 @@ import {
   setCookie,
   verifyPassphrase,
 } from "./web-ui.js";
+import { buildOpenApiSpec, renderApiDocsHtml } from "./api-docs.js";
 import { createInterface } from "node:readline/promises";
 import {
   runInitOnboarding,
@@ -374,7 +375,7 @@ cp .env.example .env
 poncho dev
 \`\`\`
 
-Open \`http://localhost:3000\` for the web UI.
+Open \`http://localhost:3000\` for the web UI, or \`http://localhost:3000/api/docs\` for interactive API documentation.
 
 On your first interactive session, the agent introduces its configurable capabilities.
 While a response is streaming, you can stop it:
@@ -534,6 +535,7 @@ export default {
       },
     },
   },
+  // webUi: false, // Disable built-in UI for API-only deployments
 };
 \`\`\`
 
@@ -1498,6 +1500,7 @@ export const createRequestHandler = async (options?: {
   const authRequired = config?.auth?.required ?? false;
   const requireAuth = authRequired && authToken.length > 0;
 
+  const webUiEnabled = config?.webUi !== false;
   const isProduction = resolveHarnessEnvironment() === "production";
   const secureCookies = isProduction;
 
@@ -1523,41 +1526,52 @@ export const createRequestHandler = async (options?: {
     }
     const [pathname] = request.url.split("?");
 
-    if (request.method === "GET" && (pathname === "/" || pathname.startsWith("/c/"))) {
-      writeHtml(response, 200, renderWebUiHtml({ agentName }));
-      return;
-    }
+    if (webUiEnabled) {
+      if (request.method === "GET" && (pathname === "/" || pathname.startsWith("/c/"))) {
+        writeHtml(response, 200, renderWebUiHtml({ agentName }));
+        return;
+      }
 
-    if (pathname === "/manifest.json" && request.method === "GET") {
-      response.writeHead(200, { "Content-Type": "application/manifest+json" });
-      response.end(renderManifest({ agentName }));
-      return;
-    }
+      if (pathname === "/manifest.json" && request.method === "GET") {
+        response.writeHead(200, { "Content-Type": "application/manifest+json" });
+        response.end(renderManifest({ agentName }));
+        return;
+      }
 
-    if (pathname === "/sw.js" && request.method === "GET") {
-      response.writeHead(200, {
-        "Content-Type": "application/javascript",
-        "Service-Worker-Allowed": "/",
-      });
-      response.end(renderServiceWorker());
-      return;
-    }
+      if (pathname === "/sw.js" && request.method === "GET") {
+        response.writeHead(200, {
+          "Content-Type": "application/javascript",
+          "Service-Worker-Allowed": "/",
+        });
+        response.end(renderServiceWorker());
+        return;
+      }
 
-    if (pathname === "/icon.svg" && request.method === "GET") {
-      response.writeHead(200, { "Content-Type": "image/svg+xml" });
-      response.end(renderIconSvg({ agentName }));
-      return;
-    }
+      if (pathname === "/icon.svg" && request.method === "GET") {
+        response.writeHead(200, { "Content-Type": "image/svg+xml" });
+        response.end(renderIconSvg({ agentName }));
+        return;
+      }
 
-    if ((pathname === "/icon-192.png" || pathname === "/icon-512.png") && request.method === "GET") {
-      // Redirect to SVG — browsers that support PWA icons will use the SVG
-      response.writeHead(302, { Location: "/icon.svg" });
-      response.end();
-      return;
+      if ((pathname === "/icon-192.png" || pathname === "/icon-512.png") && request.method === "GET") {
+        response.writeHead(302, { Location: "/icon.svg" });
+        response.end();
+        return;
+      }
     }
 
     if (pathname === "/health" && request.method === "GET") {
       writeJson(response, 200, { status: "ok" });
+      return;
+    }
+
+    if (pathname === "/api/openapi.json" && request.method === "GET") {
+      writeJson(response, 200, buildOpenApiSpec({ agentName }));
+      return;
+    }
+
+    if (pathname === "/api/docs" && request.method === "GET") {
+      writeHtml(response, 200, renderApiDocsHtml("/api/openapi.json"));
       return;
     }
 

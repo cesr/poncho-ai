@@ -815,6 +815,8 @@ Your deployed agent exposes these endpoints:
 | Endpoint | Use case |
 |----------|----------|
 | `GET /health` | Health checks for load balancers |
+| `GET /api/docs` | Interactive API documentation (Scalar) |
+| `GET /api/openapi.json` | OpenAPI 3.1 spec (machine-readable) |
 | `GET /api/auth/session` | Session status + CSRF token for browser clients |
 | `POST /api/auth/login` | Passphrase login for browser sessions |
 | `POST /api/auth/logout` | End browser session |
@@ -824,7 +826,13 @@ Your deployed agent exposes these endpoints:
 | `PATCH /api/conversations/:conversationId` | Rename conversation |
 | `DELETE /api/conversations/:conversationId` | Delete conversation |
 | `POST /api/conversations/:conversationId/messages` | Stream a new assistant response |
+| `GET /api/conversations/:conversationId/events` | Attach to live SSE stream |
+| `POST /api/conversations/:conversationId/stop` | Cancel an in-flight run |
+| `POST /api/approvals/:approvalId` | Resolve tool approval request |
+| `GET /api/uploads/:key` | Retrieve uploaded file |
 | `GET\|POST /api/cron/:jobName` | Trigger a cron job (see [Cron Jobs](#cron-jobs)) |
+
+> **Tip:** Visit `/api/docs` on any running agent for interactive API documentation with request examples and full schema details.
 
 ### POST /api/conversations/:conversationId/messages (streaming)
 
@@ -923,6 +931,24 @@ Auth notes for custom frontends:
 
 - Browser session mode: `GET /api/auth/session`, then `POST /api/auth/login`, and send `x-csrf-token` on mutating requests.
 - API token mode: send `Authorization: Bearer <PONCHO_AUTH_TOKEN>` on API requests.
+
+### Headless mode (API-only)
+
+If you're building your own frontend or using the agent purely as an API, disable the built-in Web UI:
+
+```javascript
+// poncho.config.js
+export default {
+  webUi: false,
+}
+```
+
+When `webUi` is `false`:
+- The built-in chat UI at `/` is disabled (returns 404).
+- All `/api/*` endpoints, `/health`, and `/api/docs` continue to work normally.
+- Messaging adapter routes (e.g., Slack) are unaffected.
+
+This is useful for API-only deployments where a separate frontend (e.g., a Next.js app) calls the Poncho API via a backend-for-frontend pattern.
 
 ### TypeScript/JavaScript Client
 
@@ -1125,6 +1151,9 @@ export default {
     { platform: 'slack' },                                 // Uses SLACK_BOT_TOKEN + SLACK_SIGNING_SECRET
     // { platform: 'slack', botTokenEnv: 'MY_BOT_TOKEN' }, // Custom env var names
   ],
+
+  // Headless mode: disable the built-in Web UI (API-only)
+  // webUi: false,
 
 }
 ```

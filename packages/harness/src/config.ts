@@ -90,6 +90,8 @@ export interface PonchoConfig extends McpConfig {
     lambda?: Record<string, unknown>;
     fly?: Record<string, unknown>;
   };
+  /** Set to `false` to disable the built-in web UI (headless / API-only mode). */
+  webUi?: false;
 }
 
 const resolveTtl = (
