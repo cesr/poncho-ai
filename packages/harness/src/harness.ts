@@ -25,6 +25,7 @@ import { LocalMcpBridge } from "./mcp.js";
 import { createModelProvider, type ModelProviderFactory } from "./model-factory.js";
 import { buildSkillContextWindow, loadSkillMetadata } from "./skill-context.js";
 import { streamText, type ModelMessage } from "ai";
+import { addPromptCacheBreakpoints } from "./prompt-cache.js";
 import { jsonSchemaToZod } from "./schema-converter.js";
 import type { SkillMetadata } from "./skill-context.js";
 import { createSkillTools, normalizeScriptPolicyPath } from "./skill-tools.js";
@@ -865,6 +866,7 @@ ${boundedMainMemory.trim()}`
     let responseText = "";
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
+    let totalCachedTokens = 0;
     let transientStepRetryCount = 0;
 
     for (let step = 1; step <= maxSteps; step += 1) {
@@ -889,7 +891,7 @@ ${boundedMainMemory.trim()}`
             status: "completed",
             response: responseText,
             steps: step - 1,
-            tokens: { input: totalInputTokens, output: totalOutputTokens, cached: 0 },
+            tokens: { input: totalInputTokens, output: totalOutputTokens, cached: totalCachedTokens },
             duration: now() - start,
             continuation: true,
             maxSteps,
@@ -1143,14 +1145,17 @@ ${boundedMainMemory.trim()}`
         const temperature = agent.frontmatter.model?.temperature ?? 0.2;
         const maxTokens = agent.frontmatter.model?.maxTokens;
 
+        const modelInstance = this.modelProvider(modelName);
+        const cachedMessages = addPromptCacheBreakpoints(coreMessages, modelInstance);
+
         // Stream response using Vercel AI SDK with telemetry enabled
         const telemetryEnabled = this.loadedConfig?.telemetry?.enabled !== false;
         const latitudeApiKey = this.loadedConfig?.telemetry?.latitude?.apiKey;
 
         const result = await streamText({
-          model: this.modelProvider(modelName),
+          model: modelInstance,
           system: integrityPrompt,
-          messages: coreMessages,
+          messages: cachedMessages,
           tools,
           temperature,
           abortSignal: input.abortSignal,
@@ -1274,15 +1279,17 @@ ${boundedMainMemory.trim()}`
       const toolCallsResult = await result.toolCalls;
 
       // Update token usage
+      const stepCachedTokens = usage.inputTokenDetails?.cacheReadTokens ?? 0;
       totalInputTokens += usage.inputTokens ?? 0;
       totalOutputTokens += usage.outputTokens ?? 0;
+      totalCachedTokens += stepCachedTokens;
 
       yield pushEvent({
         type: "model:response",
         usage: {
           input: usage.inputTokens ?? 0,
           output: usage.outputTokens ?? 0,
-          cached: 0,
+          cached: stepCachedTokens,
         },
       });
 
@@ -1330,7 +1337,7 @@ ${boundedMainMemory.trim()}`
           tokens: {
             input: totalInputTokens,
             output: totalOutputTokens,
-            cached: 0,
+            cached: totalCachedTokens,
           },
           duration: now() - start,
         };
@@ -1528,7 +1535,7 @@ ${boundedMainMemory.trim()}`
         status: "completed",
         response: responseText,
         steps: maxSteps,
-        tokens: { input: totalInputTokens, output: totalOutputTokens, cached: 0 },
+        tokens: { input: totalInputTokens, output: totalOutputTokens, cached: totalCachedTokens },
         duration: now() - start,
         continuation: true,
         maxSteps,

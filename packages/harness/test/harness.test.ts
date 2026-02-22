@@ -3,8 +3,17 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
+import type { ToolContext } from "@poncho-ai/sdk";
 import { AgentHarness } from "../src/harness.js";
 import { loadSkillMetadata } from "../src/skill-context.js";
+
+const stubContext: ToolContext = {
+  runId: "test-run",
+  agentId: "test-agent",
+  step: 1,
+  workingDir: "/tmp",
+  parameters: {},
+};
 
 describe("agent harness", () => {
   it("registers default filesystem tools", async () => {
@@ -461,7 +470,7 @@ description: Simple math scripts
     const listScripts = harness.listTools().find((tool) => tool.name === "list_skill_scripts");
 
     expect(listScripts).toBeDefined();
-    const result = await listScripts!.handler({ skill: "math" });
+    const result = await listScripts!.handler({ skill: "math" }, stubContext);
     expect(result).toEqual({
       skill: "math",
       scripts: ["./fetch-page.ts", "scripts/add.ts", "scripts/nested/multiply.js"],
@@ -523,7 +532,7 @@ description: Simple math scripts
       skill: "math",
       script: "scripts/add.ts",
       input: { a: 2, b: 3 },
-    });
+    }, stubContext);
     expect(result).toEqual({
       skill: "math",
       script: "./scripts/add.ts",
@@ -532,7 +541,7 @@ description: Simple math scripts
     const rootResult = await runner!.handler({
       skill: "math",
       script: "./fetch-page.ts",
-    });
+    }, stubContext);
     expect(rootResult).toEqual({
       skill: "math",
       script: "./fetch-page.ts",
@@ -565,7 +574,7 @@ model:
     await harness.initialize();
     const runner = harness.listTools().find((tool) => tool.name === "run_skill_script");
     expect(runner).toBeDefined();
-    const result = await runner!.handler({ script: "scripts/ping.ts" });
+    const result = await runner!.handler({ script: "scripts/ping.ts" }, stubContext);
     expect(result).toEqual({
       skill: null,
       script: "./scripts/ping.ts",
@@ -608,7 +617,7 @@ description: Safe skill
     const result = await runner!.handler({
       skill: "safe",
       script: "../outside.ts",
-    });
+    }, stubContext);
     expect(result).toMatchObject({
       error: expect.stringContaining("must be relative and within the allowed directory"),
     });
@@ -660,17 +669,17 @@ allowed-tools:
     const runScript = harness.listTools().find((tool) => tool.name === "run_skill_script");
     expect(listScripts).toBeDefined();
     expect(runScript).toBeDefined();
-    const listed = await listScripts!.handler({ skill: "math" });
+    const listed = await listScripts!.handler({ skill: "math" }, stubContext);
     expect(listed).toEqual({
       skill: "math",
       scripts: ["scripts/add.ts", "tools/multiply.ts"],
     });
-    const result = await runScript!.handler({ skill: "math", script: "scripts/add.ts" });
+    const result = await runScript!.handler({ skill: "math", script: "scripts/add.ts" }, stubContext);
     expect(result).toMatchObject({ output: { ok: true } });
     const toolsResult = await runScript!.handler({
       skill: "math",
       script: "./tools/multiply.ts",
-    });
+    }, stubContext);
     expect(toolsResult).toMatchObject({ output: { ok: true, kind: "tools" } });
   });
 

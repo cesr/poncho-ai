@@ -6,20 +6,18 @@ describe("model factory", () => {
     const provider = createModelProvider("openai");
     expect(provider).toBeInstanceOf(Function);
 
-    // Should be able to call it with a model name
     const model = provider("gpt-4");
     expect(model).toBeDefined();
-    expect(model.provider).toBe("openai.responses");
+    expect((model as { provider: string }).provider).toBe("openai.responses");
   });
 
   it("creates a function for Anthropic provider", () => {
     const provider = createModelProvider("anthropic");
     expect(provider).toBeInstanceOf(Function);
 
-    // Should be able to call it with a model name
     const model = provider("claude-3-opus-20240229");
     expect(model).toBeDefined();
-    expect(model.provider).toMatch(/^anthropic\./);
+    expect((model as { provider: string }).provider).toMatch(/^anthropic\./);
   });
 
   it("defaults to Anthropic when no provider specified", () => {
@@ -28,7 +26,7 @@ describe("model factory", () => {
 
     const model = provider("claude-3-opus-20240229");
     expect(model).toBeDefined();
-    expect(model.provider).toMatch(/^anthropic\./);
+    expect((model as { provider: string }).provider).toMatch(/^anthropic\./);
   });
 
   it("normalizes provider names to lowercase", () => {
@@ -36,6 +34,6 @@ describe("model factory", () => {
     expect(provider).toBeInstanceOf(Function);
 
     const model = provider("gpt-4");
-    expect(model.provider).toBe("openai.responses");
+    expect((model as { provider: string }).provider).toBe("openai.responses");
   });
 });
