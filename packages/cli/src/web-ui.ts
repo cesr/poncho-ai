@@ -2223,9 +2223,22 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                     }
                     if (eventName === "run:error") {
                       assistantMessage._activeActivities = [];
+                      if (assistantMessage._currentTools.length > 0) {
+                        assistantMessage._sections.push({
+                          type: "tools",
+                          content: assistantMessage._currentTools,
+                        });
+                        assistantMessage._currentTools = [];
+                      }
+                      if (assistantMessage._currentText.length > 0) {
+                        assistantMessage._sections.push({
+                          type: "text",
+                          content: assistantMessage._currentText,
+                        });
+                        assistantMessage._currentText = "";
+                      }
                       const errMsg =
                         payload.error?.message || "Something went wrong";
-                      assistantMessage.content = "";
                       assistantMessage._error = errMsg;
                       renderIfActiveConversation(false);
                     }
@@ -2834,9 +2847,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                   renderIfActiveConversation(false);
                 }
                 if (eventName === "run:error") {
-                  assistantMessage._activeActivities = [];
+                  finalizeAssistantMessage();
                   const errMsg = payload.error?.message || "Something went wrong";
-                  assistantMessage.content = "";
                   assistantMessage._error = errMsg;
                   renderIfActiveConversation(false);
                 }

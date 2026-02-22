@@ -63,8 +63,18 @@ export interface HarnessRunOutput {
 
 const now = (): number => Date.now();
 const MAX_CONTEXT_MESSAGES = 40;
-const FIRST_CHUNK_TIMEOUT_MS = 180_000; // 180s to receive the first chunk from the model
+const FIRST_CHUNK_TIMEOUT_MS = 300_000; // 300s to receive the first chunk from the model
 const MAX_TRANSIENT_STEP_RETRIES = 2;
+
+class FirstChunkTimeoutError extends Error {
+  constructor(modelName: string, timeoutMs: number) {
+    super(
+      `Model "${modelName}" did not respond within ${Math.floor(timeoutMs / 1000)}s. ` +
+      `This is likely a transient API delay. The step will be retried automatically.`,
+    );
+    this.name = "FirstChunkTimeoutError";
+  }
+}
 const SKILL_TOOL_NAMES = [
   "activate_skill",
   "deactivate_skill",
@@ -123,6 +133,9 @@ const getErrorStatusCode = (error: unknown): number | undefined => {
 };
 
 const isRetryableModelError = (error: unknown): boolean => {
+  if (error instanceof FirstChunkTimeoutError) {
+    return true;
+  }
   if (isNoOutputGeneratedError(error)) {
     return true;
   }
@@ -144,6 +157,12 @@ const isRetryableModelError = (error: unknown): boolean => {
 
 const toRunError = (error: unknown): { code: string; message: string; details?: Record<string, unknown> } => {
   const statusCode = getErrorStatusCode(error);
+  if (error instanceof FirstChunkTimeoutError) {
+    return {
+      code: "MODEL_TIMEOUT",
+      message: error.message,
+    };
+  }
   if (isNoOutputGeneratedError(error)) {
     return {
       code: "MODEL_NO_OUTPUT",
@@ -764,7 +783,10 @@ export class AgentHarness {
     const runId = `run_${randomUUID()}`;
     const start = now();
     const maxSteps = agent.frontmatter.limits?.maxSteps ?? 50;
-    const timeoutMs = (agent.frontmatter.limits?.timeout ?? 300) * 1000;
+    const configuredTimeout = agent.frontmatter.limits?.timeout;
+    const timeoutMs = this.environment === "development" && configuredTimeout == null
+      ? 0 // no hard timeout in development unless explicitly configured
+      : (configuredTimeout ?? 300) * 1000;
     const platformMaxDurationSec = Number(process.env.PONCHO_MAX_DURATION) || 0;
     const softDeadlineMs = platformMaxDurationSec > 0
       ? platformMaxDurationSec * 800
@@ -875,7 +897,7 @@ ${boundedMainMemory.trim()}`
           yield emitCancellation();
           return;
         }
-        if (now() - start > timeoutMs) {
+        if (timeoutMs > 0 && now() - start > timeoutMs) {
           yield pushEvent({
             type: "run:error",
             runId,
@@ -1170,7 +1192,8 @@ ${boundedMainMemory.trim()}`
         // each next() call against the remaining time budget.
         let fullText = "";
         let chunkCount = 0;
-        const streamDeadline = start + timeoutMs;
+        const hasRunTimeout = timeoutMs > 0;
+        const streamDeadline = hasRunTimeout ? start + timeoutMs : 0;
         const textIterator = result.textStream[Symbol.asyncIterator]();
         try {
           while (true) {
@@ -1178,51 +1201,63 @@ ${boundedMainMemory.trim()}`
               yield emitCancellation();
               return;
             }
-            const remaining = streamDeadline - now();
-            if (remaining <= 0) {
+            if (hasRunTimeout) {
+              const remaining = streamDeadline - now();
+              if (remaining <= 0) {
+                yield pushEvent({
+                  type: "run:error",
+                  runId,
+                  error: {
+                    code: "TIMEOUT",
+                    message: `Model "${modelName}" did not respond within the ${Math.floor(timeoutMs / 1000)}s run timeout.`,
+                  },
+                });
+                console.error(
+                  `[poncho][harness] Stream timeout: model="${modelName}", step=${step}, elapsed=${now() - start}ms`,
+                );
+                return;
+              }
+            }
+            // Use a shorter timeout for the first chunk to detect
+            // non-responsive models quickly instead of waiting minutes.
+            // When no run timeout is set, only the first chunk is time-bounded.
+            const remaining = hasRunTimeout ? streamDeadline - now() : Infinity;
+            const timeout = chunkCount === 0
+              ? Math.min(remaining, FIRST_CHUNK_TIMEOUT_MS)
+              : hasRunTimeout ? remaining : 0;
+            let nextChunk: IteratorResult<string> | null;
+            if (timeout <= 0 && chunkCount > 0) {
+              // No time budget — await the stream directly (development mode, no run timeout)
+              nextChunk = await textIterator.next();
+            } else {
+              let timer: ReturnType<typeof setTimeout> | undefined;
+              nextChunk = await Promise.race([
+                textIterator.next(),
+                new Promise<null>((resolve) => {
+                  timer = setTimeout(() => resolve(null), timeout);
+                }),
+              ]);
+              clearTimeout(timer);
+            }
+
+            if (nextChunk === null) {
+              const isFirstChunk = chunkCount === 0;
+              console.error(
+                `[poncho][harness] Stream timeout waiting for ${isFirstChunk ? "first" : "next"} chunk: model="${modelName}", step=${step}, chunks=${chunkCount}, elapsed=${now() - start}ms`,
+              );
+              if (isFirstChunk) {
+                // Throw so the step-level retry logic can handle it.
+                throw new FirstChunkTimeoutError(modelName, FIRST_CHUNK_TIMEOUT_MS);
+              }
+              // Mid-stream timeout: not retryable (partial response would be lost)
               yield pushEvent({
                 type: "run:error",
                 runId,
                 error: {
                   code: "TIMEOUT",
-                  message: `Model "${modelName}" did not respond within the ${Math.floor(timeoutMs / 1000)}s run timeout.`,
+                  message: `Model "${modelName}" stopped responding during streaming (run timeout ${Math.floor(timeoutMs / 1000)}s exceeded).`,
                 },
               });
-              console.error(
-                `[poncho][harness] Stream timeout: model="${modelName}", step=${step}, elapsed=${now() - start}ms`,
-              );
-              return;
-            }
-            // Use a shorter timeout for the first chunk to detect
-            // non-responsive models quickly instead of waiting minutes.
-            const timeout = chunkCount === 0
-              ? Math.min(remaining, FIRST_CHUNK_TIMEOUT_MS)
-              : remaining;
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            const nextChunk = await Promise.race([
-              textIterator.next(),
-              new Promise<null>((resolve) => {
-                timer = setTimeout(() => resolve(null), timeout);
-              }),
-            ]);
-            clearTimeout(timer);
-
-            if (nextChunk === null) {
-              const isFirstChunk = chunkCount === 0;
-              const errorMessage = isFirstChunk
-                ? `Model "${modelName}" did not respond within ${Math.floor(FIRST_CHUNK_TIMEOUT_MS / 1000)}s. The model may not be supported by the current provider SDK, or the API is unreachable. Check that the model name is correct and that your provider SDK is up to date.`
-                : `Model "${modelName}" stopped responding during streaming (run timeout ${Math.floor(timeoutMs / 1000)}s exceeded).`;
-              yield pushEvent({
-                type: "run:error",
-                runId,
-                error: {
-                  code: isFirstChunk ? "MODEL_TIMEOUT" : "TIMEOUT",
-                  message: errorMessage,
-                },
-              });
-              console.error(
-                `[poncho][harness] Stream timeout waiting for ${isFirstChunk ? "first" : "next"} chunk: model="${modelName}", step=${step}, chunks=${chunkCount}, elapsed=${now() - start}ms`,
-              );
               return;
             }
 
