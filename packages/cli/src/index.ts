@@ -496,7 +496,7 @@ Core files:
 
 - \`AGENT.md\`: behavior, model selection, runtime guidance
 - \`poncho.config.js\`: runtime config (storage, auth, telemetry, MCP, tools)
-- \`.env\`: secrets and environment variables
+- \`.env\`: secrets and environment variables (loaded before the harness starts, so \`process.env\` is available in skill scripts)
 
 Example \`poncho.config.js\`:
 

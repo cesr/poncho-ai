@@ -223,6 +223,7 @@ You can extend your own capabilities by creating custom JavaScript/TypeScript sc
 - Scripts can perform any Node.js operations: API calls, file processing, data transformations, web scraping, etc.
 - Use the \`run_skill_script\` tool to execute these scripts and integrate results into your workflow
 - This allows you to dynamically add custom tools and capabilities as users need them, without requiring external dependencies or MCP servers
+- Scripts run in the same Node.js process, so \`process.env\` is available directly. The \`.env\` file is loaded before the harness starts, meaning any variable defined there (e.g. API keys, tokens) can be read with \`process.env.MY_VAR\` inside scripts.
 
 ## Skill Authoring Guardrails
 

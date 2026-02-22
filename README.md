@@ -398,6 +398,28 @@ export default async function run(input) {
 }
 ```
 
+### Environment variables in scripts
+
+Skill scripts run in the same Node.js process as the agent, so `process.env` is available directly. The CLI loads your `.env` file before the harness starts, which means any variable you define there is ready to use:
+
+```bash
+# .env
+MY_API_KEY=sk-abc123
+```
+
+```typescript
+// scripts/my-tool.ts
+export default async function run(input) {
+  const apiKey = process.env.MY_API_KEY
+  const res = await fetch('https://api.example.com/data', {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  })
+  return { result: await res.json() }
+}
+```
+
+This works the same way in local development (`poncho dev`) and deployed environments — just make sure the variables are set on your deployment platform.
+
 ## Using MCP Servers
 
 MCP (Model Context Protocol) is a standard for connecting AI agents to external tools and services. While skills are simple tools bundled with your agent, MCP servers are separate processes that expose tools over a protocol - useful for complex integrations like GitHub, Slack, or databases.
