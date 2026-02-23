@@ -429,7 +429,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-  <meta name="theme-color" content="#000000">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="${agentName}">
@@ -439,12 +440,168 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
   <title>${agentName}</title>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inconsolata:400,700">
   <style>
+    :root {
+      color-scheme: light dark;
+
+      --bg: #000;
+      --bg-alt: #0a0a0a;
+      --bg-elevated: #111;
+
+      --fg: #ededed;
+      --fg-strong: #fff;
+      --fg-2: #888;
+      --fg-3: #999;
+      --fg-4: #777;
+      --fg-5: #666;
+      --fg-6: #555;
+      --fg-7: #444;
+      --fg-8: #333;
+
+      --fg-tool: #8a8a8a;
+      --fg-tool-code: #bcbcbc;
+      --fg-tool-item: #d6d6d6;
+      --fg-approval-label: #b0b0b0;
+      --fg-approval-input: #cfcfcf;
+      --fg-approval-btn: #f0f0f0;
+
+      --accent: #ededed;
+      --accent-fg: #000;
+      --accent-hover: #fff;
+
+      --stop-bg: #4a4a4a;
+      --stop-fg: #fff;
+      --stop-hover: #565656;
+
+      --border-1: rgba(255,255,255,0.06);
+      --border-2: rgba(255,255,255,0.08);
+      --border-3: rgba(255,255,255,0.1);
+      --border-4: rgba(255,255,255,0.12);
+      --border-5: rgba(255,255,255,0.18);
+      --border-focus: rgba(255,255,255,0.2);
+      --border-hover: rgba(255,255,255,0.25);
+      --border-drag: rgba(255,255,255,0.4);
+
+      --surface-1: rgba(255,255,255,0.02);
+      --surface-2: rgba(255,255,255,0.03);
+      --surface-3: rgba(255,255,255,0.04);
+      --surface-4: rgba(255,255,255,0.06);
+      --surface-5: rgba(255,255,255,0.08);
+      --surface-6: rgba(255,255,255,0.1);
+      --surface-7: rgba(255,255,255,0.12);
+      --surface-8: rgba(255,255,255,0.14);
+
+      --chip-bg: rgba(0,0,0,0.6);
+      --chip-bg-hover: rgba(0,0,0,0.75);
+      --backdrop: rgba(0,0,0,0.6);
+      --lightbox-bg: rgba(0,0,0,0.85);
+      --inset-1: rgba(0,0,0,0.16);
+      --inset-2: rgba(0,0,0,0.25);
+
+      --file-badge-bg: rgba(0,0,0,0.2);
+      --file-badge-fg: rgba(255,255,255,0.8);
+
+      --error: #ff4444;
+      --error-soft: #ff6b6b;
+      --error-alt: #ff6666;
+      --error-bg: rgba(255,68,68,0.08);
+      --error-border: rgba(255,68,68,0.25);
+
+      --tool-done: #6a9955;
+      --tool-error: #f48771;
+
+      --approve: #78e7a6;
+      --approve-border: rgba(58,208,122,0.45);
+      --deny: #f59b9b;
+      --deny-border: rgba(224,95,95,0.45);
+
+      --scrollbar: rgba(255,255,255,0.1);
+      --scrollbar-hover: rgba(255,255,255,0.16);
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #ffffff;
+        --bg-alt: #f5f5f5;
+        --bg-elevated: #e8e8e8;
+
+        --fg: #1a1a1a;
+        --fg-strong: #000;
+        --fg-2: #666;
+        --fg-3: #555;
+        --fg-4: #777;
+        --fg-5: #888;
+        --fg-6: #888;
+        --fg-7: #aaa;
+        --fg-8: #bbb;
+
+        --fg-tool: #666;
+        --fg-tool-code: #444;
+        --fg-tool-item: #333;
+        --fg-approval-label: #666;
+        --fg-approval-input: #444;
+        --fg-approval-btn: #1a1a1a;
+
+        --accent: #1a1a1a;
+        --accent-fg: #fff;
+        --accent-hover: #000;
+
+        --stop-bg: #d4d4d4;
+        --stop-fg: #333;
+        --stop-hover: #c4c4c4;
+
+        --border-1: rgba(0,0,0,0.06);
+        --border-2: rgba(0,0,0,0.08);
+        --border-3: rgba(0,0,0,0.1);
+        --border-4: rgba(0,0,0,0.1);
+        --border-5: rgba(0,0,0,0.15);
+        --border-focus: rgba(0,0,0,0.2);
+        --border-hover: rgba(0,0,0,0.2);
+        --border-drag: rgba(0,0,0,0.3);
+
+        --surface-1: rgba(0,0,0,0.02);
+        --surface-2: rgba(0,0,0,0.03);
+        --surface-3: rgba(0,0,0,0.03);
+        --surface-4: rgba(0,0,0,0.04);
+        --surface-5: rgba(0,0,0,0.05);
+        --surface-6: rgba(0,0,0,0.07);
+        --surface-7: rgba(0,0,0,0.08);
+        --surface-8: rgba(0,0,0,0.1);
+
+        --chip-bg: rgba(255,255,255,0.8);
+        --chip-bg-hover: rgba(255,255,255,0.9);
+        --backdrop: rgba(0,0,0,0.3);
+        --lightbox-bg: rgba(0,0,0,0.75);
+        --inset-1: rgba(0,0,0,0.04);
+        --inset-2: rgba(0,0,0,0.06);
+
+        --file-badge-bg: rgba(0,0,0,0.05);
+        --file-badge-fg: rgba(0,0,0,0.7);
+
+        --error: #dc2626;
+        --error-soft: #ef4444;
+        --error-alt: #ef4444;
+        --error-bg: rgba(220,38,38,0.06);
+        --error-border: rgba(220,38,38,0.2);
+
+        --tool-done: #16a34a;
+        --tool-error: #dc2626;
+
+        --approve: #16a34a;
+        --approve-border: rgba(22,163,74,0.35);
+        --deny: #dc2626;
+        --deny-border: rgba(220,38,38,0.3);
+
+        --scrollbar: rgba(0,0,0,0.12);
+        --scrollbar-hover: rgba(0,0,0,0.2);
+      }
+    }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100vh; overflow: hidden; overscroll-behavior: none; touch-action: pan-y; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Helvetica Neue", sans-serif;
-      background: #000;
-      color: #ededed;
+      background: var(--bg);
+      color: var(--fg);
       font-size: 14px;
       line-height: 1.5;
       -webkit-font-smoothing: antialiased;
@@ -452,7 +609,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     }
     button, input, textarea { font: inherit; color: inherit; }
     .hidden { display: none !important; }
-    a { color: #ededed; }
+    a { color: var(--fg); }
 
     /* Auth */
     .auth {
@@ -460,39 +617,39 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       display: grid;
       place-items: center;
       padding: 20px;
-      background: #000;
+      background: var(--bg);
     }
     .auth-card {
       width: min(400px, 90vw);
     }
     .auth-shell {
-      background: #0a0a0a;
-      border: 1px solid rgba(255,255,255,0.1);
+      background: var(--bg-alt);
+      border: 1px solid var(--border-3);
       border-radius: 9999px;
       display: flex;
       align-items: center;
       padding: 4px 6px 4px 18px;
       transition: border-color 0.15s;
     }
-    .auth-shell:focus-within { border-color: rgba(255,255,255,0.2); }
+    .auth-shell:focus-within { border-color: var(--border-focus); }
     .auth-input {
       flex: 1;
       background: transparent;
       border: 0;
       outline: none;
-      color: #ededed;
+      color: var(--fg);
       padding: 10px 0 8px;
       font-size: 14px;
       margin-top: -2px;
     }
-    .auth-input::placeholder { color: #444; }
+    .auth-input::placeholder { color: var(--fg-7); }
     .auth-submit {
       width: 32px;
       height: 32px;
-      background: #ededed;
+      background: var(--accent);
       border: 0;
       border-radius: 50%;
-      color: #000;
+      color: var(--accent-fg);
       cursor: pointer;
       display: grid;
       place-items: center;
@@ -500,19 +657,19 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       margin-bottom: 2px;
       transition: background 0.15s;
     }
-    .auth-submit:hover { background: #fff; }
-    .error { color: #ff4444; font-size: 13px; min-height: 16px; }
+    .auth-submit:hover { background: var(--accent-hover); }
+    .error { color: var(--error); font-size: 13px; min-height: 16px; }
     .message-error {
-      background: rgba(255,68,68,0.08);
-      border: 1px solid rgba(255,68,68,0.25);
+      background: var(--error-bg);
+      border: 1px solid var(--error-border);
       border-radius: 10px;
-      color: #ff6b6b;
+      color: var(--error-soft);
       padding: 12px 16px;
       font-size: 13px;
       line-height: 1.5;
       max-width: 600px;
     }
-    .message-error strong { color: #ff4444; }
+    .message-error strong { color: var(--error); }
 
     /* Layout - use fixed positioning with explicit dimensions */
     .shell { 
@@ -544,8 +701,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     }
     .sidebar {
       width: 260px;
-      background: #000;
-      border-right: 1px solid rgba(255,255,255,0.06);
+      background: var(--bg);
+      border-right: 1px solid var(--border-1);
       display: flex;
       flex-direction: column;
       padding: 12px 8px;
@@ -553,7 +710,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     .new-chat-btn {
       background: transparent;
       border: 0;
-      color: #888;
+      color: var(--fg-2);
       border-radius: 12px;
       height: 36px;
       padding: 0 10px;
@@ -564,7 +721,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       cursor: pointer;
       transition: background 0.15s, color 0.15s;
     }
-    .new-chat-btn:hover { color: #ededed; }
+    .new-chat-btn:hover { color: var(--fg); }
     .new-chat-btn svg { width: 16px; height: 16px; }
     .conversation-list {
       flex: 1;
@@ -584,16 +741,16 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       cursor: pointer;
       font-size: 13px;
       line-height: 36px;
-      color: #555;
+      color: var(--fg-6);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
       position: relative;
       transition: color 0.15s;
     }
-    .conversation-item:hover { color: #999; }
+    .conversation-item:hover { color: var(--fg-3); }
     .conversation-item.active {
-      color: #ededed;
+      color: var(--fg);
     }
     .conversation-item .delete-btn {
       position: absolute;
@@ -601,9 +758,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       top: 0;
       bottom: 0;
       opacity: 0;
-      background: #000;
+      background: var(--bg);
       border: 0;
-      color: #444;
+      color: var(--fg-7);
       padding: 0 8px;
       border-radius: 0 4px 4px 0;
       cursor: pointer;
@@ -614,7 +771,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       transition: opacity 0.15s, color 0.15s;
     }
     .conversation-item:hover .delete-btn { opacity: 1; }
-    .conversation-item.active .delete-btn { background: rgba(0,0,0,1); }
+    .conversation-item.active .delete-btn { background: var(--bg); }
     .conversation-item .delete-btn::before {
       content: "";
       position: absolute;
@@ -622,23 +779,23 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       top: 0;
       bottom: 0;
       width: 24px;
-      background: linear-gradient(to right, transparent, #000);
+      background: linear-gradient(to right, transparent, var(--bg));
       pointer-events: none;
     }
     .conversation-item.active .delete-btn::before {
-      background: linear-gradient(to right, transparent, rgba(0,0,0,1));
+      background: linear-gradient(to right, transparent, var(--bg));
     }
-    .conversation-item .delete-btn:hover { color: #888; }
+    .conversation-item .delete-btn:hover { color: var(--fg-2); }
     .conversation-item .delete-btn.confirming {
       opacity: 1;
       width: auto;
       padding: 0 8px;
       font-size: 11px;
-      color: #ff4444;
+      color: var(--error);
       border-radius: 3px;
     }
     .conversation-item .delete-btn.confirming:hover {
-      color: #ff6666;
+      color: var(--error-alt);
     }
     .sidebar-footer {
       margin-top: auto;
@@ -647,7 +804,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     .logout-btn {
       background: transparent;
       border: 0;
-      color: #555;
+      color: var(--fg-6);
       width: 100%;
       padding: 8px 10px;
       text-align: left;
@@ -656,10 +813,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       font-size: 13px;
       transition: color 0.15s, background 0.15s;
     }
-    .logout-btn:hover { color: #888; }
+    .logout-btn:hover { color: var(--fg-2); }
 
     /* Main */
-    .main { flex: 1; display: flex; flex-direction: column; min-width: 0; max-width: 100%; background: #000; overflow: hidden; }
+    .main { flex: 1; display: flex; flex-direction: column; min-width: 0; max-width: 100%; background: var(--bg); overflow: hidden; }
     .topbar {
       height: calc(52px + env(safe-area-inset-top, 0px));
       padding-top: env(safe-area-inset-top, 0px);
@@ -668,8 +825,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       justify-content: center;
       font-size: 13px;
       font-weight: 500;
-      color: #888;
-      border-bottom: 1px solid rgba(255,255,255,0.06);
+      color: var(--fg-2);
+      border-bottom: 1px solid var(--border-1);
       position: relative;
       flex-shrink: 0;
     }
@@ -688,7 +845,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       bottom: 4px; /* Position from bottom of topbar content area */
       background: transparent;
       border: 0;
-      color: #666;
+      color: var(--fg-5);
       width: 44px;
       height: 44px;
       border-radius: 6px;
@@ -698,7 +855,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       z-index: 10;
       -webkit-tap-highlight-color: transparent;
     }
-    .sidebar-toggle:hover { color: #ededed; }
+    .sidebar-toggle:hover { color: var(--fg); }
     .topbar-new-chat {
       display: none;
       position: absolute;
@@ -706,7 +863,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       bottom: 4px;
       background: transparent;
       border: 0;
-      color: #666;
+      color: var(--fg-5);
       width: 44px;
       height: 44px;
       border-radius: 6px;
@@ -715,7 +872,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       z-index: 10;
       -webkit-tap-highlight-color: transparent;
     }
-    .topbar-new-chat:hover { color: #ededed; }
+    .topbar-new-chat:hover { color: var(--fg); }
     .topbar-new-chat svg { width: 16px; height: 16px; }
 
     /* Messages */
@@ -727,8 +884,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     .assistant-avatar {
       width: 24px;
       height: 24px;
-      background: #ededed;
-      color: #000;
+      background: var(--accent);
+      color: var(--accent-fg);
       border-radius: 6px;
       display: grid;
       place-items: center;
@@ -739,7 +896,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     }
     .assistant-content {
       line-height: 1.65;
-      color: #ededed;
+      color: var(--fg);
       font-size: 14px;
       min-width: 0;
       max-width: 100%;
@@ -751,32 +908,32 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     .assistant-content p:last-child { margin-bottom: 0; }
     .assistant-content ul, .assistant-content ol { margin: 8px 0; padding-left: 20px; }
     .assistant-content li { margin: 4px 0; }
-    .assistant-content strong { font-weight: 600; color: #fff; }
+    .assistant-content strong { font-weight: 600; color: var(--fg-strong); }
     .assistant-content h2 {
       font-size: 16px;
       font-weight: 600;
       letter-spacing: -0.02em;
       margin: 20px 0 8px;
-      color: #fff;
+      color: var(--fg-strong);
     }
     .assistant-content h3 {
       font-size: 14px;
       font-weight: 600;
       letter-spacing: -0.01em;
       margin: 16px 0 6px;
-      color: #fff;
+      color: var(--fg-strong);
     }
     .assistant-content code {
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.06);
+      background: var(--surface-4);
+      border: 1px solid var(--border-1);
       padding: 2px 5px;
       border-radius: 4px;
       font-family: ui-monospace, "SF Mono", "Fira Code", monospace;
       font-size: 0.88em;
     }
     .assistant-content pre {
-      background: #0a0a0a;
-      border: 1px solid rgba(255,255,255,0.06);
+      background: var(--bg-alt);
+      border: 1px solid var(--border-1);
       padding: 14px 16px;
       border-radius: 8px;
       overflow-x: auto;
@@ -793,33 +950,33 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       margin: 8px 0;
       font-size: 12px;
       line-height: 1.45;
-      color: #8a8a8a;
+      color: var(--fg-tool);
     }
     .tool-activity-inline code {
       font-family: ui-monospace, "SF Mono", "Fira Code", monospace;
-      background: rgba(255,255,255,0.04);
-      border: 1px solid rgba(255,255,255,0.08);
+      background: var(--surface-3);
+      border: 1px solid var(--border-2);
       padding: 4px 8px;
       border-radius: 6px;
-      color: #bcbcbc;
+      color: var(--fg-tool-code);
       font-size: 11px;
     }
     .tool-status {
-      color: #8a8a8a;
+      color: var(--fg-tool);
       font-style: italic;
     }
     .tool-done {
-      color: #6a9955;
+      color: var(--tool-done);
     }
     .tool-error {
-      color: #f48771;
+      color: var(--tool-error);
     }
     .assistant-content table {
       border-collapse: collapse;
       width: 100%;
       margin: 14px 0;
       font-size: 13px;
-      border: 1px solid rgba(255,255,255,0.08);
+      border: 1px solid var(--border-2);
       border-radius: 8px;
       overflow: hidden;
       display: block;
@@ -828,17 +985,17 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       white-space: nowrap;
     }
     .assistant-content th {
-      background: rgba(255,255,255,0.06);
+      background: var(--surface-4);
       padding: 10px 12px;
       text-align: left;
       font-weight: 600;
-      border-bottom: 1px solid rgba(255,255,255,0.12);
-      color: #fff;
+      border-bottom: 1px solid var(--border-4);
+      color: var(--fg-strong);
       min-width: 100px;
     }
     .assistant-content td {
       padding: 10px 12px;
-      border-bottom: 1px solid rgba(255,255,255,0.06);
+      border-bottom: 1px solid var(--border-1);
       width: 100%;
       min-width: 100px;
     }
@@ -846,22 +1003,22 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       border-bottom: none;
     }
     .assistant-content tbody tr:hover {
-      background: rgba(255,255,255,0.02);
+      background: var(--surface-1);
     }
     .assistant-content hr {
       border: 0;
-      border-top: 1px solid rgba(255,255,255,0.1);
+      border-top: 1px solid var(--border-3);
       margin: 20px 0;
     }
     .tool-activity {
       margin-top: 12px;
       margin-bottom: 12px;
-      border: 1px solid rgba(255,255,255,0.08);
-      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border-2);
+      background: var(--surface-2);
       border-radius: 10px;
       font-size: 12px;
       line-height: 1.45;
-      color: #bcbcbc;
+      color: var(--fg-tool-code);
       width: 300px;
     }
     .assistant-content > .tool-activity:first-child {
@@ -886,12 +1043,12 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.06em;
-      color: #8a8a8a;
+      color: var(--fg-tool);
       font-weight: 600;
     }
     .tool-activity-caret {
       margin-left: auto;
-      color: #8a8a8a;
+      color: var(--fg-tool);
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -913,28 +1070,28 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     }
     .tool-activity-item {
       font-family: ui-monospace, "SF Mono", "Fira Code", monospace;
-      background: rgba(255,255,255,0.04);
+      background: var(--surface-3);
       border-radius: 6px;
       padding: 4px 7px;
-      color: #d6d6d6;
+      color: var(--fg-tool-item);
     }
     .approval-requests {
-      border-top: 1px solid rgba(255,255,255,0.08);
+      border-top: 1px solid var(--border-2);
       padding: 10px 12px 12px;
       display: grid;
       gap: 8px;
-      background: rgba(0,0,0,0.16);
+      background: var(--inset-1);
     }
     .approval-requests-label {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.06em;
-      color: #b0b0b0;
+      color: var(--fg-approval-label);
       font-weight: 600;
     }
     .approval-request-item {
-      border: 1px solid rgba(255,255,255,0.1);
-      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border-3);
+      background: var(--surface-2);
       border-radius: 8px;
       padding: 8px;
       display: grid;
@@ -942,15 +1099,15 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     }
     .approval-request-tool {
       font-size: 12px;
-      color: #fff;
+      color: var(--fg-strong);
       font-weight: 600;
       overflow-wrap: anywhere;
     }
     .approval-request-input {
       font-family: ui-monospace, "SF Mono", "Fira Code", monospace;
       font-size: 11px;
-      color: #cfcfcf;
-      background: rgba(0,0,0,0.25);
+      color: var(--fg-approval-input);
+      background: var(--inset-2);
       border-radius: 6px;
       padding: 6px;
       overflow-wrap: anywhere;
@@ -963,32 +1120,32 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     }
     .approval-action-btn {
       border-radius: 6px;
-      border: 1px solid rgba(255,255,255,0.18);
-      background: rgba(255,255,255,0.06);
-      color: #f0f0f0;
+      border: 1px solid var(--border-5);
+      background: var(--surface-4);
+      color: var(--fg-approval-btn);
       font-size: 11px;
       font-weight: 600;
       padding: 4px 8px;
       cursor: pointer;
     }
     .approval-action-btn:hover {
-      background: rgba(255,255,255,0.12);
+      background: var(--surface-7);
     }
     .approval-action-btn.approve {
-      border-color: rgba(58, 208, 122, 0.45);
-      color: #78e7a6;
+      border-color: var(--approve-border);
+      color: var(--approve);
     }
     .approval-action-btn.deny {
-      border-color: rgba(224, 95, 95, 0.45);
-      color: #f59b9b;
+      border-color: var(--deny-border);
+      color: var(--deny);
     }
     .approval-action-btn[disabled] {
       opacity: 0.55;
       cursor: not-allowed;
     }
     .user-bubble {
-      background: #111;
-      border: 1px solid rgba(255,255,255,0.08);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-2);
       padding: 10px 16px;
       border-radius: 18px;
       max-width: 70%;
@@ -1004,7 +1161,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       justify-content: center;
       height: 100%;
       gap: 16px;
-      color: #555;
+      color: var(--fg-6);
     }
     .empty-state .assistant-avatar {
       width: 36px;
@@ -1014,7 +1171,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     }
     .empty-state-text {
       font-size: 14px;
-      color: #555;
+      color: var(--fg-6);
     }
     .thinking-indicator {
       display: inline-block;
@@ -1022,7 +1179,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       font-size: 20px;
       line-height: 1;
       vertical-align: middle;
-      color: #ededed;
+      color: var(--fg);
       opacity: 0.5;
     }
     .thinking-status {
@@ -1030,13 +1187,13 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       align-items: center;
       gap: 8px;
       margin-top: 2px;
-      color: #8a8a8a;
+      color: var(--fg-tool);
       font-size: 14px;
       line-height: 1.65;
       font-weight: 400;
     }
     .thinking-status-label {
-      color: #8a8a8a;
+      color: var(--fg-tool);
       font-size: 14px;
       line-height: 1.65;
       font-weight: 400;
@@ -1067,26 +1224,26 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       right: 0;
       bottom: 100%;
       height: 48px;
-      background: linear-gradient(to top, #000 0%, transparent 100%);
+      background: linear-gradient(to top, var(--bg) 0%, transparent 100%);
       pointer-events: none;
     }
     .composer-inner { max-width: 680px; margin: 0 auto; }
     .composer-shell {
-      background: #0a0a0a;
-      border: 1px solid rgba(255,255,255,0.1);
+      background: var(--bg-alt);
+      border: 1px solid var(--border-3);
       border-radius: 24px;
       display: flex;
       align-items: end;
       padding: 4px 6px 4px 6px;
       transition: border-color 0.15s;
     }
-    .composer-shell:focus-within { border-color: rgba(255,255,255,0.2); }
+    .composer-shell:focus-within { border-color: var(--border-focus); }
     .composer-input {
       flex: 1;
       background: transparent;
       border: 0;
       outline: none;
-      color: #ededed;
+      color: var(--fg);
       min-height: 40px;
       max-height: 200px;
       resize: none;
@@ -1095,14 +1252,14 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       line-height: 1.5;
       margin-top: -4px;
     }
-    .composer-input::placeholder { color: #444; }
+    .composer-input::placeholder { color: var(--fg-7); }
     .send-btn {
       width: 32px;
       height: 32px;
-      background: #ededed;
+      background: var(--accent);
       border: 0;
       border-radius: 50%;
-      color: #000;
+      color: var(--accent-fg);
       cursor: pointer;
       display: grid;
       place-items: center;
@@ -1110,21 +1267,21 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       margin-bottom: 2px;
       transition: background 0.15s, opacity 0.15s;
     }
-    .send-btn:hover { background: #fff; }
+    .send-btn:hover { background: var(--accent-hover); }
     .send-btn.stop-mode {
-      background: #4a4a4a;
-      color: #fff;
+      background: var(--stop-bg);
+      color: var(--stop-fg);
     }
-    .send-btn.stop-mode:hover { background: #565656; }
+    .send-btn.stop-mode:hover { background: var(--stop-hover); }
     .send-btn:disabled { opacity: 0.2; cursor: default; }
-    .send-btn:disabled:hover { background: #ededed; }
+    .send-btn:disabled:hover { background: var(--accent); }
     .attach-btn {
       width: 32px;
       height: 32px;
-      background: rgba(255,255,255,0.08);
+      background: var(--surface-5);
       border: 0;
       border-radius: 50%;
-      color: #999;
+      color: var(--fg-3);
       cursor: pointer;
       display: grid;
       place-items: center;
@@ -1133,7 +1290,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       margin-right: 8px;
       transition: color 0.15s, background 0.15s;
     }
-    .attach-btn:hover { color: #ededed; background: rgba(255,255,255,0.14); }
+    .attach-btn:hover { color: var(--fg); background: var(--surface-8); }
     .attachment-preview {
       display: flex;
       gap: 8px;
@@ -1144,12 +1301,12 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      background: rgba(0, 0, 0, 0.6);
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: var(--chip-bg);
+      border: 1px solid var(--border-4);
       border-radius: 9999px;
       padding: 4px 10px 4px 6px;
       font-size: 11px;
-      color: #777;
+      color: var(--fg-4);
       max-width: 200px;
       cursor: pointer;
       backdrop-filter: blur(6px);
@@ -1157,9 +1314,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       transition: color 0.15s, border-color 0.15s, background 0.15s;
     }
     .attachment-chip:hover {
-      color: #ededed;
-      border-color: rgba(255, 255, 255, 0.25);
-      background: rgba(0, 0, 0, 0.75);
+      color: var(--fg);
+      border-color: var(--border-hover);
+      background: var(--chip-bg-hover);
     }
     .attachment-chip img {
       width: 20px;
@@ -1173,7 +1330,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       width: 20px;
       height: 20px;
       border-radius: 50%;
-      background: rgba(255,255,255,0.1);
+      background: var(--surface-6);
       display: grid;
       place-items: center;
       font-size: 11px;
@@ -1181,13 +1338,13 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     }
     .attachment-chip .remove-attachment {
       cursor: pointer;
-      color: #555;
+      color: var(--fg-6);
       font-size: 14px;
       margin-left: 2px;
       line-height: 1;
       transition: color 0.15s;
     }
-    .attachment-chip .remove-attachment:hover { color: #fff; }
+    .attachment-chip .remove-attachment:hover { color: var(--fg-strong); }
     .attachment-chip .filename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100px; }
     .user-bubble .user-file-attachments {
       display: flex;
@@ -1217,7 +1374,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       transition: background 0.25s ease, backdrop-filter 0.25s ease;
     }
     .lightbox.active {
-      background: rgba(0,0,0,0.85);
+      background: var(--lightbox-bg);
       backdrop-filter: blur(8px);
     }
     .lightbox img {
@@ -1237,16 +1394,16 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      background: rgba(0,0,0,0.2);
+      background: var(--file-badge-bg);
       border-radius: 6px;
       padding: 4px 8px;
       font-size: 12px;
-      color: rgba(255,255,255,0.8);
+      color: var(--file-badge-fg);
     }
     .drag-overlay {
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,0.6);
+      background: var(--backdrop);
       z-index: 9999;
       display: none;
       align-items: center;
@@ -1255,15 +1412,15 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     }
     .drag-overlay.active { display: flex; }
     .drag-overlay-inner {
-      border: 2px dashed rgba(255,255,255,0.4);
+      border: 2px dashed var(--border-drag);
       border-radius: 16px;
       padding: 40px 60px;
-      color: #fff;
+      color: var(--fg-strong);
       font-size: 16px;
     }
     .disclaimer {
       text-align: center;
-      color: #333;
+      color: var(--fg-8);
       font-size: 12px;
       margin-top: 10px;
     }
@@ -1278,10 +1435,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       align-items: center;
       gap: 6px;
       font-size: 11px;
-      color: #777;
+      color: var(--fg-4);
       text-decoration: none;
-      background: rgba(0, 0, 0, 0.6);
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: var(--chip-bg);
+      border: 1px solid var(--border-4);
       border-radius: 9999px;
       padding: 4px 10px 4px 6px;
       backdrop-filter: blur(6px);
@@ -1289,9 +1446,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       transition: color 0.15s, border-color 0.15s, background 0.15s;
     }
     .poncho-badge:hover {
-      color: #ededed;
-      border-color: rgba(255, 255, 255, 0.25);
-      background: rgba(0, 0, 0, 0.75);
+      color: var(--fg);
+      border-color: var(--border-hover);
+      background: var(--chip-bg-hover);
     }
     .poncho-badge-avatar {
       width: 16px;
@@ -1305,8 +1462,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     /* Scrollbar */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.16); }
+    ::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); }
 
     /* Mobile */
     @media (max-width: 768px) {
@@ -1336,7 +1493,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       .sidebar-backdrop {
         position: fixed;
         inset: 0;
-        background: rgba(0,0,0,0.6);
+        background: var(--backdrop);
         z-index: 50;
         backdrop-filter: blur(2px);
         -webkit-backdrop-filter: blur(2px);

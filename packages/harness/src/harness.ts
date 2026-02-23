@@ -30,6 +30,7 @@ import { jsonSchemaToZod } from "./schema-converter.js";
 import type { SkillMetadata } from "./skill-context.js";
 import { createSkillTools, normalizeScriptPolicyPath } from "./skill-tools.js";
 import { LatitudeTelemetry } from "@latitude-data/telemetry";
+import { diag, DiagLogLevel } from "@opentelemetry/api";
 import {
   isSiblingScriptsPattern,
   matchesRelativeScriptPattern,
@@ -301,6 +302,37 @@ Users can connect this agent to messaging platforms so it responds to @mentions.
 
 The agent will respond in Slack threads when @mentioned. Each Slack thread maps to a separate Poncho conversation.
 
+## Editing AGENT.md Safely
+
+When modifying \`AGENT.md\`, follow these rules strictly:
+
+- **Preserve all existing frontmatter fields.** Always read the full file first, then write it back with your changes applied. Never drop \`name\`, \`description\`, \`model\`, \`cron\`, or any other field that was already present unless the user explicitly asks you to remove it.
+- **Do not change the \`model\` unless explicitly asked.** If the user asks you to add a cron job, update the system prompt, add tools, etc., keep the existing \`model\` block exactly as-is. Pay special attention to model names — do not "correct", shorten, or substitute them (e.g. do not change \`claude-opus-4-6\` to \`claude-opus-4\` or any other variant).
+- **Prefer skill-scoped \`allowed-tools\` over agent-level.** If a tool is already declared in a \`SKILL.md\` frontmatter \`allowed-tools\` list, do not duplicate it into \`AGENT.md\`. Only add \`allowed-tools\` to \`AGENT.md\` when the user wants a tool available globally (outside any specific skill).
+- **Add env vars to \`.env\`, not \`.env.example\`.** When the user needs new environment variables, add them directly to the existing \`.env\` file (with placeholder values if needed). Do not create or modify \`.env.example\` — the user manages their secrets in \`.env\`.
+- **Do not create files the user didn't ask for.** Only create or modify files that are directly required by the user's request. Do not speculatively create documentation files, READMEs, guides, or any other artifacts unless explicitly asked.
+
+## Telemetry Configuration (\`poncho.config.js\`)
+
+When configuring Latitude telemetry, use **exactly** these field names:
+
+\`\`\`javascript
+telemetry: {
+  enabled: true,
+  latitude: {
+    apiKey: process.env.LATITUDE_API_KEY,       // NOT "apiKeyEnv"
+    projectId: process.env.LATITUDE_PROJECT_ID, // string or number
+    path: "your/prompt-path",                   // optional, defaults to agent name
+  },
+},
+\`\`\`
+
+- The field is \`apiKey\` (not \`apiKeyEnv\`, \`api_key\`, or \`key\`).
+- The field is \`projectId\` (not \`project_id\`, \`projectID\`, or \`project\`).
+- \`path\` must only contain letters, numbers, hyphens, underscores, dots, and slashes.
+- For a generic OTLP endpoint instead: \`telemetry: { otlp: process.env.OTEL_EXPORTER_OTLP_ENDPOINT }\`.
+- Always read the env vars from \`process.env\` — do not hardcode secrets in \`poncho.config.js\`.
+
 ## When users ask about customization:
 
 - Explain and edit \`poncho.config.js\` for model/provider, storage+memory, auth, telemetry, and MCP settings.
@@ -337,6 +369,7 @@ export class AgentHarness {
   private skillFingerprint = "";
   private readonly activeSkillNames = new Set<string>();
   private readonly registeredMcpToolNames = new Set<string>();
+  private latitudeTelemetry?: LatitudeTelemetry;
 
   private parsedAgent?: ParsedAgent;
   private mcpBridge?: LocalMcpBridge;
@@ -694,10 +727,62 @@ export class AgentHarness {
     await bridge.startLocalServers();
     await bridge.discoverTools();
     await this.refreshMcpTools("initialize");
+
+    // Initialize Latitude telemetry once so the OpenTelemetry global state
+    // (context manager, tracer provider, propagator) is set up exactly once.
+    // Creating a new LatitudeTelemetry per run would break on the second call
+    // because @opentelemetry/api silently ignores repeated global registrations.
+    const telemetryEnabled = config?.telemetry?.enabled !== false;
+    const latitudeApiKey = config?.telemetry?.latitude?.apiKey;
+    const rawProjectId = config?.telemetry?.latitude?.projectId;
+    const latitudeProjectId = typeof rawProjectId === 'string' ? parseInt(rawProjectId, 10) : rawProjectId;
+    const latitudeBlock = config?.telemetry?.latitude;
+    if (telemetryEnabled && latitudeApiKey && latitudeProjectId) {
+      // Surface genuine OTLP export failures. Suppress "duplicate registration"
+      // errors that fire when the dev server re-initializes the harness — the
+      // first registration persists and telemetry keeps working.
+      diag.setLogger(
+        {
+          error: (msg, ...args) => {
+            if (typeof msg === "string" && msg.includes("Attempted duplicate registration")) return;
+            console.error(`[poncho][otel] ${msg}`, ...args);
+          },
+          warn: () => {},
+          info: () => {},
+          debug: () => {},
+          verbose: () => {},
+        },
+        DiagLogLevel.ERROR,
+      );
+      this.latitudeTelemetry = new LatitudeTelemetry(latitudeApiKey, { disableBatch: true });
+    } else if (telemetryEnabled && latitudeBlock && (!latitudeApiKey || !latitudeProjectId)) {
+      const missing: string[] = [];
+      if (!latitudeApiKey) missing.push("apiKey");
+      if (!latitudeProjectId) missing.push("projectId");
+      const unknownKeys = Object.keys(latitudeBlock).filter(
+        (k) => !["apiKey", "projectId", "path", "documentPath"].includes(k),
+      );
+      const hint = unknownKeys.length > 0
+        ? ` (found unknown key${unknownKeys.length > 1 ? "s" : ""}: ${unknownKeys.join(", ")} – did you mean "apiKey"?)`
+        : "";
+      console.warn(
+        `[poncho][telemetry] Latitude telemetry is configured but missing: ${missing.join(", ")}${hint}. Traces will NOT be sent.`,
+      );
+    }
   }
 
   async shutdown(): Promise<void> {
     await this.mcpBridge?.stopLocalServers();
+    if (this.latitudeTelemetry) {
+      await this.latitudeTelemetry.shutdown().catch((err) => {
+        console.warn(
+          `[poncho][telemetry] Latitude telemetry shutdown error: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+      this.latitudeTelemetry = undefined;
+    }
   }
 
   listTools(): ToolDefinition[] {
@@ -710,15 +795,18 @@ export class AgentHarness {
    */
   async *runWithTelemetry(input: RunInput): AsyncGenerator<AgentEvent> {
     const config = this.loadedConfig;
-    const telemetryEnabled = config?.telemetry?.enabled !== false;
-    const latitudeApiKey = config?.telemetry?.latitude?.apiKey;
-    const rawProjectId = config?.telemetry?.latitude?.projectId;
-    const projectId = typeof rawProjectId === 'string' ? parseInt(rawProjectId, 10) : rawProjectId;
-    const path = config?.telemetry?.latitude?.path ?? this.parsedAgent?.frontmatter.name ?? 'agent';
+    const telemetry = this.latitudeTelemetry;
 
-    // If Latitude telemetry is configured, wrap the entire run with capture
-    if (telemetryEnabled && latitudeApiKey && projectId) {
-      const telemetry = new LatitudeTelemetry(latitudeApiKey);
+    if (telemetry) {
+      const rawProjectId = config?.telemetry?.latitude?.projectId;
+      const projectId = (typeof rawProjectId === 'string' ? parseInt(rawProjectId, 10) : rawProjectId) as number;
+      const rawPath = config?.telemetry?.latitude?.path ?? this.parsedAgent?.frontmatter.name ?? 'agent';
+      // Sanitize path for Latitude's DOCUMENT_PATH_REGEXP: /^([\w-]+\/)*([\w-.])+$/
+      const path = rawPath.replace(/[^\w\-./]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '') || 'agent';
+
+      console.info(
+        `[poncho][telemetry] Latitude telemetry active – projectId=${projectId}, path="${path}"`,
+      );
 
       // Event queue for streaming events in real-time
       const eventQueue: AgentEvent[] = [];
@@ -765,7 +853,13 @@ export class AgentHarness {
           throw generatorError;
         }
       } finally {
-        await capturePromise;
+        try {
+          await capturePromise;
+        } finally {
+          // Flush pending spans but do NOT shutdown — the LatitudeTelemetry
+          // instance is reused across runs. Shutdown happens in harness.shutdown().
+          await telemetry.flush().catch(() => {});
+        }
       }
     } else {
       // No telemetry configured, just pass through
