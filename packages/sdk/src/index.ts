@@ -98,6 +98,8 @@ export interface RunInput {
   messages?: Message[];
   files?: FileInput[];
   abortSignal?: AbortSignal;
+  /** When set, Latitude telemetry groups all turns in this conversation under a single trace. */
+  conversationId?: string;
 }
 
 export interface TokenUsage {

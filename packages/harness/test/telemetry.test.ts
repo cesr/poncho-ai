@@ -25,7 +25,7 @@ describe("telemetry emitter", () => {
     global.fetch = originalFetch;
   });
 
-  it("includes latitude projectId and documentPath when configured", async () => {
+  it("does not send to latitude custom endpoint (handled by LatitudeTelemetry)", async () => {
     const originalFetch = global.fetch;
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     global.fetch = fetchMock as unknown as typeof fetch;
@@ -40,17 +40,7 @@ describe("telemetry emitter", () => {
 
     await emitter.emit({ type: "step:started", step: 2 });
 
-    expect(fetchMock).toHaveBeenCalled();
-    const [, request] = fetchMock.mock.calls[0] as [
-      string,
-      { body?: string; headers?: Record<string, string> },
-    ];
-    const payload = JSON.parse(request.body ?? "{}") as {
-      projectId?: string;
-      documentPath?: string;
-    };
-    expect(payload.projectId).toBe("proj_123");
-    expect(payload.documentPath).toBe("agents/support-agent/AGENT.md");
+    expect(fetchMock).not.toHaveBeenCalled();
 
     global.fetch = originalFetch;
   });

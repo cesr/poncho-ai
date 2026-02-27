@@ -1434,6 +1434,7 @@ export const createRequestHandler = async (options?: {
     async run(conversationId, input) {
       const output = await harness.runToCompletion({
         task: input.task,
+        conversationId,
         messages: input.messages,
       });
       const response = output.result.response ?? "";
@@ -2138,6 +2139,7 @@ export const createRequestHandler = async (options?: {
 
         for await (const event of harness.runWithTelemetry({
           task: messageText,
+          conversationId,
           parameters: {
             ...(bodyParameters ?? {}),
             __conversationRecallCorpus: recallCorpus,
@@ -2417,6 +2419,7 @@ export const createRequestHandler = async (options?: {
 
         for await (const event of harness.runWithTelemetry({
           task: cronJob.task,
+          conversationId: conversation.conversationId,
           parameters: { __activeConversationId: conversation.conversationId },
           messages: historyMessages,
           abortSignal: abortController.signal,
@@ -2603,6 +2606,7 @@ export const startDevServer = async (
             let currentText = "";
             for await (const event of harness.runWithTelemetry({
               task: config.task,
+              conversationId: conversation.conversationId,
               parameters: { __activeConversationId: conversation.conversationId },
               messages: [],
             })) {

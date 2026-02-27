@@ -370,6 +370,7 @@ export class AgentHarness {
   private readonly activeSkillNames = new Set<string>();
   private readonly registeredMcpToolNames = new Set<string>();
   private latitudeTelemetry?: LatitudeTelemetry;
+  private insideTelemetryCapture = false;
 
   private parsedAgent?: ParsedAgent;
   private mcpBridge?: LocalMcpBridge;
@@ -804,8 +805,14 @@ export class AgentHarness {
       // Sanitize path for Latitude's DOCUMENT_PATH_REGEXP: /^([\w-]+\/)*([\w-.])+$/
       const path = rawPath.replace(/[^\w\-./]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '') || 'agent';
 
+      const conversationUuid = input.conversationId ?? (
+        typeof input.parameters?.__activeConversationId === "string"
+          ? input.parameters.__activeConversationId
+          : undefined
+      );
+
       console.info(
-        `[poncho][telemetry] Latitude telemetry active – projectId=${projectId}, path="${path}"`,
+        `[poncho][telemetry] Latitude telemetry active – projectId=${projectId}, path="${path}"${conversationUuid ? `, conversation="${conversationUuid}"` : ""}`,
       );
 
       // Event queue for streaming events in real-time
@@ -815,7 +822,8 @@ export class AgentHarness {
       let generatorError: Error | null = null;
 
       // Start the generator inside telemetry.capture() (runs in background)
-      const capturePromise = telemetry.capture({ projectId, path }, async () => {
+      const capturePromise = telemetry.capture({ projectId, path, conversationUuid }, async () => {
+        this.insideTelemetryCapture = true;
         try {
           for await (const event of this.run(input)) {
             eventQueue.push(event);
@@ -828,6 +836,7 @@ export class AgentHarness {
         } catch (error) {
           generatorError = error as Error;
         } finally {
+          this.insideTelemetryCapture = false;
           generatorDone = true;
           if (queueResolve) {
             queueResolve();
@@ -1529,6 +1538,13 @@ ${boundedMainMemory.trim()}`
             return;
           }
           if (!approved) {
+            if (this.insideTelemetryCapture && this.latitudeTelemetry) {
+              const deniedSpan = this.latitudeTelemetry.span.tool({
+                name: runtimeToolName,
+                call: { id: call.id, arguments: call.input },
+              });
+              deniedSpan.end({ result: { value: "Tool execution denied by approval policy", isError: true } });
+            }
             yield pushEvent({
               type: "tool:approval:denied",
               approvalId,
@@ -1561,6 +1577,22 @@ ${boundedMainMemory.trim()}`
         yield emitCancellation();
         return;
       }
+
+      // Create telemetry tool spans so tool calls appear in Latitude traces
+      type ToolSpanHandle = { end: (opts: { result: { value: unknown; isError: boolean } }) => void };
+      const toolSpans = new Map<string, ToolSpanHandle>();
+      if (this.insideTelemetryCapture && this.latitudeTelemetry) {
+        for (const call of approvedCalls) {
+          toolSpans.set(
+            call.id,
+            this.latitudeTelemetry.span.tool({
+              name: call.name,
+              call: { id: call.id, arguments: call.input },
+            }),
+          );
+        }
+      }
+
       const batchResults =
         approvedCalls.length > 0
           ? await this.dispatcher.executeBatch(approvedCalls, toolContext)
@@ -1572,7 +1604,9 @@ ${boundedMainMemory.trim()}`
       }
 
       for (const result of batchResults) {
+        const span = toolSpans.get(result.callId);
         if (result.error) {
+          span?.end({ result: { value: result.error, isError: true } });
           yield pushEvent({
             type: "tool:error",
             tool: result.tool,
@@ -1586,6 +1620,7 @@ ${boundedMainMemory.trim()}`
             content: `Tool error: ${result.error}`,
           });
         } else {
+          span?.end({ result: { value: result.output ?? null, isError: false } });
           yield pushEvent({
             type: "tool:completed",
             tool: result.tool,
@@ -1689,7 +1724,7 @@ ${boundedMainMemory.trim()}`
     const messages: Message[] = [...(input.messages ?? [])];
     messages.push({ role: "user", content: input.task });
 
-    for await (const event of this.run(input)) {
+    for await (const event of this.runWithTelemetry(input)) {
       events.push(event);
       if (event.type === "run:started") {
         runId = event.runId;

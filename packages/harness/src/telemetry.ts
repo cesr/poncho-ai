@@ -30,9 +30,8 @@ export class TelemetryEmitter {
     if (this.config?.otlp) {
       await this.sendOtlp(event);
     }
-    if (this.config?.latitude?.apiKey) {
-      await this.sendLatitude(event);
-    }
+    // Latitude telemetry is handled by LatitudeTelemetry (from
+    // @latitude-data/telemetry) via harness.runWithTelemetry().
     // Default behavior in local dev: print concise structured logs.
     process.stdout.write(`[event] ${event.type} ${JSON.stringify(event)}\n`);
   }
@@ -75,34 +74,4 @@ export class TelemetryEmitter {
     }
   }
 
-  private async sendLatitude(event: AgentEvent): Promise<void> {
-    const apiKey = this.config?.latitude?.apiKey;
-    if (!apiKey) {
-      return;
-    }
-    const projectId =
-      this.config?.latitude?.projectId ?? process.env.LATITUDE_PROJECT_ID;
-    const path = this.config?.latitude?.path ?? process.env.LATITUDE_PATH;
-    const documentPath =
-      this.config?.latitude?.documentPath ?? process.env.LATITUDE_DOCUMENT_PATH;
-    try {
-      await fetch("https://api.latitude.so/v1/telemetry/events", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          type: event.type,
-          payload: event,
-          timestamp: Date.now(),
-          projectId,
-          path,
-          documentPath,
-        }),
-      });
-    } catch {
-      // Ignore telemetry delivery failures.
-    }
-  }
 }
