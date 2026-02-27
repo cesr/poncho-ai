@@ -1,5 +1,16 @@
 # @poncho-ai/harness
 
+## 0.13.2
+
+### Patch Changes
+
+- [`9e87d28`](https://github.com/cesr/poncho-ai/commit/9e87d2801ba7b8d4c8b0650563d59e9cad530ff6) Thanks [@cesr](https://github.com/cesr)! - Fix Latitude telemetry not exporting traces
+  - Reuse a single `LatitudeTelemetry` instance across runs instead of creating one per run (avoids OpenTelemetry global registration conflicts)
+  - Use `disableBatch` mode so spans export immediately instead of being silently lost on a 5s timer
+  - Warn at startup when `telemetry.latitude` is configured with missing or misnamed fields (e.g. `apiKeyEnv` instead of `apiKey`)
+  - Sanitize agent name for Latitude's path validation
+  - Surface OTLP export errors in console output
+
 ## 0.13.1
 
 ### Patch Changes
