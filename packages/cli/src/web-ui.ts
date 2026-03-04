@@ -1275,6 +1275,64 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     .send-btn.stop-mode:hover { background: var(--stop-hover); }
     .send-btn:disabled { opacity: 0.2; cursor: default; }
     .send-btn:disabled:hover { background: var(--accent); }
+    .send-btn-wrapper {
+      position: relative;
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+      margin-bottom: 0;
+    }
+    .send-btn-wrapper .send-btn {
+      margin-bottom: 0;
+    }
+    .context-ring {
+      position: absolute;
+      inset: 0;
+      width: 36px;
+      height: 36px;
+      pointer-events: none;
+      transform: rotate(-90deg);
+    }
+    .context-ring-fill {
+      fill: none;
+      stroke: var(--bg-alt);
+      stroke-width: 3;
+      stroke-linecap: butt;
+      transition: stroke-dashoffset 0.4s ease, stroke 0.3s ease;
+    }
+    .send-btn-wrapper.stop-mode .context-ring-fill {
+      stroke: var(--fg-3);
+    }
+    .context-ring-fill.warning {
+      stroke: #e5a33d;
+    }
+    .context-ring-fill.critical {
+      stroke: #e55d4a;
+    }
+    .context-tooltip {
+      position: absolute;
+      bottom: calc(100% + 8px);
+      right: 0;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-3);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--fg-2);
+      white-space: nowrap;
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 0.15s, transform 0.15s;
+      z-index: 10;
+    }
+    .send-btn-wrapper:hover .context-tooltip,
+    .send-btn-wrapper:focus-within .context-tooltip {
+      opacity: 1;
+      transform: translateY(0);
+    }
     .attach-btn {
       width: 32px;
       height: 32px;
@@ -1568,9 +1626,15 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             </button>
             <input id="file-input" type="file" multiple accept="image/*,video/*,application/pdf,.txt,.csv,.json,.html" style="display:none" />
             <textarea id="prompt" class="composer-input" placeholder="Send a message..." rows="1"></textarea>
-            <button id="send" class="send-btn" type="submit">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 12V4M4 7l4-4 4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </button>
+            <div class="send-btn-wrapper" id="send-btn-wrapper">
+              <svg class="context-ring" viewBox="0 0 36 36">
+                <circle class="context-ring-fill" id="context-ring-fill" cx="18" cy="18" r="14.5" />
+              </svg>
+              <button id="send" class="send-btn" type="submit">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 12V4M4 7l4-4 4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="context-tooltip" id="context-tooltip"></div>
+            </div>
           </div>
         </div>
       </form>
@@ -1602,6 +1666,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         confirmDeleteId: null,
         approvalRequestsInFlight: {},
         pendingFiles: [],
+        contextTokens: 0,
+        contextWindow: 0,
       };
 
       const agentInitial = document.body.dataset.agentInitial || "A";
@@ -1629,11 +1695,40 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         attachmentPreview: $("attachment-preview"),
         dragOverlay: $("drag-overlay"),
         lightbox: $("lightbox"),
+        contextRingFill: $("context-ring-fill"),
+        contextTooltip: $("context-tooltip"),
+        sendBtnWrapper: $("send-btn-wrapper"),
       };
       const sendIconMarkup =
         '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 12V4M4 7l4-4 4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
       const stopIconMarkup =
         '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="4" y="4" width="8" height="8" rx="2" fill="currentColor"/></svg>';
+
+      const CONTEXT_RING_CIRCUMFERENCE = 2 * Math.PI * 14.5;
+      const formatTokenCount = (n) => {
+        if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\\.0$/, "") + "M";
+        if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\\.0$/, "") + "k";
+        return String(n);
+      };
+      const updateContextRing = () => {
+        const ring = elements.contextRingFill;
+        const tooltip = elements.contextTooltip;
+        if (!ring || !tooltip) return;
+        if (state.contextWindow <= 0) {
+          ring.style.strokeDasharray = String(CONTEXT_RING_CIRCUMFERENCE);
+          ring.style.strokeDashoffset = String(CONTEXT_RING_CIRCUMFERENCE);
+          tooltip.textContent = "";
+          return;
+        }
+        const ratio = Math.min(state.contextTokens / state.contextWindow, 1);
+        const offset = CONTEXT_RING_CIRCUMFERENCE * (1 - ratio);
+        ring.style.strokeDasharray = String(CONTEXT_RING_CIRCUMFERENCE);
+        ring.style.strokeDashoffset = String(offset);
+        ring.classList.toggle("warning", ratio >= 0.7 && ratio < 0.9);
+        ring.classList.toggle("critical", ratio >= 0.9);
+        const pct = (ratio * 100).toFixed(1).replace(/\\.0$/, "");
+        tooltip.textContent = formatTokenCount(state.contextTokens) + " / " + formatTokenCount(state.contextWindow) + " tokens (" + pct + "%)";
+      };
 
       const pushConversationUrl = (conversationId) => {
         const target = conversationId ? "/c/" + encodeURIComponent(conversationId) : "/";
@@ -1954,6 +2049,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             if (state.activeConversationId === c.conversationId) {
               state.activeConversationId = null;
               state.activeMessages = [];
+              state.contextTokens = 0;
+              state.contextWindow = 0;
+              updateContextRing();
               pushConversationUrl(null);
               elements.chatTitle.textContent = "";
               renderMessages([]);
@@ -2192,6 +2290,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           payload.conversation.messages || [],
           payload.conversation.pendingApprovals || payload.pendingApprovals || [],
         );
+        state.contextTokens = 0;
+        state.contextWindow = 0;
+        updateContextRing();
         renderMessages(state.activeMessages, false, { forceScrollBottom: true });
         elements.prompt.focus();
       };
@@ -2249,6 +2350,11 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                     if (eventName === "stream:end") {
                       return;
                     }
+                    if (eventName === "run:started") {
+                      if (typeof payload.contextWindow === "number" && payload.contextWindow > 0) {
+                        state.contextWindow = payload.contextWindow;
+                      }
+                    }
                     if (eventName === "model:chunk") {
                       const chunk = String(payload.content || "");
                       if (assistantMessage._currentTools.length > 0 && chunk.length > 0) {
@@ -2261,6 +2367,12 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                       assistantMessage.content += chunk;
                       assistantMessage._currentText += chunk;
                       renderIfActiveConversation(true);
+                    }
+                    if (eventName === "model:response") {
+                      if (typeof payload.usage?.input === "number") {
+                        state.contextTokens = payload.usage.input;
+                        updateContextRing();
+                      }
                     }
                     if (eventName === "tool:started") {
                       const toolName = payload.tool || "tool";
@@ -2468,6 +2580,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         elements.send.disabled = value ? !canStop : false;
         elements.send.innerHTML = value ? stopIconMarkup : sendIconMarkup;
         elements.send.classList.toggle("stop-mode", value);
+        if (elements.sendBtnWrapper) {
+          elements.sendBtnWrapper.classList.toggle("stop-mode", value);
+        }
         elements.send.setAttribute("aria-label", value ? "Stop response" : "Send message");
         elements.send.setAttribute(
           "title",
@@ -2840,7 +2955,16 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                 }
                 if (eventName === "run:started") {
                   state.activeStreamRunId = typeof payload.runId === "string" ? payload.runId : null;
+                  if (typeof payload.contextWindow === "number" && payload.contextWindow > 0) {
+                    state.contextWindow = payload.contextWindow;
+                  }
                   setStreaming(state.isStreaming);
+                }
+                if (eventName === "model:response") {
+                  if (typeof payload.usage?.input === "number") {
+                    state.contextTokens = payload.usage.input;
+                    updateContextRing();
+                  }
                 }
                 if (eventName === "tool:started") {
                   const toolName = payload.tool || "tool";
@@ -3108,6 +3232,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         state.activeConversationId = null;
         state.activeMessages = [];
         state.confirmDeleteId = null;
+        state.contextTokens = 0;
+        state.contextWindow = 0;
+        updateContextRing();
         pushConversationUrl(null);
         elements.chatTitle.textContent = "";
         renderMessages([]);
@@ -3145,6 +3272,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         state.confirmDeleteId = null;
         state.conversations = [];
         state.csrfToken = "";
+        state.contextTokens = 0;
+        state.contextWindow = 0;
+        updateContextRing();
         await requireAuth();
       });
 
@@ -3349,6 +3479,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         } else {
           state.activeConversationId = null;
           state.activeMessages = [];
+          state.contextTokens = 0;
+          state.contextWindow = 0;
+          updateContextRing();
           elements.chatTitle.textContent = "";
           renderMessages([]);
           renderConversationList();
@@ -3390,6 +3523,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           await createConversation();
         }
         autoResizePrompt();
+        updateContextRing();
         elements.prompt.focus();
       })();
 

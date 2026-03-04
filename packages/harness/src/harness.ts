@@ -22,7 +22,7 @@ import {
   type MemoryStore,
 } from "./memory.js";
 import { LocalMcpBridge } from "./mcp.js";
-import { createModelProvider, type ModelProviderFactory } from "./model-factory.js";
+import { createModelProvider, getModelContextWindow, type ModelProviderFactory } from "./model-factory.js";
 import { buildSkillContextWindow, loadSkillMetadata } from "./skill-context.js";
 import { streamText, type ModelMessage } from "ai";
 import { addPromptCacheBreakpoints } from "./prompt-cache.js";
@@ -945,10 +945,15 @@ ${boundedMainMemory.trim()}`
       return pushEvent({ type: "run:cancelled", runId });
     };
 
+    const resolvedModelName = agent.frontmatter.model?.name ?? "claude-opus-4-5";
+    const contextWindow =
+      agent.frontmatter.model?.contextWindow ?? getModelContextWindow(resolvedModelName);
+
     yield pushEvent({
       type: "run:started",
       runId,
       agentId: agent.frontmatter.id ?? agent.frontmatter.name,
+      contextWindow,
     });
 
     if (input.files && input.files.length > 0) {

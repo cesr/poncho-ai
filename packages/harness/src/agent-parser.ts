@@ -15,6 +15,7 @@ export interface AgentModelConfig {
   name: string;
   temperature?: number;
   maxTokens?: number;
+  contextWindow?: number;
 }
 
 export interface AgentLimitsConfig {

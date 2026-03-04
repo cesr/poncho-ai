@@ -125,7 +125,7 @@ export interface AgentFailure {
 }
 
 export type AgentEvent =
-  | { type: "run:started"; runId: string; agentId: string }
+  | { type: "run:started"; runId: string; agentId: string; contextWindow?: number }
   | { type: "run:completed"; runId: string; result: RunResult }
   | { type: "run:cancelled"; runId: string }
   | { type: "run:error"; runId: string; error: AgentFailure }
