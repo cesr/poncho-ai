@@ -1,0 +1,479 @@
+import { createHmac } from "node:crypto";
+import type http from "node:http";
+import type {
+  FileAttachment,
+  IncomingMessage as PonchoIncomingMessage,
+  IncomingMessageHandler,
+  MessagingAdapter,
+  RouteRegistrar,
+  ThreadRef,
+} from "../../types.js";
+import {
+  buildReplyHeaders,
+  buildReplySubject,
+  deriveRootMessageId,
+  extractDisplayName,
+  extractEmailAddress,
+  markdownToEmailHtml,
+  matchesSenderPattern,
+  parseReferences,
+  stripQuotedReply,
+} from "../email/utils.js";
+
+// ---------------------------------------------------------------------------
+// Types for the dynamically-imported Resend SDK
+// ---------------------------------------------------------------------------
+
+interface ResendClient {
+  emails: {
+    send(opts: {
+      from: string;
+      to: string[];
+      subject: string;
+      text: string;
+      html?: string;
+      headers?: Record<string, string>;
+      attachments?: Array<{ filename: string; content: string }>;
+    }): Promise<{ data?: { id: string }; error?: unknown }>;
+    receiving: {
+      get(emailId: string): Promise<{
+        data?: {
+          html?: string;
+          text?: string;
+          headers?: Array<{ name: string; value: string }>;
+        };
+        error?: unknown;
+      }>;
+    };
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Svix webhook verification (works with any Resend SDK version)
+// ---------------------------------------------------------------------------
+
+function verifySvixSignature(
+  rawBody: string,
+  svixId: string,
+  svixTimestamp: string,
+  svixSignature: string,
+  secret: string,
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  const ts = parseInt(svixTimestamp, 10);
+  const tolerance = 5 * 60;
+  if (isNaN(ts) || Math.abs(now - ts) > tolerance) {
+    throw new Error("Timestamp outside tolerance");
+  }
+
+  const secretBytes = Buffer.from(
+    secret.startsWith("whsec_") ? secret.slice(6) : secret,
+    "base64",
+  );
+
+  const toSign = `${svixId}.${svixTimestamp}.${rawBody}`;
+  const expected = createHmac("sha256", secretBytes)
+    .update(toSign)
+    .digest("base64");
+
+  const candidates = svixSignature.split(" ").map((sig) => {
+    const parts = sig.split(",");
+    return parts.length === 2 ? parts[1]! : parts[0]!;
+  });
+
+  if (!candidates.some((c) => c === expected)) {
+    throw new Error("Signature mismatch");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// LRU deduplication set
+// ---------------------------------------------------------------------------
+
+class LruSet {
+  private readonly max: number;
+  private readonly set = new Set<string>();
+
+  constructor(max = 1000) {
+    this.max = max;
+  }
+
+  has(key: string): boolean {
+    return this.set.has(key);
+  }
+
+  add(key: string): void {
+    if (this.set.size >= this.max) {
+      // Evict the oldest entry
+      const first = this.set.values().next().value as string;
+      this.set.delete(first);
+    }
+    this.set.add(key);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ResendAdapter
+// ---------------------------------------------------------------------------
+
+export interface ResendAdapterOptions {
+  apiKeyEnv?: string;
+  webhookSecretEnv?: string;
+  fromEnv?: string;
+  allowedSenders?: string[];
+}
+
+const collectBody = (req: http.IncomingMessage): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+
+interface ThreadMeta {
+  subject: string;
+  senderEmail: string;
+  references: string[];
+}
+
+export class ResendAdapter implements MessagingAdapter {
+  readonly platform = "resend" as const;
+
+  private resend: ResendClient | undefined;
+  private apiKey = "";
+  private webhookSecret = "";
+  private fromAddress = "";
+  private readonly apiKeyEnv: string;
+  private readonly webhookSecretEnv: string;
+  private readonly fromEnv: string;
+  private readonly allowedSenders: string[] | undefined;
+  private handler: IncomingMessageHandler | undefined;
+
+  /** Request-scoped thread metadata for sendReply. */
+  private readonly threadMeta = new Map<string, ThreadMeta>();
+
+  /** Deduplication set for svix-id headers. */
+  private readonly processed = new LruSet(1000);
+
+  constructor(options: ResendAdapterOptions = {}) {
+    this.apiKeyEnv = options.apiKeyEnv ?? "RESEND_API_KEY";
+    this.webhookSecretEnv = options.webhookSecretEnv ?? "RESEND_WEBHOOK_SECRET";
+    this.fromEnv = options.fromEnv ?? "RESEND_FROM";
+    this.allowedSenders = options.allowedSenders;
+  }
+
+  // -----------------------------------------------------------------------
+  // MessagingAdapter implementation
+  // -----------------------------------------------------------------------
+
+  async initialize(): Promise<void> {
+    this.apiKey = process.env[this.apiKeyEnv] ?? "";
+    this.webhookSecret = process.env[this.webhookSecretEnv] ?? "";
+    this.fromAddress = process.env[this.fromEnv] ?? "";
+
+    if (!this.apiKey) {
+      throw new Error(
+        `Resend messaging: ${this.apiKeyEnv} environment variable is not set`,
+      );
+    }
+    if (!this.webhookSecret) {
+      throw new Error(
+        `Resend messaging: ${this.webhookSecretEnv} environment variable is not set`,
+      );
+    }
+    if (!this.fromAddress) {
+      throw new Error(
+        `Resend messaging: ${this.fromEnv} environment variable is not set`,
+      );
+    }
+
+    try {
+      const mod = await import("resend");
+      const ResendClass = mod.Resend;
+      this.resend = new ResendClass(this.apiKey) as unknown as ResendClient;
+    } catch {
+      throw new Error(
+        "ResendAdapter requires the 'resend' package. Install it: npm install resend",
+      );
+    }
+  }
+
+  onMessage(handler: IncomingMessageHandler): void {
+    this.handler = handler;
+  }
+
+  registerRoutes(router: RouteRegistrar): void {
+    router("POST", "/api/messaging/resend", (req, res) =>
+      this.handleRequest(req, res),
+    );
+  }
+
+  async sendReply(
+    threadRef: ThreadRef,
+    content: string,
+    options?: { files?: FileAttachment[] },
+  ): Promise<void> {
+    if (!this.resend) throw new Error("ResendAdapter not initialised");
+
+    const meta = this.threadMeta.get(threadRef.platformThreadId);
+    const subject = meta
+      ? buildReplySubject(meta.subject)
+      : "Re: (no subject)";
+    const headers = meta
+      ? buildReplyHeaders(threadRef.messageId ?? threadRef.platformThreadId, meta.references)
+      : {};
+
+    const attachments = options?.files?.map((f) => ({
+      filename: f.filename ?? "attachment",
+      content: f.data,
+    }));
+
+    console.log("[resend-adapter] sendReply →", {
+      from: this.fromAddress,
+      to: threadRef.channelId,
+      subject,
+    });
+
+    const result = await this.resend.emails.send({
+      from: this.fromAddress,
+      to: [threadRef.channelId],
+      subject,
+      text: content,
+      html: markdownToEmailHtml(content),
+      headers,
+      attachments: attachments && attachments.length > 0 ? attachments : undefined,
+    });
+
+    if (result.error) {
+      console.error("[resend-adapter] send failed:", JSON.stringify(result.error));
+      throw new Error(`Resend send failed: ${JSON.stringify(result.error)}`);
+    }
+
+    console.log("[resend-adapter] email sent:", result.data);
+  }
+
+  async indicateProcessing(
+    _threadRef: ThreadRef,
+  ): Promise<() => Promise<void>> {
+    return async () => {};
+  }
+
+  // -----------------------------------------------------------------------
+  // HTTP request handling
+  // -----------------------------------------------------------------------
+
+  private async handleRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    if (!this.resend) {
+      res.writeHead(500);
+      res.end("Adapter not initialised");
+      return;
+    }
+
+    const rawBody = await collectBody(req);
+
+    // -- Svix signature verification --------------------------------------
+    const svixId = req.headers["svix-id"] as string | undefined;
+    const svixTimestamp = req.headers["svix-timestamp"] as string | undefined;
+    const svixSignature = req.headers["svix-signature"] as string | undefined;
+
+    if (!svixId || !svixTimestamp || !svixSignature) {
+      console.warn("[resend-adapter] 401: missing svix headers", {
+        hasSvixId: !!svixId,
+        hasSvixTimestamp: !!svixTimestamp,
+        hasSvixSignature: !!svixSignature,
+      });
+      res.writeHead(401);
+      res.end("Missing signature headers");
+      return;
+    }
+
+    try {
+      verifySvixSignature(rawBody, svixId, svixTimestamp, svixSignature, this.webhookSecret);
+    } catch (err) {
+      console.warn("[resend-adapter] 401: signature verification failed", err instanceof Error ? err.message : err);
+      res.writeHead(401);
+      res.end("Invalid signature");
+      return;
+    }
+
+    // -- Deduplication via svix-id ----------------------------------------
+    if (this.processed.has(svixId)) {
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+    this.processed.add(svixId);
+
+    // -- Parse payload ----------------------------------------------------
+    let payload: { type?: string; data?: Record<string, unknown> };
+    try {
+      payload = JSON.parse(rawBody) as typeof payload;
+    } catch {
+      res.writeHead(400);
+      res.end("Invalid JSON");
+      return;
+    }
+
+    if (payload.type !== "email.received") {
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+
+    // Acknowledge immediately
+    res.writeHead(200);
+    res.end();
+
+    const data = payload.data;
+    if (!data || !this.handler) return;
+
+    try {
+      await this.processInboundEmail(data, payload);
+    } catch (err) {
+      console.error("[resend-adapter] error processing inbound email", err);
+    }
+  }
+
+  private async processInboundEmail(
+    data: Record<string, unknown>,
+    payload: unknown,
+  ): Promise<void> {
+    if (!this.handler) return;
+
+    const fromRaw = String(data.from ?? "");
+    const senderEmail = extractEmailAddress(fromRaw);
+    const senderName = extractDisplayName(fromRaw);
+
+    // -- Sender allowlist -------------------------------------------------
+    if (!matchesSenderPattern(senderEmail, this.allowedSenders)) {
+      return;
+    }
+
+    const emailId = String(data.email_id ?? "");
+    const messageId = String(data.message_id ?? "");
+    const subject = String(data.subject ?? "");
+
+    // -- Fetch email body + headers via REST API ---------------------------
+    let text = "";
+    let emailHeaders: Array<{ name: string; value: string }> | Record<string, string> | undefined;
+
+    if (emailId) {
+      try {
+        const resp = await fetch(
+          `https://api.resend.com/emails/receiving/${emailId}`,
+          { headers: { Authorization: `Bearer ${this.apiKey}` } },
+        );
+        if (resp.ok) {
+          const emailData = (await resp.json()) as {
+            text?: string;
+            html?: string;
+            headers?: Array<{ name: string; value: string }> | Record<string, string>;
+          };
+          text = emailData.text ?? "";
+          emailHeaders = emailData.headers;
+        } else {
+          const body = await resp.text().catch(() => "");
+          console.error(
+            `[resend-adapter] failed to fetch email body: ${resp.status} ${resp.statusText}`,
+            `\n  URL: https://api.resend.com/emails/receiving/${emailId}`,
+            `\n  Key: ${this.apiKey.slice(0, 6)}...${this.apiKey.slice(-4)}`,
+            body ? `\n  Response: ${body.slice(0, 200)}` : "",
+          );
+        }
+      } catch (err) {
+        console.error("[resend-adapter] failed to fetch email body", err);
+      }
+    }
+
+    // Strip quoted replies to avoid feeding duplicate context to the agent
+    const cleanText = stripQuotedReply(text).trim();
+    if (!cleanText) return;
+
+    // -- Threading --------------------------------------------------------
+    const references = parseReferences(emailHeaders);
+    const rootMessageId = deriveRootMessageId(references, messageId, {
+      subject,
+      sender: senderEmail,
+    });
+
+    // Store metadata for sendReply (consumed within the same invocation)
+    this.threadMeta.set(rootMessageId, {
+      subject,
+      senderEmail,
+      references: [...references, messageId].filter(Boolean),
+    });
+
+    // -- Download attachments ---------------------------------------------
+    const webhookAttachments = data.attachments as Array<{ id?: string; filename?: string; content_type?: string }> | undefined;
+    const files = await this.fetchAndDownloadAttachments(emailId, webhookAttachments);
+
+    // -- Build and dispatch message ---------------------------------------
+    const message: PonchoIncomingMessage = {
+      text: cleanText,
+      subject: subject || undefined,
+      files: files.length > 0 ? files : undefined,
+      threadRef: {
+        channelId: senderEmail,
+        platformThreadId: rootMessageId,
+        messageId,
+      },
+      sender: { id: senderEmail, name: senderName },
+      platform: "resend",
+      raw: payload,
+    };
+
+    await this.handler(message);
+  }
+
+  // -----------------------------------------------------------------------
+  // Attachment helpers
+  // -----------------------------------------------------------------------
+
+  private async fetchAndDownloadAttachments(
+    emailId: string,
+    webhookAttachments: Array<{ id?: string; filename?: string; content_type?: string }> | undefined,
+  ): Promise<FileAttachment[]> {
+    if (!emailId || !webhookAttachments || webhookAttachments.length === 0) return [];
+
+    // Fetch attachment metadata (with download_url) from the Resend API
+    let attachments: Array<{ filename?: string; content_type?: string; download_url?: string }> = [];
+    try {
+      const resp = await fetch(
+        `https://api.resend.com/emails/receiving/${emailId}/attachments`,
+        { headers: { Authorization: `Bearer ${this.apiKey}` } },
+      );
+      if (resp.ok) {
+        const body = await resp.json();
+        attachments = (Array.isArray(body) ? body : (body as { data?: unknown[] }).data ?? []) as typeof attachments;
+      } else {
+        console.error("[resend-adapter] failed to list attachments:", resp.status, resp.statusText);
+        return [];
+      }
+    } catch (err) {
+      console.error("[resend-adapter] failed to list attachments", err);
+      return [];
+    }
+
+    const results: FileAttachment[] = [];
+    for (const att of attachments) {
+      if (!att.download_url) continue;
+      try {
+        const resp = await fetch(att.download_url);
+        if (!resp.ok) continue;
+        const buf = Buffer.from(await resp.arrayBuffer());
+        results.push({
+          data: buf.toString("base64"),
+          mediaType: att.content_type ?? "application/octet-stream",
+          filename: att.filename,
+        });
+      } catch {
+        // Best-effort: skip attachments that fail to download
+      }
+    }
+    return results;
+  }
+}

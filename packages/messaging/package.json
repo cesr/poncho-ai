@@ -28,7 +28,16 @@
   "dependencies": {
     "@poncho-ai/sdk": "workspace:*"
   },
+  "peerDependencies": {
+    "resend": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "resend": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "resend": "^4.0.0",
     "tsup": "^8.0.0",
     "vitest": "^1.4.0"
   },
@@ -36,7 +45,9 @@
     "ai",
     "agent",
     "messaging",
-    "slack"
+    "slack",
+    "email",
+    "resend"
   ],
   "license": "MIT"
 }

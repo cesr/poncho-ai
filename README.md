@@ -808,6 +808,90 @@ messaging: [
 ]
 ```
 
+### Email (Resend)
+
+#### 1. Set up Resend
+
+1. Create an account at [resend.com](https://resend.com) and add your domain
+2. Enable **Inbound** on your domain in the Resend dashboard
+3. Create a **Webhook** subscribing to the `email.received` event
+   - Set the endpoint URL to `https://<your-deployed-agent>/api/messaging/resend`
+4. Copy the webhook **Signing Secret** from the webhook details page
+5. Create an API key at [resend.com/api-keys](https://resend.com/api-keys)
+
+#### 2. Configure your agent
+
+Add environment variables to `.env`:
+
+```
+RESEND_API_KEY=re_...
+RESEND_WEBHOOK_SECRET=whsec_...
+RESEND_FROM=Agent <agent@yourdomain.com>
+```
+
+Add messaging to `poncho.config.js`:
+
+```javascript
+export default {
+  // ... your existing config ...
+  messaging: [
+    { platform: 'resend' }
+  ]
+}
+```
+
+Install the Resend SDK:
+
+```bash
+npm install resend
+```
+
+#### 3. Deploy
+
+The messaging endpoint works on all deployment targets (Vercel, Docker, Fly.io, etc.). For local development, use a tunnel like [ngrok](https://ngrok.com) to expose your local server and set it as your Resend webhook URL.
+
+**Vercel deployments:** install `@vercel/functions` so Poncho can keep the serverless function alive while the agent processes messages:
+
+```bash
+npm install @vercel/functions
+```
+
+#### How it works
+
+- When someone emails your agent's address, the agent receives the message and replies in the same email thread.
+- Each email thread maps to a separate Poncho conversation with persistent history.
+- Email attachments are passed to the agent as file inputs.
+- Agent responses are formatted as HTML emails with proper markdown rendering.
+- Quoted reply content is automatically stripped so the agent only sees the new message.
+
+#### Options
+
+```javascript
+messaging: [
+  {
+    platform: 'resend',
+    // Optional: restrict who can email the agent
+    allowedSenders: ['*@mycompany.com', 'partner@external.com'],
+    // Optional: custom env var names
+    apiKeyEnv: 'MY_RESEND_API_KEY',
+    webhookSecretEnv: 'MY_RESEND_WEBHOOK_SECRET',
+    fromEnv: 'MY_RESEND_FROM',
+  }
+]
+```
+
+### Custom Messaging Adapters
+
+The `MessagingAdapter` interface from `@poncho-ai/messaging` is the extension point for adding other messaging platforms (SendGrid, Postmark, Discord, Telegram, etc.). Implement the interface and wire it with `AgentBridge`:
+
+```typescript
+import { AgentBridge, type MessagingAdapter } from '@poncho-ai/messaging';
+// Shared email utilities for threading (optional, useful for email adapters)
+import { parseReferences, deriveRootMessageId, buildReplyHeaders } from '@poncho-ai/messaging';
+```
+
+See the `SlackAdapter` and `ResendAdapter` source code for reference implementations.
+
 ## HTTP API
 
 Your deployed agent exposes these endpoints:

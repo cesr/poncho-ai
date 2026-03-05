@@ -9,9 +9,11 @@ import type {
   ThreadRef,
 } from "../src/types.js";
 
+import type { FileAttachment } from "../src/types.js";
+
 const makeAdapter = (): MessagingAdapter & {
   _handler: IncomingMessageHandler | undefined;
-  _replies: Array<{ ref: ThreadRef; content: string }>;
+  _replies: Array<{ ref: ThreadRef; content: string; files?: FileAttachment[] }>;
   _processing: ThreadRef[];
 } => ({
   platform: "test",
@@ -23,8 +25,8 @@ const makeAdapter = (): MessagingAdapter & {
   onMessage(handler) {
     this._handler = handler;
   },
-  async sendReply(ref, content) {
-    this._replies.push({ ref, content });
+  async sendReply(ref, content, options) {
+    this._replies.push({ ref, content, files: options?.files });
   },
   async indicateProcessing(ref) {
     this._processing.push(ref);
@@ -37,12 +39,13 @@ const makeAdapter = (): MessagingAdapter & {
 
 const makeRunner = (
   response = "Hello from agent",
+  responseFiles?: FileAttachment[],
 ): AgentRunner & {
   _conversations: Map<string, { messages: Array<{ role: string; content: string }> }>;
-  _runs: Array<{ id: string; task: string }>;
+  _runs: Array<{ id: string; task: string; files?: FileAttachment[]; metadata?: { platform: string; sender: { id: string; name?: string }; threadId: string } }>;
 } => {
   const conversations = new Map<string, { messages: Array<{ role: string; content: string }> }>();
-  const runs: Array<{ id: string; task: string }> = [];
+  const runs: Array<{ id: string; task: string; files?: FileAttachment[]; metadata?: { platform: string; sender: { id: string; name?: string }; threadId: string } }> = [];
   return {
     _conversations: conversations,
     _runs: runs,
@@ -53,8 +56,8 @@ const makeRunner = (
       return conversations.get(id)!;
     },
     async run(id, input) {
-      runs.push({ id, task: input.task });
-      return { response };
+      runs.push({ id, task: input.task, files: input.files, metadata: input.metadata });
+      return { response, files: responseFiles };
     },
   };
 };
@@ -161,5 +164,60 @@ describe("AgentBridge", () => {
 
     expect(waitUntil).toHaveBeenCalledTimes(1);
     expect(waitUntil.mock.calls[0]![0]).toBeInstanceOf(Promise);
+  });
+
+  it("pipes inbound files from message to runner", async () => {
+    const adapter = makeAdapter();
+    const runner = makeRunner();
+    const bridge = new AgentBridge({ adapter, runner });
+    await bridge.start();
+
+    const files: FileAttachment[] = [
+      { data: "base64data", mediaType: "image/png", filename: "screenshot.png" },
+    ];
+    await adapter._handler!(sampleMessage({ files }));
+
+    expect(runner._runs[0]!.files).toEqual(files);
+  });
+
+  it("pipes outbound files from runner result to adapter sendReply", async () => {
+    const outFiles: FileAttachment[] = [
+      { data: "csvdata", mediaType: "text/csv", filename: "report.csv" },
+    ];
+    const adapter = makeAdapter();
+    const runner = makeRunner("Here is the report.", outFiles);
+    const bridge = new AgentBridge({ adapter, runner });
+    await bridge.start();
+
+    await adapter._handler!(sampleMessage());
+
+    expect(adapter._replies[0]!.files).toEqual(outFiles);
+  });
+
+  it("passes undefined files when message has no attachments", async () => {
+    const adapter = makeAdapter();
+    const runner = makeRunner();
+    const bridge = new AgentBridge({ adapter, runner });
+    await bridge.start();
+
+    await adapter._handler!(sampleMessage());
+
+    expect(runner._runs[0]!.files).toBeUndefined();
+    expect(adapter._replies[0]!.files).toBeUndefined();
+  });
+
+  it("passes sender metadata to runner", async () => {
+    const adapter = makeAdapter();
+    const runner = makeRunner();
+    const bridge = new AgentBridge({ adapter, runner });
+    await bridge.start();
+
+    await adapter._handler!(sampleMessage());
+
+    expect(runner._runs[0]!.metadata).toEqual({
+      platform: "test",
+      sender: { id: "U123", name: "alice" },
+      threadId: "ts_123",
+    });
   });
 });

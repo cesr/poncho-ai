@@ -78,7 +78,11 @@ export class SlackAdapter implements MessagingAdapter {
     );
   }
 
-  async sendReply(threadRef: ThreadRef, content: string): Promise<void> {
+  async sendReply(
+    threadRef: ThreadRef,
+    content: string,
+    _options?: { files?: Array<{ data: string; mediaType: string; filename?: string }> },
+  ): Promise<void> {
     const chunks = splitMessage(content);
     for (const chunk of chunks) {
       await postMessage(

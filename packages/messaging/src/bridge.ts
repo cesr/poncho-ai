@@ -19,11 +19,13 @@ export class AgentBridge {
   private readonly adapter: MessagingAdapter;
   private readonly runner: AgentRunner;
   private readonly waitUntil: (promise: Promise<unknown>) => void;
+  private readonly ownerIdOverride: string | undefined;
 
   constructor(options: AgentBridgeOptions) {
     this.adapter = options.adapter;
     this.runner = options.runner;
     this.waitUntil = options.waitUntil ?? ((_p: Promise<unknown>) => {});
+    this.ownerIdOverride = options.ownerId;
   }
 
   /** Wire the adapter's message handler and initialise. */
@@ -53,18 +55,34 @@ export class AgentBridge {
         conversationId,
         {
           platform: message.platform,
-          ownerId: message.sender.id,
+          ownerId: this.ownerIdOverride ?? message.sender.id,
           title: `${message.platform} thread`,
         },
       );
 
+      const senderLine = message.sender.name
+        ? `From: ${message.sender.name} <${message.sender.id}>`
+        : `From: ${message.sender.id}`;
+      const subjectLine = message.subject ? `Subject: ${message.subject}` : "";
+      const header = [senderLine, subjectLine].filter(Boolean).join("\n");
+      const task = `${header}\n\n${message.text}`;
+
       const result = await this.runner.run(conversationId, {
-        task: message.text,
+        task,
         messages: conversation.messages,
+        files: message.files,
+        metadata: {
+          platform: message.platform,
+          sender: message.sender,
+          threadId: message.threadRef.platformThreadId,
+        },
       });
 
-      await this.adapter.sendReply(message.threadRef, result.response);
+      await this.adapter.sendReply(message.threadRef, result.response, {
+        files: result.files,
+      });
     } catch (error) {
+      console.error("[agent-bridge] handleMessage error:", error instanceof Error ? error.message : error);
       const snippet =
         error instanceof Error ? error.message : "Unknown error";
       try {
@@ -72,8 +90,8 @@ export class AgentBridge {
           message.threadRef,
           `Sorry, something went wrong: ${snippet}`,
         );
-      } catch {
-        // Best-effort error reporting — nothing more we can do.
+      } catch (replyError) {
+        console.error("[agent-bridge] failed to send error reply:", replyError instanceof Error ? replyError.message : replyError);
       }
     } finally {
       if (cleanup) {

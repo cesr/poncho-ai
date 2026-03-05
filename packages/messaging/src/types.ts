@@ -12,8 +12,17 @@ export interface ThreadRef {
   messageId?: string;
 }
 
+export interface FileAttachment {
+  /** base64-encoded file data */
+  data: string;
+  mediaType: string;
+  filename?: string;
+}
+
 export interface IncomingMessage {
   text: string;
+  subject?: string;
+  files?: FileAttachment[];
   threadRef: ThreadRef;
   sender: { id: string; name?: string };
   platform: string;
@@ -56,7 +65,11 @@ export interface MessagingAdapter {
   onMessage(handler: IncomingMessageHandler): void;
 
   /** Post a reply back to the originating thread. */
-  sendReply(threadRef: ThreadRef, content: string): Promise<void>;
+  sendReply(
+    threadRef: ThreadRef,
+    content: string,
+    options?: { files?: FileAttachment[] },
+  ): Promise<void>;
 
   /**
    * Show a processing indicator (e.g. reaction, typing).
@@ -79,8 +92,20 @@ export interface AgentRunner {
 
   run(
     conversationId: string,
-    input: { task: string; messages: Message[] },
-  ): Promise<{ response: string }>;
+    input: {
+      task: string;
+      messages: Message[];
+      files?: FileAttachment[];
+      metadata?: {
+        platform: string;
+        sender: { id: string; name?: string };
+        threadId: string;
+      };
+    },
+  ): Promise<{
+    response: string;
+    files?: FileAttachment[];
+  }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,4 +120,10 @@ export interface AgentBridgeOptions {
    * On Vercel, pass the real `waitUntil` from `@vercel/functions`.
    */
   waitUntil?: (promise: Promise<unknown>) => void;
+  /**
+   * Override the ownerId for conversations created by this bridge.
+   * Defaults to the sender's ID. Set to a fixed value (e.g. "local-owner")
+   * so messaging conversations appear in the web UI alongside regular ones.
+   */
+  ownerId?: string;
 }

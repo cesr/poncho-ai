@@ -39,9 +39,15 @@ export type BuiltInToolToggles = {
 };
 
 export interface MessagingChannelConfig {
-  platform: "slack";
+  platform: "slack" | "resend";
+  // Slack
   botTokenEnv?: string;
   signingSecretEnv?: string;
+  // Resend (email)
+  apiKeyEnv?: string;
+  webhookSecretEnv?: string;
+  fromEnv?: string;
+  allowedSenders?: string[];
 }
 
 export interface PonchoConfig extends McpConfig {

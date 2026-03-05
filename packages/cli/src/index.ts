@@ -31,6 +31,7 @@ import type { AgentEvent, FileInput, Message, RunInput } from "@poncho-ai/sdk";
 import { getTextContent } from "@poncho-ai/sdk";
 import {
   AgentBridge,
+  ResendAdapter,
   SlackAdapter,
   type AgentRunner,
   type MessagingAdapter,
@@ -592,6 +593,24 @@ Connect your agent to Slack so it responds to @mentions:
 6. Add to \`poncho.config.js\`:
    \`\`\`javascript
    messaging: [{ platform: 'slack' }]
+   \`\`\`
+
+## Messaging (Email via Resend)
+
+Connect your agent to email so users can interact by sending emails:
+
+1. Set up a domain and enable Inbound at [resend.com](https://resend.com)
+2. Create a webhook for \`email.received\` pointing to \`https://<your-url>/api/messaging/resend\`
+3. Install the Resend SDK: \`npm install resend\`
+4. Set env vars:
+   \`\`\`
+   RESEND_API_KEY=re_...
+   RESEND_WEBHOOK_SECRET=whsec_...
+   RESEND_FROM=Agent <agent@yourdomain.com>
+   \`\`\`
+5. Add to \`poncho.config.js\`:
+   \`\`\`javascript
+   messaging: [{ platform: 'resend' }]
    \`\`\`
 
 ## Deployment
@@ -1432,12 +1451,37 @@ export const createRequestHandler = async (options?: {
       return { messages: [] };
     },
     async run(conversationId, input) {
+      console.log("[messaging-runner] starting run for", conversationId, "task:", input.task.slice(0, 80));
       const output = await harness.runToCompletion({
         task: input.task,
         conversationId,
         messages: input.messages,
+        files: input.files,
+        parameters: input.metadata ? {
+          __messaging_platform: input.metadata.platform,
+          __messaging_sender_id: input.metadata.sender.id,
+          __messaging_sender_name: input.metadata.sender.name ?? "",
+          __messaging_thread_id: input.metadata.threadId,
+        } : undefined,
       });
+      console.log("[messaging-runner] run complete, response length:", (output.result.response ?? "").length);
       const response = output.result.response ?? "";
+
+      // Extract FileContentPart entries from output messages (e.g. tool results)
+      const outboundFiles: Array<{ data: string; mediaType: string; filename?: string }> = [];
+      for (const msg of output.messages) {
+        if (Array.isArray(msg.content)) {
+          for (const part of msg.content) {
+            if (part.type === "file") {
+              outboundFiles.push({
+                data: part.data,
+                mediaType: part.mediaType,
+                filename: part.filename,
+              });
+            }
+          }
+        }
+      }
 
       const conversation = await conversationStore.get(conversationId);
       if (conversation) {
@@ -1449,7 +1493,10 @@ export const createRequestHandler = async (options?: {
         await conversationStore.update(conversation);
       }
 
-      return { response };
+      return {
+        response,
+        files: outboundFiles.length > 0 ? outboundFiles : undefined,
+      };
     },
   };
 
@@ -1478,6 +1525,7 @@ export const createRequestHandler = async (options?: {
           adapter,
           runner: messagingRunner,
           waitUntil: waitUntilHook,
+          ownerId: "local-owner",
         });
         adapter.registerRoutes(messagingRouteRegistrar);
         try {
@@ -1487,6 +1535,29 @@ export const createRequestHandler = async (options?: {
         } catch (err) {
           console.warn(
             `  Slack messaging disabled: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      } else if (channelConfig.platform === "resend") {
+        const adapter = new ResendAdapter({
+          apiKeyEnv: channelConfig.apiKeyEnv,
+          webhookSecretEnv: channelConfig.webhookSecretEnv,
+          fromEnv: channelConfig.fromEnv,
+          allowedSenders: channelConfig.allowedSenders,
+        });
+        const bridge = new AgentBridge({
+          adapter,
+          runner: messagingRunner,
+          waitUntil: waitUntilHook,
+          ownerId: "local-owner",
+        });
+        adapter.registerRoutes(messagingRouteRegistrar);
+        try {
+          await bridge.start();
+          messagingBridges.push(bridge);
+          console.log(`  Resend email messaging enabled at /api/messaging/resend`);
+        } catch (err) {
+          console.warn(
+            `  Resend email messaging disabled: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
       }
