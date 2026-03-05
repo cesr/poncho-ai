@@ -33,7 +33,7 @@ interface ResendClient {
       text: string;
       html?: string;
       headers?: Record<string, string>;
-      attachments?: Array<{ filename: string; content: string }>;
+      attachments?: Array<{ filename: string; content?: string; path?: string; contentType?: string }>;
     }): Promise<{ data?: { id: string }; error?: unknown }>;
     receiving: {
       get(emailId: string): Promise<{
@@ -110,6 +110,42 @@ class LruSet {
     }
     this.set.add(key);
   }
+}
+
+// ---------------------------------------------------------------------------
+// FileAttachment → Resend attachment normalisation
+// ---------------------------------------------------------------------------
+
+const DATA_URI_RE = /^data:[^;]+;base64,/;
+
+/**
+ * Convert a `FileAttachment` into a Resend-compatible attachment object.
+ *
+ * `FileAttachment.data` can be raw base64, a data URI, an HTTPS URL, or a
+ * `poncho-upload://` reference. Resend accepts either `content` (base64 /
+ * Buffer) or `path` (remote URL). This function maps each format to the
+ * correct field, returning `null` for unresolvable references.
+ */
+function toResendAttachment(
+  f: FileAttachment,
+): { filename: string; content?: string; path?: string; contentType?: string } | null {
+  const filename = f.filename ?? "attachment";
+  const data = f.data;
+
+  if (data.startsWith("poncho-upload://")) {
+    console.warn("[resend-adapter] skipping poncho-upload:// attachment (not resolvable from adapter):", filename);
+    return null;
+  }
+
+  if (data.startsWith("https://") || data.startsWith("http://")) {
+    return { filename, path: data, contentType: f.mediaType };
+  }
+
+  if (DATA_URI_RE.test(data)) {
+    return { filename, content: data.replace(DATA_URI_RE, ""), contentType: f.mediaType };
+  }
+
+  return { filename, content: data, contentType: f.mediaType };
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +253,7 @@ export class ResendAdapter implements MessagingAdapter {
     if (!this.resend) throw new Error("ResendAdapter not initialised");
 
     const meta = this.threadMeta.get(threadRef.platformThreadId);
+    this.threadMeta.delete(threadRef.platformThreadId);
     const subject = meta
       ? buildReplySubject(meta.subject)
       : "Re: (no subject)";
@@ -224,10 +261,9 @@ export class ResendAdapter implements MessagingAdapter {
       ? buildReplyHeaders(threadRef.messageId ?? threadRef.platformThreadId, meta.references)
       : {};
 
-    const attachments = options?.files?.map((f) => ({
-      filename: f.filename ?? "attachment",
-      content: f.data,
-    }));
+    const attachments = options?.files
+      ?.map((f) => toResendAttachment(f))
+      .filter((a): a is NonNullable<typeof a> => a !== null);
 
     console.log("[resend-adapter] sendReply →", {
       from: this.fromAddress,
