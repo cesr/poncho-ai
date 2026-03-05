@@ -57,8 +57,52 @@ describe("ResendAdapter", () => {
     const adapter = new ResendAdapter({
       allowedSenders: ["*@myco.com"],
     });
-    // The allowedSenders is stored privately — we verify it indirectly
-    // through the full webhook flow or by checking it doesn't throw on construct
     expect(adapter.platform).toBe("resend");
+  });
+
+  describe("mode configuration", () => {
+    it("defaults to auto-reply mode", () => {
+      const adapter = new ResendAdapter();
+      expect(adapter.autoReply).toBe(true);
+    });
+
+    it("sets autoReply to false in tool mode", () => {
+      const adapter = new ResendAdapter({ mode: "tool" });
+      expect(adapter.autoReply).toBe(false);
+    });
+
+    it("sets autoReply to true in auto-reply mode", () => {
+      const adapter = new ResendAdapter({ mode: "auto-reply" });
+      expect(adapter.autoReply).toBe(true);
+    });
+
+    it("returns send_email tool definitions in tool mode", () => {
+      const adapter = new ResendAdapter({ mode: "tool" });
+      const tools = adapter.getToolDefinitions();
+      expect(tools).toHaveLength(1);
+      expect(tools[0]!.name).toBe("send_email");
+      expect(tools[0]!.inputSchema.required).toEqual(["to", "subject", "body"]);
+    });
+
+    it("returns empty tool definitions in auto-reply mode", () => {
+      const adapter = new ResendAdapter({ mode: "auto-reply" });
+      const tools = adapter.getToolDefinitions();
+      expect(tools).toHaveLength(0);
+    });
+
+    it("returns empty tool definitions in default mode", () => {
+      const adapter = new ResendAdapter();
+      const tools = adapter.getToolDefinitions();
+      expect(tools).toHaveLength(0);
+    });
+  });
+
+  describe("resetRequestState", () => {
+    it("resets hasSentInCurrentRequest flag", () => {
+      const adapter = new ResendAdapter({ mode: "tool" });
+      (adapter as unknown as { hasSentInCurrentRequest: boolean }).hasSentInCurrentRequest = true;
+      adapter.resetRequestState!();
+      expect(adapter.hasSentInCurrentRequest).toBe(false);
+    });
   });
 });

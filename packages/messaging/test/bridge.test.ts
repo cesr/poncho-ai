@@ -11,12 +11,16 @@ import type {
 
 import type { FileAttachment } from "../src/types.js";
 
-const makeAdapter = (): MessagingAdapter & {
+const makeAdapter = (
+  opts: { autoReply?: boolean; hasSentInCurrentRequest?: boolean } = {},
+): MessagingAdapter & {
   _handler: IncomingMessageHandler | undefined;
   _replies: Array<{ ref: ThreadRef; content: string; files?: FileAttachment[] }>;
   _processing: ThreadRef[];
 } => ({
   platform: "test",
+  autoReply: opts.autoReply ?? true,
+  hasSentInCurrentRequest: opts.hasSentInCurrentRequest ?? false,
   _handler: undefined,
   _replies: [],
   _processing: [],
@@ -219,5 +223,56 @@ describe("AgentBridge", () => {
       sender: { id: "U123", name: "alice" },
       threadId: "ts_123",
     });
+  });
+
+  it("skips sendReply when autoReply is false", async () => {
+    const adapter = makeAdapter({ autoReply: false });
+    const runner = makeRunner("agent response");
+    const bridge = new AgentBridge({ adapter, runner });
+    await bridge.start();
+
+    await adapter._handler!(sampleMessage());
+
+    expect(adapter._replies).toHaveLength(0);
+  });
+
+  it("sends reply when autoReply is true (default)", async () => {
+    const adapter = makeAdapter({ autoReply: true });
+    const runner = makeRunner("agent response");
+    const bridge = new AgentBridge({ adapter, runner });
+    await bridge.start();
+
+    await adapter._handler!(sampleMessage());
+
+    expect(adapter._replies).toHaveLength(1);
+    expect(adapter._replies[0]!.content).toBe("agent response");
+  });
+
+  it("suppresses error reply when hasSentInCurrentRequest is true", async () => {
+    const adapter = makeAdapter({ autoReply: false });
+    (adapter as unknown as { hasSentInCurrentRequest: boolean }).hasSentInCurrentRequest = true;
+    const runner = makeRunner();
+    runner.run = async () => {
+      throw new Error("Oops");
+    };
+    const bridge = new AgentBridge({ adapter, runner });
+    await bridge.start();
+
+    await adapter._handler!(sampleMessage());
+
+    expect(adapter._replies).toHaveLength(0);
+  });
+
+  it("calls resetRequestState before handling each message", async () => {
+    const adapter = makeAdapter({ autoReply: false });
+    const resetSpy = vi.fn();
+    adapter.resetRequestState = resetSpy;
+    const runner = makeRunner();
+    const bridge = new AgentBridge({ adapter, runner });
+    await bridge.start();
+
+    await adapter._handler!(sampleMessage());
+
+    expect(resetSpy).toHaveBeenCalledTimes(1);
   });
 });

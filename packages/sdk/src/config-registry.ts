@@ -350,6 +350,35 @@ export const ONBOARDING_FIELDS = [
     placeholder: "Agent <agent@yourdomain.com>",
     dependsOn: { fieldId: "messaging.platform", equals: "resend" },
   },
+  {
+    id: "messaging.resend.mode",
+    domain: "messaging",
+    target: "agent",
+    path: "messaging.resend.mode",
+    kind: "select",
+    scopes: ["full"],
+    label: "Email response mode",
+    prompt: "How should the agent respond to emails?",
+    defaultValue: "auto-reply",
+    options: [
+      { value: "auto-reply", label: "Auto-reply (agent response sent as email reply)" },
+      { value: "tool", label: "Tool (agent uses send_email tool for full control)" },
+    ],
+    dependsOn: { fieldId: "messaging.platform", equals: "resend" },
+  },
+  {
+    id: "messaging.resend.allowedRecipients",
+    domain: "messaging",
+    target: "agent",
+    path: "messaging.resend.allowedRecipients",
+    kind: "string",
+    scopes: ["full"],
+    label: "Allowed recipients",
+    prompt: "Allowed recipient patterns for send_email tool (comma-separated, e.g. *@mycompany.com). Leave empty for no restrictions.",
+    defaultValue: "",
+    placeholder: "*@mycompany.com, partner@external.com",
+    dependsOn: { fieldId: "messaging.resend.mode", equals: "tool" },
+  },
 ] as const satisfies readonly OnboardingField[];
 
 export const FEATURE_DOMAIN_ORDER: readonly FeatureDomain[] = [

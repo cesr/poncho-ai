@@ -349,7 +349,20 @@ export const buildConfigFromOnboardingAnswers = (
   };
 
   if (messagingPlatform !== "none") {
-    config.messaging = [{ platform: messagingPlatform as "slack" }];
+    const channelConfig: NonNullable<PonchoConfig["messaging"]>[number] = {
+      platform: messagingPlatform as "slack" | "resend",
+    };
+    if (messagingPlatform === "resend") {
+      const mode = String(answers["messaging.resend.mode"] ?? "auto-reply");
+      if (mode === "tool") {
+        channelConfig.mode = "tool";
+      }
+      const recipientsRaw = String(answers["messaging.resend.allowedRecipients"] ?? "");
+      if (recipientsRaw.trim().length > 0) {
+        channelConfig.allowedRecipients = recipientsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+      }
+    }
+    config.messaging = [channelConfig];
   }
 
   return config;

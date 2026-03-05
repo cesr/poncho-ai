@@ -613,6 +613,8 @@ Connect your agent to email so users can interact by sending emails:
    messaging: [{ platform: 'resend' }]
    \`\`\`
 
+For full control over outbound emails, use **tool mode** (\`mode: 'tool'\`) — the agent gets a \`send_email\` tool instead of auto-replying. See the repo README for details.
+
 ## Deployment
 
 \`\`\`bash
@@ -1543,6 +1545,9 @@ export const createRequestHandler = async (options?: {
           webhookSecretEnv: channelConfig.webhookSecretEnv,
           fromEnv: channelConfig.fromEnv,
           allowedSenders: channelConfig.allowedSenders,
+          mode: channelConfig.mode,
+          allowedRecipients: channelConfig.allowedRecipients,
+          maxSendsPerRun: channelConfig.maxSendsPerRun,
         });
         const bridge = new AgentBridge({
           adapter,
@@ -1554,7 +1559,12 @@ export const createRequestHandler = async (options?: {
         try {
           await bridge.start();
           messagingBridges.push(bridge);
-          console.log(`  Resend email messaging enabled at /api/messaging/resend`);
+          const adapterTools = adapter.getToolDefinitions?.() ?? [];
+          if (adapterTools.length > 0) {
+            harness.registerTools(adapterTools);
+          }
+          const modeLabel = channelConfig.mode === "tool" ? "tool" : "auto-reply";
+          console.log(`  Resend email messaging enabled at /api/messaging/resend (mode: ${modeLabel})`);
         } catch (err) {
           console.warn(
             `  Resend email messaging disabled: ${err instanceof Error ? err.message : String(err)}`,

@@ -48,6 +48,9 @@ export interface MessagingChannelConfig {
   webhookSecretEnv?: string;
   fromEnv?: string;
   allowedSenders?: string[];
+  mode?: "auto-reply" | "tool";
+  allowedRecipients?: string[];
+  maxSendsPerRun?: number;
 }
 
 export interface PonchoConfig extends McpConfig {

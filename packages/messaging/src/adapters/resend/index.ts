@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import type http from "node:http";
+import type { ToolDefinition } from "@poncho-ai/sdk";
 import type {
   FileAttachment,
   IncomingMessage as PonchoIncomingMessage,
@@ -32,6 +33,8 @@ interface ResendClient {
       subject: string;
       text: string;
       html?: string;
+      cc?: string[];
+      bcc?: string[];
       headers?: Record<string, string>;
       attachments?: Array<{ filename: string; content?: string; path?: string; contentType?: string }>;
     }): Promise<{ data?: { id: string }; error?: unknown }>;
@@ -157,6 +160,9 @@ export interface ResendAdapterOptions {
   webhookSecretEnv?: string;
   fromEnv?: string;
   allowedSenders?: string[];
+  mode?: "auto-reply" | "tool";
+  allowedRecipients?: string[];
+  maxSendsPerRun?: number;
 }
 
 const collectBody = (req: http.IncomingMessage): Promise<string> =>
@@ -175,6 +181,9 @@ interface ThreadMeta {
 
 export class ResendAdapter implements MessagingAdapter {
   readonly platform = "resend" as const;
+  readonly autoReply: boolean;
+
+  hasSentInCurrentRequest = false;
 
   private resend: ResendClient | undefined;
   private apiKey = "";
@@ -184,7 +193,11 @@ export class ResendAdapter implements MessagingAdapter {
   private readonly webhookSecretEnv: string;
   private readonly fromEnv: string;
   private readonly allowedSenders: string[] | undefined;
+  private readonly allowedRecipients: string[] | undefined;
+  private readonly maxSendsPerRun: number;
+  private readonly mode: "auto-reply" | "tool";
   private handler: IncomingMessageHandler | undefined;
+  private sendCount = 0;
 
   /** Request-scoped thread metadata for sendReply. */
   private readonly threadMeta = new Map<string, ThreadMeta>();
@@ -197,6 +210,15 @@ export class ResendAdapter implements MessagingAdapter {
     this.webhookSecretEnv = options.webhookSecretEnv ?? "RESEND_WEBHOOK_SECRET";
     this.fromEnv = options.fromEnv ?? "RESEND_FROM";
     this.allowedSenders = options.allowedSenders;
+    this.mode = options.mode ?? "auto-reply";
+    this.autoReply = this.mode !== "tool";
+    this.allowedRecipients = options.allowedRecipients;
+    this.maxSendsPerRun = options.maxSendsPerRun ?? 10;
+  }
+
+  resetRequestState(): void {
+    this.hasSentInCurrentRequest = false;
+    this.sendCount = 0;
   }
 
   // -----------------------------------------------------------------------
@@ -293,6 +315,128 @@ export class ResendAdapter implements MessagingAdapter {
     _threadRef: ThreadRef,
   ): Promise<() => Promise<void>> {
     return async () => {};
+  }
+
+  getToolDefinitions(): ToolDefinition[] {
+    if (this.mode !== "tool") return [];
+
+    const adapter = this;
+
+    return [
+      {
+        name: "send_email",
+        description:
+          "Send an email via Resend. The body is written in markdown and will be converted to HTML. " +
+          "To thread as a reply, provide in_reply_to with the original message ID. Omit it for a new standalone email.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            to: {
+              type: "array",
+              items: { type: "string" },
+              description: "Recipient email addresses",
+            },
+            subject: {
+              type: "string",
+              description: "Email subject line",
+            },
+            body: {
+              type: "string",
+              description: "Email body in markdown (converted to HTML)",
+            },
+            cc: {
+              type: "array",
+              items: { type: "string" },
+              description: "CC recipient email addresses",
+            },
+            bcc: {
+              type: "array",
+              items: { type: "string" },
+              description: "BCC recipient email addresses",
+            },
+            in_reply_to: {
+              type: "string",
+              description: "Message-ID to thread this email under (for replies). Omit for a new email.",
+            },
+          },
+          required: ["to", "subject", "body"],
+        },
+        handler: async (input: Record<string, unknown>) => {
+          return adapter.handleSendEmailTool(input);
+        },
+      },
+    ];
+  }
+
+  private async handleSendEmailTool(
+    input: Record<string, unknown>,
+  ): Promise<{ success: boolean; id?: string; error?: string }> {
+    if (!this.resend) {
+      return { success: false, error: "ResendAdapter not initialised" };
+    }
+
+    if (this.sendCount >= this.maxSendsPerRun) {
+      return {
+        success: false,
+        error: `Send limit reached (${this.maxSendsPerRun} per run). Cannot send more emails in this run.`,
+      };
+    }
+
+    const to = input.to as string[];
+    const subject = input.subject as string;
+    const body = input.body as string;
+    const cc = input.cc as string[] | undefined;
+    const bcc = input.bcc as string[] | undefined;
+    const inReplyTo = input.in_reply_to as string | undefined;
+
+    const allRecipients = [...to, ...(cc ?? []), ...(bcc ?? [])];
+    if (this.allowedRecipients && this.allowedRecipients.length > 0) {
+      for (const addr of allRecipients) {
+        if (!matchesSenderPattern(addr, this.allowedRecipients)) {
+          return {
+            success: false,
+            error: `Recipient "${addr}" is not in the allowed recipients list. Allowed patterns: ${this.allowedRecipients.join(", ")}`,
+          };
+        }
+      }
+    }
+
+    const headers: Record<string, string> = {};
+    if (inReplyTo) {
+      headers["In-Reply-To"] = inReplyTo;
+      headers["References"] = inReplyTo;
+    }
+
+    console.log("[resend-adapter] send_email tool →", {
+      from: this.fromAddress,
+      to,
+      subject,
+      cc: cc ?? undefined,
+      bcc: bcc ?? undefined,
+      inReplyTo: inReplyTo ?? undefined,
+    });
+
+    const result = await this.resend.emails.send({
+      from: this.fromAddress,
+      to,
+      subject,
+      text: body,
+      html: markdownToEmailHtml(body),
+      cc: cc && cc.length > 0 ? cc : undefined,
+      bcc: bcc && bcc.length > 0 ? bcc : undefined,
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
+    });
+
+    if (result.error) {
+      console.error("[resend-adapter] send_email tool failed:", JSON.stringify(result.error));
+      return { success: false, error: JSON.stringify(result.error) };
+    }
+
+    this.sendCount++;
+    this.hasSentInCurrentRequest = true;
+
+    console.log("[resend-adapter] send_email tool sent:", result.data);
+    return { success: true, id: result.data?.id };
   }
 
   // -----------------------------------------------------------------------

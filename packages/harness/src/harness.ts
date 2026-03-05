@@ -302,6 +302,43 @@ Users can connect this agent to messaging platforms so it responds to @mentions.
 
 The agent will respond in Slack threads when @mentioned. Each Slack thread maps to a separate Poncho conversation.
 
+### Email Setup (Resend)
+
+1. Create an account at https://resend.com and add your domain
+2. Enable **Inbound** on your domain, create a webhook for \`email.received\` pointing to \`https://<deployed-url>/api/messaging/resend\`
+3. Install the Resend SDK: \`npm install resend\`
+4. Add env vars:
+   \`\`\`
+   RESEND_API_KEY=re_...
+   RESEND_WEBHOOK_SECRET=whsec_...
+   RESEND_FROM=Agent <agent@yourdomain.com>
+   \`\`\`
+5. Add to \`poncho.config.js\`:
+   \`\`\`javascript
+   messaging: [{ platform: 'resend' }]
+   \`\`\`
+
+**Response modes:**
+
+- \`mode: 'auto-reply'\` (default): the agent's text response is sent back as an email reply automatically.
+- \`mode: 'tool'\`: auto-reply is disabled; the agent gets a \`send_email\` tool with full control over recipients, subject, body, CC/BCC, and threading.
+
+**Tool mode config options:**
+
+\`\`\`javascript
+messaging: [{
+  platform: 'resend',
+  mode: 'tool',
+  allowedSenders: ['*@mycompany.com'],     // optional: restrict who can email the agent
+  allowedRecipients: ['*@mycompany.com'],  // optional: restrict who the agent can email
+  maxSendsPerRun: 5,                       // optional: max emails per run (default: 10)
+}]
+\`\`\`
+
+In tool mode, the \`send_email\` tool accepts: \`to\` (required), \`subject\` (required), \`body\` (required, markdown converted to HTML), \`cc\`, \`bcc\`, and \`in_reply_to\` (optional, message ID for threading as a reply).
+
+The incoming email's sender and subject are included in the task as \`From:\` / \`Subject:\` headers.
+
 ## Editing AGENT.md Safely
 
 When modifying \`AGENT.md\`, follow these rules strictly:
@@ -406,6 +443,14 @@ export class AgentHarness {
     if (!this.dispatcher.get(tool.name)) {
       this.dispatcher.register(tool);
     }
+  }
+
+  /**
+   * Register additional tools after construction (e.g. messaging adapter tools).
+   * Existing tools with the same name are overwritten.
+   */
+  registerTools(tools: ToolDefinition[]): void {
+    this.dispatcher.registerMany(tools);
   }
 
   private registerConfiguredBuiltInTools(config: PonchoConfig | undefined): void {

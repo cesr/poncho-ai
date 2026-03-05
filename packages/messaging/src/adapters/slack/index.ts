@@ -35,6 +35,8 @@ const collectBody = (req: http.IncomingMessage): Promise<string> =>
 
 export class SlackAdapter implements MessagingAdapter {
   readonly platform = "slack" as const;
+  readonly autoReply = true;
+  readonly hasSentInCurrentRequest = false;
 
   private botToken = "";
   private signingSecret = "";

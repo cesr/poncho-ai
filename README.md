@@ -863,6 +863,14 @@ npm install @vercel/functions
 - Email attachments are passed to the agent as file inputs.
 - Agent responses are formatted as HTML emails with proper markdown rendering.
 - Quoted reply content is automatically stripped so the agent only sees the new message.
+- The incoming email's sender and subject are included in the task header (`From:` / `Subject:`) so the agent knows who sent the email.
+
+#### Response modes
+
+Resend email supports two response modes:
+
+- **`"auto-reply"`** (default): The agent's text response is automatically sent back as an email reply. Simple and zero-config.
+- **`"tool"`**: Auto-reply is disabled. Instead, the agent gets a `send_email` tool with full control over recipients, subject, body, CC/BCC, and threading. Use this for agents that need to send emails to different people, compose custom subjects, or decide whether to reply at all.
 
 #### Options
 
@@ -879,6 +887,28 @@ messaging: [
   }
 ]
 ```
+
+**Tool mode** gives the agent explicit email control:
+
+```javascript
+messaging: [
+  {
+    platform: 'resend',
+    mode: 'tool',
+    // Optional: restrict who the agent can email (glob patterns)
+    allowedRecipients: ['*@mycompany.com', 'partner@external.com'],
+    // Optional: max emails per agent run (default: 10)
+    maxSendsPerRun: 5,
+  }
+]
+```
+
+In tool mode the agent can call `send_email` with:
+- `to` (required): recipient email addresses
+- `subject` (required): email subject
+- `body` (required): markdown content (auto-converted to HTML)
+- `cc`, `bcc` (optional): additional recipients
+- `in_reply_to` (optional): message ID for threading as a reply; omit for a standalone email
 
 ### Custom Messaging Adapters
 

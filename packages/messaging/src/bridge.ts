@@ -43,6 +43,8 @@ export class AgentBridge {
   private async handleMessage(message: IncomingMessage): Promise<void> {
     let cleanup: (() => Promise<void>) | undefined;
 
+    this.adapter.resetRequestState?.();
+
     try {
       cleanup = await this.adapter.indicateProcessing(message.threadRef);
 
@@ -78,20 +80,26 @@ export class AgentBridge {
         },
       });
 
-      await this.adapter.sendReply(message.threadRef, result.response, {
-        files: result.files,
-      });
+      if (this.adapter.autoReply) {
+        await this.adapter.sendReply(message.threadRef, result.response, {
+          files: result.files,
+        });
+      } else if (!this.adapter.hasSentInCurrentRequest) {
+        console.warn("[agent-bridge] tool mode completed without send_email being called; no reply sent");
+      }
     } catch (error) {
       console.error("[agent-bridge] handleMessage error:", error instanceof Error ? error.message : error);
-      const snippet =
-        error instanceof Error ? error.message : "Unknown error";
-      try {
-        await this.adapter.sendReply(
-          message.threadRef,
-          `Sorry, something went wrong: ${snippet}`,
-        );
-      } catch (replyError) {
-        console.error("[agent-bridge] failed to send error reply:", replyError instanceof Error ? replyError.message : replyError);
+      if (!this.adapter.hasSentInCurrentRequest) {
+        const snippet =
+          error instanceof Error ? error.message : "Unknown error";
+        try {
+          await this.adapter.sendReply(
+            message.threadRef,
+            `Sorry, something went wrong: ${snippet}`,
+          );
+        } catch (replyError) {
+          console.error("[agent-bridge] failed to send error reply:", replyError instanceof Error ? replyError.message : replyError);
+        }
       }
     } finally {
       if (cleanup) {

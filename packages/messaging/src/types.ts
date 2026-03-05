@@ -1,5 +1,5 @@
 import type http from "node:http";
-import type { Message } from "@poncho-ai/sdk";
+import type { Message, ToolDefinition } from "@poncho-ai/sdk";
 
 // ---------------------------------------------------------------------------
 // Thread & message primitives
@@ -55,6 +55,15 @@ export type RouteRegistrar = (
 export interface MessagingAdapter {
   readonly platform: string;
 
+  /** When true, the bridge auto-sends the agent's response as a reply. */
+  readonly autoReply: boolean;
+
+  /**
+   * Whether the adapter's tool has sent at least one message during the
+   * current request. Used by the bridge to suppress duplicate error replies.
+   */
+  readonly hasSentInCurrentRequest: boolean;
+
   /** Register HTTP routes on the host server for receiving platform events. */
   registerRoutes(router: RouteRegistrar): void;
 
@@ -78,6 +87,15 @@ export interface MessagingAdapter {
   indicateProcessing(
     threadRef: ThreadRef,
   ): Promise<() => Promise<void>>;
+
+  /**
+   * Optional: return tool definitions the agent can use (e.g. send_email).
+   * Called once after initialization to register tools with the harness.
+   */
+  getToolDefinitions?(): ToolDefinition[];
+
+  /** Reset per-request state (e.g. send counter, hasSentInCurrentRequest). */
+  resetRequestState?(): void;
 }
 
 // ---------------------------------------------------------------------------
