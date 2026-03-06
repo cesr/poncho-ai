@@ -32,6 +32,9 @@ export interface UploadsConfig {
   endpoint?: string;
 }
 
+export type ToolAccess = boolean | "approval";
+
+/** @deprecated Use flat tool keys on `tools` instead. Kept for backward compat. */
 export type BuiltInToolToggles = {
   list_directory?: boolean;
   read_file?: boolean;
@@ -59,10 +62,15 @@ export interface PonchoConfig extends McpConfig {
   tools?: {
     defaults?: BuiltInToolToggles;
     byEnvironment?: {
-      development?: BuiltInToolToggles;
-      staging?: BuiltInToolToggles;
-      production?: BuiltInToolToggles;
+      development?: Record<string, ToolAccess>;
+      staging?: Record<string, ToolAccess>;
+      production?: Record<string, ToolAccess>;
     };
+    [toolName: string]:
+      | ToolAccess
+      | BuiltInToolToggles
+      | Record<string, Record<string, ToolAccess>>
+      | undefined;
   };
   auth?: {
     required?: boolean;

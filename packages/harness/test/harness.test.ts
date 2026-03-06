@@ -907,6 +907,216 @@ allowed-tools:
     await new Promise<void>((resolveClose) => mcpServer.close(() => resolveClose()));
   });
 
+  it("supports flat tool access config format", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-flat-tool-access-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: flat-tool-access-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Flat Tool Access Agent
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "poncho.config.js"),
+      `export default {
+  tools: {
+    read_file: false,
+    list_directory: true,
+  }
+};
+`,
+      "utf8",
+    );
+
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    const names = harness.listTools().map((tool) => tool.name);
+    expect(names).toContain("list_directory");
+    expect(names).not.toContain("read_file");
+  });
+
+  it("flat tool access takes priority over legacy defaults", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-flat-over-legacy-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: flat-over-legacy-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Flat Over Legacy Agent
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "poncho.config.js"),
+      `export default {
+  tools: {
+    read_file: true,
+    defaults: {
+      read_file: false,
+    },
+  }
+};
+`,
+      "utf8",
+    );
+
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    const names = harness.listTools().map((tool) => tool.name);
+    expect(names).toContain("read_file");
+  });
+
+  it("byEnvironment overrides flat tool access", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-env-override-flat-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: env-override-flat-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Env Override Flat Agent
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "poncho.config.js"),
+      `export default {
+  tools: {
+    read_file: false,
+    byEnvironment: {
+      development: {
+        read_file: true,
+      },
+    },
+  }
+};
+`,
+      "utf8",
+    );
+
+    const harness = new AgentHarness({ workingDir: dir, environment: "development" });
+    await harness.initialize();
+    const names = harness.listTools().map((tool) => tool.name);
+    expect(names).toContain("read_file");
+  });
+
+  it("registerTools skips tools disabled via config", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-register-tools-disabled-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: register-tools-disabled-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Register Tools Disabled Agent
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "poncho.config.js"),
+      `export default {
+  tools: {
+    custom_tool: false,
+  }
+};
+`,
+      "utf8",
+    );
+
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    harness.registerTools([
+      {
+        name: "custom_tool",
+        description: "should be skipped",
+        inputSchema: { type: "object", properties: {} },
+        handler: async () => ({ ok: true }),
+      },
+      {
+        name: "allowed_tool",
+        description: "should be registered",
+        inputSchema: { type: "object", properties: {} },
+        handler: async () => ({ ok: true }),
+      },
+    ]);
+    const names = harness.listTools().map((tool) => tool.name);
+    expect(names).not.toContain("custom_tool");
+    expect(names).toContain("allowed_tool");
+  });
+
+  it("approval access level registers the tool but marks it for approval", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-approval-access-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: approval-access-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Approval Access Agent
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "poncho.config.js"),
+      `export default {
+  tools: {
+    write_file: 'approval',
+  }
+};
+`,
+      "utf8",
+    );
+
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    const names = harness.listTools().map((tool) => tool.name);
+    expect(names).toContain("write_file");
+
+    const requiresApproval = (harness as any).requiresApprovalForToolCall("write_file", {});
+    expect(requiresApproval).toBe(true);
+  });
+
+  it("tools without approval config do not require approval", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-no-approval-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: no-approval-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# No Approval Agent
+`,
+      "utf8",
+    );
+
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    const requiresApproval = (harness as any).requiresApprovalForToolCall("write_file", {});
+    expect(requiresApproval).toBe(false);
+  });
+
   it("allows in-flight MCP calls to finish after skill deactivation", async () => {
     process.env.LINEAR_TOKEN = "token-123";
     const mcpServer = createServer(async (req, res) => {

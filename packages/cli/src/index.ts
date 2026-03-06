@@ -24,6 +24,7 @@ import {
   resolveStateConfig,
   type CronJobConfig,
   type PonchoConfig,
+  type Conversation,
   type ConversationStore,
   type UploadStore,
 } from "@poncho-ai/harness";
@@ -524,15 +525,16 @@ export default {
       auth: { type: "bearer", tokenEnv: "GITHUB_TOKEN" },
     },
   ],
+  // Tool access: true (available), false (disabled), 'approval' (requires human approval)
   tools: {
-    defaults: {
-      list_directory: true,
-      read_file: true,
-      write_file: true, // still gated by environment/policy
-    },
+    write_file: true,           // gated by environment for writes
+    send_email: 'approval',     // requires human approval
     byEnvironment: {
       production: {
-        read_file: false, // example override
+        write_file: false,
+      },
+      development: {
+        send_email: true,       // skip approval in dev
       },
     },
   },
@@ -1454,7 +1456,78 @@ export const createRequestHandler = async (options?: {
     },
     async run(conversationId, input) {
       console.log("[messaging-runner] starting run for", conversationId, "task:", input.task.slice(0, 80));
-      const output = await harness.runToCompletion({
+
+      const historyMessages = [...input.messages];
+      const userContent = input.task;
+
+      // Read-modify-write helper: always fetches the latest version from
+      // the store before writing, so concurrent writers (e.g. the approval
+      // handler's persistConversationPendingApprovals) don't get clobbered.
+      const updateConversation = async (
+        patch: (conv: Conversation) => void,
+      ): Promise<void> => {
+        const fresh = await conversationStore.get(conversationId);
+        if (!fresh) return;
+        patch(fresh);
+        fresh.updatedAt = Date.now();
+        await conversationStore.update(fresh);
+      };
+
+      // Persist user turn immediately so the web UI shows it while the agent runs.
+      await updateConversation((c) => {
+        c.messages = [...historyMessages, { role: "user" as const, content: userContent }];
+      });
+
+      let latestRunId = "";
+      let assistantResponse = "";
+      const toolTimeline: string[] = [];
+      const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
+      let currentTools: string[] = [];
+      let currentText = "";
+
+      const buildMessages = (): Message[] => {
+        const draftSections: Array<{ type: "text" | "tools"; content: string | string[] }> = [
+          ...sections.map((s) => ({
+            type: s.type,
+            content: Array.isArray(s.content) ? [...s.content] : s.content,
+          })),
+        ];
+        if (currentTools.length > 0) {
+          draftSections.push({ type: "tools", content: [...currentTools] });
+        }
+        if (currentText.length > 0) {
+          draftSections.push({ type: "text", content: currentText });
+        }
+        const hasDraftContent =
+          assistantResponse.length > 0 || toolTimeline.length > 0 || draftSections.length > 0;
+        if (!hasDraftContent) {
+          return [...historyMessages, { role: "user" as const, content: userContent }];
+        }
+        return [
+          ...historyMessages,
+          { role: "user" as const, content: userContent },
+          {
+            role: "assistant" as const,
+            content: assistantResponse,
+            metadata:
+              toolTimeline.length > 0 || draftSections.length > 0
+                ? ({
+                    toolActivity: [...toolTimeline],
+                    sections: draftSections.length > 0 ? draftSections : undefined,
+                  } as Message["metadata"])
+                : undefined,
+          },
+        ];
+      };
+
+      const persistDraftAssistantTurn = async (): Promise<void> => {
+        if (assistantResponse.length === 0 && toolTimeline.length === 0) return;
+        await updateConversation((c) => {
+          c.messages = buildMessages();
+        });
+      };
+
+      const runInput = {
         task: input.task,
         conversationId,
         messages: input.messages,
@@ -1465,40 +1538,107 @@ export const createRequestHandler = async (options?: {
           __messaging_sender_name: input.metadata.sender.name ?? "",
           __messaging_thread_id: input.metadata.threadId,
         } : undefined,
-      });
-      console.log("[messaging-runner] run complete, response length:", (output.result.response ?? "").length);
-      const response = output.result.response ?? "";
-
-      // Extract FileContentPart entries from output messages (e.g. tool results)
-      const outboundFiles: Array<{ data: string; mediaType: string; filename?: string }> = [];
-      for (const msg of output.messages) {
-        if (Array.isArray(msg.content)) {
-          for (const part of msg.content) {
-            if (part.type === "file") {
-              outboundFiles.push({
-                data: part.data,
-                mediaType: part.mediaType,
-                filename: part.filename,
-              });
-            }
-          }
-        }
-      }
-
-      const conversation = await conversationStore.get(conversationId);
-      if (conversation) {
-        conversation.messages = [
-          ...input.messages,
-          { role: "user" as const, content: input.task },
-          { role: "assistant" as const, content: response },
-        ];
-        await conversationStore.update(conversation);
-      }
-
-      return {
-        response,
-        files: outboundFiles.length > 0 ? outboundFiles : undefined,
       };
+
+      try {
+        for await (const event of harness.runWithTelemetry(runInput)) {
+          if (event.type === "run:started") {
+            latestRunId = event.runId;
+            runOwners.set(event.runId, "local-owner");
+            runConversations.set(event.runId, conversationId);
+          }
+          if (event.type === "model:chunk") {
+            if (currentTools.length > 0) {
+              sections.push({ type: "tools", content: currentTools });
+              currentTools = [];
+            }
+            assistantResponse += event.content;
+            currentText += event.content;
+          }
+          if (event.type === "tool:started") {
+            if (currentText.length > 0) {
+              sections.push({ type: "text", content: currentText });
+              currentText = "";
+            }
+            const toolText = `- start \`${event.tool}\``;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
+          }
+          if (event.type === "tool:completed") {
+            const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
+          }
+          if (event.type === "tool:error") {
+            const toolText = `- error \`${event.tool}\`: ${event.error}`;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
+          }
+          if (event.type === "step:completed") {
+            await persistDraftAssistantTurn();
+          }
+          if (event.type === "tool:approval:required") {
+            const toolText = `- approval required \`${event.tool}\``;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
+            await persistDraftAssistantTurn();
+            await persistConversationPendingApprovals(conversationId);
+          }
+          if (event.type === "tool:approval:granted") {
+            const toolText = `- approval granted (${event.approvalId})`;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
+            await persistDraftAssistantTurn();
+          }
+          if (event.type === "tool:approval:denied") {
+            const toolText = `- approval denied (${event.approvalId})`;
+            toolTimeline.push(toolText);
+            currentTools.push(toolText);
+            await persistDraftAssistantTurn();
+          }
+          if (
+            event.type === "run:completed" &&
+            assistantResponse.length === 0 &&
+            event.result.response
+          ) {
+            assistantResponse = event.result.response;
+          }
+          if (event.type === "run:error") {
+            assistantResponse = assistantResponse || `[Error: ${event.error.message}]`;
+          }
+          broadcastEvent(conversationId, event);
+        }
+      } catch (err) {
+        console.error("[messaging-runner] run failed:", err instanceof Error ? err.message : err);
+        assistantResponse = assistantResponse || `[Error: ${err instanceof Error ? err.message : "Unknown error"}]`;
+      }
+
+      // Finalize sections (clear after pushing so buildMessages doesn't re-add)
+      if (currentTools.length > 0) {
+        sections.push({ type: "tools", content: currentTools });
+        currentTools = [];
+      }
+      if (currentText.length > 0) {
+        sections.push({ type: "text", content: currentText });
+        currentText = "";
+      }
+
+      await updateConversation((c) => {
+        c.messages = buildMessages();
+        c.runtimeRunId = latestRunId || c.runtimeRunId;
+        c.pendingApprovals = [];
+      });
+      finishConversationStream(conversationId);
+      await persistConversationPendingApprovals(conversationId);
+      if (latestRunId) {
+        runOwners.delete(latestRunId);
+        runConversations.delete(latestRunId);
+      }
+
+      console.log("[messaging-runner] run complete, response length:", assistantResponse.length);
+      const response = assistantResponse;
+
+      return { response };
     },
   };
 
@@ -1875,18 +2015,19 @@ export const createRequestHandler = async (options?: {
       });
       const stream = conversationEventStreams.get(conversationId);
       if (!stream) {
-        // No active run — close immediately
         response.write("event: stream:end\ndata: {}\n\n");
         response.end();
         return;
       }
-      // Replay buffered events
-      for (const bufferedEvent of stream.buffer) {
-        try {
-          response.write(formatSseEvent(bufferedEvent));
-        } catch {
-          response.end();
-          return;
+      const liveOnly = (request.url ?? "").includes("live_only=true");
+      if (!liveOnly) {
+        for (const bufferedEvent of stream.buffer) {
+          try {
+            response.write(formatSseEvent(bufferedEvent));
+          } catch {
+            response.end();
+            return;
+          }
         }
       }
       if (stream.finished) {
@@ -1937,11 +2078,14 @@ export const createRequestHandler = async (options?: {
         for (const approval of livePending) {
           mergedPendingById.set(approval.approvalId, approval);
         }
+        const activeStream = conversationEventStreams.get(conversationId);
+        const hasActiveRun = !!activeStream && !activeStream.finished;
         writeJson(response, 200, {
           conversation: {
             ...conversation,
             pendingApprovals: Array.from(mergedPendingById.values()),
           },
+          hasActiveRun,
         });
         return;
       }

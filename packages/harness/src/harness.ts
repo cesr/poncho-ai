@@ -14,7 +14,7 @@ import { getTextContent } from "@poncho-ai/sdk";
 import type { UploadStore } from "./upload-store.js";
 import { PONCHO_UPLOAD_SCHEME, deriveUploadKey } from "./upload-store.js";
 import { parseAgentFile, renderAgentPrompt, type ParsedAgent, type AgentFrontmatter } from "./agent-parser.js";
-import { loadPonchoConfig, resolveMemoryConfig, type PonchoConfig } from "./config.js";
+import { loadPonchoConfig, resolveMemoryConfig, type PonchoConfig, type ToolAccess, type BuiltInToolToggles } from "./config.js";
 import { createDefaultTools, createWriteTool } from "./default-tools.js";
 import {
   createMemoryStore,
@@ -236,6 +236,23 @@ You are running locally in development mode. Treat this as an editable agent wor
 - For setup/configuration/skills/MCP questions, proactively read \`README.md\` with \`read_file\` before answering
 - Prefer concrete commands and examples from \`README.md\` over assumptions
 
+### Tool Access Control
+
+Any tool can be configured in \`poncho.config.js\` under \`tools\`:
+
+\`\`\`javascript
+tools: {
+  send_email: 'approval',  // requires human approval before each call
+  write_file: false,        // disabled (agent never sees it)
+  read_file: true,          // available (default)
+  byEnvironment: {
+    development: { send_email: true },  // skip approval in dev
+  },
+}
+\`\`\`
+
+Three access levels: \`true\` (available), \`'approval'\` (requires approval), \`false\` (disabled). Works for any tool name. Per-environment overrides take priority.
+
 ## Self-Extension Capabilities
 
 You can extend your own capabilities by creating custom JavaScript/TypeScript scripts:
@@ -412,29 +429,28 @@ export class AgentHarness {
   private parsedAgent?: ParsedAgent;
   private mcpBridge?: LocalMcpBridge;
 
-  private getConfiguredToolFlag(
-    config: PonchoConfig | undefined,
-    name: keyof NonNullable<NonNullable<PonchoConfig["tools"]>["defaults"]>,
-  ): boolean | undefined {
-    const defaults = config?.tools?.defaults;
-    const environment = this.environment ?? "development";
-    const envOverrides = config?.tools?.byEnvironment?.[environment];
-    return envOverrides?.[name] ?? defaults?.[name];
+  private resolveToolAccess(toolName: string): ToolAccess {
+    const tools = this.loadedConfig?.tools;
+    if (!tools) return true;
+
+    const env = this.environment ?? "development";
+    const envOverride = tools.byEnvironment?.[env]?.[toolName];
+    if (envOverride !== undefined) return envOverride;
+
+    const flatValue = tools[toolName];
+    if (typeof flatValue === "boolean" || flatValue === "approval") return flatValue;
+
+    const legacyValue = tools.defaults?.[toolName as keyof BuiltInToolToggles];
+    if (legacyValue !== undefined) return legacyValue;
+
+    return true;
   }
 
-  private isBuiltInToolEnabled(config: PonchoConfig | undefined, name: string): boolean {
+  private isToolEnabled(name: string): boolean {
+    const access = this.resolveToolAccess(name);
+    if (access === false) return false;
     if (name === "write_file") {
-      const allowedByEnvironment = this.shouldEnableWriteTool();
-      const configured = this.getConfiguredToolFlag(config, "write_file");
-      return allowedByEnvironment && configured !== false;
-    }
-    if (name === "list_directory") {
-      const configured = this.getConfiguredToolFlag(config, "list_directory");
-      return configured !== false;
-    }
-    if (name === "read_file") {
-      const configured = this.getConfiguredToolFlag(config, "read_file");
-      return configured !== false;
+      return this.shouldEnableWriteTool();
     }
     return true;
   }
@@ -448,18 +464,22 @@ export class AgentHarness {
   /**
    * Register additional tools after construction (e.g. messaging adapter tools).
    * Existing tools with the same name are overwritten.
+   * Tools disabled via `tools` config are skipped.
    */
   registerTools(tools: ToolDefinition[]): void {
-    this.dispatcher.registerMany(tools);
+    for (const tool of tools) {
+      if (!this.isToolEnabled(tool.name)) continue;
+      this.dispatcher.register(tool);
+    }
   }
 
   private registerConfiguredBuiltInTools(config: PonchoConfig | undefined): void {
     for (const tool of createDefaultTools(this.workingDir)) {
-      if (this.isBuiltInToolEnabled(config, tool.name)) {
+      if (this.isToolEnabled(tool.name)) {
         this.registerIfMissing(tool);
       }
     }
-    if (this.isBuiltInToolEnabled(config, "write_file")) {
+    if (this.isToolEnabled("write_file")) {
       this.registerIfMissing(createWriteTool(this.workingDir));
     }
   }
@@ -615,6 +635,9 @@ export class AgentHarness {
     toolName: string,
     input: Record<string, unknown>,
   ): boolean {
+    if (this.resolveToolAccess(toolName) === "approval") {
+      return true;
+    }
     if (toolName === "run_skill_script") {
       const rawScript = typeof input.script === "string" ? input.script.trim() : "";
       if (!rawScript) {

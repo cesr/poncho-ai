@@ -323,6 +323,32 @@ By default, Poncho includes built-in filesystem tools from the harness:
 
 Additional skills can be installed via `poncho skills add <repo-or-path>` (or the `poncho add` alias).
 
+### Tool access configuration
+
+Control whether any tool is available, requires approval, or is disabled via `poncho.config.js`:
+
+```javascript
+tools: {
+  send_email: 'approval',   // available, requires human approval
+  write_file: false,         // disabled (agent never sees it)
+  read_file: true,           // available (same as default)
+  byEnvironment: {
+    development: {
+      send_email: true,      // skip approval in dev
+      write_file: true,
+    },
+  },
+}
+```
+
+Three access levels per tool:
+
+- `true` (or omitted): available, no approval needed (default for all tools)
+- `'approval'`: available, but triggers a human approval prompt before each call
+- `false`: disabled, tool is not registered and the agent never sees it
+
+This works for any tool — built-in harness tools (`write_file`, `read_file`, `list_directory`), adapter tools (`send_email`), MCP tools, and skill tools. Per-environment overrides in `byEnvironment` take priority over the top-level defaults.
+
 ### How skill discovery works
 
 At startup, Poncho recursively scans the `skills/` directory for `SKILL.md` files and loads their metadata.
@@ -1208,17 +1234,20 @@ export default {
     },
   },
 
-  // Built-in harness tools (enabled by default unless noted)
+  // Tool access: true (available), false (disabled), 'approval' (requires human approval)
+  // Any tool name works — harness tools, adapter tools (send_email), MCP tools, etc.
   tools: {
-    defaults: {
-      list_directory: true,
-      read_file: true,
-      write_file: true,       // still gated by environment/policy
-    },
+    write_file: true,            // available (still gated by environment for writes)
+    send_email: 'approval',      // available, requires human approval before each call
+    list_directory: true,
     byEnvironment: {
       production: {
-        read_file: false      // example: disable file reading in production
-      }
+        write_file: false,       // disable writes in production
+        send_email: 'approval',  // keep approval in production
+      },
+      development: {
+        send_email: true,        // skip approval in dev
+      },
     },
   },
 

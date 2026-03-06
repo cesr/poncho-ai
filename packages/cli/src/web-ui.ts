@@ -2148,8 +2148,14 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             } else if (shouldRenderEmptyStreamingIndicator) {
               content.appendChild(createThinkingIndicator(getThinkingStatusLabel(m)));
             } else {
-              // Check for sections in _sections (streaming) or metadata.sections (stored)
-              const sections = m._sections || (m.metadata && m.metadata.sections);
+              // Merge stored sections (persisted) with live sections (from
+              // an active stream).  For normal messages only one source
+              // exists; for liveOnly reconnects both contribute.
+              const storedSections = (m.metadata && m.metadata.sections) || [];
+              const liveSections = m._sections || [];
+              const sections = liveSections.length > 0 && storedSections.length > 0
+                ? storedSections.concat(liveSections)
+                : liveSections.length > 0 ? liveSections : (storedSections.length > 0 ? storedSections : null);
               const pendingApprovals = Array.isArray(m._pendingApprovals) ? m._pendingApprovals : [];
 
               if (sections && sections.length > 0) {
@@ -2295,9 +2301,19 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         updateContextRing();
         renderMessages(state.activeMessages, false, { forceScrollBottom: true });
         elements.prompt.focus();
+        if (payload.hasActiveRun && !state.isStreaming) {
+          setStreaming(true);
+          streamConversationEvents(conversationId, { liveOnly: true }).finally(() => {
+            if (state.activeConversationId === conversationId) {
+              setStreaming(false);
+              renderMessages(state.activeMessages, false);
+            }
+          });
+        }
       };
 
-      const streamConversationEvents = (conversationId) => {
+      const streamConversationEvents = (conversationId, options) => {
+        const liveOnly = options && options.liveOnly;
         return new Promise((resolve) => {
           const localMessages = state.activeMessages || [];
           const renderIfActiveConversation = (streaming) => {
@@ -2316,20 +2332,36 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
               _currentText: "",
               _currentTools: [],
               _pendingApprovals: [],
+              _activeActivities: [],
               metadata: { toolActivity: [] },
             };
             localMessages.push(assistantMessage);
             state.activeMessages = localMessages;
           }
-          if (!assistantMessage._sections) assistantMessage._sections = [];
-          if (!assistantMessage._currentText) assistantMessage._currentText = "";
-          if (!assistantMessage._currentTools) assistantMessage._currentTools = [];
-          if (!assistantMessage._activeActivities) assistantMessage._activeActivities = [];
-          if (!assistantMessage._pendingApprovals) assistantMessage._pendingApprovals = [];
-          if (!assistantMessage.metadata) assistantMessage.metadata = {};
-          if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+          if (liveOnly) {
+            // Live-only mode: keep metadata.sections intact (the stored
+            // base content) and start _sections empty so it only collects
+            // NEW sections from live events.  The renderer merges both.
+            assistantMessage._sections = [];
+            assistantMessage._currentText = "";
+            assistantMessage._currentTools = [];
+            if (!assistantMessage._activeActivities) assistantMessage._activeActivities = [];
+            if (!assistantMessage._pendingApprovals) assistantMessage._pendingApprovals = [];
+            if (!assistantMessage.metadata) assistantMessage.metadata = {};
+            if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+          } else {
+            // Full replay mode: reset transient state so replayed events
+            // rebuild from scratch (the buffer has the full event history).
+            assistantMessage.content = "";
+            assistantMessage._sections = [];
+            assistantMessage._currentText = "";
+            assistantMessage._currentTools = [];
+            assistantMessage._activeActivities = [];
+            assistantMessage._pendingApprovals = [];
+            assistantMessage.metadata = { toolActivity: [] };
+          }
 
-          const url = "/api/conversations/" + encodeURIComponent(conversationId) + "/events";
+          const url = "/api/conversations/" + encodeURIComponent(conversationId) + "/events" + (liveOnly ? "?live_only=true" : "");
           fetch(url, { credentials: "include" }).then((response) => {
             if (!response.ok || !response.body) {
               resolve(undefined);
@@ -2444,6 +2476,75 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                         errorMsg;
                       assistantMessage._currentTools.push(toolText);
                       assistantMessage.metadata.toolActivity.push(toolText);
+                      renderIfActiveConversation(true);
+                    }
+                    if (eventName === "tool:approval:required") {
+                      const toolName = payload.tool || "tool";
+                      const activeActivity = removeActiveActivityForTool(
+                        assistantMessage,
+                        toolName,
+                      );
+                      const detailFromPayload = describeToolStart(payload);
+                      const detail =
+                        (activeActivity && typeof activeActivity.detail === "string"
+                          ? activeActivity.detail.trim()
+                          : "") ||
+                        (detailFromPayload && typeof detailFromPayload.detail === "string"
+                          ? detailFromPayload.detail.trim()
+                          : "");
+                      const toolText =
+                        "- approval required \\x60" +
+                        toolName +
+                        "\\x60" +
+                        (detail ? " (" + detail + ")" : "");
+                      assistantMessage._currentTools.push(toolText);
+                      assistantMessage.metadata.toolActivity.push(toolText);
+                      const approvalId =
+                        typeof payload.approvalId === "string" ? payload.approvalId : "";
+                      if (approvalId) {
+                        const preview = safeJsonPreview(payload.input ?? {});
+                        const inputPreview = preview.length > 600 ? preview.slice(0, 600) + "..." : preview;
+                        if (!Array.isArray(assistantMessage._pendingApprovals)) {
+                          assistantMessage._pendingApprovals = [];
+                        }
+                        const exists = assistantMessage._pendingApprovals.some(
+                          (req) => req.approvalId === approvalId,
+                        );
+                        if (!exists) {
+                          assistantMessage._pendingApprovals.push({
+                            approvalId,
+                            tool: toolName,
+                            inputPreview,
+                            state: "pending",
+                          });
+                        }
+                      }
+                      renderIfActiveConversation(true);
+                    }
+                    if (eventName === "tool:approval:granted") {
+                      const toolText = "- approval granted";
+                      assistantMessage._currentTools.push(toolText);
+                      assistantMessage.metadata.toolActivity.push(toolText);
+                      const approvalId =
+                        typeof payload.approvalId === "string" ? payload.approvalId : "";
+                      if (approvalId && Array.isArray(assistantMessage._pendingApprovals)) {
+                        assistantMessage._pendingApprovals = assistantMessage._pendingApprovals.filter(
+                          (req) => req.approvalId !== approvalId,
+                        );
+                      }
+                      renderIfActiveConversation(true);
+                    }
+                    if (eventName === "tool:approval:denied") {
+                      const toolText = "- approval denied";
+                      assistantMessage._currentTools.push(toolText);
+                      assistantMessage.metadata.toolActivity.push(toolText);
+                      const approvalId =
+                        typeof payload.approvalId === "string" ? payload.approvalId : "";
+                      if (approvalId && Array.isArray(assistantMessage._pendingApprovals)) {
+                        assistantMessage._pendingApprovals = assistantMessage._pendingApprovals.filter(
+                          (req) => req.approvalId !== approvalId,
+                        );
+                      }
                       renderIfActiveConversation(true);
                     }
                     if (eventName === "run:completed") {
