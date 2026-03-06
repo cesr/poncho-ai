@@ -1,5 +1,28 @@
 # @poncho-ai/cli
 
+## 0.14.0
+
+### Minor Changes
+
+- [`fed3e87`](https://github.com/cesr/poncho-ai/commit/fed3e870aecaea9dcbe8070f5bb2c828d4eb8921) Thanks [@cesr](https://github.com/cesr)! - Unified tool access configuration and web UI streaming for messaging conversations
+  - New `tools` config in `poncho.config.js`: control any tool with `true` (available), `false` (disabled), or `'approval'` (requires human approval). Per-environment overrides via `byEnvironment`. Works for harness, adapter, MCP, and skill tools.
+  - Messaging conversations (email via Resend) now stream events to the web UI: live tool progress, approval prompts, and text chunks display in real time.
+  - Clicking a conversation with an active run in the web UI sidebar auto-attaches to the event stream.
+  - Fix conversation persistence race condition in messaging runner (stale-write clobber).
+  - Fix duplicated last section in persisted conversations.
+
+### Patch Changes
+
+- [`9e87d28`](https://github.com/cesr/poncho-ai/commit/9e87d2801ba7b8d4c8b0650563d59e9cad530ff6) Thanks [@cesr](https://github.com/cesr)! - Fix Latitude telemetry not exporting traces
+  - Reuse a single `LatitudeTelemetry` instance across runs instead of creating one per run (avoids OpenTelemetry global registration conflicts)
+  - Use `disableBatch` mode so spans export immediately instead of being silently lost on a 5s timer
+  - Warn at startup when `telemetry.latitude` is configured with missing or misnamed fields (e.g. `apiKeyEnv` instead of `apiKey`)
+  - Sanitize agent name for Latitude's path validation
+  - Surface OTLP export errors in console output
+
+- Updated dependencies [[`9e87d28`](https://github.com/cesr/poncho-ai/commit/9e87d2801ba7b8d4c8b0650563d59e9cad530ff6), [`fed3e87`](https://github.com/cesr/poncho-ai/commit/fed3e870aecaea9dcbe8070f5bb2c828d4eb8921)]:
+  - @poncho-ai/harness@0.14.0
+
 ## 0.13.0
 
 ### Minor Changes
