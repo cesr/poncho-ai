@@ -865,6 +865,22 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       white-space: nowrap;
       letter-spacing: -0.01em;
       padding: 0 50px;
+      cursor: default;
+    }
+    .topbar-title-input {
+      font: inherit;
+      font-weight: inherit;
+      letter-spacing: inherit;
+      color: inherit;
+      background: var(--bg-2);
+      border: none;
+      border-radius: 4px;
+      padding: 2px 6px;
+      margin: -3px 0;
+      max-width: 100%;
+      outline: none;
+      box-sizing: border-box;
+      text-align: center;
     }
     .sidebar-toggle {
       display: none;
@@ -2422,6 +2438,67 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         }
       };
 
+      const renameConversation = async (conversationId, title) => {
+        const payload = await api("/api/conversations/" + encodeURIComponent(conversationId), {
+          method: "PATCH",
+          body: JSON.stringify({ title }),
+        });
+        elements.chatTitle.textContent = payload.conversation.title;
+        const entry = state.conversations.find(c => c.conversationId === conversationId);
+        if (entry) entry.title = payload.conversation.title;
+        renderConversationList();
+      };
+
+      const beginTitleEdit = () => {
+        if (!state.activeConversationId) return;
+        if (elements.chatTitle.querySelector("input")) return;
+
+        const current = elements.chatTitle.textContent || "";
+        elements.chatTitle.textContent = "";
+
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "topbar-title-input";
+        input.value = current;
+
+        const sizer = document.createElement("span");
+        sizer.style.cssText = "position:absolute;visibility:hidden;white-space:pre;font:inherit;font-weight:inherit;letter-spacing:inherit;padding:0 6px;";
+        const autoSize = () => {
+          sizer.textContent = input.value || " ";
+          elements.chatTitle.appendChild(sizer);
+          input.style.width = sizer.offsetWidth + 12 + "px";
+          sizer.remove();
+        };
+
+        elements.chatTitle.appendChild(input);
+        autoSize();
+        input.focus();
+        input.select();
+        input.addEventListener("input", autoSize);
+
+        const commit = async () => {
+          const newTitle = input.value.trim();
+          if (input._committed) return;
+          input._committed = true;
+
+          if (newTitle && newTitle !== current) {
+            try {
+              await renameConversation(state.activeConversationId, newTitle);
+            } catch {
+              elements.chatTitle.textContent = current;
+            }
+          } else {
+            elements.chatTitle.textContent = current;
+          }
+        };
+
+        input.addEventListener("blur", commit);
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+          if (e.key === "Escape") { input.value = current; input.blur(); }
+        });
+      };
+
       const streamConversationEvents = (conversationId, options) => {
         const liveOnly = options && options.liveOnly;
         return new Promise((resolve) => {
@@ -3454,6 +3531,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
 
       elements.newChat.addEventListener("click", startNewChat);
       elements.topbarNewChat.addEventListener("click", startNewChat);
+
+      elements.chatTitle.addEventListener("dblclick", beginTitleEdit);
 
       elements.prompt.addEventListener("input", () => {
         autoResizePrompt();
