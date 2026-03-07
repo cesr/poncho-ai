@@ -1205,6 +1205,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       line-height: 1.5;
       overflow-wrap: break-word;
       word-break: break-word;
+      white-space: pre-wrap;
     }
     .empty-state {
       display: flex;
