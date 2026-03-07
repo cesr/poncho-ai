@@ -316,8 +316,6 @@ export const buildConfigFromOnboardingAnswers = (
       maxRecallConversations,
     },
   };
-  maybeSet(storage, "url", answers["storage.url"]);
-  maybeSet(storage, "token", answers["storage.token"]);
   maybeSet(storage, "table", answers["storage.table"]);
   maybeSet(storage, "region", answers["storage.region"]);
 
@@ -392,8 +390,8 @@ export const isDefaultOnboardingConfig = (
     return false;
   }
   if (
-    typeof config.storage?.url !== "undefined" ||
-    typeof config.storage?.token !== "undefined" ||
+    typeof config.storage?.urlEnv !== "undefined" ||
+    typeof config.storage?.tokenEnv !== "undefined" ||
     typeof config.storage?.table !== "undefined" ||
     typeof config.storage?.region !== "undefined"
   ) {

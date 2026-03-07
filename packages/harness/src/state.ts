@@ -61,8 +61,8 @@ export type StateProviderName =
 export interface StateConfig {
   provider?: StateProviderName;
   ttl?: number;
-  url?: string;
-  token?: string;
+  urlEnv?: string;
+  tokenEnv?: string;
   table?: string;
   region?: string;
 }
@@ -1166,15 +1166,18 @@ export const createStateStore = (
     return new InMemoryStateStore(ttl);
   }
   if (provider === "upstash") {
-    const url = config?.url ?? process.env.UPSTASH_REDIS_REST_URL ?? "";
-    const token = config?.token ?? process.env.UPSTASH_REDIS_REST_TOKEN ?? "";
+    const urlEnv = config?.urlEnv ?? (process.env.UPSTASH_REDIS_REST_URL ? "UPSTASH_REDIS_REST_URL" : "KV_REST_API_URL");
+    const tokenEnv = config?.tokenEnv ?? (process.env.UPSTASH_REDIS_REST_TOKEN ? "UPSTASH_REDIS_REST_TOKEN" : "KV_REST_API_TOKEN");
+    const url = process.env[urlEnv] ?? "";
+    const token = process.env[tokenEnv] ?? "";
     if (url && token) {
       return new UpstashStateStore(url, token, ttl);
     }
     return new InMemoryStateStore(ttl);
   }
   if (provider === "redis") {
-    const url = config?.url ?? process.env.REDIS_URL ?? "";
+    const urlEnv = config?.urlEnv ?? "REDIS_URL";
+    const url = process.env[urlEnv] ?? "";
     if (url) {
       return new RedisLikeStateStore(url, ttl);
     }
@@ -1204,19 +1207,18 @@ export const createConversationStore = (
     return new InMemoryConversationStore(ttl);
   }
   if (provider === "upstash") {
-    const url =
-      config?.url ??
-      (process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || "");
-    const token =
-      config?.token ??
-      (process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN || "");
+    const urlEnv = config?.urlEnv ?? (process.env.UPSTASH_REDIS_REST_URL ? "UPSTASH_REDIS_REST_URL" : "KV_REST_API_URL");
+    const tokenEnv = config?.tokenEnv ?? (process.env.UPSTASH_REDIS_REST_TOKEN ? "UPSTASH_REDIS_REST_TOKEN" : "KV_REST_API_TOKEN");
+    const url = process.env[urlEnv] ?? "";
+    const token = process.env[tokenEnv] ?? "";
     if (url && token) {
       return new UpstashConversationStore(url, token, workingDir, ttl, options?.agentId);
     }
     return new InMemoryConversationStore(ttl);
   }
   if (provider === "redis") {
-    const url = config?.url ?? process.env.REDIS_URL ?? "";
+    const urlEnv = config?.urlEnv ?? "REDIS_URL";
+    const url = process.env[urlEnv] ?? "";
     if (url) {
       return new RedisLikeConversationStore(url, workingDir, ttl, options?.agentId);
     }

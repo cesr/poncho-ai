@@ -49,23 +49,30 @@ export const getModelContextWindow = (modelName: string): number => {
   return best ? MODEL_CONTEXT_WINDOWS[best]! : DEFAULT_CONTEXT_WINDOW;
 };
 
+export interface ProviderConfig {
+  openai?: { apiKeyEnv?: string };
+  anthropic?: { apiKeyEnv?: string };
+}
+
 /**
- * Creates a model provider factory for the specified AI provider
- * @param provider - The provider name ('openai' or 'anthropic')
- * @returns A function that takes a model name and returns a LanguageModel instance
+ * Creates a model provider factory for the specified AI provider.
+ * API keys are read from environment variables; override the env var
+ * name via the `providers` config in `poncho.config.js`.
  */
-export const createModelProvider = (provider?: string): ModelProviderFactory => {
+export const createModelProvider = (provider?: string, config?: ProviderConfig): ModelProviderFactory => {
   const normalized = (provider ?? "anthropic").toLowerCase();
 
   if (normalized === "openai") {
+    const apiKeyEnv = config?.openai?.apiKeyEnv ?? "OPENAI_API_KEY";
     const openai = createOpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
+      apiKey: process.env[apiKeyEnv],
     });
     return (modelName: string) => openai(modelName);
   }
 
+  const apiKeyEnv = config?.anthropic?.apiKeyEnv ?? "ANTHROPIC_API_KEY";
   const anthropic = createAnthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY,
+    apiKey: process.env[apiKeyEnv],
   });
   return (modelName: string) => anthropic(modelName);
 };

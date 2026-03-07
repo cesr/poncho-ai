@@ -7,8 +7,8 @@ import type { StateConfig } from "./state.js";
 
 export interface StorageConfig {
   provider?: "local" | "memory" | "redis" | "upstash" | "dynamodb";
-  url?: string;
-  token?: string;
+  urlEnv?: string;
+  tokenEnv?: string;
   table?: string;
   region?: string;
   ttl?:
@@ -76,6 +76,7 @@ export interface PonchoConfig extends McpConfig {
     required?: boolean;
     type?: "bearer" | "header" | "custom";
     headerName?: string;
+    tokenEnv?: string;
     validate?: (token: string, req?: unknown) => Promise<boolean> | boolean;
   };
   state?: {
@@ -85,12 +86,16 @@ export interface PonchoConfig extends McpConfig {
   };
   memory?: MemoryConfig;
   storage?: StorageConfig;
+  providers?: {
+    openai?: { apiKeyEnv?: string };
+    anthropic?: { apiKeyEnv?: string };
+  };
   telemetry?: {
     enabled?: boolean;
     otlp?: string;
     latitude?: {
-      apiKey?: string;
-      projectId?: string | number;
+      apiKeyEnv?: string;
+      projectIdEnv?: string;
       path?: string;
       documentPath?: string;
     };
@@ -130,8 +135,8 @@ export const resolveStateConfig = (
   if (config?.storage) {
     return {
       provider: config.storage.provider,
-      url: config.storage.url,
-      token: config.storage.token,
+      urlEnv: config.storage.urlEnv,
+      tokenEnv: config.storage.tokenEnv,
       table: config.storage.table,
       region: config.storage.region,
       ttl: resolveTtl(config.storage.ttl, "conversations"),
@@ -147,8 +152,8 @@ export const resolveMemoryConfig = (
     return {
       enabled: config.storage.memory?.enabled ?? config.memory?.enabled,
       provider: config.storage.provider,
-      url: config.storage.url,
-      token: config.storage.token,
+      urlEnv: config.storage.urlEnv,
+      tokenEnv: config.storage.tokenEnv,
       table: config.storage.table,
       region: config.storage.region,
       ttl: resolveTtl(config.storage.ttl, "memory"),

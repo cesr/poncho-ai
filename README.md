@@ -1198,6 +1198,24 @@ LATITUDE_PATH=agents/my-agent/run
 
 ## Configuration Reference
 
+### Credential pattern
+
+All credentials in `poncho.config.js` use **env var name** fields (`*Env` suffix). The config specifies *which* environment variable to read — never the secret value itself. Every `*Env` field has a sensible default, so you only need to set the field when your env var name differs from the convention:
+
+| Config field | Default env var | Purpose |
+|---|---|---|
+| `providers.anthropic.apiKeyEnv` | `ANTHROPIC_API_KEY` | Anthropic model API key |
+| `providers.openai.apiKeyEnv` | `OPENAI_API_KEY` | OpenAI model API key |
+| `auth.tokenEnv` | `PONCHO_AUTH_TOKEN` | Auth passphrase / bearer token |
+| `storage.urlEnv` | `UPSTASH_REDIS_REST_URL` / `REDIS_URL` | Storage connection URL |
+| `storage.tokenEnv` | `UPSTASH_REDIS_REST_TOKEN` | Upstash REST token |
+| `telemetry.latitude.apiKeyEnv` | `LATITUDE_API_KEY` | Latitude API key |
+| `telemetry.latitude.projectIdEnv` | `LATITUDE_PROJECT_ID` | Latitude project ID |
+| `messaging[].botTokenEnv` | `SLACK_BOT_TOKEN` | Slack bot token |
+| `messaging[].signingSecretEnv` | `SLACK_SIGNING_SECRET` | Slack signing secret |
+| `messaging[].apiKeyEnv` | `RESEND_API_KEY` | Resend API key |
+| `mcp[].auth.tokenEnv` | *(user-defined)* | MCP server bearer token |
+
 ### poncho.config.js
 
 ```javascript
@@ -1255,18 +1273,24 @@ export default {
   auth: {
     required: true,
     type: 'bearer',              // 'bearer' | 'header' | 'custom'
-    // Custom validation (optional)
-    validate: async (token) => token === process.env.PONCHO_AUTH_TOKEN,
+    // tokenEnv: 'PONCHO_AUTH_TOKEN',  // env var name (default)
   },
   // When auth.required is true:
-  // - Web UI: users enter PONCHO_AUTH_TOKEN as the passphrase
-  // - API: clients include Authorization: Bearer <PONCHO_AUTH_TOKEN> header
+  // - Web UI: users enter the passphrase (value of PONCHO_AUTH_TOKEN env var)
+  // - API: clients include Authorization: Bearer <token> header
+
+  // Model provider API key env var overrides (optional)
+  providers: {
+    // anthropic: { apiKeyEnv: 'ANTHROPIC_API_KEY' },  // default
+    // openai: { apiKeyEnv: 'OPENAI_API_KEY' },        // default
+  },
 
   // Unified storage (preferred). Replaces separate `state` and `memory` blocks.
+  // Credentials are read from env vars; override the var name with *Env fields.
   storage: {
     provider: 'upstash',         // 'local' | 'memory' | 'redis' | 'upstash' | 'dynamodb'
-    url: process.env.KV_REST_API_URL,        // or UPSTASH_REDIS_REST_URL
-    token: process.env.KV_REST_API_TOKEN,    // or UPSTASH_REDIS_REST_TOKEN
+    // urlEnv: 'UPSTASH_REDIS_REST_URL',     // default (falls back to KV_REST_API_URL)
+    // tokenEnv: 'UPSTASH_REDIS_REST_TOKEN', // default (falls back to KV_REST_API_TOKEN)
     ttl: {
       conversations: 3600,       // seconds
       memory: 0,                 // 0/undefined means no expiration
@@ -1281,11 +1305,11 @@ export default {
   telemetry: {
     enabled: true,
     otlp: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
-    // Or use Latitude
+    // Or use Latitude (reads from LATITUDE_API_KEY and LATITUDE_PROJECT_ID env vars by default)
     latitude: {
-      apiKey: process.env.LATITUDE_API_KEY,
-      projectId: process.env.LATITUDE_PROJECT_ID,
-      path: process.env.LATITUDE_PATH, // Prompt path in Latitude
+      // apiKeyEnv: 'LATITUDE_API_KEY',       // default
+      // projectIdEnv: 'LATITUDE_PROJECT_ID', // default
+      path: 'your/prompt-path',               // optional, defaults to agent name
     },
   },
 

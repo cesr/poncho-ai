@@ -4,8 +4,8 @@ export interface TelemetryConfig {
   enabled?: boolean;
   otlp?: string;
   latitude?: {
-    apiKey?: string;
-    projectId?: string | number;
+    apiKeyEnv?: string;
+    projectIdEnv?: string;
     path?: string;
     documentPath?: string;
   };

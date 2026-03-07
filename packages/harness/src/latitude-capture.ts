@@ -10,8 +10,8 @@
  */
 
 export interface LatitudeCaptureConfig {
-  apiKey?: string;
-  projectId?: string | number;
+  apiKeyEnv?: string;
+  projectIdEnv?: string;
   path?: string;
   defaultPath?: string;
 }
@@ -26,15 +26,14 @@ export class LatitudeCapture {
   private readonly path?: string;
 
   constructor(config?: LatitudeCaptureConfig) {
-    this.apiKey = config?.apiKey ?? process.env.LATITUDE_API_KEY;
+    const apiKeyEnv = config?.apiKeyEnv ?? "LATITUDE_API_KEY";
+    this.apiKey = process.env[apiKeyEnv];
 
-    const rawProjectId = config?.projectId ?? process.env.LATITUDE_PROJECT_ID;
-    const projectIdNumber =
-      typeof rawProjectId === "number"
-        ? rawProjectId
-        : rawProjectId
-          ? Number.parseInt(rawProjectId, 10)
-          : Number.NaN;
+    const projectIdEnv = config?.projectIdEnv ?? "LATITUDE_PROJECT_ID";
+    const rawProjectId = process.env[projectIdEnv];
+    const projectIdNumber = rawProjectId
+      ? Number.parseInt(rawProjectId, 10)
+      : Number.NaN;
     this.projectId = Number.isFinite(projectIdNumber) ? projectIdNumber : undefined;
 
     const rawPath =

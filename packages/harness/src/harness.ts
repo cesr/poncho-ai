@@ -22,7 +22,7 @@ import {
   type MemoryStore,
 } from "./memory.js";
 import { LocalMcpBridge } from "./mcp.js";
-import { createModelProvider, getModelContextWindow, type ModelProviderFactory } from "./model-factory.js";
+import { createModelProvider, getModelContextWindow, type ModelProviderFactory, type ProviderConfig } from "./model-factory.js";
 import { buildSkillContextWindow, loadSkillMetadata } from "./skill-context.js";
 import { streamText, type ModelMessage } from "ai";
 import { addPromptCacheBreakpoints } from "./prompt-cache.js";
@@ -367,18 +367,51 @@ When configuring Latitude telemetry, use **exactly** these field names:
 telemetry: {
   enabled: true,
   latitude: {
-    apiKey: process.env.LATITUDE_API_KEY,       // NOT "apiKeyEnv"
-    projectId: process.env.LATITUDE_PROJECT_ID, // string or number
-    path: "your/prompt-path",                   // optional, defaults to agent name
+    apiKeyEnv: "LATITUDE_API_KEY",       // env var name (default)
+    projectIdEnv: "LATITUDE_PROJECT_ID", // env var name (default)
+    path: "your/prompt-path",            // optional, defaults to agent name
   },
 },
 \`\`\`
 
-- The field is \`apiKey\` (not \`apiKeyEnv\`, \`api_key\`, or \`key\`).
-- The field is \`projectId\` (not \`project_id\`, \`projectID\`, or \`project\`).
+- \`apiKeyEnv\` specifies the environment variable name for the Latitude API key (defaults to \`"LATITUDE_API_KEY"\`).
+- \`projectIdEnv\` specifies the environment variable name for the project ID (defaults to \`"LATITUDE_PROJECT_ID"\`).
+- With defaults, you only need \`telemetry: { latitude: {} }\` if the env vars are already named \`LATITUDE_API_KEY\` and \`LATITUDE_PROJECT_ID\`.
 - \`path\` must only contain letters, numbers, hyphens, underscores, dots, and slashes.
 - For a generic OTLP endpoint instead: \`telemetry: { otlp: process.env.OTEL_EXPORTER_OTLP_ENDPOINT }\`.
-- Always read the env vars from \`process.env\` — do not hardcode secrets in \`poncho.config.js\`.
+
+## Credential Configuration Pattern
+
+All credentials in \`poncho.config.js\` use the **env var name** pattern (\`*Env\` fields). Config specifies which environment variable to read — never the secret itself. Sensible defaults mean zero config when using conventional env var names.
+
+\`\`\`javascript
+// poncho.config.js — credentials use *Env fields with defaults
+export default {
+  // Model provider API keys (optional, defaults shown)
+  providers: {
+    anthropic: { apiKeyEnv: "ANTHROPIC_API_KEY" },
+    openai: { apiKeyEnv: "OPENAI_API_KEY" },
+  },
+  auth: {
+    required: true,
+    tokenEnv: "PONCHO_AUTH_TOKEN",  // default
+  },
+  storage: {
+    provider: "upstash",
+    urlEnv: "UPSTASH_REDIS_REST_URL",       // default (falls back to KV_REST_API_URL)
+    tokenEnv: "UPSTASH_REDIS_REST_TOKEN",   // default (falls back to KV_REST_API_TOKEN)
+  },
+  telemetry: {
+    latitude: {
+      apiKeyEnv: "LATITUDE_API_KEY",       // default
+      projectIdEnv: "LATITUDE_PROJECT_ID", // default
+    },
+  },
+  messaging: [{ platform: "slack" }],      // reads SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET by default
+}
+\`\`\`
+
+Since all fields have defaults, you only need to specify \`*Env\` when your env var name differs from the convention.
 
 ## When users ask about customization:
 
@@ -393,6 +426,7 @@ telemetry: {
 - To scope tools to a skill: keep server config in \`poncho.config.js\`, add desired \`allowed-tools\`/ \`approval-required\` patterns in that skill's \`SKILL.md\`, and remove global \`AGENT.md\` patterns if you do not want global availability.
 - Do not invent unsupported top-level config keys (for example \`model\` in \`poncho.config.js\`). Keep existing config structure unless README/spec explicitly says otherwise.
 - Keep \`poncho.config.js\` valid JavaScript and preserve existing imports/types/comments. If there is a JSDoc type import, do not rewrite it to a different package name.
+- Credentials always use \`*Env\` fields (env var names), never raw \`process.env.*\` values. For example, use \`apiKeyEnv: "MY_KEY"\` not \`apiKey: process.env.MY_KEY\`.
 - Preferred MCP config shape in \`poncho.config.js\`:
   \`mcp: [{ name: "linear", url: "https://mcp.linear.app/mcp", auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" } }]\`
 - If shell/CLI access exists, you can use \`poncho mcp add --url ... --name ... --auth-bearer-env ...\`, then \`poncho mcp tools list <server>\` and \`poncho mcp tools select <server>\`.
@@ -758,10 +792,8 @@ export class AgentHarness {
     this.registerConfiguredBuiltInTools(config);
     const provider = this.parsedAgent.frontmatter.model?.provider ?? "anthropic";
     const memoryConfig = resolveMemoryConfig(config);
-    // Only create modelProvider if one wasn't injected (for production use)
-    // Tests can inject a mock modelProvider via constructor options
     if (!this.modelProviderInjected) {
-      this.modelProvider = createModelProvider(provider);
+      this.modelProvider = createModelProvider(provider, config?.providers);
     }
     const bridge = new LocalMcpBridge(config);
     this.mcpBridge = bridge;
@@ -793,14 +825,13 @@ export class AgentHarness {
     // Creating a new LatitudeTelemetry per run would break on the second call
     // because @opentelemetry/api silently ignores repeated global registrations.
     const telemetryEnabled = config?.telemetry?.enabled !== false;
-    const latitudeApiKey = config?.telemetry?.latitude?.apiKey;
-    const rawProjectId = config?.telemetry?.latitude?.projectId;
-    const latitudeProjectId = typeof rawProjectId === 'string' ? parseInt(rawProjectId, 10) : rawProjectId;
     const latitudeBlock = config?.telemetry?.latitude;
+    const latApiKeyEnv = latitudeBlock?.apiKeyEnv ?? "LATITUDE_API_KEY";
+    const latProjectIdEnv = latitudeBlock?.projectIdEnv ?? "LATITUDE_PROJECT_ID";
+    const latitudeApiKey = process.env[latApiKeyEnv];
+    const rawProjectId = process.env[latProjectIdEnv];
+    const latitudeProjectId = rawProjectId ? parseInt(rawProjectId, 10) : undefined;
     if (telemetryEnabled && latitudeApiKey && latitudeProjectId) {
-      // Surface genuine OTLP export failures. Suppress "duplicate registration"
-      // errors that fire when the dev server re-initializes the harness — the
-      // first registration persists and telemetry keeps working.
       diag.setLogger(
         {
           error: (msg, ...args) => {
@@ -817,16 +848,10 @@ export class AgentHarness {
       this.latitudeTelemetry = new LatitudeTelemetry(latitudeApiKey, { disableBatch: true });
     } else if (telemetryEnabled && latitudeBlock && (!latitudeApiKey || !latitudeProjectId)) {
       const missing: string[] = [];
-      if (!latitudeApiKey) missing.push("apiKey");
-      if (!latitudeProjectId) missing.push("projectId");
-      const unknownKeys = Object.keys(latitudeBlock).filter(
-        (k) => !["apiKey", "projectId", "path", "documentPath"].includes(k),
-      );
-      const hint = unknownKeys.length > 0
-        ? ` (found unknown key${unknownKeys.length > 1 ? "s" : ""}: ${unknownKeys.join(", ")} – did you mean "apiKey"?)`
-        : "";
+      if (!latitudeApiKey) missing.push(`${latApiKeyEnv} env var`);
+      if (!latitudeProjectId) missing.push(`${latProjectIdEnv} env var`);
       console.warn(
-        `[poncho][telemetry] Latitude telemetry is configured but missing: ${missing.join(", ")}${hint}. Traces will NOT be sent.`,
+        `[poncho][telemetry] Latitude telemetry is configured but missing: ${missing.join(", ")}. Traces will NOT be sent.`,
       );
     }
   }
@@ -858,8 +883,8 @@ export class AgentHarness {
     const telemetry = this.latitudeTelemetry;
 
     if (telemetry) {
-      const rawProjectId = config?.telemetry?.latitude?.projectId;
-      const projectId = (typeof rawProjectId === 'string' ? parseInt(rawProjectId, 10) : rawProjectId) as number;
+      const latProjectIdEnv2 = config?.telemetry?.latitude?.projectIdEnv ?? "LATITUDE_PROJECT_ID";
+      const projectId = parseInt(process.env[latProjectIdEnv2] ?? "", 10) as number;
       const rawPath = config?.telemetry?.latitude?.path ?? this.parsedAgent?.frontmatter.name ?? 'agent';
       // Sanitize path for Latitude's DOCUMENT_PATH_REGEXP: /^([\w-]+\/)*([\w-.])+$/
       const path = rawPath.replace(/[^\w\-./]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '') || 'agent';
@@ -1340,9 +1365,7 @@ ${boundedMainMemory.trim()}`
         const modelInstance = this.modelProvider(modelName);
         const cachedMessages = addPromptCacheBreakpoints(coreMessages, modelInstance);
 
-        // Stream response using Vercel AI SDK with telemetry enabled
         const telemetryEnabled = this.loadedConfig?.telemetry?.enabled !== false;
-        const latitudeApiKey = this.loadedConfig?.telemetry?.latitude?.apiKey;
 
         const result = await streamText({
           model: modelInstance,
@@ -1353,7 +1376,7 @@ ${boundedMainMemory.trim()}`
           abortSignal: input.abortSignal,
           ...(typeof maxTokens === "number" ? { maxTokens } : {}),
           experimental_telemetry: {
-            isEnabled: telemetryEnabled && !!latitudeApiKey,
+            isEnabled: telemetryEnabled && !!this.latitudeTelemetry,
           },
         });
         // Stream text chunks — enforce overall run timeout per chunk.

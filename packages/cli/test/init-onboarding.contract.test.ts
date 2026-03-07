@@ -28,8 +28,6 @@ describe("init onboarding registry contract", () => {
     const config = buildConfigFromOnboardingAnswers({
       "model.provider": "openai",
       "storage.provider": "upstash",
-      "storage.url": "https://example.upstash.io",
-      "storage.token": "token",
       "storage.memory.enabled": true,
       "storage.memory.maxRecallConversations": 10,
       "auth.required": true,
@@ -41,7 +39,8 @@ describe("init onboarding registry contract", () => {
     const memory = resolveMemoryConfig(config);
 
     expect(state?.provider).toBe("upstash");
-    expect(state?.url).toBe("https://example.upstash.io");
+    expect(state?.urlEnv).toBeUndefined();
+    expect(state?.tokenEnv).toBeUndefined();
     expect(memory?.enabled).toBe(true);
     expect(memory?.maxRecallConversations).toBe(10);
   });

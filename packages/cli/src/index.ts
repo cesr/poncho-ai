@@ -1855,8 +1855,8 @@ export const createRequestHandler = async (options?: {
   const sessionStore = new SessionStore();
   const loginRateLimiter = new LoginRateLimiter();
 
-  // Unified authentication using PONCHO_AUTH_TOKEN for both Web UI and API
-  const authToken = process.env.PONCHO_AUTH_TOKEN ?? "";
+  const authTokenEnv = config?.auth?.tokenEnv ?? "PONCHO_AUTH_TOKEN";
+  const authToken = process.env[authTokenEnv] ?? "";
   const authRequired = config?.auth?.required ?? false;
   const requireAuth = authRequired && authToken.length > 0;
 

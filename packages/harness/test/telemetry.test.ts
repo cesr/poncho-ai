@@ -15,7 +15,7 @@ describe("telemetry emitter", () => {
 
     const emitter = new TelemetryEmitter({
       otlp: "https://otel.example.com/v1/logs",
-      latitude: { apiKey: "lat_test" },
+      latitude: { apiKeyEnv: "LATITUDE_API_KEY" },
     });
 
     await expect(
@@ -32,8 +32,8 @@ describe("telemetry emitter", () => {
 
     const emitter = new TelemetryEmitter({
       latitude: {
-        apiKey: "lat_test",
-        projectId: "proj_123",
+        apiKeyEnv: "LATITUDE_API_KEY",
+        projectIdEnv: "LATITUDE_PROJECT_ID",
         documentPath: "agents/support-agent/AGENT.md",
       },
     });
