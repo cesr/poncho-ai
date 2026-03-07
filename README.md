@@ -459,7 +459,7 @@ MCP (Model Context Protocol) is a standard for connecting AI agents to external 
 ```bash
 # Remote server (connect via URL)
 poncho mcp add --url https://mcp.example.com/github \
-  --auth-bearer-env GITHUB_TOKEN
+  --name github --auth-bearer-env GITHUB_TOKEN
 ```
 
 ### Configure in poncho.config.js
@@ -657,7 +657,7 @@ On your deployment platform, set:
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...   # Required
-AGENT_API_KEY=your-secret      # Optional: protect your endpoint
+PONCHO_AUTH_TOKEN=your-secret  # Optional: protect your endpoint (Web UI passphrase + API Bearer token)
 PONCHO_MAX_DURATION=55         # Optional: serverless timeout in seconds (enables auto-continuation)
 ```
 

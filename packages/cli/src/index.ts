@@ -391,12 +391,14 @@ Stopping is best-effort and keeps partial assistant output/tool activity already
 \`\`\`bash
 # Local web UI + API server
 poncho dev
+poncho dev --port 8080
 
 # Local interactive CLI
 poncho run --interactive
 
 # One-off run
 poncho run "Your task here"
+poncho run "Explain this code" --file ./src/index.ts
 
 # Run tests
 poncho test
@@ -478,9 +480,9 @@ How it works:
 - Use \`approval-required\` to require human approval for specific MCP calls or script files.
 - Deactivating a skill (\`deactivate_skill\`) removes its MCP tools from runtime registration.
 
-Pattern format is strict slash-only:
+Pattern format:
 
-- MCP: \`server/tool\`, \`server/*\`
+- MCP: \`mcp:server/tool\`, \`mcp:server/*\` (protocol-like prefix)
 - Scripts: relative paths such as \`./scripts/file.ts\`, \`./scripts/*\`, \`./tools/deploy.ts\`
 
 Skill authoring guardrails:
@@ -575,8 +577,9 @@ cron:
 \`\`\`
 
 - \`poncho dev\`: jobs run via an in-process scheduler.
-- \`poncho build vercel\`: generates \`vercel.json\` cron entries.
+- \`poncho build vercel\`: generates \`vercel.json\` cron entries. Set \`CRON_SECRET\` to the same value as \`PONCHO_AUTH_TOKEN\` so Vercel can authenticate.
 - Docker/Fly.io: scheduler runs automatically.
+- Lambda: use AWS EventBridge to trigger \`GET /api/cron/<jobName>\` with \`Authorization: Bearer <token>\`.
 - Trigger manually: \`curl http://localhost:3000/api/cron/daily-report\`
 
 ## Messaging (Slack)
@@ -596,6 +599,8 @@ Connect your agent to Slack so it responds to @mentions:
    \`\`\`javascript
    messaging: [{ platform: 'slack' }]
    \`\`\`
+
+**Vercel deployments:** install \`@vercel/functions\` so Poncho can keep the serverless function alive while processing: \`npm install @vercel/functions\`
 
 ## Messaging (Email via Resend)
 
@@ -617,6 +622,8 @@ Connect your agent to email so users can interact by sending emails:
 
 For full control over outbound emails, use **tool mode** (\`mode: 'tool'\`) — the agent gets a \`send_email\` tool instead of auto-replying. See the repo README for details.
 
+**Vercel deployments:** install \`@vercel/functions\` so Poncho can keep the serverless function alive while processing: \`npm install @vercel/functions\`
+
 ## Deployment
 
 \`\`\`bash
@@ -627,7 +634,27 @@ vercel deploy --prod
 # Build for Docker
 poncho build docker
 docker build -t ${name} .
+docker run -p 3000:3000 -e ANTHROPIC_API_KEY=sk-ant-... ${name}
+
+# AWS Lambda
+poncho build lambda
+
+# Fly.io
+poncho build fly
+fly deploy
 \`\`\`
+
+Set environment variables on your deployment platform:
+
+\`\`\`bash
+ANTHROPIC_API_KEY=sk-ant-...   # Required
+PONCHO_AUTH_TOKEN=your-secret  # Optional: protect your endpoint
+PONCHO_MAX_DURATION=55         # Optional: serverless timeout in seconds (enables auto-continuation)
+\`\`\`
+
+When \`PONCHO_MAX_DURATION\` is set, the agent automatically checkpoints and resumes across
+request cycles when it approaches the platform timeout. The web UI and client SDK handle
+this transparently.
 
 ## Troubleshooting
 
