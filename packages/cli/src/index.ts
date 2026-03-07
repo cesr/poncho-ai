@@ -1462,6 +1462,7 @@ export const createRequestHandler = async (options?: {
               toolCallId: event.toolCallId,
               input: event.input,
               checkpointMessages: [...fullCheckpointMessages, ...event.checkpointMessages],
+              baseMessageCount: 0,
               pendingToolCalls: event.pendingToolCalls,
             }];
             conv.updatedAt = Date.now();
@@ -2069,6 +2070,7 @@ export const createRequestHandler = async (options?: {
           createdAt: conversation.createdAt,
           updatedAt: conversation.updatedAt,
           messageCount: conversation.messages.length,
+          hasPendingApprovals: Array.isArray(conversation.pendingApprovals) && conversation.pendingApprovals.length > 0,
         })),
       });
       return;

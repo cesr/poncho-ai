@@ -12,7 +12,6 @@ import type {
 import {
   buildReplyHeaders,
   buildReplySubject,
-  deriveRootMessageId,
   extractDisplayName,
   extractEmailAddress,
   markdownToEmailHtml,
@@ -573,15 +572,9 @@ export class ResendAdapter implements MessagingAdapter {
     const cleanText = stripQuotedReply(text).trim();
     if (!cleanText) return;
 
-    // -- Threading --------------------------------------------------------
+    // -- Reply metadata (consumed by sendReply within the same invocation) --
     const references = parseReferences(emailHeaders);
-    const rootMessageId = deriveRootMessageId(references, messageId, {
-      subject,
-      sender: senderEmail,
-    });
-
-    // Store metadata for sendReply (consumed within the same invocation)
-    this.threadMeta.set(rootMessageId, {
+    this.threadMeta.set(messageId, {
       subject,
       senderEmail,
       references: [...references, messageId].filter(Boolean),
@@ -592,13 +585,14 @@ export class ResendAdapter implements MessagingAdapter {
     const files = await this.fetchAndDownloadAttachments(emailId, webhookAttachments);
 
     // -- Build and dispatch message ---------------------------------------
+    // Each incoming email creates its own conversation (no threading).
     const message: PonchoIncomingMessage = {
       text: cleanText,
       subject: subject || undefined,
       files: files.length > 0 ? files : undefined,
       threadRef: {
         channelId: senderEmail,
-        platformThreadId: rootMessageId,
+        platformThreadId: messageId,
         messageId,
       },
       sender: { id: senderEmail, name: senderName },

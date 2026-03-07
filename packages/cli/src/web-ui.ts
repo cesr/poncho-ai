@@ -509,6 +509,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       --tool-done: #6a9955;
       --tool-error: #f48771;
 
+      --warning: #e8a735;
+
       --approve: #78e7a6;
       --approve-border: rgba(58,208,122,0.45);
       --deny: #f59b9b;
@@ -585,6 +587,8 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
 
         --tool-done: #16a34a;
         --tool-error: #dc2626;
+
+        --warning: #ca8a04;
 
         --approve: #16a34a;
         --approve-border: rgba(22,163,74,0.35);
@@ -731,6 +735,20 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       flex-direction: column;
       gap: 2px;
     }
+    .sidebar-section-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--fg-7);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 10px 10px 4px;
+    }
+    .sidebar-section-label:first-child { padding-top: 4px; }
+    .sidebar-section-divider {
+      height: 1px;
+      background: var(--border);
+      margin: 6px 10px;
+    }
     .conversation-item {
       height: 36px;
       min-height: 36px;
@@ -747,6 +765,16 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       text-overflow: ellipsis;
       position: relative;
       transition: color 0.15s;
+    }
+    .conversation-item .approval-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--warning, #e8a735);
+      margin-right: 6px;
+      flex-shrink: 0;
+      vertical-align: middle;
     }
     .conversation-item:hover { color: var(--fg-3); }
     .conversation-item.active {
@@ -2074,53 +2102,87 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
         elements.shell.classList.toggle("sidebar-open", open);
       };
 
+      const buildConversationItem = (c) => {
+        const item = document.createElement("div");
+        item.className = "conversation-item" + (c.conversationId === state.activeConversationId ? " active" : "");
+
+        if (c.hasPendingApprovals) {
+          const dot = document.createElement("span");
+          dot.className = "approval-dot";
+          item.appendChild(dot);
+        }
+
+        const titleSpan = document.createElement("span");
+        titleSpan.textContent = c.title;
+        item.appendChild(titleSpan);
+
+        const isConfirming = state.confirmDeleteId === c.conversationId;
+        const deleteBtn = document.createElement("button");
+        deleteBtn.className = "delete-btn" + (isConfirming ? " confirming" : "");
+        deleteBtn.textContent = isConfirming ? "sure?" : "\\u00d7";
+        deleteBtn.onclick = async (e) => {
+          e.stopPropagation();
+          if (!isConfirming) {
+            state.confirmDeleteId = c.conversationId;
+            renderConversationList();
+            return;
+          }
+          await api("/api/conversations/" + c.conversationId, { method: "DELETE" });
+          if (state.activeConversationId === c.conversationId) {
+            state.activeConversationId = null;
+            state.activeMessages = [];
+            state.contextTokens = 0;
+            state.contextWindow = 0;
+            updateContextRing();
+            pushConversationUrl(null);
+            elements.chatTitle.textContent = "";
+            renderMessages([]);
+          }
+          state.confirmDeleteId = null;
+          await loadConversations();
+        };
+        item.appendChild(deleteBtn);
+
+        item.onclick = async () => {
+          if (state.confirmDeleteId) {
+            state.confirmDeleteId = null;
+          }
+          state.activeConversationId = c.conversationId;
+          pushConversationUrl(c.conversationId);
+          renderConversationList();
+          await loadConversation(c.conversationId);
+          if (isMobile()) setSidebarOpen(false);
+        };
+
+        return item;
+      };
+
       const renderConversationList = () => {
         elements.list.innerHTML = "";
-        for (const c of state.conversations) {
-          const item = document.createElement("div");
-          item.className = "conversation-item" + (c.conversationId === state.activeConversationId ? " active" : "");
-          item.textContent = c.title;
+        const pending = state.conversations.filter(c => c.hasPendingApprovals);
+        const rest = state.conversations.filter(c => !c.hasPendingApprovals);
 
-          const isConfirming = state.confirmDeleteId === c.conversationId;
-          const deleteBtn = document.createElement("button");
-          deleteBtn.className = "delete-btn" + (isConfirming ? " confirming" : "");
-          deleteBtn.textContent = isConfirming ? "sure?" : "\\u00d7";
-          deleteBtn.onclick = async (e) => {
-            e.stopPropagation();
-            if (!isConfirming) {
-              state.confirmDeleteId = c.conversationId;
-              renderConversationList();
-              return;
-            }
-            await api("/api/conversations/" + c.conversationId, { method: "DELETE" });
-            if (state.activeConversationId === c.conversationId) {
-              state.activeConversationId = null;
-              state.activeMessages = [];
-              state.contextTokens = 0;
-              state.contextWindow = 0;
-              updateContextRing();
-              pushConversationUrl(null);
-              elements.chatTitle.textContent = "";
-              renderMessages([]);
-            }
-            state.confirmDeleteId = null;
-            await loadConversations();
-          };
-          item.appendChild(deleteBtn);
+        if (pending.length > 0) {
+          const label = document.createElement("div");
+          label.className = "sidebar-section-label";
+          label.textContent = "Awaiting approval";
+          elements.list.appendChild(label);
+          for (const c of pending) {
+            elements.list.appendChild(buildConversationItem(c));
+          }
+          if (rest.length > 0) {
+            const divider = document.createElement("div");
+            divider.className = "sidebar-section-divider";
+            elements.list.appendChild(divider);
+            const recentLabel = document.createElement("div");
+            recentLabel.className = "sidebar-section-label";
+            recentLabel.textContent = "Recent";
+            elements.list.appendChild(recentLabel);
+          }
+        }
 
-          item.onclick = async () => {
-            // Clear any delete confirmation, but still navigate
-            if (state.confirmDeleteId) {
-              state.confirmDeleteId = null;
-            }
-            state.activeConversationId = c.conversationId;
-            pushConversationUrl(c.conversationId);
-            renderConversationList();
-            await loadConversation(c.conversationId);
-            if (isMobile()) setSidebarOpen(false);
-          };
-
-          elements.list.appendChild(item);
+        for (const c of rest) {
+          elements.list.appendChild(buildConversationItem(c));
         }
       };
 
@@ -3566,8 +3628,9 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           });
           updatePendingApproval(approvalId, () => null);
           renderMessages(state.activeMessages, state.isStreaming);
+          loadConversations();
           if (!wasStreaming && state.activeConversationId) {
-            await streamConversationEvents(state.activeConversationId);
+            await streamConversationEvents(state.activeConversationId, { liveOnly: true });
           }
         } catch (error) {
           const isStale = error && error.payload && error.payload.code === "APPROVAL_NOT_FOUND";

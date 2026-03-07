@@ -53,12 +53,16 @@ export class AgentBridge {
         message.threadRef,
       );
 
+      const titleParts = [message.sender.id];
+      if (message.subject) titleParts.push(message.subject);
+      const title = titleParts.join(" — ") || `${message.platform} thread`;
+
       const conversation = await this.runner.getOrCreateConversation(
         conversationId,
         {
           platform: message.platform,
           ownerId: this.ownerIdOverride ?? message.sender.id,
-          title: `${message.platform} thread`,
+          title,
         },
       );
 
