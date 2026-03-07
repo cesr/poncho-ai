@@ -1,5 +1,18 @@
 # @poncho-ai/cli
 
+## 0.15.0
+
+### Minor Changes
+
+- [`1f47bb4`](https://github.com/cesr/poncho-ai/commit/1f47bb49e5d48dc17644172012b057190b316469) Thanks [@cesr](https://github.com/cesr)! - Add conversation rename via double-click on the title in the web UI, standardize all credential config fields to the `*Env` naming pattern, and sync the init README template with the repo README.
+
+### Patch Changes
+
+- Updated dependencies [[`1f47bb4`](https://github.com/cesr/poncho-ai/commit/1f47bb49e5d48dc17644172012b057190b316469)]:
+  - @poncho-ai/harness@0.14.2
+  - @poncho-ai/sdk@1.0.3
+  - @poncho-ai/messaging@0.2.2
+
 ## 0.14.1
 
 ### Patch Changes
