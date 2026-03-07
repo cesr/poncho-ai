@@ -971,7 +971,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
     .tool-error {
       color: var(--tool-error);
     }
-    .assistant-content table {
+    .assistant-content table:not(.approval-request-table) {
       border-collapse: collapse;
       width: 100%;
       margin: 14px 0;
@@ -984,7 +984,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       overflow-x: auto;
       white-space: nowrap;
     }
-    .assistant-content th {
+    .assistant-content table:not(.approval-request-table) th {
       background: var(--surface-4);
       padding: 10px 12px;
       text-align: left;
@@ -993,16 +993,16 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       color: var(--fg-strong);
       min-width: 100px;
     }
-    .assistant-content td {
+    .assistant-content table:not(.approval-request-table) td {
       padding: 10px 12px;
       border-bottom: 1px solid var(--border-1);
       width: 100%;
       min-width: 100px;
     }
-    .assistant-content tr:last-child td {
+    .assistant-content table:not(.approval-request-table) tr:last-child td {
       border-bottom: none;
     }
-    .assistant-content tbody tr:hover {
+    .assistant-content table:not(.approval-request-table) tbody tr:hover {
       background: var(--surface-1);
     }
     .assistant-content hr {
@@ -1020,6 +1020,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       line-height: 1.45;
       color: var(--fg-tool-code);
       width: 300px;
+      transition: width 0.2s ease;
+    }
+    .tool-activity.has-approvals {
+      width: 100%;
     }
     .assistant-content > .tool-activity:first-child {
       margin-top: 0;
@@ -1079,40 +1083,60 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
       border-top: 1px solid var(--border-2);
       padding: 10px 12px 12px;
       display: grid;
-      gap: 8px;
-      background: var(--inset-1);
+      gap: 10px;
     }
     .approval-requests-label {
-      font-size: 11px;
+      font-size: 12px;
       text-transform: uppercase;
       letter-spacing: 0.06em;
       color: var(--fg-approval-label);
       font-weight: 600;
     }
-    .approval-request-item {
-      border: 1px solid var(--border-3);
-      background: var(--surface-2);
-      border-radius: 8px;
-      padding: 8px;
-      display: grid;
-      gap: 6px;
-    }
-    .approval-request-tool {
-      font-size: 12px;
-      color: var(--fg-strong);
-      font-weight: 600;
-      overflow-wrap: anywhere;
-    }
-    .approval-request-input {
+    .approval-requests-label code {
       font-family: ui-monospace, "SF Mono", "Fira Code", monospace;
-      font-size: 11px;
-      color: var(--fg-approval-input);
-      background: var(--inset-2);
-      border-radius: 6px;
-      padding: 6px;
+      text-transform: none;
+      letter-spacing: 0;
+      color: var(--fg-strong);
+    }
+    .approval-request-item {
+      display: grid;
+      gap: 8px;
+    }
+    .approval-request-table {
+      width: 100%;
+      border-collapse: collapse;
+      border: none;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .approval-request-table tr,
+    .approval-request-table td {
+      border: none;
+      background: none;
+    }
+    .approval-request-table td {
+      padding: 4px 0;
+      vertical-align: top;
+    }
+    .approval-request-table .ak {
+      font-weight: 600;
+      color: var(--fg-approval-label);
+      white-space: nowrap;
+      width: 1%;
+      padding-right: 20px;
+    }
+    .approval-request-table .av,
+    .approval-request-table .av-complex {
+      color: var(--fg);
       overflow-wrap: anywhere;
-      max-height: 80px;
+      white-space: pre-wrap;
+      max-height: 200px;
       overflow-y: auto;
+      display: block;
+    }
+    .approval-request-table .av-complex {
+      font-family: ui-monospace, "SF Mono", "Fira Code", monospace;
+      font-size: 12px;
     }
     .approval-request-actions {
       display: flex;
@@ -1826,18 +1850,20 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           .map((req) => {
             const approvalId = typeof req.approvalId === "string" ? req.approvalId : "";
             const tool = typeof req.tool === "string" ? req.tool : "tool";
-            const inputPreview = typeof req.inputPreview === "string" ? req.inputPreview : "{}";
+            const input = req.input != null ? req.input : {};
             const submitting = req.state === "submitting";
             const approveLabel = submitting && req.pendingDecision === "approve" ? "Approving..." : "Approve";
             const denyLabel = submitting && req.pendingDecision === "deny" ? "Denying..." : "Deny";
+            const errorHtml = req._error
+              ? '<div style="color: var(--deny); font-size: 11px; margin-top: 4px;">Submit failed: ' + escapeHtml(req._error) + "</div>"
+              : "";
             return (
               '<div class="approval-request-item">' +
-              '<div class="approval-request-tool">' +
+              '<div class="approval-requests-label">Approval required: <code>' +
               escapeHtml(tool) +
-              "</div>" +
-              '<div class="approval-request-input">' +
-              escapeHtml(inputPreview) +
-              "</div>" +
+              "</code></div>" +
+              renderInputTable(input) +
+              errorHtml +
               '<div class="approval-request-actions">' +
               '<button class="approval-action-btn approve" data-approval-id="' +
               escapeHtml(approvalId) +
@@ -1860,7 +1886,6 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
           .join("");
         return (
           '<div class="approval-requests">' +
-          '<div class="approval-requests-label">Approval required</div>' +
           rows +
           "</div>"
         );
@@ -1890,22 +1915,46 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
               "</details>"
             )
           : "";
+        const cls = "tool-activity" + (hasApprovals ? " has-approvals" : "");
         return (
-          '<div class="tool-activity">' +
+          '<div class="' + cls + '">' +
           disclosure +
           renderApprovalRequests(approvalRequests) +
           "</div>"
         );
       };
 
-      const safeJsonPreview = (value) => {
-        try {
-          return JSON.stringify(value, (_, nestedValue) =>
-            typeof nestedValue === "bigint" ? String(nestedValue) : nestedValue,
-          );
-        } catch {
-          return "[unserializable input]";
+      const renderInputTable = (input) => {
+        if (!input || typeof input !== "object") {
+          return '<div class="av-complex">' + escapeHtml(String(input ?? "{}")) + "</div>";
         }
+        const keys = Object.keys(input);
+        if (keys.length === 0) {
+          return '<div class="av-complex">{}</div>';
+        }
+        const formatValue = (val) => {
+          if (val === null || val === undefined) return escapeHtml("null");
+          if (typeof val === "boolean" || typeof val === "number") return escapeHtml(String(val));
+          if (typeof val === "string") return escapeHtml(val);
+          try {
+            const replacer = (_, v) => typeof v === "bigint" ? String(v) : v;
+            return escapeHtml(JSON.stringify(val, replacer, 2));
+          } catch {
+            return escapeHtml("[unserializable]");
+          }
+        };
+        const rows = keys.map((key) => {
+          const val = input[key];
+          const isComplex = val !== null && typeof val === "object";
+          const cls = isComplex ? "av-complex" : "av";
+          return (
+            "<tr>" +
+            '<td class="ak">' + escapeHtml(key) + "</td>" +
+            '<td><div class="' + cls + '">' + formatValue(val) + "</div></td>" +
+            "</tr>"
+          );
+        }).join("");
+        return '<table class="approval-request-table">' + rows + "</table>";
       };
 
       const updatePendingApproval = (approvalId, updater) => {
@@ -1944,12 +1993,10 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
               return null;
             }
             const toolName = item && typeof item.tool === "string" ? item.tool : "tool";
-            const preview = safeJsonPreview(item?.input ?? {});
-            const inputPreview = preview.length > 600 ? preview.slice(0, 600) + "..." : preview;
             return {
               approvalId,
               tool: toolName,
-              inputPreview,
+              input: item?.input ?? {},
               state: "pending",
             };
           })
@@ -2502,8 +2549,6 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                       const approvalId =
                         typeof payload.approvalId === "string" ? payload.approvalId : "";
                       if (approvalId) {
-                        const preview = safeJsonPreview(payload.input ?? {});
-                        const inputPreview = preview.length > 600 ? preview.slice(0, 600) + "..." : preview;
                         if (!Array.isArray(assistantMessage._pendingApprovals)) {
                           assistantMessage._pendingApprovals = [];
                         }
@@ -2514,7 +2559,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                           assistantMessage._pendingApprovals.push({
                             approvalId,
                             tool: toolName,
-                            inputPreview,
+                            input: payload.input ?? {},
                             state: "pending",
                           });
                         }
@@ -3162,8 +3207,6 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                   const approvalId =
                     typeof payload.approvalId === "string" ? payload.approvalId : "";
                   if (approvalId) {
-                    const preview = safeJsonPreview(payload.input ?? {});
-                    const inputPreview = preview.length > 600 ? preview.slice(0, 600) + "..." : preview;
                     if (!Array.isArray(assistantMessage._pendingApprovals)) {
                       assistantMessage._pendingApprovals = [];
                     }
@@ -3174,7 +3217,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
                       assistantMessage._pendingApprovals.push({
                         approvalId,
                         tool: toolName,
-                        inputPreview,
+                        input: payload.input ?? {},
                         state: "pending",
                       });
                     }
@@ -3527,13 +3570,18 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
             await streamConversationEvents(state.activeConversationId);
           }
         } catch (error) {
-          const errMsg = error instanceof Error ? error.message : String(error);
-          updatePendingApproval(approvalId, (request) => ({
-            ...request,
-            state: "pending",
-            pendingDecision: null,
-            inputPreview: String(request.inputPreview || "") + " (submit failed: " + errMsg + ")",
-          }));
+          const isStale = error && error.payload && error.payload.code === "APPROVAL_NOT_FOUND";
+          if (isStale) {
+            updatePendingApproval(approvalId, () => null);
+          } else {
+            const errMsg = error instanceof Error ? error.message : String(error);
+            updatePendingApproval(approvalId, (request) => ({
+              ...request,
+              state: "pending",
+              pendingDecision: null,
+              _error: errMsg,
+            }));
+          }
           renderMessages(state.activeMessages, state.isStreaming);
         } finally {
           if (!wasStreaming) {

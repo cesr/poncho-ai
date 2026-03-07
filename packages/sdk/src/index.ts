@@ -93,7 +93,7 @@ export interface FileInput {
 }
 
 export interface RunInput {
-  task: string;
+  task?: string;
   parameters?: Record<string, unknown>;
   messages?: Message[];
   files?: FileInput[];
@@ -144,4 +144,13 @@ export type AgentEvent =
       approvalId: string;
     }
   | { type: "tool:approval:granted"; approvalId: string }
-  | { type: "tool:approval:denied"; approvalId: string; reason?: string };
+  | { type: "tool:approval:denied"; approvalId: string; reason?: string }
+  | {
+      type: "tool:approval:checkpoint";
+      approvalId: string;
+      tool: string;
+      toolCallId: string;
+      input: Record<string, unknown>;
+      checkpointMessages: Message[];
+      pendingToolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
+    };

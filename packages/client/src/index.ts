@@ -255,7 +255,7 @@ export class AgentClient {
     const conversation = await this.createConversation({
       title: input.task,
     });
-    return await this.sendMessage(conversation.conversationId, input.task, {
+    return await this.sendMessage(conversation.conversationId, input.task ?? "", {
       parameters: input.parameters,
       files: input.files,
     });

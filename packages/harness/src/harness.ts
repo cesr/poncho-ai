@@ -37,20 +37,13 @@ import {
   matchesSlashPattern,
   normalizeRelativeScriptPattern,
 } from "./tool-policy.js";
-import { ToolDispatcher } from "./tool-dispatcher.js";
+import { ToolDispatcher, type ToolCall, type ToolExecutionResult } from "./tool-dispatcher.js";
 import { ensureAgentIdentity } from "./agent-identity.js";
 
 export interface HarnessOptions {
   workingDir?: string;
   environment?: "development" | "staging" | "production";
   toolDefinitions?: ToolDefinition[];
-  approvalHandler?: (request: {
-    tool: string;
-    input: Record<string, unknown>;
-    runId: string;
-    step: number;
-    approvalId: string;
-  }) => Promise<boolean> | boolean;
   modelProvider?: ModelProviderFactory;
   uploadStore?: UploadStore;
 }
@@ -414,7 +407,6 @@ export class AgentHarness {
   private modelProvider: ModelProviderFactory;
   private readonly modelProviderInjected: boolean;
   private readonly dispatcher = new ToolDispatcher();
-  private readonly approvalHandler?: HarnessOptions["approvalHandler"];
   readonly uploadStore?: UploadStore;
   private skillContextWindow = "";
   private memoryStore?: MemoryStore;
@@ -500,7 +492,6 @@ export class AgentHarness {
     this.environment = options.environment ?? "development";
     this.modelProviderInjected = !!options.modelProvider;
     this.modelProvider = options.modelProvider ?? createModelProvider("anthropic");
-    this.approvalHandler = options.approvalHandler;
     this.uploadStore = options.uploadStore;
 
     if (options.toolDefinitions?.length) {
@@ -963,6 +954,7 @@ export class AgentHarness {
       ? platformMaxDurationSec * 800
       : 0;
     const messages: Message[] = [...(input.messages ?? [])];
+    const inputMessageCount = messages.length;
     const events: AgentEvent[] = [];
 
     const systemPrompt = renderAgentPrompt(agent, {
@@ -1024,41 +1016,43 @@ ${boundedMainMemory.trim()}`
       contextWindow,
     });
 
-    if (input.files && input.files.length > 0) {
-      const parts: ContentPart[] = [
-        { type: "text", text: input.task } satisfies TextContentPart,
-      ];
-      for (const file of input.files) {
-        if (this.uploadStore) {
-          const buf = Buffer.from(file.data, "base64");
-          const key = deriveUploadKey(buf, file.mediaType);
-          const ref = await this.uploadStore.put(key, buf, file.mediaType);
-          parts.push({
-            type: "file",
-            data: ref,
-            mediaType: file.mediaType,
-            filename: file.filename,
-          } satisfies FileContentPart);
-        } else {
-          parts.push({
-            type: "file",
-            data: file.data,
-            mediaType: file.mediaType,
-            filename: file.filename,
-          } satisfies FileContentPart);
+    if (input.task != null) {
+      if (input.files && input.files.length > 0) {
+        const parts: ContentPart[] = [
+          { type: "text", text: input.task } satisfies TextContentPart,
+        ];
+        for (const file of input.files) {
+          if (this.uploadStore) {
+            const buf = Buffer.from(file.data, "base64");
+            const key = deriveUploadKey(buf, file.mediaType);
+            const ref = await this.uploadStore.put(key, buf, file.mediaType);
+            parts.push({
+              type: "file",
+              data: ref,
+              mediaType: file.mediaType,
+              filename: file.filename,
+            } satisfies FileContentPart);
+          } else {
+            parts.push({
+              type: "file",
+              data: file.data,
+              mediaType: file.mediaType,
+              filename: file.filename,
+            } satisfies FileContentPart);
+          }
         }
+        messages.push({
+          role: "user",
+          content: parts,
+          metadata: { timestamp: now(), id: randomUUID() },
+        });
+      } else {
+        messages.push({
+          role: "user",
+          content: input.task,
+          metadata: { timestamp: now(), id: randomUUID() },
+        });
       }
-      messages.push({
-        role: "user",
-        content: parts,
-        metadata: { timestamp: now(), id: randomUUID() },
-      });
-    } else {
-      messages.push({
-        role: "user",
-        content: input.task,
-        metadata: { timestamp: now(), id: randomUUID() },
-      });
     }
 
     let responseText = "";
@@ -1597,47 +1591,35 @@ ${boundedMainMemory.trim()}`
             input: call.input,
             approvalId,
           });
-          const approved = this.approvalHandler
-            ? await this.approvalHandler({
-                tool: runtimeToolName,
-                input: call.input,
-                runId,
-                step,
-                approvalId,
-              })
-            : false;
-          if (isCancelled()) {
-            yield emitCancellation();
-            return;
-          }
-          if (!approved) {
-            if (this.insideTelemetryCapture && this.latitudeTelemetry) {
-              const deniedSpan = this.latitudeTelemetry.span.tool({
-                name: runtimeToolName,
-                call: { id: call.id, arguments: call.input },
-              });
-              deniedSpan.end({ result: { value: "Tool execution denied by approval policy", isError: true } });
-            }
-            yield pushEvent({
-              type: "tool:approval:denied",
-              approvalId,
-              reason: "No approval handler granted execution",
-            });
-            yield pushEvent({
-              type: "tool:error",
-              tool: call.name,
-              error: "Tool execution denied by approval policy",
-              recoverable: true,
-            });
-            toolResultsForModel.push({
-              type: "tool_result",
-              tool_use_id: call.id,
-              tool_name: runtimeToolName,
-              content: "Tool error: Tool execution denied by approval policy",
-            });
-            continue;
-          }
-          yield pushEvent({ type: "tool:approval:granted", approvalId });
+
+          const assistantContent = JSON.stringify({
+            text: fullText,
+            tool_calls: toolCalls.map(tc => ({
+              id: tc.id,
+              name: exposedToolNames.get(tc.name) ?? tc.name,
+              input: tc.input,
+            })),
+          });
+          const assistantMsg: Message = {
+            role: "assistant",
+            content: assistantContent,
+            metadata: { timestamp: now(), id: randomUUID(), step },
+          };
+          const deltaMessages = [...messages.slice(inputMessageCount), assistantMsg];
+          yield pushEvent({
+            type: "tool:approval:checkpoint",
+            approvalId,
+            tool: runtimeToolName,
+            toolCallId: call.id,
+            input: call.input,
+            checkpointMessages: deltaMessages,
+            pendingToolCalls: toolCalls.map(tc => ({
+              id: tc.id,
+              name: exposedToolNames.get(tc.name) ?? tc.name,
+              input: tc.input,
+            })),
+          });
+          return;
         }
         approvedCalls.push({
           id: call.id,
@@ -1790,12 +1772,87 @@ ${boundedMainMemory.trim()}`
     }
   }
 
+  async executeTools(
+    calls: ToolCall[],
+    context: ToolContext,
+  ): Promise<ToolExecutionResult[]> {
+    return this.dispatcher.executeBatch(calls, context);
+  }
+
+  async *continueFromToolResult(input: {
+    messages: Message[];
+    toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }>;
+    conversationId?: string;
+    parameters?: Record<string, unknown>;
+    abortSignal?: AbortSignal;
+  }): AsyncGenerator<AgentEvent> {
+    const messages = [...input.messages];
+    const lastMsg = messages[messages.length - 1];
+    if (!lastMsg || lastMsg.role !== "assistant") {
+      throw new Error("continueFromToolResult: last message must be an assistant message with tool calls");
+    }
+
+    let allToolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
+    try {
+      const parsed = JSON.parse(typeof lastMsg.content === "string" ? lastMsg.content : "");
+      allToolCalls = parsed.tool_calls ?? [];
+    } catch {
+      throw new Error("continueFromToolResult: could not parse tool calls from last assistant message");
+    }
+
+    const providedMap = new Map(
+      input.toolResults.map(r => [r.callId, r]),
+    );
+    const toolResultsForModel: Array<{
+      type: "tool_result";
+      tool_use_id: string;
+      tool_name: string;
+      content: string;
+    }> = [];
+
+    for (const tc of allToolCalls) {
+      const provided = providedMap.get(tc.id);
+      if (provided) {
+        toolResultsForModel.push({
+          type: "tool_result",
+          tool_use_id: tc.id,
+          tool_name: provided.toolName,
+          content: provided.error
+            ? `Tool error: ${provided.error}`
+            : JSON.stringify(provided.result ?? null),
+        });
+      } else {
+        toolResultsForModel.push({
+          type: "tool_result",
+          tool_use_id: tc.id,
+          tool_name: tc.name,
+          content: "Tool error: Tool execution deferred (pending approval checkpoint)",
+        });
+      }
+    }
+
+    messages.push({
+      role: "tool",
+      content: JSON.stringify(toolResultsForModel),
+      metadata: { timestamp: Date.now(), id: randomUUID() },
+    });
+
+    yield* this.runWithTelemetry({
+      messages,
+      conversationId: input.conversationId,
+      parameters: input.parameters,
+      abortSignal: input.abortSignal,
+    });
+  }
+
   async runToCompletion(input: RunInput): Promise<HarnessRunOutput> {
     const events: AgentEvent[] = [];
     let runId = "";
     let finalResult: RunResult | undefined;
     const messages: Message[] = [...(input.messages ?? [])];
-    messages.push({ role: "user", content: input.task });
+    if (input.task != null) {
+      messages.push({ role: "user", content: input.task });
+    }
 
     for await (const event of this.runWithTelemetry(input)) {
       events.push(event);

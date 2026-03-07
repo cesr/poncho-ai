@@ -22,14 +22,6 @@ import { consumeFirstRunIntro } from "./init-feature-context.js";
 import { resolveHarnessEnvironment } from "./index.js";
 import { getMascotLines } from "./mascot.js";
 
-// Re-export types that index.ts references
-export type ApprovalRequest = {
-  tool: string;
-  input: Record<string, unknown>;
-  approvalId: string;
-  resolve: (approved: boolean) => void;
-};
-
 export type SessionSnapshot = {
   messages: Message[];
   nextTurn: number;
@@ -374,14 +366,12 @@ export const runInteractiveInk = async ({
   workingDir,
   config,
   conversationStore,
-  onSetApprovalCallback,
 }: {
   harness: AgentHarness;
   params: Record<string, string>;
   workingDir: string;
   config?: PonchoConfig;
   conversationStore: ConversationStore;
-  onSetApprovalCallback?: (cb: (req: ApprovalRequest) => void) => void;
 }): Promise<void> => {
   const metadata = await loadMetadata(workingDir);
 
@@ -390,32 +380,6 @@ export const runInteractiveInk = async ({
     output: process.stdout,
     terminal: true,
   });
-
-  // --- Approval bridge -------------------------------------------------------
-  // When the harness needs tool approval, it calls the approval handler in
-  // index.ts, which creates a pending promise and fires our callback.
-  // We use readline to prompt the user for y/n.
-  if (onSetApprovalCallback) {
-    onSetApprovalCallback((req: ApprovalRequest) => {
-      // Print approval prompt — we're mid-turn so stdout might have partial text
-      process.stdout.write("\n");
-      const preview = compactPreview(req.input, 100);
-      rl.question(
-        `${C.yellow}${C.bold}Tool "${req.tool}" requires approval${C.reset}\n` +
-          `${C.gray}input: ${preview}${C.reset}\n` +
-          `${C.yellow}approve? (y/n): ${C.reset}`,
-        (answer) => {
-          const approved = answer.trim().toLowerCase() === "y";
-          console.log(
-            approved
-              ? green(`  approved ${req.tool}`)
-              : magenta(`  denied ${req.tool}`),
-          );
-          req.resolve(approved);
-        },
-      );
-    });
-  }
 
   // --- Print header ----------------------------------------------------------
 
@@ -555,130 +519,190 @@ export const runInteractiveInk = async ({
       pendingFiles = [];
     }
 
+    type CheckpointEvent = Extract<AgentEvent, { type: "tool:approval:checkpoint" }>;
+    let eventSource: AsyncGenerator<AgentEvent> = harness.run({
+      task: trimmed,
+      parameters: params,
+      messages,
+      files: turnFiles.length > 0 ? turnFiles : undefined,
+      abortSignal: activeRunAbortController.signal,
+    });
+
     try {
-      for await (const event of harness.run({
-        task: trimmed,
-        parameters: params,
-        messages,
-        files: turnFiles.length > 0 ? turnFiles : undefined,
-        abortSignal: activeRunAbortController.signal,
-      })) {
-        if (event.type === "run:started") {
-          latestRunId = event.runId;
-        }
-        if (event.type === "model:chunk") {
-          sawChunk = true;
-          // If we have tools accumulated and text starts again, push tools as a section
-          if (currentTools.length > 0) {
-            sections.push({ type: "tools", content: currentTools });
-            currentTools = [];
-          }
-          responseText += event.content;
-          streamedText += event.content;
-          currentText += event.content;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        let checkpointEvent: CheckpointEvent | null = null;
 
-          if (!thinkingCleared) {
+        for await (const event of eventSource) {
+          if (event.type === "run:started") {
+            latestRunId = event.runId;
+          }
+          if (event.type === "model:chunk") {
+            sawChunk = true;
+            if (currentTools.length > 0) {
+              sections.push({ type: "tools", content: currentTools });
+              currentTools = [];
+            }
+            responseText += event.content;
+            streamedText += event.content;
+            currentText += event.content;
+
+            if (!thinkingCleared) {
+              clearThinking();
+              process.stdout.write(`${C.green}assistant> ${C.reset}`);
+            }
+            process.stdout.write(event.content);
+          } else if (
+            event.type === "tool:started" ||
+            event.type === "tool:completed" ||
+            event.type === "tool:error" ||
+            event.type === "tool:approval:required"
+          ) {
+            if (streamedText.length > 0) {
+              committedText = true;
+              streamedText = "";
+              process.stdout.write("\n");
+            }
             clearThinking();
-            process.stdout.write(`${C.green}assistant> ${C.reset}`);
-          }
-          // Stream the text directly to stdout
-          process.stdout.write(event.content);
-        } else if (
-          event.type === "tool:started" ||
-          event.type === "tool:completed" ||
-          event.type === "tool:error" ||
-          event.type === "tool:approval:required" ||
-          event.type === "tool:approval:granted" ||
-          event.type === "tool:approval:denied"
-        ) {
-          // Flush any streaming text before tool output
-          if (streamedText.length > 0) {
-            committedText = true;
-            streamedText = "";
-            process.stdout.write("\n");
-          }
-          clearThinking();
 
-          if (event.type === "tool:started") {
-            // If we have text accumulated, push it as a text section
-            if (currentText.length > 0) {
-              sections.push({ type: "text", content: currentText });
-              currentText = "";
+            if (event.type === "tool:started") {
+              if (currentText.length > 0) {
+                sections.push({ type: "text", content: currentText });
+                currentText = "";
+              }
+              const preview = showToolPayloads
+                ? compactPreview(event.input, 400)
+                : compactPreview(event.input, 100);
+              console.log(yellow(`tools> start ${event.tool} input=${preview}`));
+              const toolText = `- start \`${event.tool}\``;
+              toolTimeline.push(toolText);
+              currentTools.push(toolText);
+              toolEvents += 1;
+            } else if (event.type === "tool:completed") {
+              const preview = showToolPayloads
+                ? compactPreview(event.output, 400)
+                : compactPreview(event.output, 100);
+              console.log(
+                yellow(
+                  `tools> done  ${event.tool} in ${formatDuration(event.duration)}`,
+                ),
+              );
+              if (showToolPayloads) {
+                console.log(yellow(`tools> output ${preview}`));
+              }
+              const toolText = `- done \`${event.tool}\` in ${formatDuration(event.duration)}`;
+              toolTimeline.push(toolText);
+              currentTools.push(toolText);
+            } else if (event.type === "tool:error") {
+              console.log(
+                red(`tools> error ${event.tool}: ${event.error}`),
+              );
+              const toolText = `- error \`${event.tool}\`: ${event.error}`;
+              toolTimeline.push(toolText);
+              currentTools.push(toolText);
+            } else if (event.type === "tool:approval:required") {
+              console.log(
+                magenta(`tools> approval required for ${event.tool}`),
+              );
+              const toolText = `- approval required \`${event.tool}\``;
+              toolTimeline.push(toolText);
+              currentTools.push(toolText);
             }
-            const preview = showToolPayloads
-              ? compactPreview(event.input, 400)
-              : compactPreview(event.input, 100);
-            console.log(yellow(`tools> start ${event.tool} input=${preview}`));
-            const toolText = `- start \`${event.tool}\``;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-            toolEvents += 1;
-          } else if (event.type === "tool:completed") {
-            const preview = showToolPayloads
-              ? compactPreview(event.output, 400)
-              : compactPreview(event.output, 100);
-            console.log(
-              yellow(
-                `tools> done  ${event.tool} in ${formatDuration(event.duration)}`,
-              ),
-            );
-            if (showToolPayloads) {
-              console.log(yellow(`tools> output ${preview}`));
+          } else if (event.type === "tool:approval:checkpoint") {
+            checkpointEvent = event as CheckpointEvent;
+          } else if (event.type === "run:error") {
+            clearThinking();
+            runFailed = true;
+            console.log(red(`error> ${event.error.message}`));
+          } else if (event.type === "run:cancelled") {
+            clearThinking();
+            runCancelled = true;
+          } else if (event.type === "model:response") {
+            usage = event.usage;
+          } else if (event.type === "run:completed" && !sawChunk) {
+            clearThinking();
+            responseText = event.result.response ?? "";
+            if (responseText.length > 0) {
+              process.stdout.write(
+                `${C.green}assistant> ${C.reset}${responseText}\n`,
+              );
             }
-            const toolText = `- done \`${event.tool}\` in ${formatDuration(event.duration)}`;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-          } else if (event.type === "tool:error") {
-            console.log(
-              red(`tools> error ${event.tool}: ${event.error}`),
-            );
-            const toolText = `- error \`${event.tool}\`: ${event.error}`;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-          } else if (event.type === "tool:approval:required") {
-            console.log(
-              magenta(`tools> approval required for ${event.tool}`),
-            );
-            const toolText = `- approval required \`${event.tool}\``;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-          } else if (event.type === "tool:approval:granted") {
-            console.log(
-              gray(`tools> approval granted (${event.approvalId})`),
-            );
-            const toolText = `- approval granted (${event.approvalId})`;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-          } else if (event.type === "tool:approval:denied") {
-            console.log(
-              magenta(`tools> approval denied (${event.approvalId})`),
-            );
-            const toolText = `- approval denied (${event.approvalId})`;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-          }
-        } else if (event.type === "run:error") {
-          clearThinking();
-          runFailed = true;
-          console.log(red(`error> ${event.error.message}`));
-        } else if (event.type === "run:cancelled") {
-          clearThinking();
-          runCancelled = true;
-        } else if (event.type === "model:response") {
-          usage = event.usage;
-        } else if (event.type === "run:completed" && !sawChunk) {
-          clearThinking();
-          responseText = event.result.response ?? "";
-          if (responseText.length > 0) {
-            process.stdout.write(
-              `${C.green}assistant> ${C.reset}${responseText}\n`,
-            );
           }
         }
+
+        if (!checkpointEvent) break;
+
+        // Prompt user for approval
+        if (streamedText.length > 0) {
+          process.stdout.write("\n");
+          streamedText = "";
+        }
+        clearThinking();
+        const preview = compactPreview(checkpointEvent.input, 100);
+        const answer = await ask(rl,
+          `${C.yellow}${C.bold}Tool "${checkpointEvent.tool}" requires approval${C.reset}\n` +
+          `${C.gray}input: ${preview}${C.reset}\n` +
+          `${C.yellow}approve? (y/n): ${C.reset}`,
+        );
+        const approved = answer.trim().toLowerCase() === "y";
+        console.log(
+          approved
+            ? green(`  approved ${checkpointEvent.tool}`)
+            : magenta(`  denied ${checkpointEvent.tool}`),
+        );
+
+        const approvalText = approved
+          ? `- approval granted (${checkpointEvent.approvalId})`
+          : `- approval denied (${checkpointEvent.approvalId})`;
+        toolTimeline.push(approvalText);
+        currentTools.push(approvalText);
+
+        let toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }>;
+        if (approved) {
+          const execResults = await harness.executeTools(
+            [{ id: checkpointEvent.toolCallId, name: checkpointEvent.tool, input: checkpointEvent.input }],
+            { runId: latestRunId, agentId: "interactive", step: 0, workingDir, parameters: params },
+          );
+          toolResults = execResults.map(r => ({
+            callId: r.callId,
+            toolName: r.tool,
+            result: r.output,
+            error: r.error,
+          }));
+          for (const r of execResults) {
+            if (r.error) {
+              console.log(red(`tools> error ${r.tool}: ${r.error}`));
+              const toolText = `- error \`${r.tool}\`: ${r.error}`;
+              toolTimeline.push(toolText);
+              currentTools.push(toolText);
+            } else {
+              console.log(yellow(`tools> done  ${r.tool}`));
+              const toolText = `- done \`${r.tool}\``;
+              toolTimeline.push(toolText);
+              currentTools.push(toolText);
+            }
+          }
+        } else {
+          toolResults = [{
+            callId: checkpointEvent.toolCallId,
+            toolName: checkpointEvent.tool,
+            error: "Tool execution denied by user",
+          }];
+        }
+
+        const fullMessages = [...messages, ...checkpointEvent.checkpointMessages];
+        eventSource = harness.continueFromToolResult({
+          messages: fullMessages,
+          toolResults,
+          abortSignal: activeRunAbortController!.signal,
+        });
+
+        process.stdout.write(gray("thinking..."));
+        thinkingCleared = false;
       }
     } catch (error) {
       clearThinking();
-      if (activeRunAbortController.signal.aborted) {
+      if (activeRunAbortController?.signal.aborted) {
         runCancelled = true;
       } else {
         runFailed = true;

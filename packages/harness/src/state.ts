@@ -30,7 +30,11 @@ export interface Conversation {
     approvalId: string;
     runId: string;
     tool: string;
+    toolCallId?: string;
     input: Record<string, unknown>;
+    checkpointMessages?: Message[];
+    baseMessageCount?: number;
+    pendingToolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }>;
   }>;
   ownerId: string;
   tenantId: string | null;
