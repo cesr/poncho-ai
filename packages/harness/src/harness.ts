@@ -1210,9 +1210,29 @@ export class AgentHarness {
     });
     const developmentContext =
       this.environment === "development" ? `\n\n${DEVELOPMENT_MODE_CONTEXT}` : "";
+    const browserContext = this._browserSession
+      ? `\n\n## Browser Tools
+
+The user has a live browser viewport displayed alongside the conversation. They can see everything the browser shows in real time and interact with it directly (click, type, scroll, paste).
+
+### Authentication
+When a website requires authentication or credentials, do NOT ask the user to send them in the chat. Instead, navigate to the login page and let the user enter their credentials directly in the browser viewport. Wait for them to confirm they have logged in before continuing.
+
+### Session persistence
+Browser sessions (cookies, localStorage, login state) are automatically saved and restored across conversations. If the user logged into a website in a previous conversation, that session is likely still active. Try navigating directly to the authenticated page before asking the user to log in again.
+
+### Reading page content
+- Use \`browser_content\` to read the visible text on a page. This is fast and token-efficient.
+- Use \`browser_snapshot\` to get the accessibility tree with interactive element refs for clicking and typing.
+- Use \`browser_screenshot\` only when you need to see visual layout or images. Screenshots consume significantly more tokens.
+- The accessibility tree may be sparse on some pages. If \`browser_snapshot\` returns little or no content, fall back to \`browser_content\` or \`browser_screenshot\`.
+
+### Tabs and resources
+Each conversation gets its own browser tab sharing a single browser instance. Call \`browser_close\` when done to free the tab. If you don't close it, the tab stays open and the user can continue interacting with it.`
+      : "";
     const promptWithSkills = this.skillContextWindow
-      ? `${systemPrompt}${developmentContext}\n\n${this.skillContextWindow}`
-      : `${systemPrompt}${developmentContext}`;
+      ? `${systemPrompt}${developmentContext}\n\n${this.skillContextWindow}${browserContext}`
+      : `${systemPrompt}${developmentContext}${browserContext}`;
     const mainMemory = this.memoryStore
       ? await this.memoryStore.getMainMemory()
       : undefined;
