@@ -153,4 +153,11 @@ export type AgentEvent =
       input: Record<string, unknown>;
       checkpointMessages: Message[];
       pendingToolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
+    }
+  | { type: "browser:frame"; data: string; width: number; height: number }
+  | {
+      type: "browser:status";
+      active: boolean;
+      url?: string;
+      interactionAllowed: boolean;
     };

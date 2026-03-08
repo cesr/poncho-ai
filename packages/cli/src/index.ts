@@ -540,6 +540,7 @@ export default {
       },
     },
   },
+  // browser: true, // Enable browser automation tools (requires @poncho-ai/browser)
   // webUi: false, // Disable built-in UI for API-only deployments
 };
 \`\`\`
@@ -1912,6 +1913,7 @@ export const createRequestHandler = async (options?: {
       return;
     }
     const [pathname] = request.url.split("?");
+    const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
 
     if (webUiEnabled) {
       if (request.method === "GET" && (pathname === "/" || pathname.startsWith("/c/"))) {
@@ -2083,6 +2085,140 @@ export const createRequestHandler = async (options?: {
         });
         return;
       }
+    }
+
+    // --- Browser endpoints (single session, routed by conversationId) ---
+
+    type BrowserSessionTyped = {
+      isLaunched: boolean;
+      isActiveFor: (cid: string) => boolean;
+      getUrl: (cid: string) => string | undefined;
+      onFrame: (cid: string, cb: (f: { data: string; width: number; height: number; timestamp: number }) => void) => () => void;
+      onStatus: (cid: string, cb: (s: { active: boolean; url?: string; interactionAllowed: boolean }) => void) => () => void;
+      startScreencast: (cid: string, opts?: Record<string, unknown>) => Promise<void>;
+      screenshot: (cid: string) => Promise<string>;
+      injectMouse: (cid: string, e: { type: string; x: number; y: number; button?: string; clickCount?: number; deltaX?: number; deltaY?: number }) => Promise<void>;
+      injectKeyboard: (cid: string, e: { type: string; key: string; code?: string }) => Promise<void>;
+      injectScroll: (cid: string, e: { deltaX: number; deltaY: number; x?: number; y?: number }) => Promise<void>;
+      injectPaste: (cid: string, text: string) => Promise<void>;
+      navigate: (cid: string, action: string) => Promise<void>;
+    };
+
+    const browserSession = harness.browserSession as BrowserSessionTyped | undefined;
+
+    if (pathname === "/api/browser/status" && request.method === "GET") {
+      const cid = requestUrl.searchParams.get("conversationId") ?? "";
+      writeJson(response, 200, {
+        active: cid && browserSession ? browserSession.isActiveFor(cid) : false,
+        url: cid && browserSession ? browserSession.getUrl(cid) ?? null : null,
+        conversationId: cid || null,
+      });
+      return;
+    }
+
+    if (pathname === "/api/browser/stream" && request.method === "GET") {
+      const cid = requestUrl.searchParams.get("conversationId");
+      if (!cid || !browserSession) {
+        writeJson(response, 404, { error: "No browser session available" });
+        return;
+      }
+
+      response.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      response.flushHeaders();
+
+      let frameCount = 0;
+      const sendSse = (event: string, data: unknown) => {
+        if (response.destroyed) return;
+        response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      };
+
+      sendSse("browser:status", {
+        active: browserSession.isActiveFor(cid),
+        url: browserSession.getUrl(cid),
+        interactionAllowed: browserSession.isActiveFor(cid),
+      });
+
+      const removeFrame = browserSession.onFrame(cid, (frame) => {
+        frameCount++;
+        if (frameCount <= 3 || frameCount % 50 === 0) {
+          console.log(`[poncho][browser-sse] Frame ${frameCount}: ${frame.width}x${frame.height}, data bytes: ${frame.data?.length ?? 0}`);
+        }
+        sendSse("browser:frame", frame);
+      });
+      const removeStatus = browserSession.onStatus(cid, (status) => {
+        sendSse("browser:status", status);
+      });
+
+      if (browserSession.isActiveFor(cid)) {
+        // Send a screenshot as the first frame for immediate visual feedback,
+        // then start the live screencast for subsequent frames.
+        browserSession.screenshot(cid).then((data) => {
+          if (!response.destroyed) {
+            sendSse("browser:frame", { data, width: 1280, height: 720, timestamp: Date.now() });
+          }
+          return browserSession.startScreencast(cid);
+        }).catch((err: unknown) => {
+          console.error("[poncho][browser-sse] initial frame/screencast failed:", (err as Error)?.message ?? err);
+        });
+      }
+
+      request.on("close", () => {
+        removeFrame();
+        removeStatus();
+      });
+      return;
+    }
+
+    if (pathname === "/api/browser/input" && request.method === "POST") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(chunk as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString());
+      const cid = body.conversationId as string;
+      if (!cid || !browserSession || !browserSession.isActiveFor(cid)) {
+        writeJson(response, 404, { error: "No active browser session" });
+        return;
+      }
+      try {
+        if (body.kind === "mouse") {
+          await browserSession.injectMouse(cid, body.event);
+        } else if (body.kind === "keyboard") {
+          await browserSession.injectKeyboard(cid, body.event);
+        } else if (body.kind === "scroll") {
+          await browserSession.injectScroll(cid, body.event);
+        } else if (body.kind === "paste") {
+          await browserSession.injectPaste(cid, body.text ?? body.event?.text ?? "");
+        } else {
+          writeJson(response, 400, { error: "Unknown input kind" });
+          return;
+        }
+        writeJson(response, 200, { ok: true });
+      } catch (err) {
+        writeJson(response, 500, { error: (err as Error)?.message ?? "Input injection failed" });
+      }
+      return;
+    }
+
+    if (pathname === "/api/browser/navigate" && request.method === "POST") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(chunk as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString());
+      const cid = body.conversationId as string;
+      if (!cid || !browserSession || !browserSession.isActiveFor(cid)) {
+        writeJson(response, 400, { error: "No active browser session" });
+        return;
+      }
+      try {
+        await browserSession.navigate(cid, body.action);
+        writeJson(response, 200, { ok: true });
+      } catch (err) {
+        writeJson(response, 500, { error: (err as Error)?.message ?? "Navigation failed" });
+      }
+      return;
     }
 
     if (pathname === "/api/conversations" && request.method === "GET") {

@@ -435,6 +435,49 @@ Since all fields have defaults, you only need to specify \`*Env\` when your env 
 - Prefer quoting concrete commands and examples from \`README.md\` over guessing.
 - Keep edits minimal, preserve unrelated settings/code, and summarize what changed.`;
 
+/**
+ * Detect FileContentPart objects ({ type:"file", data, mediaType }) in a tool
+ * output value and split them into:
+ *  - `mediaItems` – items suitable for the AI SDK multi-part `content` output
+ *    (images become proper vision tokens, not base64 text).
+ *  - `strippedOutput` – the original output with base64 `data` fields replaced
+ *    by a short placeholder so the stored conversation stays small.
+ */
+function extractMediaFromToolOutput(output: unknown): {
+  mediaItems: Array<{ type: "media"; data: string; mediaType: string }>;
+  strippedOutput: unknown;
+} {
+  const mediaItems: Array<{ type: "media"; data: string; mediaType: string }> = [];
+
+  function walk(node: unknown): unknown {
+    if (node === null || node === undefined) return node;
+    if (Array.isArray(node)) return node.map(walk);
+    if (typeof node === "object") {
+      const obj = node as Record<string, unknown>;
+      if (
+        obj.type === "file" &&
+        typeof obj.data === "string" &&
+        typeof obj.mediaType === "string" &&
+        (obj.mediaType as string).startsWith("image/")
+      ) {
+        mediaItems.push({
+          type: "media",
+          data: obj.data as string,
+          mediaType: obj.mediaType as string,
+        });
+        return { type: "file", mediaType: obj.mediaType, filename: obj.filename ?? "image", _stripped: true };
+      }
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(obj)) out[k] = walk(v);
+      return out;
+    }
+    return node;
+  }
+
+  const strippedOutput = walk(output);
+  return { mediaItems, strippedOutput };
+}
+
 export class AgentHarness {
   private readonly workingDir: string;
   private readonly environment: HarnessOptions["environment"];
@@ -451,6 +494,11 @@ export class AgentHarness {
   private readonly registeredMcpToolNames = new Set<string>();
   private latitudeTelemetry?: LatitudeTelemetry;
   private insideTelemetryCapture = false;
+  private _browserSession?: unknown;
+  private _browserMod?: {
+    createBrowserTools: (getSession: () => unknown, getConversationId: () => string) => ToolDefinition[];
+    BrowserSession: new (sessionId: string, config: Record<string, unknown>) => unknown;
+  };
 
   private parsedAgent?: ParsedAgent;
   private mcpBridge?: LocalMcpBridge;
@@ -816,6 +864,16 @@ export class AgentHarness {
         }),
       );
     }
+
+    if (config?.browser) {
+      await this.initBrowserTools(config)
+        .catch((e) => {
+          console.warn(
+            `[poncho][browser] Failed to load browser tools: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        });
+    }
+
     await bridge.startLocalServers();
     await bridge.discoverTools();
     await this.refreshMcpTools("initialize");
@@ -856,7 +914,68 @@ export class AgentHarness {
     }
   }
 
+  private async initBrowserTools(config: PonchoConfig): Promise<void> {
+    const spec = ["@poncho-ai", "browser"].join("/");
+    let browserMod: {
+      createBrowserTools: (getSession: () => unknown, getConversationId: () => string) => ToolDefinition[];
+      BrowserSession: new (sessionId: string, cfg?: Record<string, unknown>) => unknown;
+    };
+    try {
+      // Resolve from the agent project's node_modules (not the harness dist
+      // location).  Walk up from workingDir the same way Node's resolution
+      // algorithm does, then dynamically import the ESM entry point.
+      const { existsSync } = await import("node:fs");
+      const { join, dirname } = await import("node:path");
+      const { pathToFileURL } = await import("node:url");
+
+      let searchDir = this.workingDir;
+      let entryPath: string | undefined;
+      for (;;) {
+        const candidate = join(searchDir, "node_modules", "@poncho-ai", "browser", "dist", "index.js");
+        if (existsSync(candidate)) { entryPath = candidate; break; }
+        const parent = dirname(searchDir);
+        if (parent === searchDir) break;
+        searchDir = parent;
+      }
+      if (!entryPath) throw new Error("not installed");
+      browserMod = await import(pathToFileURL(entryPath).href);
+    } catch {
+      throw new Error(
+        `browser: true is set in poncho.config but @poncho-ai/browser is not installed.\n` +
+        `  Run: pnpm add @poncho-ai/browser`,
+      );
+    }
+
+    this._browserMod = browserMod;
+    const browserCfg = typeof config.browser === "object" ? config.browser : {};
+    const agentId = this.parsedAgent?.frontmatter.id ?? this.parsedAgent?.frontmatter.name ?? "default";
+    const session = new browserMod.BrowserSession(`poncho-${agentId}`, browserCfg);
+    this._browserSession = session;
+
+    const tools = browserMod.createBrowserTools(
+      () => session,
+      () => this._currentRunConversationId ?? "__default__",
+    );
+    for (const tool of tools) {
+      if (this.isToolEnabled(tool.name)) {
+        this.registerIfMissing(tool);
+      }
+    }
+  }
+
+  /** Conversation ID of the currently executing run (set during run, cleared after). */
+  private _currentRunConversationId?: string;
+
+  get browserSession(): unknown {
+    return this._browserSession;
+  }
+
   async shutdown(): Promise<void> {
+    if (this._browserSession) {
+      try { await (this._browserSession as { close(): Promise<void> }).close(); } catch { /* best-effort */ }
+      this._browserSession = undefined;
+    }
+
     await this.mcpBridge?.stopLocalServers();
     if (this.latitudeTelemetry) {
       await this.latitudeTelemetry.shutdown().catch((err) => {
@@ -966,6 +1085,9 @@ export class AgentHarness {
     }
     await this.refreshSkillsIfChanged();
 
+    // Track which conversation this run belongs to so browser tools resolve the right session
+    this._currentRunConversationId = input.conversationId;
+
     const agent = this.parsedAgent as ParsedAgent;
     const runId = `run_${randomUUID()}`;
     const start = now();
@@ -1041,6 +1163,34 @@ ${boundedMainMemory.trim()}`
       contextWindow,
     });
 
+    // Subscribe to browser frame/status events for this conversation's tab.
+    const browserEventQueue: AgentEvent[] = [];
+    const browserCleanups: Array<() => void> = [];
+    const browserSession = this._browserSession as
+      | { onFrame: (cid: string, cb: (f: { data: string; width: number; height: number }) => void) => () => void;
+          onStatus: (cid: string, cb: (s: { active: boolean; url?: string; interactionAllowed: boolean }) => void) => () => void;
+          saveState: (path: string) => Promise<void>;
+          close: () => Promise<void>;
+          profileDir: string;
+          isLaunched: boolean }
+      | undefined;
+    const conversationId = input.conversationId ?? "__default__";
+    if (browserSession) {
+      browserCleanups.push(
+        browserSession.onFrame(conversationId, (frame) => {
+          browserEventQueue.push({ type: "browser:frame", data: frame.data, width: frame.width, height: frame.height });
+        }),
+        browserSession.onStatus(conversationId, (status) => {
+          browserEventQueue.push({ type: "browser:status", ...status });
+        }),
+      );
+    }
+    const drainBrowserEvents = function* (): Generator<AgentEvent> {
+      while (browserEventQueue.length > 0) {
+        yield browserEventQueue.shift()!;
+      }
+    };
+
     if (input.task != null) {
       if (input.files && input.files.length > 0) {
         const parts: ContentPart[] = [
@@ -1088,6 +1238,7 @@ ${boundedMainMemory.trim()}`
 
     for (let step = 1; step <= maxSteps; step += 1) {
       try {
+        yield* drainBrowserEvents();
         if (isCancelled()) {
           yield emitCancellation();
           return;
@@ -1145,8 +1296,22 @@ ${boundedMainMemory.trim()}`
         // Convert messages to ModelMessage format
         const convertMessage = async (msg: Message): Promise<ModelMessage[]> => {
           if (msg.role === "tool") {
-            // Tool messages are provider-sensitive; skip malformed historical records
-            // instead of failing the entire run continuation.
+            // When rich (multi-part) tool results are attached from the
+            // current run, use them directly — they include proper image
+            // content blocks instead of base64 text.
+            const meta = msg.metadata as Record<string, unknown> | undefined;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const rich = (meta as any)?._richToolResults as unknown[] | undefined;
+            if (rich && rich.length > 0) {
+              // The rich array already conforms to the AI SDK ToolContent shape
+              // (tool-result parts with multi-part content outputs).  Cast
+              // through `any` because the exact generic types are internal.
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              return [{ role: "tool" as const, content: rich as any }];
+            }
+
+            // Fallback for historical messages loaded from storage (base64
+            // already stripped, so this is always token-safe).
             const textContent = typeof msg.content === "string" ? msg.content : getTextContent(msg);
             try {
               const parsed: unknown = JSON.parse(textContent);
@@ -1171,7 +1336,6 @@ ${boundedMainMemory.trim()}`
               return [{
                 role: "tool" as const,
                 content: toolResults.map((tr) => {
-                  // Parse JSON content for successful results, keep error messages as strings.
                   if (tr.content.startsWith("Tool error:")) {
                     return {
                       type: "tool-result" as const,
@@ -1589,6 +1753,17 @@ ${boundedMainMemory.trim()}`
         content: string;
       }> = [];
 
+      // Rich tool results that use multi-part content for images (proper
+      // vision tokens instead of base64 text).  Used for the *current* step
+      // model call; the `toolResultsForModel` array holds the storage-safe
+      // version with base64 stripped.
+      const richToolResults: Array<{
+        type: "tool-result";
+        toolCallId: string;
+        toolName: string;
+        output: { type: "json"; value: unknown } | { type: "content"; value: Array<{ type: "text"; text: string } | { type: "media"; data: string; mediaType: string }> };
+      }> = [];
+
       const approvedCalls: Array<{
         id: string;
         name: string;
@@ -1697,6 +1872,12 @@ ${boundedMainMemory.trim()}`
             tool_name: result.tool,
             content: `Tool error: ${result.error}`,
           });
+          richToolResults.push({
+            type: "tool-result",
+            toolCallId: result.callId,
+            toolName: result.tool,
+            output: { type: "json", value: { error: result.error } },
+          });
         } else {
           span?.end({ result: { value: result.output ?? null, isError: false } });
           yield pushEvent({
@@ -1705,12 +1886,36 @@ ${boundedMainMemory.trim()}`
             output: result.output,
             duration: now() - batchStart,
           });
+
+          const { mediaItems, strippedOutput } = extractMediaFromToolOutput(result.output);
           toolResultsForModel.push({
             type: "tool_result",
             tool_use_id: result.callId,
             tool_name: result.tool,
-            content: JSON.stringify(result.output ?? null),
+            content: JSON.stringify(strippedOutput ?? null),
           });
+
+          if (mediaItems.length > 0) {
+            richToolResults.push({
+              type: "tool-result",
+              toolCallId: result.callId,
+              toolName: result.tool,
+              output: {
+                type: "content",
+                value: [
+                  { type: "text", text: JSON.stringify(strippedOutput ?? null) },
+                  ...mediaItems,
+                ],
+              },
+            });
+          } else {
+            richToolResults.push({
+              type: "tool-result",
+              toolCallId: result.callId,
+              toolName: result.tool,
+              output: { type: "json", value: result.output ?? null },
+            });
+          }
         }
       }
 
@@ -1731,10 +1936,11 @@ ${boundedMainMemory.trim()}`
         content: assistantContent,
         metadata: { timestamp: now(), id: randomUUID(), step },
       });
+      const toolMsgMeta: Record<string, unknown> = { timestamp: now(), id: randomUUID(), step, _richToolResults: richToolResults };
       messages.push({
         role: "tool",
         content: JSON.stringify(toolResultsForModel),
-        metadata: { timestamp: now(), id: randomUUID(), step },
+        metadata: toolMsgMeta as Message["metadata"],
       });
 
         yield pushEvent({
@@ -1793,6 +1999,10 @@ ${boundedMainMemory.trim()}`
         },
       });
     }
+
+    // Drain any remaining browser events and clean up subscriptions
+    yield* drainBrowserEvents();
+    for (const cleanup of browserCleanups) cleanup();
   }
 
   async executeTools(
