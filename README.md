@@ -1149,6 +1149,75 @@ Available memory tools:
 - `memory_main_update`
 - `conversation_recall`
 
+## Browser Automation (Experimental)
+
+Give your agent the ability to browse the web with a headless Chromium browser. Powered by [`agent-browser`](https://github.com/vercel-labs/agent-browser).
+
+```javascript
+// poncho.config.js
+export default {
+  browser: true,
+  // or with options:
+  browser: {
+    viewport: { width: 1280, height: 720 },
+    quality: 80,
+    everyNthFrame: 2,
+    headless: true,
+    profileDir: "~/.poncho/browser-profiles",
+  },
+}
+```
+
+When `browser` is enabled, the agent gets seven tools:
+
+- `browser_open` — Navigate to a URL. Starts real-time viewport streaming.
+- `browser_snapshot` — Get the page as a compact accessibility tree with element refs (`@e1`, `@e2`, ...).
+- `browser_click` — Click an element by ref.
+- `browser_type` — Type text into a form field by ref.
+- `browser_screenshot` — Take a PNG screenshot (sent to the model as an image).
+- `browser_scroll` — Scroll the page up or down.
+- `browser_close` — Save session and close the browser.
+
+The agent uses the snapshot/ref pattern: call `browser_snapshot` to get refs, then `browser_click @e2` or `browser_type @e3 "hello"`. Re-snapshot after each interaction since refs change when the page updates.
+
+### Live viewport
+
+The web UI shows a real-time browser viewport panel alongside the chat when a browser session is active. Frames stream via CDP screencast through the `/api/browser/stream` SSE endpoint.
+
+### Session persistence
+
+Browser sessions are stored in profile directories (`~/.poncho/browser-profiles/<agent-id>/`). Cookies, localStorage, and other browser state persist across runs, so the agent can pick up where it left off (e.g., staying logged in across cron job runs).
+
+### Setup
+
+Install the browser package in your agent project:
+
+```bash
+pnpm add @poncho-ai/browser
+```
+
+Then set `browser: true` in `poncho.config.js`. Chromium is downloaded automatically via a `postinstall` hook (skipped when `CI` or `SERVERLESS` env vars are set).
+
+**Serverless deployments** (Lambda, Vercel, etc.): use `@sparticuz/chromium` instead of the bundled Chromium:
+
+```bash
+pnpm add @sparticuz/chromium
+```
+
+```javascript
+// poncho.config.js
+import chromium from "@sparticuz/chromium";
+
+export default {
+  browser: {
+    executablePath: await chromium.executablePath(),
+    headless: true,
+  },
+};
+```
+
+You can also set the `AGENT_BROWSER_EXECUTABLE_PATH` environment variable instead of using config.
+
 ## Observability
 
 ### Local development

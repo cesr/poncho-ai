@@ -114,6 +114,18 @@ export interface PonchoConfig extends McpConfig {
   };
   /** Set to `false` to disable the built-in web UI (headless / API-only mode). */
   webUi?: false;
+  /** Enable browser automation tools. Set `true` for defaults, or provide config. */
+  browser?:
+    | boolean
+    | {
+        viewport?: { width?: number; height?: number };
+        quality?: number;
+        everyNthFrame?: number;
+        profileDir?: string;
+        sessionName?: string;
+        executablePath?: string;
+        headless?: boolean;
+      };
 }
 
 const resolveTtl = (

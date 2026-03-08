@@ -1,5 +1,16 @@
 import type { AgentEvent } from "@poncho-ai/sdk";
 
+const MAX_FIELD_LENGTH = 200;
+
+function sanitizeEventForLog(event: AgentEvent): string {
+  return JSON.stringify(event, (_key, value) => {
+    if (typeof value === "string" && value.length > MAX_FIELD_LENGTH) {
+      return `${value.slice(0, 80)}...[${value.length} chars]`;
+    }
+    return value;
+  });
+}
+
 export interface TelemetryConfig {
   enabled?: boolean;
   otlp?: string;
@@ -33,7 +44,8 @@ export class TelemetryEmitter {
     // Latitude telemetry is handled by LatitudeTelemetry (from
     // @latitude-data/telemetry) via harness.runWithTelemetry().
     // Default behavior in local dev: print concise structured logs.
-    process.stdout.write(`[event] ${event.type} ${JSON.stringify(event)}\n`);
+    // Strip large binary payloads (e.g. base64 images) to keep logs readable.
+    process.stdout.write(`[event] ${event.type} ${sanitizeEventForLog(event)}\n`);
   }
 
   private async sendOtlp(event: AgentEvent): Promise<void> {

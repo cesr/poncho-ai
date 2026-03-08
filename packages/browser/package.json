@@ -1,0 +1,44 @@
+{
+  "name": "@poncho-ai/browser",
+  "version": "0.1.0",
+  "description": "Browser automation for Poncho agents, powered by agent-browser",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cesr/poncho-ai.git",
+    "directory": "packages/browser"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "dev": "tsup src/index.ts --format esm --dts --watch",
+    "postinstall": "node -e \"if(!process.env.CI&&!process.env.SERVERLESS)require('child_process').execSync('npx playwright install chromium',{stdio:'inherit'})\"",
+    "test": "vitest --passWithNoTests",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "@poncho-ai/sdk": "workspace:*",
+    "agent-browser": "^0.15.1"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "vitest": "^1.4.0"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "browser",
+    "automation"
+  ],
+  "license": "MIT"
+}
