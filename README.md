@@ -45,6 +45,8 @@ Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` 
 - **Skills you can ship**: AgentSkills-style `skills/*/SKILL.md` plus TypeScript/JavaScript scripts under `scripts/`.
 - **MCP support**: connect remote tool servers and inject required environment variables through config.
 - **Conversation-first API + streaming**: stored conversations with SSE streaming responses and tool events.
+- **Multimodal inputs**: attach images, PDFs, and other files via the Web UI, API, or client SDK.
+- **Browser automation**: headless Chromium with live viewport streaming, snapshot/ref interaction, and session persistence.
 - **Pluggable storage + memory**: local files for dev or hosted stores (e.g. Upstash), with optional persistent memory + recall.
 - **Testing + observability**: `poncho test` workflows and OpenTelemetry traces/events.
 
@@ -63,19 +65,38 @@ Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` 
 
 ### Deploy & Integrate
 - [Building and Deploying](#building-and-deploying)
-- [HTTP API](#http-api)
-- [Multi-turn Conversations](#multi-turn-conversations)
+- [Cron Jobs](#cron-jobs)
+- HTTP API & Client
+  - [HTTP API](docs/api.md)
+  - [Client SDK](docs/api.md#typescriptjavascript-client)
+  - [Custom Chat UI](docs/api.md#build-a-custom-chat-ui)
+  - [Multi-turn Conversations](docs/api.md#multi-turn-conversations)
+  - [File Attachments](docs/api.md#file-attachments)
 
 ### Features
-- [Persistent Memory](#persistent-memory-mvp)
-- [Observability](#observability)
+- [Web UI](docs/features.md#web-ui)
+- Messaging
+  - [Slack](docs/features.md#slack)
+  - [Email (Resend)](docs/features.md#email-resend)
+  - [Custom Adapters](docs/features.md#custom-messaging-adapters)
+- [Browser Automation](docs/features.md#browser-automation-experimental)
+- [Persistent Memory](docs/features.md#persistent-memory)
 
 ### Reference
-- [Configuration](#configuration-reference)
-- [Security](#security)
+- Configuration
+  - [Config File](docs/configuration.md#config-file-reference-ponchoconfigs)
+  - [Environment Variables](docs/configuration.md#environment-variables)
+  - [Credential Pattern](docs/configuration.md#credential-pattern)
+- Observability
+  - [Telemetry](docs/configuration.md#observability)
+  - [Latitude Integration](docs/configuration.md#latitude-integration-optional)
+- Security
+  - [Auth](docs/configuration.md#security)
+  - [Tool Approval](docs/configuration.md#require-approval-for-dangerous-tools)
 - [Examples](#examples)
-- [Error Handling](#error-handling)
-- [Troubleshooting](#troubleshooting)
+- Errors
+  - [Error Handling](docs/troubleshooting.md#error-types)
+  - [Troubleshooting](docs/troubleshooting.md#troubleshooting)
 
 ## Why Poncho?
 
@@ -111,6 +132,7 @@ my-agent/
 ├── AGENT.md           # Your agent definition
 ├── package.json       # Dependencies (skills)
 ├── poncho.config.js   # Configuration (optional)
+├── README.md          # Project readme
 ├── .env.example       # Environment variables template
 ├── tests/
 │   └── basic.yaml     # Starter test suite
@@ -134,8 +156,8 @@ my-agent/
   "private": true,
   "type": "module",
   "dependencies": {
-    "@poncho-ai/harness": "^0.6.0",
-    "@poncho-ai/sdk": "^0.6.0"
+    "@poncho-ai/harness": "^0.16.0",
+    "@poncho-ai/sdk": "^1.1.0"
   }
 }
 ```
@@ -532,6 +554,9 @@ Available tools:
 # One-off task
 poncho run "Explain this code" --file ./src/index.ts
 
+# Pass parameters to the agent
+poncho run "Review the code" --param projectName=my-app --param focus=security
+
 # Interactive mode
 poncho run --interactive
 ```
@@ -546,11 +571,34 @@ Interactive mode uses native terminal I/O (readline + stdout), so it behaves lik
 - Approval-gated tools prompt for `y/n` confirmation when approval is required.
 - Input is line-based (`Enter` sends the prompt).
 - Press `Ctrl+C` during an active response to stop the current run and keep partial output.
-- Built-in commands: `/help`, `/clear`, `/tools`, `/exit`.
+- Built-in commands:
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show available commands |
+| `/clear` | Clear the screen |
+| `/tools` | Toggle tool payload visibility |
+| `/exit` | Quit the session |
+| `/attach <path>` | Attach a file to the next message |
+| `/files` | List attached files |
+| `/list` | List conversations |
+| `/open <id>` | Switch to a conversation |
+| `/new [title]` | Start a new conversation |
+| `/delete [id]` | Delete a conversation |
+| `/continue` | Continue the last response |
+| `/reset [all]` | Reset conversation or all state |
 
 In the web UI, click the send button while streaming (it changes to a stop icon) to stop
 the current run. Stopping is best-effort and preserves partial assistant output/tool activity
 already produced.
+
+### Update agent guidance
+
+```bash
+poncho update-agent
+```
+
+Removes deprecated embedded local guidance from `AGENT.md`. Run this after upgrading `@poncho-ai/cli` to clean up any stale scaffolded instructions.
 
 ### Hot reload
 
@@ -607,7 +655,6 @@ tests:
 | Option | Description |
 |--------|-------------|
 | `contains` | Response must contain this string |
-| `matches` | Response must match this regex |
 | `refusal` | Agent should refuse the request |
 | `toolCalled` | A specific tool must be called |
 | `maxSteps` | Must complete within N steps |
@@ -728,7 +775,7 @@ Each key under `cron` is the job name. Fields per job:
 - **Docker / Fly.io**: The in-process scheduler activates automatically since these use `startDevServer()`.
 - **Lambda**: Use AWS EventBridge (CloudWatch Events) to trigger `GET /api/cron/<jobName>` on schedule. Include the `Authorization: Bearer <token>` header.
 
-Each cron invocation creates a **fresh conversation** (no accumulated history). To carry context between runs, enable [memory](#memory).
+Each cron invocation creates a **fresh conversation** (no accumulated history). To carry context between runs, enable [memory](docs/features.md#persistent-memory).
 
 ### Manual triggers
 
@@ -761,731 +808,6 @@ If your `vercel.json` crons fall out of sync with `AGENT.md` (e.g. you change a 
 ### Vercel plan limits
 
 Vercel Hobby allows 1 cron job with daily minimum granularity. Vercel Pro allows more jobs and finer schedules. See [Vercel Cron Jobs docs](https://vercel.com/docs/cron-jobs) for details.
-
-## Messaging Integrations
-
-Connect your Poncho agent to messaging platforms so it responds to @mentions.
-
-### Slack
-
-#### 1. Create a Slack App
-
-1. Go to [api.slack.com/apps](https://api.slack.com/apps) and create a new app "From scratch"
-2. Under **OAuth & Permissions**, add these Bot Token Scopes:
-   - `app_mentions:read`
-   - `chat:write`
-   - `reactions:write`
-3. Under **Event Subscriptions**, enable events:
-   - Set the Request URL to `https://<your-deployed-agent>/api/messaging/slack`
-   - Subscribe to the `app_mention` bot event
-4. Install the app to your workspace (generates a Bot Token `xoxb-...`)
-5. Copy the **Signing Secret** from the Basic Information page
-
-#### 2. Configure your agent
-
-Add environment variables to `.env`:
-
-```
-SLACK_BOT_TOKEN=xoxb-...
-SLACK_SIGNING_SECRET=...
-```
-
-Add messaging to `poncho.config.js`:
-
-```javascript
-export default {
-  // ... your existing config ...
-  messaging: [
-    { platform: 'slack' }
-  ]
-}
-```
-
-#### 3. Deploy
-
-The messaging endpoint works on all deployment targets (Vercel, Docker, Fly.io, etc.). For local development with Slack, use a tunnel like [ngrok](https://ngrok.com) to expose your local server.
-
-**Vercel deployments:** install `@vercel/functions` so Poncho can keep the serverless function alive while the agent processes messages:
-
-```bash
-npm install @vercel/functions
-```
-
-This is detected automatically at runtime -- no extra configuration needed.
-
-#### How it works
-
-- When a user @mentions your bot in Slack, the agent receives the message and responds in the same thread.
-- Each Slack thread maps to a separate Poncho conversation with persistent history.
-- The bot adds an "eyes" reaction while processing and removes it when done.
-- Long responses are automatically split into multiple messages.
-
-#### Custom environment variable names
-
-If you need different env var names (e.g., running multiple Slack integrations):
-
-```javascript
-messaging: [
-  {
-    platform: 'slack',
-    botTokenEnv: 'MY_SLACK_BOT_TOKEN',
-    signingSecretEnv: 'MY_SLACK_SIGNING_SECRET',
-  }
-]
-```
-
-### Email (Resend)
-
-#### 1. Set up Resend
-
-1. Create an account at [resend.com](https://resend.com) and add your domain
-2. Enable **Inbound** on your domain in the Resend dashboard
-3. Create a **Webhook** subscribing to the `email.received` event
-   - Set the endpoint URL to `https://<your-deployed-agent>/api/messaging/resend`
-4. Copy the webhook **Signing Secret** from the webhook details page
-5. Create an API key at [resend.com/api-keys](https://resend.com/api-keys)
-
-#### 2. Configure your agent
-
-Add environment variables to `.env`:
-
-```
-RESEND_API_KEY=re_...
-RESEND_WEBHOOK_SECRET=whsec_...
-RESEND_FROM=Agent <agent@yourdomain.com>
-```
-
-Add messaging to `poncho.config.js`:
-
-```javascript
-export default {
-  // ... your existing config ...
-  messaging: [
-    { platform: 'resend' }
-  ]
-}
-```
-
-Install the Resend SDK:
-
-```bash
-npm install resend
-```
-
-#### 3. Deploy
-
-The messaging endpoint works on all deployment targets (Vercel, Docker, Fly.io, etc.). For local development, use a tunnel like [ngrok](https://ngrok.com) to expose your local server and set it as your Resend webhook URL.
-
-**Vercel deployments:** install `@vercel/functions` so Poncho can keep the serverless function alive while the agent processes messages:
-
-```bash
-npm install @vercel/functions
-```
-
-#### How it works
-
-- When someone emails your agent's address, the agent receives the message and replies in the same email thread.
-- Each email thread maps to a separate Poncho conversation with persistent history.
-- Email attachments are passed to the agent as file inputs.
-- Agent responses are formatted as HTML emails with proper markdown rendering.
-- Quoted reply content is automatically stripped so the agent only sees the new message.
-- The incoming email's sender and subject are included in the task header (`From:` / `Subject:`) so the agent knows who sent the email.
-
-#### Response modes
-
-Resend email supports two response modes:
-
-- **`"auto-reply"`** (default): The agent's text response is automatically sent back as an email reply. Simple and zero-config.
-- **`"tool"`**: Auto-reply is disabled. Instead, the agent gets a `send_email` tool with full control over recipients, subject, body, CC/BCC, and threading. Use this for agents that need to send emails to different people, compose custom subjects, or decide whether to reply at all.
-
-#### Options
-
-```javascript
-messaging: [
-  {
-    platform: 'resend',
-    // Optional: restrict who can email the agent
-    allowedSenders: ['*@mycompany.com', 'partner@external.com'],
-    // Optional: custom env var names
-    apiKeyEnv: 'MY_RESEND_API_KEY',
-    webhookSecretEnv: 'MY_RESEND_WEBHOOK_SECRET',
-    fromEnv: 'MY_RESEND_FROM',
-  }
-]
-```
-
-**Tool mode** gives the agent explicit email control:
-
-```javascript
-messaging: [
-  {
-    platform: 'resend',
-    mode: 'tool',
-    // Optional: restrict who the agent can email (glob patterns)
-    allowedRecipients: ['*@mycompany.com', 'partner@external.com'],
-    // Optional: max emails per agent run (default: 10)
-    maxSendsPerRun: 5,
-  }
-]
-```
-
-In tool mode the agent can call `send_email` with:
-- `to` (required): recipient email addresses
-- `subject` (required): email subject
-- `body` (required): markdown content (auto-converted to HTML)
-- `cc`, `bcc` (optional): additional recipients
-- `in_reply_to` (optional): message ID for threading as a reply; omit for a standalone email
-
-### Custom Messaging Adapters
-
-The `MessagingAdapter` interface from `@poncho-ai/messaging` is the extension point for adding other messaging platforms (SendGrid, Postmark, Discord, Telegram, etc.). Implement the interface and wire it with `AgentBridge`:
-
-```typescript
-import { AgentBridge, type MessagingAdapter } from '@poncho-ai/messaging';
-// Shared email utilities for threading (optional, useful for email adapters)
-import { parseReferences, deriveRootMessageId, buildReplyHeaders } from '@poncho-ai/messaging';
-```
-
-See the `SlackAdapter` and `ResendAdapter` source code for reference implementations.
-
-## HTTP API
-
-Your deployed agent exposes these endpoints:
-
-| Endpoint | Use case |
-|----------|----------|
-| `GET /health` | Health checks for load balancers |
-| `GET /api/docs` | Interactive API documentation (Scalar) |
-| `GET /api/openapi.json` | OpenAPI 3.1 spec (machine-readable) |
-| `GET /api/auth/session` | Session status + CSRF token for browser clients |
-| `POST /api/auth/login` | Passphrase login for browser sessions |
-| `POST /api/auth/logout` | End browser session |
-| `GET /api/conversations` | List stored conversations |
-| `POST /api/conversations` | Create conversation |
-| `GET /api/conversations/:conversationId` | Get conversation transcript |
-| `PATCH /api/conversations/:conversationId` | Rename conversation |
-| `DELETE /api/conversations/:conversationId` | Delete conversation |
-| `POST /api/conversations/:conversationId/messages` | Stream a new assistant response |
-| `GET /api/conversations/:conversationId/events` | Attach to live SSE stream |
-| `POST /api/conversations/:conversationId/stop` | Cancel an in-flight run |
-| `POST /api/approvals/:approvalId` | Resolve tool approval request |
-| `GET /api/uploads/:key` | Retrieve uploaded file |
-| `GET\|POST /api/cron/:jobName` | Trigger a cron job (see [Cron Jobs](#cron-jobs)) |
-
-> **Tip:** Visit `/api/docs` on any running agent for interactive API documentation with request examples and full schema details.
-
-### POST /api/conversations/:conversationId/messages (streaming)
-
-```bash
-curl -N -X POST https://my-agent.vercel.app/api/conversations/<conversation-id>/messages \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Write a hello world function"}'
-```
-
-Response: Server-Sent Events (`run:started`, `model:chunk`, `tool:*`, `run:completed`).
-
-On serverless deployments with `PONCHO_MAX_DURATION` set, the `run:completed` event may
-include `continuation: true` in `result`, indicating the agent stopped early due to a
-platform timeout and the client should send another message (e.g., `"Continue"`) on the
-same conversation to resume.
-
-### Build a custom chat UI
-
-You can build your own chat frontend by calling Poncho's conversation endpoints directly.
-
-Typical UI flow:
-
-1. Create a conversation: `POST /api/conversations`
-2. Send a message and stream events: `POST /api/conversations/:conversationId/messages`
-3. Append `model:chunk` events into the in-progress assistant message
-4. Render `tool:*` events as activity status
-5. Finalize on `run:completed` (or handle `run:error` / `run:cancelled`)
-6. Reload full transcript on refresh: `GET /api/conversations/:conversationId`
-
-Minimal browser example (SSE parsing):
-
-```typescript
-async function streamMessage(conversationId: string, message: string) {
-  const response = await fetch(
-    `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
-      credentials: "include", // keep for session auth
-    },
-  );
-
-  if (!response.ok || !response.body) {
-    throw new Error(`Streaming request failed: HTTP ${response.status}`);
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const frames = buffer.split("\n\n");
-    buffer = frames.pop() ?? "";
-
-    for (const frame of frames) {
-      const lines = frame
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean);
-
-      const eventLine = lines.find((line) => line.startsWith("event:"));
-      const dataLine = lines.find((line) => line.startsWith("data:"));
-      if (!eventLine || !dataLine) continue;
-
-      const eventName = eventLine.slice("event:".length).trim();
-      const payload = JSON.parse(dataLine.slice("data:".length).trim());
-
-      if (eventName === "model:chunk") {
-        // Append payload.content to the active assistant message
-      } else if (eventName === "tool:started") {
-        // Show "running tool" activity
-      } else if (eventName === "tool:completed") {
-        // Mark tool activity as complete
-      } else if (eventName === "run:completed") {
-        // Finalize assistant message
-      } else if (eventName === "run:error" || eventName === "run:cancelled") {
-        // Show interrupted/error state in UI
-      }
-    }
-  }
-}
-```
-
-Useful optional endpoints for richer UIs:
-
-- `POST /api/conversations/:conversationId/stop` with `{ "runId": "<run-id>" }` to cancel an in-flight run
-- `GET /api/conversations/:conversationId/events` to attach/re-attach to a live event stream
-- `POST /api/approvals/:approvalId` with `{ "approved": true|false }` to resolve `tool:approval:required`
-
-Auth notes for custom frontends:
-
-- Browser session mode: `GET /api/auth/session`, then `POST /api/auth/login`, and send `x-csrf-token` on mutating requests.
-- API token mode: send `Authorization: Bearer <PONCHO_AUTH_TOKEN>` on API requests.
-
-### Headless mode (API-only)
-
-If you're building your own frontend or using the agent purely as an API, disable the built-in Web UI:
-
-```javascript
-// poncho.config.js
-export default {
-  webUi: false,
-}
-```
-
-When `webUi` is `false`:
-- The built-in chat UI at `/` is disabled (returns 404).
-- All `/api/*` endpoints, `/health`, and `/api/docs` continue to work normally.
-- Messaging adapter routes (e.g., Slack) are unaffected.
-
-This is useful for API-only deployments where a separate frontend (e.g., a Next.js app) calls the Poncho API via a backend-for-frontend pattern.
-
-### TypeScript/JavaScript Client
-
-Install the client SDK for type-safe access:
-
-```bash
-npm install @poncho-ai/client
-```
-
-```typescript
-import { AgentClient } from '@poncho-ai/client'
-
-const agent = new AgentClient({
-  url: 'https://my-agent.vercel.app',
-  apiKey: 'your-api-key'  // Optional, if auth enabled
-})
-
-const created = await agent.createConversation({ title: 'Session' })
-const response = await agent.sendMessage(created.conversationId, 'What is 2 + 2?')
-console.log(response.result.response)
-```
-
-## Multi-turn Conversations
-
-Conversations are persisted and keyed by `conversationId`.
-
-Typical flow:
-
-1. `POST /api/conversations`
-2. `POST /api/conversations/:conversationId/messages`
-3. Repeat step 2 for follow-up turns
-4. `GET /api/conversations/:conversationId` to fetch full transcript
-
-## Persistent Memory
-
-When `memory.enabled` is true in `poncho.config.js`, the harness enables a simple memory model:
-
-- A single persistent main memory document is loaded at run start and interpolated into the system prompt under `## Persistent Memory`.
-- `memory_main_update` can replace or append to that document. The tool description instructs the model to proactively evaluate each turn whether durable memory should be updated.
-- `conversation_recall` can search recent prior conversations (keyword scoring) when historical context is relevant (`as we discussed`, `last time`, etc.).
-
-```javascript
-// poncho.config.js
-export default {
-  storage: {
-    provider: 'local',           // 'local' | 'memory' | 'redis' | 'upstash' | 'dynamodb'
-    memory: {
-      enabled: true,
-      maxRecallConversations: 20, // Bounds conversation_recall scan size
-    },
-  },
-}
-```
-
-Available memory tools:
-
-- `memory_main_get`
-- `memory_main_update`
-- `conversation_recall`
-
-## Browser Automation (Experimental)
-
-Give your agent the ability to browse the web with a headless Chromium browser. Powered by [`agent-browser`](https://github.com/vercel-labs/agent-browser).
-
-```javascript
-// poncho.config.js
-export default {
-  browser: true,
-  // or with options:
-  browser: {
-    viewport: { width: 1280, height: 720 },
-    quality: 80,
-    everyNthFrame: 2,
-    headless: true,
-    profileDir: "~/.poncho/browser-profiles",
-  },
-}
-```
-
-When `browser` is enabled, the agent gets seven tools:
-
-- `browser_open` — Navigate to a URL. Starts real-time viewport streaming.
-- `browser_snapshot` — Get the page as a compact accessibility tree with element refs (`@e1`, `@e2`, ...).
-- `browser_click` — Click an element by ref.
-- `browser_type` — Type text into a form field by ref.
-- `browser_screenshot` — Take a PNG screenshot (sent to the model as an image).
-- `browser_scroll` — Scroll the page up or down.
-- `browser_close` — Save session and close the browser.
-
-The agent uses the snapshot/ref pattern: call `browser_snapshot` to get refs, then `browser_click @e2` or `browser_type @e3 "hello"`. Re-snapshot after each interaction since refs change when the page updates.
-
-### Live viewport
-
-The web UI shows a real-time browser viewport panel alongside the chat when a browser session is active. Frames stream via CDP screencast through the `/api/browser/stream` SSE endpoint.
-
-### Session persistence
-
-Browser sessions are stored in profile directories (`~/.poncho/browser-profiles/<agent-id>/`). Cookies, localStorage, and other browser state persist across runs, so the agent can pick up where it left off (e.g., staying logged in across cron job runs).
-
-### Setup
-
-Install the browser package in your agent project:
-
-```bash
-pnpm add @poncho-ai/browser
-```
-
-Then set `browser: true` in `poncho.config.js`. Chromium is downloaded automatically via a `postinstall` hook (skipped when `CI` or `SERVERLESS` env vars are set).
-
-**Serverless deployments** (Lambda, Vercel, etc.): use `@sparticuz/chromium` instead of the bundled Chromium:
-
-```bash
-pnpm add @sparticuz/chromium
-```
-
-```javascript
-// poncho.config.js
-import chromium from "@sparticuz/chromium";
-
-export default {
-  browser: {
-    executablePath: await chromium.executablePath(),
-    headless: true,
-  },
-};
-```
-
-You can also set the `AGENT_BROWSER_EXECUTABLE_PATH` environment variable instead of using config.
-
-## Observability
-
-### Local development
-
-Logs print to console:
-
-```
-[event] run:started {"type":"run:started","runId":"run_abc123","agentId":"my-agent"}
-[event] tool:started {"type":"tool:started","tool":"read_file","input":{"path":"README.md"}}
-[event] tool:completed {"type":"tool:completed","tool":"read_file","duration":45,"output":{"path":"README.md","content":"..."}}
-[event] run:completed {"type":"run:completed","runId":"run_abc123","result":{"status":"completed","response":"...","steps":3,"tokens":{"input":1500,"output":840}}}
-```
-
-### Production telemetry
-
-Send events to your observability stack:
-
-```bash
-# Environment variable
-OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.com
-```
-
-Or configure in code:
-
-```javascript
-// poncho.config.js
-export default {
-  telemetry: {
-    otlp: 'https://otel.example.com',
-    // Or custom handler
-    handler: async (event) => {
-      await sendToMyLoggingService(event)
-    }
-  }
-}
-```
-
-### Latitude integration (optional)
-
-For a pre-built dashboard with cost tracking:
-
-```bash
-LATITUDE_API_KEY=lat_xxx
-LATITUDE_PROJECT_ID=123
-LATITUDE_PATH=agents/my-agent/run
-```
-
-## Configuration Reference
-
-### Credential pattern
-
-All credentials in `poncho.config.js` use **env var name** fields (`*Env` suffix). The config specifies *which* environment variable to read — never the secret value itself. Every `*Env` field has a sensible default, so you only need to set the field when your env var name differs from the convention:
-
-| Config field | Default env var | Purpose |
-|---|---|---|
-| `providers.anthropic.apiKeyEnv` | `ANTHROPIC_API_KEY` | Anthropic model API key |
-| `providers.openai.apiKeyEnv` | `OPENAI_API_KEY` | OpenAI model API key |
-| `auth.tokenEnv` | `PONCHO_AUTH_TOKEN` | Auth passphrase / bearer token |
-| `storage.urlEnv` | `UPSTASH_REDIS_REST_URL` / `REDIS_URL` | Storage connection URL |
-| `storage.tokenEnv` | `UPSTASH_REDIS_REST_TOKEN` | Upstash REST token |
-| `telemetry.latitude.apiKeyEnv` | `LATITUDE_API_KEY` | Latitude API key |
-| `telemetry.latitude.projectIdEnv` | `LATITUDE_PROJECT_ID` | Latitude project ID |
-| `messaging[].botTokenEnv` | `SLACK_BOT_TOKEN` | Slack bot token |
-| `messaging[].signingSecretEnv` | `SLACK_SIGNING_SECRET` | Slack signing secret |
-| `messaging[].apiKeyEnv` | `RESEND_API_KEY` | Resend API key |
-| `mcp[].auth.tokenEnv` | *(user-defined)* | MCP server bearer token |
-
-### poncho.config.js
-
-```javascript
-export default {
-  // Custom harness (default: @poncho-ai/harness)
-  harness: '@poncho-ai/harness',  // or './my-harness.js'
-
-  // MCP servers (remote)
-  mcp: [
-    // Remote: Connect to external server
-    {
-      name: 'github',
-      url: 'https://mcp.example.com/github',
-      auth: { type: 'bearer', tokenEnv: 'GITHUB_TOKEN' },
-    }
-  ],
-
-  // Extra directories to scan for skills (skills/ is always scanned)
-  skillPaths: ['.cursor/skills'],
-
-  // Skill-specific configuration
-  skills: {
-    '@poncho-ai/web-fetch': {
-      allowedDomains: ['*.github.com', 'api.example.com'],
-      timeout: 10000,              // 10 seconds (ms)
-      maxResponseSize: 1024 * 1024,  // 1MB
-    },
-    '@poncho-ai/code-execution': {
-      allowedLanguages: ['javascript', 'typescript'],
-      maxExecutionTime: 30000,     // 30 seconds (ms)
-    },
-    '@poncho-ai/shell': {
-      allowedCommands: ['ls', 'cat', 'grep'],
-    },
-  },
-
-  // Tool access: true (available), false (disabled), 'approval' (requires human approval)
-  // Any tool name works — harness tools, adapter tools (send_email), MCP tools, etc.
-  tools: {
-    write_file: true,            // available (still gated by environment for writes)
-    send_email: 'approval',      // available, requires human approval before each call
-    list_directory: true,
-    byEnvironment: {
-      production: {
-        write_file: false,       // disable writes in production
-        send_email: 'approval',  // keep approval in production
-      },
-      development: {
-        send_email: true,        // skip approval in dev
-      },
-    },
-  },
-
-  // Authentication (protects both Web UI and API)
-  auth: {
-    required: true,
-    type: 'bearer',              // 'bearer' | 'header' | 'custom'
-    // tokenEnv: 'PONCHO_AUTH_TOKEN',  // env var name (default)
-  },
-  // When auth.required is true:
-  // - Web UI: users enter the passphrase (value of PONCHO_AUTH_TOKEN env var)
-  // - API: clients include Authorization: Bearer <token> header
-
-  // Model provider API key env var overrides (optional)
-  providers: {
-    // anthropic: { apiKeyEnv: 'ANTHROPIC_API_KEY' },  // default
-    // openai: { apiKeyEnv: 'OPENAI_API_KEY' },        // default
-  },
-
-  // Unified storage (preferred). Replaces separate `state` and `memory` blocks.
-  // Credentials are read from env vars; override the var name with *Env fields.
-  storage: {
-    provider: 'upstash',         // 'local' | 'memory' | 'redis' | 'upstash' | 'dynamodb'
-    // urlEnv: 'UPSTASH_REDIS_REST_URL',     // default (falls back to KV_REST_API_URL)
-    // tokenEnv: 'UPSTASH_REDIS_REST_TOKEN', // default (falls back to KV_REST_API_TOKEN)
-    ttl: {
-      conversations: 3600,       // seconds
-      memory: 0,                 // 0/undefined means no expiration
-    },
-    memory: {
-      enabled: true,
-      maxRecallConversations: 20, // Bounds conversation_recall scan size
-    },
-  },
-
-  // Telemetry destination
-  telemetry: {
-    enabled: true,
-    otlp: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
-    // Or use Latitude (reads from LATITUDE_API_KEY and LATITUDE_PROJECT_ID env vars by default)
-    latitude: {
-      // apiKeyEnv: 'LATITUDE_API_KEY',       // default
-      // projectIdEnv: 'LATITUDE_PROJECT_ID', // default
-      path: 'your/prompt-path',               // optional, defaults to agent name
-    },
-  },
-
-  // Messaging platform integrations
-  messaging: [
-    { platform: 'slack' },                                 // Uses SLACK_BOT_TOKEN + SLACK_SIGNING_SECRET
-    // { platform: 'slack', botTokenEnv: 'MY_BOT_TOKEN' }, // Custom env var names
-  ],
-
-  // Headless mode: disable the built-in Web UI (API-only)
-  // webUi: false,
-
-}
-```
-
-`provider: 'local'` stores runtime state under `~/.poncho/store` (or `/tmp/.poncho/store` on serverless runtimes), scoped by both agent name and stable agent id:
-
-```text
-~/.poncho/store
-└── my-agent--agent_01f4f5d7e9c7432da51f8c6b9e2b1a0c
-    ├── memory.json
-    ├── state.json
-    ├── onboarding-state.json
-    └── conversations
-        ├── index.json
-        ├── 20260217T154233Z--conv_01j9x8a12bcd.json
-        └── 20260218T101004Z--conv_01j9x8b45efg.json
-```
-
-Remote storage keys are namespaced and versioned, for example `poncho:v1:<agentId>:...`.
-
-### Environment variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes* | Claude API key |
-| `OPENAI_API_KEY` | No | OpenAI API key (if using OpenAI) |
-| `PONCHO_AUTH_TOKEN` | No | Unified auth token (Web UI passphrase + API Bearer token) |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | No | Telemetry destination |
-| `LATITUDE_API_KEY` | No | Latitude dashboard integration |
-| `LATITUDE_PROJECT_ID` | No | Latitude project identifier for capture traces |
-| `LATITUDE_PATH` | No | Latitude prompt path for grouping traces |
-| `KV_REST_API_URL` | No | Upstash REST URL (Vercel Marketplace naming) |
-| `KV_REST_API_TOKEN` | No | Upstash REST write token (Vercel Marketplace naming) |
-| `UPSTASH_REDIS_REST_URL` | No | Upstash REST URL (direct Upstash naming) |
-| `UPSTASH_REDIS_REST_TOKEN` | No | Upstash REST write token (direct Upstash naming) |
-| `REDIS_URL` | No | For Redis state storage |
-| `SLACK_BOT_TOKEN` | No | Slack Bot Token (for messaging integration) |
-| `SLACK_SIGNING_SECRET` | No | Slack Signing Secret (for messaging integration) |
-
-*Required if using Anthropic models (default).
-
-## Security
-
-### Protect your endpoint
-
-Enable authentication to secure both the Web UI and API:
-
-```javascript
-// poncho.config.js
-export default {
-  auth: {
-    required: true,
-    type: 'bearer'  // Default: validates against PONCHO_AUTH_TOKEN
-  }
-}
-```
-
-```bash
-# .env
-PONCHO_AUTH_TOKEN=your-secret-token-here
-```
-
-With `auth.required: true`:
-- **Web UI**: Users must enter `PONCHO_AUTH_TOKEN` as the passphrase to login
-- **API**: Clients must include `Authorization: Bearer <PONCHO_AUTH_TOKEN>` header
-
-For custom validation:
-
-```javascript
-// poncho.config.js
-export default {
-  auth: {
-    required: true,
-    type: 'custom',
-    validate: async (token) => {
-      // Custom logic: check database, verify JWT, etc.
-      return token === process.env.PONCHO_AUTH_TOKEN
-    }
-  }
-}
-```
-
-### Require approval for dangerous tools
-
-Use `approval-required` in your `AGENT.md` or `SKILL.md` frontmatter to gate specific tools:
-
-```yaml
----
-allowed-tools:
-  - mcp:linear/*
-approval-required:
-  - mcp:linear/list_initiatives
----
-```
-
-When a gated tool is called, the harness emits a `tool:approval:required` event and pauses until approval is granted or denied. In the web UI and interactive CLI, the user is prompted before execution continues.
 
 ## Examples
 
@@ -1578,94 +900,12 @@ You are a helpful customer support agent for Acme Corp.
 {{/parameters.knowledgeBase}}
 ```
 
-## Error Handling
+## Further Documentation
 
-### Error types
-
-| Code | Description |
-|------|-------------|
-| `MAX_STEPS_EXCEEDED` | Agent hit the step limit without completing |
-| `TIMEOUT` | Agent exceeded the timeout |
-| `TOOL_ERROR` | A tool failed (agent will retry or try another approach) |
-| `MODEL_ERROR` | Model API returned an error |
-| `AUTH_ERROR` | Authentication failed |
-| `CONFIG_ERROR` | Invalid configuration |
-
-### Tool errors are recoverable
-
-When a tool fails, the error is sent back to the model, which can:
-- Retry with different parameters
-- Try a different tool
-- Ask the user for help
-
-```
-event: tool:error
-data: {"tool": "fetch-url", "error": "Connection timeout", "recoverable": true}
-
-event: model:chunk
-data: {"content": "I couldn't fetch that URL. Let me try a different approach..."}
-```
-
-### Fatal errors end the run
-
-Timeout, max steps, or model API errors end the run immediately:
-
-```
-event: run:error
-data: {"code": "TIMEOUT", "message": "Run exceeded 60 second timeout"}
-```
-
-### Handle errors in your client
-
-```typescript
-const agent = new AgentClient({ url: 'https://my-agent.vercel.app' })
-
-try {
-  const result = await agent.run({ task: 'Do something' })
-} catch (error) {
-  if (error.code === 'TIMEOUT') {
-    console.log('Agent took too long')
-  } else if (error.code === 'MAX_STEPS_EXCEEDED') {
-    console.log('Task was too complex')
-  }
-}
-```
-
-## Troubleshooting
-
-### "ANTHROPIC_API_KEY not set"
-
-Make sure you have a `.env` file with your API key:
-
-```bash
-echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
-```
-
-### "MCP server failed to connect"
-
-Check that:
-1. A remote MCP server is configured (`poncho mcp list`)
-2. The MCP URL is correct and reachable (`http://` or `https://`)
-3. Required environment variables/secrets are set
-4. Any required auth headers/tokens expected by the remote server are configured
-
-### Agent keeps running forever
-
-Set execution limits:
-
-```yaml
----
-limits:
-  maxSteps: 20
-  timeout: 60  # 1 minute (in seconds)
----
-```
-
-### Vercel deploy issues
-
-- After upgrading `@poncho-ai/cli`, re-run `poncho build vercel --force` to refresh generated deploy files.
-- If Vercel fails during `pnpm install` due to a lockfile mismatch, run `pnpm install --no-frozen-lockfile` locally and commit `pnpm-lock.yaml`.
-- Deploy from the project root: `vercel deploy --prod`.
+- **[HTTP API & Client SDK](docs/api.md)** — REST endpoints, SSE streaming, TypeScript client, file attachments, custom UIs
+- **[Platform Features](docs/features.md)** — Web UI, Slack & email messaging, browser automation, persistent memory
+- **[Configuration & Security](docs/configuration.md)** — `poncho.config.js` reference, environment variables, observability, auth
+- **[Error Handling & Troubleshooting](docs/troubleshooting.md)** — Error codes, recovery, common issues
 
 ## Getting Help
 

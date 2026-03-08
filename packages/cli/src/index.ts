@@ -379,12 +379,16 @@ poncho dev
 
 Open \`http://localhost:3000\` for the web UI, or \`http://localhost:3000/api/docs\` for interactive API documentation.
 
+The web UI supports file attachments (drag-and-drop, paste, or attach button), conversation management (sidebar), a context window usage ring, and tool approval prompts. It can be installed as a PWA.
+
 On your first interactive session, the agent introduces its configurable capabilities.
 While a response is streaming, you can stop it:
 - Web UI: click the send button again (it switches to a stop icon)
 - Interactive CLI: press \`Ctrl+C\`
 
 Stopping is best-effort and keeps partial assistant output/tool activity already produced.
+
+Interactive CLI commands: \`/help\`, \`/clear\`, \`/tools\`, \`/exit\`, \`/attach <path>\`, \`/files\`, \`/list\`, \`/open <id>\`, \`/new [title]\`, \`/delete [id]\`, \`/continue\`, \`/reset [all]\`.
 
 ## Common Commands
 
@@ -399,12 +403,16 @@ poncho run --interactive
 # One-off run
 poncho run "Your task here"
 poncho run "Explain this code" --file ./src/index.ts
+poncho run "Review the code" --param projectName=my-app
 
 # Run tests
 poncho test
 
 # List available tools
 poncho tools
+
+# Remove deprecated guidance from AGENT.md after upgrading
+poncho update-agent
 \`\`\`
 
 ## Add Skills
@@ -542,6 +550,7 @@ export default {
   },
   // browser: true, // Enable browser automation tools (requires @poncho-ai/browser)
   // webUi: false, // Disable built-in UI for API-only deployments
+  // uploads: { provider: 'local' }, // 'local' | 'vercel-blob' | 's3'
 };
 \`\`\`
 
@@ -1426,6 +1435,8 @@ export const createRequestHandler = async (options?: {
     let currentText = "";
     let currentTools: string[] = [];
     let checkpointedRun = false;
+    let runContextTokens = conversation.contextTokens ?? 0;
+    let runContextWindow = conversation.contextWindow ?? 0;
 
     const baseMessages = checkpoint.baseMessageCount != null
       ? conversation.messages.slice(0, checkpoint.baseMessageCount)
@@ -1446,6 +1457,14 @@ export const createRequestHandler = async (options?: {
           const active = activeConversationRuns.get(conversationId);
           if (active && active.abortController === abortController) {
             active.runId = event.runId;
+          }
+          if (typeof event.contextWindow === "number" && event.contextWindow > 0) {
+            runContextWindow = event.contextWindow;
+          }
+        }
+        if (event.type === "model:response") {
+          if (typeof event.usage?.input === "number") {
+            runContextTokens = event.usage.input;
           }
         }
         if (event.type === "model:chunk") {
@@ -1569,6 +1588,8 @@ export const createRequestHandler = async (options?: {
         }
         conv.runtimeRunId = latestRunId || conv.runtimeRunId;
         conv.pendingApprovals = [];
+        if (runContextTokens > 0) conv.contextTokens = runContextTokens;
+        if (runContextWindow > 0) conv.contextWindow = runContextWindow;
         conv.updatedAt = Date.now();
         await conversationStore.update(conv);
       }
@@ -1646,6 +1667,8 @@ export const createRequestHandler = async (options?: {
       let currentTools: string[] = [];
       let currentText = "";
       let checkpointedRun = false;
+      let runContextTokens = 0;
+      let runContextWindow = 0;
 
       const buildMessages = (): Message[] => {
         const draftSections: Array<{ type: "text" | "tools"; content: string | string[] }> = [
@@ -1708,6 +1731,14 @@ export const createRequestHandler = async (options?: {
             latestRunId = event.runId;
             runOwners.set(event.runId, "local-owner");
             runConversations.set(event.runId, conversationId);
+            if (typeof event.contextWindow === "number" && event.contextWindow > 0) {
+              runContextWindow = event.contextWindow;
+            }
+          }
+          if (event.type === "model:response") {
+            if (typeof event.usage?.input === "number") {
+              runContextTokens = event.usage.input;
+            }
           }
           if (event.type === "model:chunk") {
             if (currentTools.length > 0) {
@@ -1793,6 +1824,8 @@ export const createRequestHandler = async (options?: {
           c.messages = buildMessages();
           c.runtimeRunId = latestRunId || c.runtimeRunId;
           c.pendingApprovals = [];
+          if (runContextTokens > 0) c.contextTokens = runContextTokens;
+          if (runContextWindow > 0) c.contextWindow = runContextWindow;
         });
       }
       finishConversationStream(conversationId);
@@ -2610,6 +2643,8 @@ export const createRequestHandler = async (options?: {
       let currentTools: string[] = [];
       let runCancelled = false;
       let checkpointedRun = false;
+      let runContextTokens = conversation.contextTokens ?? 0;
+      let runContextWindow = conversation.contextWindow ?? 0;
       let userContent: Message["content"] = messageText;
       if (files.length > 0) {
         try {
@@ -2722,6 +2757,14 @@ export const createRequestHandler = async (options?: {
             const active = activeConversationRuns.get(conversationId);
             if (active && active.abortController === abortController) {
               active.runId = event.runId;
+            }
+            if (typeof event.contextWindow === "number" && event.contextWindow > 0) {
+              runContextWindow = event.contextWindow;
+            }
+          }
+          if (event.type === "model:response") {
+            if (typeof event.usage?.input === "number") {
+              runContextTokens = event.usage.input;
             }
           }
           if (event.type === "run:cancelled") {
@@ -2845,6 +2888,8 @@ export const createRequestHandler = async (options?: {
             : [...historyMessages, { role: "user", content: userContent }];
           conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
           conversation.pendingApprovals = [];
+          if (runContextTokens > 0) conversation.contextTokens = runContextTokens;
+          if (runContextWindow > 0) conversation.contextWindow = runContextWindow;
           conversation.updatedAt = Date.now();
           await conversationStore.update(conversation);
         }

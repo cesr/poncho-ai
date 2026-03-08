@@ -38,6 +38,8 @@ export interface Conversation {
   }>;
   ownerId: string;
   tenantId: string | null;
+  contextTokens?: number;
+  contextWindow?: number;
   createdAt: number;
   updatedAt: number;
 }

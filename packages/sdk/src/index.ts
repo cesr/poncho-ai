@@ -135,7 +135,7 @@ export type AgentEvent =
   | { type: "model:chunk"; content: string }
   | { type: "model:response"; usage: TokenUsage }
   | { type: "tool:started"; tool: string; input: unknown }
-  | { type: "tool:completed"; tool: string; output: unknown; duration: number }
+  | { type: "tool:completed"; tool: string; output: unknown; duration: number; outputTokenEstimate?: number }
   | { type: "tool:error"; tool: string; error: string; recoverable: boolean }
   | {
       type: "tool:approval:required";

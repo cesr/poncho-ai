@@ -1,14 +1,3 @@
-/**
- * Latitude telemetry integration for Vercel AI SDK
- *
- * TODO: Implement proper Vercel AI SDK telemetry integration using:
- * - LatitudeTelemetry.capture() wrapper around streamText()
- * - experimental_telemetry: { isEnabled: true } in streamText() options
- *
- * This requires @latitude-data/telemetry package which has official
- * Vercel AI SDK support.
- */
-
 export interface LatitudeCaptureConfig {
   apiKeyEnv?: string;
   projectIdEnv?: string;
@@ -17,8 +6,9 @@ export interface LatitudeCaptureConfig {
 }
 
 /**
- * Placeholder for Latitude telemetry integration
- * This will be properly implemented once Vercel AI SDK migration is complete
+ * Reads and validates Latitude telemetry configuration from environment
+ * variables. The actual telemetry capture is handled by LatitudeTelemetry
+ * from @latitude-data/telemetry in harness.ts (via runWithTelemetry).
  */
 export class LatitudeCapture {
   private readonly apiKey?: string;

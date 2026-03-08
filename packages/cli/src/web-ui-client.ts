@@ -740,8 +740,8 @@ export const getWebUiClientScript = (markedSource: string): string => `
           payload.conversation.messages || [],
           payload.conversation.pendingApprovals || payload.pendingApprovals || [],
         );
-        state.contextTokens = 0;
-        state.contextWindow = 0;
+        state.contextTokens = typeof payload.conversation.contextTokens === "number" ? payload.conversation.contextTokens : 0;
+        state.contextWindow = typeof payload.conversation.contextWindow === "number" ? payload.conversation.contextWindow : 0;
         updateContextRing();
         renderMessages(state.activeMessages, false, { forceScrollBottom: true });
         elements.prompt.focus();
@@ -960,6 +960,10 @@ export const getWebUiClientScript = (markedSource: string): string => `
                         (meta.length > 0 ? " (" + meta.join(", ") + ")" : "");
                       assistantMessage._currentTools.push(toolText);
                       assistantMessage.metadata.toolActivity.push(toolText);
+                      if (typeof payload.outputTokenEstimate === "number" && payload.outputTokenEstimate > 0 && state.contextWindow > 0) {
+                        state.contextTokens += payload.outputTokenEstimate;
+                        updateContextRing();
+                      }
                       renderIfActiveConversation(true);
                     }
                     if (eventName === "tool:error") {
@@ -1619,6 +1623,10 @@ export const getWebUiClientScript = (markedSource: string): string => `
                   if (!assistantMessage.metadata) assistantMessage.metadata = {};
                   if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
                   assistantMessage.metadata.toolActivity.push(toolText);
+                  if (typeof payload.outputTokenEstimate === "number" && payload.outputTokenEstimate > 0 && state.contextWindow > 0) {
+                    state.contextTokens += payload.outputTokenEstimate;
+                    updateContextRing();
+                  }
                   renderIfActiveConversation(true);
                 }
                 if (eventName === "tool:error") {

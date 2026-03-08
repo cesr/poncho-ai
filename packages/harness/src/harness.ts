@@ -1995,11 +1995,14 @@ ${boundedMainMemory.trim()}`
           });
         } else {
           span?.end({ result: { value: result.output ?? null, isError: false } });
+          const serialized = JSON.stringify(result.output ?? null);
+          const outputTokenEstimate = Math.ceil(serialized.length / 4);
           yield pushEvent({
             type: "tool:completed",
             tool: result.tool,
             output: result.output,
             duration: now() - batchStart,
+            outputTokenEstimate,
           });
 
           const { mediaItems, strippedOutput } = extractMediaFromToolOutput(result.output);

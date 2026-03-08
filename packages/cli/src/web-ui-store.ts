@@ -12,6 +12,8 @@ export interface WebUiConversation {
   runtimeRunId?: string;
   ownerId: string;
   tenantId: string | null;
+  contextTokens?: number;
+  contextWindow?: number;
   createdAt: number;
   updatedAt: number;
 }
