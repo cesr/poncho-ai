@@ -1,5 +1,11 @@
 # @poncho-ai/browser
 
+## 0.3.0
+
+### Minor Changes
+
+- [`12f2845`](https://github.com/cesr/poncho-ai/commit/12f28457c20e650640ff2a1c1dbece2a6e4a9ddd) Thanks [@cesr](https://github.com/cesr)! - Add browser storage persistence (cookies/localStorage survive restarts via configured storage provider) and new `browser_content` tool for fast text extraction from pages.
+
 ## 0.2.1
 
 ### Patch Changes
