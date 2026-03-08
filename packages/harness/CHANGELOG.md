@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.16.1
+
+### Patch Changes
+
+- [`7475da5`](https://github.com/cesr/poncho-ai/commit/7475da5c0c2399e79064a2622137c0eb2fb16871) Thanks [@cesr](https://github.com/cesr)! - Inject browser usage context into agent system prompt (auth flow, session persistence, tool selection guidance).
+
 ## 0.16.0
 
 ### Minor Changes
