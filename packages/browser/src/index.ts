@@ -4,6 +4,7 @@ export type {
   BrowserConfig,
   BrowserFrame,
   BrowserStatus,
+  BrowserStoragePersistence,
   ViewportOptions,
   ScreencastOptions,
   MouseInputEvent,

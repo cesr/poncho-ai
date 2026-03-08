@@ -914,6 +914,94 @@ export class AgentHarness {
     }
   }
 
+  private async buildBrowserStoragePersistence(
+    config: PonchoConfig,
+    sessionId: string,
+  ): Promise<{ save(json: string): Promise<void>; load(): Promise<string | undefined> } | undefined> {
+    const provider = config.storage?.provider ?? (config.state as Record<string, unknown> | undefined)?.provider as string | undefined ?? "local";
+    const stateKey = `poncho:browser:state:${sessionId}`;
+
+    if (provider === "memory") return undefined;
+
+    if (provider === "local") {
+      const { resolve: pathResolve } = await import("node:path");
+      const { homedir: home } = await import("node:os");
+      const stateDir = pathResolve(home(), ".poncho", "browser-state");
+      const filePath = pathResolve(stateDir, `${sessionId}.json`);
+      return {
+        async save(json: string) {
+          const { mkdir, writeFile } = await import("node:fs/promises");
+          await mkdir(stateDir, { recursive: true });
+          await writeFile(filePath, json, "utf8");
+        },
+        async load() {
+          const { readFile } = await import("node:fs/promises");
+          try { return await readFile(filePath, "utf8"); } catch { return undefined; }
+        },
+      };
+    }
+
+    if (provider === "upstash") {
+      const urlEnv = config.storage?.urlEnv ?? (process.env.UPSTASH_REDIS_REST_URL ? "UPSTASH_REDIS_REST_URL" : "KV_REST_API_URL");
+      const tokenEnv = config.storage?.tokenEnv ?? (process.env.UPSTASH_REDIS_REST_TOKEN ? "UPSTASH_REDIS_REST_TOKEN" : "KV_REST_API_TOKEN");
+      const baseUrl = (process.env[urlEnv] ?? "").replace(/\/+$/, "");
+      const token = process.env[tokenEnv] ?? "";
+      if (!baseUrl || !token) return undefined;
+      const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+      return {
+        async save(json: string) {
+          await fetch(`${baseUrl}/set/${encodeURIComponent(stateKey)}/${encodeURIComponent(json)}`, { method: "POST", headers });
+        },
+        async load() {
+          const res = await fetch(`${baseUrl}/get/${encodeURIComponent(stateKey)}`, { headers });
+          if (!res.ok) return undefined;
+          const body = await res.json() as { result?: string | null };
+          return body.result ?? undefined;
+        },
+      };
+    }
+
+    if (provider === "redis") {
+      const urlEnv = config.storage?.urlEnv ?? "REDIS_URL";
+      const url = process.env[urlEnv] ?? "";
+      if (!url) return undefined;
+      let clientPromise: Promise<{ get(k: string): Promise<string | null>; set(k: string, v: string): Promise<unknown> } | undefined> | undefined;
+      const getClient = () => {
+        if (!clientPromise) {
+          clientPromise = (async () => {
+            try {
+              const mod = (await import("redis")) as unknown as {
+                createClient: (opts: { url: string }) => {
+                  connect(): Promise<unknown>;
+                  get(k: string): Promise<string | null>;
+                  set(k: string, v: string): Promise<unknown>;
+                };
+              };
+              const c = mod.createClient({ url });
+              await c.connect();
+              return c;
+            } catch { return undefined; }
+          })();
+        }
+        return clientPromise;
+      };
+      return {
+        async save(json: string) {
+          const c = await getClient();
+          if (c) await c.set(stateKey, json);
+        },
+        async load() {
+          const c = await getClient();
+          if (!c) return undefined;
+          const val = await c.get(stateKey);
+          return val ?? undefined;
+        },
+      };
+    }
+
+    return undefined;
+  }
+
   private async initBrowserTools(config: PonchoConfig): Promise<void> {
     const spec = ["@poncho-ai", "browser"].join("/");
     let browserMod: {
@@ -947,9 +1035,16 @@ export class AgentHarness {
     }
 
     this._browserMod = browserMod;
-    const browserCfg = typeof config.browser === "object" ? config.browser : {};
+    const browserCfg: Record<string, unknown> = typeof config.browser === "object" ? { ...config.browser } : {};
     const agentId = this.parsedAgent?.frontmatter.id ?? this.parsedAgent?.frontmatter.name ?? "default";
-    const session = new browserMod.BrowserSession(`poncho-${agentId}`, browserCfg);
+    const sessionId = `poncho-${agentId}`;
+
+    const storagePersistence = await this.buildBrowserStoragePersistence(config, sessionId);
+    if (storagePersistence) {
+      browserCfg.storagePersistence = storagePersistence;
+    }
+
+    const session = new browserMod.BrowserSession(sessionId, browserCfg);
     this._browserSession = session;
 
     const tools = browserMod.createBrowserTools(

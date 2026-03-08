@@ -49,6 +49,11 @@ export interface ScrollInputEvent {
   y?: number;
 }
 
+export interface BrowserStoragePersistence {
+  save(json: string): Promise<void>;
+  load(): Promise<string | undefined>;
+}
+
 export interface BrowserConfig {
   viewport?: ViewportOptions;
   quality?: number;
@@ -57,4 +62,5 @@ export interface BrowserConfig {
   sessionName?: string;
   executablePath?: string;
   headless?: boolean;
+  storagePersistence?: BrowserStoragePersistence;
 }

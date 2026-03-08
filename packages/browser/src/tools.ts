@@ -102,6 +102,22 @@ export function createBrowserTools(
       },
     },
     {
+      name: "browser_content",
+      description:
+        "Get the visible text content of the current page. Returns the page's text as a plain string (like what you'd " +
+        "see if you selected all text). Use this to read articles, tables, data, or any text on the page. " +
+        "Much faster and cheaper than screenshots for reading content.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+      },
+      handler: async () => {
+        const session = getSession();
+        const result = await session.content(getConversationId());
+        return { url: result.url, title: result.title, text: result.text };
+      },
+    },
+    {
       name: "browser_screenshot",
       description:
         "Take a screenshot of the current page. Returns the image so you can see exactly what the page looks like. " +

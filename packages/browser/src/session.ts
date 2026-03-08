@@ -1,6 +1,6 @@
-import { resolve } from "node:path";
-import { homedir } from "node:os";
-import { mkdir } from "node:fs/promises";
+import { resolve, join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { mkdir, readFile, unlink } from "node:fs/promises";
 import type {
   BrowserConfig,
   BrowserFrame,
@@ -19,7 +19,7 @@ let BrowserManagerCtor: (new () => BrowserManagerInstance) | undefined;
 interface BrowserManagerInstance {
   isLaunched(): boolean;
   launch(options: Record<string, unknown>): Promise<void>;
-  getPage(): { url(): string; title(): Promise<string>; screenshot(opts?: Record<string, unknown>): Promise<Buffer>; goBack(): Promise<unknown>; goForward(): Promise<unknown> };
+  getPage(): { url(): string; title(): Promise<string>; screenshot(opts?: Record<string, unknown>): Promise<Buffer>; goBack(): Promise<unknown>; goForward(): Promise<unknown>; evaluate(fn: string | (() => unknown)): Promise<unknown> };
   getSnapshot(options?: { interactive?: boolean; compact?: boolean }): Promise<{ tree: string; refs: Record<string, unknown> }>;
   getLocatorFromRef(ref: string): { click(): Promise<void> } | null;
   getLocator(selector: string): { fill(text: string): Promise<void>; click(): Promise<void> };
@@ -134,6 +134,7 @@ export class BrowserSession {
     try {
       const cdp = await mgr.getCDPSession();
       await cdp.send("Debugger.disable");
+      await this.restoreStorageState(cdp);
     } catch { /* best-effort */ }
 
     this.manager = mgr;
@@ -346,6 +347,20 @@ export class BrowserSession {
     }
   }
 
+  async content(conversationId: string): Promise<{ text: string; url: string; title: string }> {
+    await this.lock();
+    try {
+      const mgr = await this.ensureManager();
+      await this.switchToConversation(mgr, conversationId);
+      const page = mgr.getPage();
+      const text = (await page.evaluate("document.body.innerText")) as string;
+      const title = await page.title();
+      return { text: text ?? "", url: page.url(), title: title ?? "" };
+    } finally {
+      this.unlock();
+    }
+  }
+
   async scroll(conversationId: string, direction: "up" | "down", amount?: number): Promise<void> {
     await this.lock();
     try {
@@ -354,8 +369,7 @@ export class BrowserSession {
       const page = mgr.getPage();
       const pixels = amount ?? 600;
       const delta = direction === "down" ? pixels : -pixels;
-      await (page as unknown as { evaluate(fn: string): Promise<void> })
-        .evaluate(`window.scrollBy(0, ${delta})`);
+      await page.evaluate(`window.scrollBy(0, ${delta})`);
     } finally {
       this.unlock();
     }
@@ -379,6 +393,7 @@ export class BrowserSession {
           if (t.tabIndex > tab.tabIndex) t.tabIndex--;
         }
       } else if (this.manager?.isLaunched()) {
+        await this.persistStorageState();
         try { await this.manager.close(); } catch { /* */ }
         this.manager = undefined;
       }
@@ -563,8 +578,58 @@ export class BrowserSession {
     await this.manager.saveStorageState(storagePath);
   }
 
+  private async persistStorageState(): Promise<void> {
+    const persistence = this.config.storagePersistence;
+    if (!persistence || !this.manager?.isLaunched()) return;
+    try {
+      const tmpFile = join(tmpdir(), `poncho-browser-state-${this.sessionId}-${Date.now()}.json`);
+      await this.manager.saveStorageState(tmpFile);
+      const json = await readFile(tmpFile, "utf8");
+      await unlink(tmpFile).catch(() => {});
+      await persistence.save(json);
+      console.log(`[poncho][browser] Storage state persisted (${json.length} bytes)`);
+    } catch (err) {
+      console.warn("[poncho][browser] Failed to persist storage state:", (err as Error)?.message ?? err);
+    }
+  }
+
+  private async restoreStorageState(
+    cdp: { send(method: string, params?: Record<string, unknown>): Promise<unknown> },
+  ): Promise<void> {
+    const persistence = this.config.storagePersistence;
+    if (!persistence) return;
+    try {
+      const json = await persistence.load();
+      if (!json) return;
+      const state = JSON.parse(json) as {
+        cookies?: Array<Record<string, unknown>>;
+        origins?: Array<{ origin: string; localStorage: Array<{ name: string; value: string }> }>;
+      };
+      if (state.cookies?.length) {
+        await cdp.send("Network.setCookies", { cookies: state.cookies });
+        console.log(`[poncho][browser] Restored ${state.cookies.length} cookies`);
+      }
+      if (state.origins?.length) {
+        const entries: Record<string, Array<{ name: string; value: string }>> = {};
+        for (const origin of state.origins) {
+          if (origin.localStorage?.length) {
+            entries[origin.origin] = origin.localStorage;
+          }
+        }
+        if (Object.keys(entries).length) {
+          const script = `try{const __e=${JSON.stringify(entries)};const __i=__e[location.origin];if(__i)for(const{name:n,value:v}of __i)try{localStorage.setItem(n,v)}catch{}}catch{}`;
+          await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: script });
+          console.log(`[poncho][browser] Registered localStorage restore for ${Object.keys(entries).length} origin(s)`);
+        }
+      }
+    } catch (err) {
+      console.warn("[poncho][browser] Failed to restore storage state:", (err as Error)?.message ?? err);
+    }
+  }
+
   async close(): Promise<void> {
     try { await this.stopScreencast(); } catch { /* */ }
+    await this.persistStorageState();
     try { await this.manager?.close(); } catch { /* */ }
     this.manager = undefined;
     for (const [cid, tab] of this.tabs) {
