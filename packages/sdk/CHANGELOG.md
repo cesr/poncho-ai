@@ -1,5 +1,11 @@
 # @poncho-ai/sdk
 
+## 1.1.0
+
+### Minor Changes
+
+- [`139ed89`](https://github.com/cesr/poncho-ai/commit/139ed89a5df2372cfb0a124c967f51f4d8158c3b) Thanks [@cesr](https://github.com/cesr)! - Add browser automation for Poncho agents with real-time viewport streaming, per-conversation tab management, interactive browser control in the web UI, and shared agent-level profiles for authentication persistence.
+
 ## 1.0.3
 
 ### Patch Changes
