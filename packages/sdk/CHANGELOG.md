@@ -1,5 +1,11 @@
 # @poncho-ai/sdk
 
+## 1.1.1
+
+### Patch Changes
+
+- Fix browser session reconnection, tab lifecycle management, and web UI panel state handling.
+
 ## 1.1.0
 
 ### Minor Changes

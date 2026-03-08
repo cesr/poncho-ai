@@ -1,5 +1,16 @@
 # @poncho-ai/cli
 
+## 0.16.1
+
+### Patch Changes
+
+- Fix browser session reconnection, tab lifecycle management, and web UI panel state handling.
+
+- Updated dependencies []:
+  - @poncho-ai/harness@0.15.1
+  - @poncho-ai/sdk@1.1.1
+  - @poncho-ai/messaging@0.2.4
+
 ## 0.16.0
 
 ### Minor Changes

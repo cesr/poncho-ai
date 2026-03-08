@@ -1,5 +1,12 @@
 # @poncho-ai/client
 
+## 0.6.5
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @poncho-ai/sdk@1.1.1
+
 ## 0.6.4
 
 ### Patch Changes

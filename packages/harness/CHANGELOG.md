@@ -1,5 +1,14 @@
 # @poncho-ai/harness
 
+## 0.15.1
+
+### Patch Changes
+
+- Fix browser session reconnection, tab lifecycle management, and web UI panel state handling.
+
+- Updated dependencies []:
+  - @poncho-ai/sdk@1.1.1
+
 ## 0.15.0
 
 ### Minor Changes

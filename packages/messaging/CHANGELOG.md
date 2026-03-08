@@ -1,5 +1,14 @@
 # @poncho-ai/messaging
 
+## 0.2.4
+
+### Patch Changes
+
+- Fix browser session reconnection, tab lifecycle management, and web UI panel state handling.
+
+- Updated dependencies []:
+  - @poncho-ai/sdk@1.1.1
+
 ## 0.2.3
 
 ### Patch Changes
