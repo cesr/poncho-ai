@@ -1330,6 +1330,109 @@ export const WEB_UI_STYLES = `
       .main-chat.has-browser { flex: 1 1 auto !important; min-width: 0; }
     }
 
+    /* --- Subagent UI --- */
+
+    .subagent-tree {
+      margin-left: 16px;
+    }
+    .subagent-tree-item {
+      height: 36px;
+      min-height: 36px;
+      max-height: 36px;
+      flex-shrink: 0;
+      padding: 0 10px 0 18px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--fg-4);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      position: relative;
+      transition: color 0.15s;
+    }
+    .subagent-tree-item::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      border-left: 1px solid var(--border-5);
+    }
+    .subagent-tree-item::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 50%;
+      width: 8px;
+      border-top: 1px solid var(--border-5);
+    }
+    .subagent-tree-item.last::before {
+      bottom: auto;
+      height: 50%;
+      width: 8px;
+      border-bottom: 1px solid var(--border-5);
+      border-bottom-left-radius: 4px;
+    }
+    .subagent-tree-item.last::after {
+      display: none;
+    }
+    .subagent-tree-item:hover { color: var(--fg-3); }
+    .subagent-tree-item.active { color: var(--fg); }
+    .subagent-tree-item .approval-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--warning, #e8a735);
+      flex-shrink: 0;
+    }
+    .subagent-title {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .subagent-banner {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 16px;
+      background: var(--surface-2);
+      border-bottom: none;
+      color: var(--fg-3);
+      flex-shrink: 0;
+    }
+    .subagent-banner-text {
+      font-size: 12px;
+    }
+    .subagent-back-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      color: var(--accent);
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .subagent-back-btn:hover {
+      background: var(--surface-1);
+    }
+    .subagent-link {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 11px;
+      margin-left: 4px;
+      cursor: pointer;
+    }
+    .subagent-link:hover {
+      text-decoration: underline;
+    }
+
     /* Reduced motion */
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {

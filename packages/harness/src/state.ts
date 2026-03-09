@@ -40,12 +40,20 @@ export interface Conversation {
   tenantId: string | null;
   contextTokens?: number;
   contextWindow?: number;
+  parentConversationId?: string;
+  subagentMeta?: {
+    task: string;
+    status: "running" | "completed" | "error" | "stopped";
+    result?: import("@poncho-ai/sdk").RunResult;
+    error?: import("@poncho-ai/sdk").AgentFailure;
+  };
   createdAt: number;
   updatedAt: number;
 }
 
 export interface ConversationStore {
   list(ownerId?: string): Promise<Conversation[]>;
+  listSummaries(ownerId?: string): Promise<ConversationSummary[]>;
   get(conversationId: string): Promise<Conversation | undefined>;
   create(ownerId?: string, title?: string): Promise<Conversation>;
   update(conversation: Conversation): Promise<void>;
@@ -222,6 +230,23 @@ export class InMemoryConversationStore implements ConversationStore {
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
+  async listSummaries(ownerId = DEFAULT_OWNER): Promise<ConversationSummary[]> {
+    this.purgeExpired();
+    return Array.from(this.conversations.values())
+      .filter((c) => c.ownerId === ownerId)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((c) => ({
+        conversationId: c.conversationId,
+        title: c.title,
+        updatedAt: c.updatedAt,
+        createdAt: c.createdAt,
+        ownerId: c.ownerId,
+        parentConversationId: c.parentConversationId,
+        messageCount: c.messages.length,
+        hasPendingApprovals: Array.isArray(c.pendingApprovals) && c.pendingApprovals.length > 0,
+      }));
+  }
+
   async get(conversationId: string): Promise<Conversation | undefined> {
     this.purgeExpired();
     return this.conversations.get(conversationId);
@@ -268,14 +293,29 @@ export class InMemoryConversationStore implements ConversationStore {
   }
 }
 
+export type ConversationSummary = {
+  conversationId: string;
+  title: string;
+  updatedAt: number;
+  createdAt?: number;
+  ownerId: string;
+  parentConversationId?: string;
+  messageCount?: number;
+  hasPendingApprovals?: boolean;
+};
+
 type ConversationStoreFile = {
   schemaVersion: string;
   conversations: Array<{
     conversationId: string;
     title: string;
     updatedAt: number;
+    createdAt?: number;
     ownerId: string;
     fileName: string;
+    parentConversationId?: string;
+    messageCount?: number;
+    hasPendingApprovals?: boolean;
   }>;
 };
 
@@ -344,8 +384,12 @@ class FileConversationStore implements ConversationStore {
           conversationId: conversation.conversationId,
           title: conversation.title,
           updatedAt: conversation.updatedAt,
+          createdAt: conversation.createdAt,
           ownerId: conversation.ownerId,
           fileName: entry.name,
+          parentConversationId: conversation.parentConversationId,
+          messageCount: conversation.messages.length,
+          hasPendingApprovals: Array.isArray(conversation.pendingApprovals) && conversation.pendingApprovals.length > 0,
         });
       }
     } catch {
@@ -371,6 +415,17 @@ class FileConversationStore implements ConversationStore {
       for (const conversation of parsed.conversations ?? []) {
         this.conversations.set(conversation.conversationId, conversation);
       }
+      // Rebuild if any entry is from an older index format (missing messageCount)
+      let needsRebuild = false;
+      for (const entry of this.conversations.values()) {
+        if (entry.messageCount === undefined) {
+          needsRebuild = true;
+          break;
+        }
+      }
+      if (needsRebuild) {
+        await this.rebuildIndexFromFiles();
+      }
     } catch {
       await this.rebuildIndexFromFiles();
     }
@@ -387,8 +442,12 @@ class FileConversationStore implements ConversationStore {
         conversationId: conversation.conversationId,
         title: conversation.title,
         updatedAt: conversation.updatedAt,
+        createdAt: conversation.createdAt,
         ownerId: conversation.ownerId,
         fileName,
+        parentConversationId: conversation.parentConversationId,
+        messageCount: conversation.messages.length,
+        hasPendingApprovals: Array.isArray(conversation.pendingApprovals) && conversation.pendingApprovals.length > 0,
       });
       await this.writeIndex();
     });
@@ -408,6 +467,23 @@ class FileConversationStore implements ConversationStore {
       }
     }
     return conversations;
+  }
+
+  async listSummaries(ownerId = DEFAULT_OWNER): Promise<ConversationSummary[]> {
+    await this.ensureLoaded();
+    return Array.from(this.conversations.values())
+      .filter((c) => c.ownerId === ownerId)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((c) => ({
+        conversationId: c.conversationId,
+        title: c.title,
+        updatedAt: c.updatedAt,
+        createdAt: c.createdAt,
+        ownerId: c.ownerId,
+        parentConversationId: c.parentConversationId,
+        messageCount: c.messageCount,
+        hasPendingApprovals: c.hasPendingApprovals,
+      }));
   }
 
   async get(conversationId: string): Promise<Conversation | undefined> {
@@ -575,7 +651,11 @@ type ConversationMeta = {
   conversationId: string;
   title: string;
   updatedAt: number;
+  createdAt?: number;
   ownerId: string;
+  parentConversationId?: string;
+  messageCount?: number;
+  hasPendingApprovals?: boolean;
 };
 
 abstract class KeyValueConversationStoreBase implements ConversationStore {
@@ -692,6 +772,31 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
     return conversations.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
+  async listSummaries(ownerId = DEFAULT_OWNER): Promise<ConversationSummary[]> {
+    const kv = await this.client();
+    if (!kv) {
+      return await this.memoryFallback.listSummaries(ownerId);
+    }
+    const ids = await this.getOwnerConversationIds(ownerId);
+    const summaries: ConversationSummary[] = [];
+    for (const id of ids) {
+      const meta = await this.getConversationMeta(id);
+      if (meta && meta.ownerId === ownerId) {
+        summaries.push({
+          conversationId: meta.conversationId,
+          title: meta.title,
+          updatedAt: meta.updatedAt,
+          createdAt: meta.createdAt,
+          ownerId: meta.ownerId,
+          parentConversationId: meta.parentConversationId,
+          messageCount: meta.messageCount,
+          hasPendingApprovals: meta.hasPendingApprovals,
+        });
+      }
+    }
+    return summaries.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
   async get(conversationId: string): Promise<Conversation | undefined> {
     const kv = await this.client();
     if (!kv) {
@@ -743,7 +848,11 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
         conversationId: nextConversation.conversationId,
         title: nextConversation.title,
         updatedAt: nextConversation.updatedAt,
+        createdAt: nextConversation.createdAt,
         ownerId: nextConversation.ownerId,
+        parentConversationId: nextConversation.parentConversationId,
+        messageCount: nextConversation.messages.length,
+        hasPendingApprovals: Array.isArray(nextConversation.pendingApprovals) && nextConversation.pendingApprovals.length > 0,
       } satisfies ConversationMeta),
       this.ttl,
     );

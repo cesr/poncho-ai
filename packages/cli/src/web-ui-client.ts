@@ -23,6 +23,10 @@ export const getWebUiClientScript = (markedSource: string): string => `
         pendingFiles: [],
         contextTokens: 0,
         contextWindow: 0,
+        subagents: [],
+        subagentsParentId: null,
+        viewingSubagentId: null,
+        parentConversationId: null,
       };
 
       const agentInitial = document.body.dataset.agentInitial || "A";
@@ -196,11 +200,14 @@ export const getWebUiClientScript = (markedSource: string): string => `
             const errorHtml = req._error
               ? '<div style="color: var(--deny); font-size: 11px; margin-top: 4px;">Submit failed: ' + escapeHtml(req._error) + "</div>"
               : "";
+            const subagentLabel = req._subagentLabel
+              ? ' <span style="color: var(--text-3); font-size: 11px;">(from ' + escapeHtml(req._subagentLabel) + ')</span>'
+              : "";
             return (
               '<div class="approval-request-item">' +
               '<div class="approval-requests-label">Approval required: <code>' +
               escapeHtml(tool) +
-              "</code></div>" +
+              "</code>" + subagentLabel + "</div>" +
               renderInputTable(input) +
               errorHtml +
               '<div class="approval-request-actions">' +
@@ -248,10 +255,19 @@ export const getWebUiClientScript = (markedSource: string): string => `
         if (!hasItems && !hasApprovals) {
           return "";
         }
+        const subagentLinkRe = /\\s*\\[subagent:([^\\]]+)\\]$/;
+        const renderActivityItem = (item) => {
+          const match = item.match(subagentLinkRe);
+          if (match) {
+            const cleaned = escapeHtml(item.replace(subagentLinkRe, ""));
+            const subId = escapeHtml(match[1]);
+            return '<div class="tool-activity-item">' + cleaned +
+              ' <a class="subagent-link" href="javascript:void(0)" data-subagent-id="' + subId + '">View subagent</a></div>';
+          }
+          return '<div class="tool-activity-item">' + escapeHtml(item) + "</div>";
+        };
         const chips = hasItems
-          ? items
-              .map((item) => '<div class="tool-activity-item">' + escapeHtml(item) + "</div>")
-              .join("")
+          ? items.map(renderActivityItem).join("")
           : "";
         const disclosure = hasItems
           ? (
@@ -434,7 +450,9 @@ export const getWebUiClientScript = (markedSource: string): string => `
 
       const buildConversationItem = (c) => {
         const item = document.createElement("div");
-        item.className = "conversation-item" + (c.conversationId === state.activeConversationId ? " active" : "");
+        const isActive = c.conversationId === state.activeConversationId ||
+          (state.parentConversationId && state.parentConversationId === c.conversationId);
+        item.className = "conversation-item" + (isActive ? " active" : "");
 
         if (c.hasPendingApprovals) {
           const dot = document.createElement("span");
@@ -457,7 +475,13 @@ export const getWebUiClientScript = (markedSource: string): string => `
             renderConversationList();
             return;
           }
-          await api("/api/conversations/" + c.conversationId, { method: "DELETE" });
+          // Optimistic: update UI immediately, delete in background
+          state.conversations = state.conversations.filter(
+            function(conv) { return conv.conversationId !== c.conversationId; }
+          );
+          state.subagents = (state.subagents || []).filter(
+            function(sub) { return sub.conversationId !== c.conversationId; }
+          );
           if (state.activeConversationId === c.conversationId) {
             state.activeConversationId = null;
             state.activeMessages = [];
@@ -469,7 +493,8 @@ export const getWebUiClientScript = (markedSource: string): string => `
             renderMessages([]);
           }
           state.confirmDeleteId = null;
-          await loadConversations();
+          renderConversationList();
+          api("/api/conversations/" + c.conversationId, { method: "DELETE" }).catch(function() {});
         };
         item.appendChild(deleteBtn);
 
@@ -477,7 +502,14 @@ export const getWebUiClientScript = (markedSource: string): string => `
           if (state.confirmDeleteId) {
             state.confirmDeleteId = null;
           }
+          var switchingFamily = state.subagentsParentId !== c.conversationId;
           state.activeConversationId = c.conversationId;
+          state.viewingSubagentId = null;
+          state.parentConversationId = null;
+          if (switchingFamily) {
+            state.subagents = [];
+            state.subagentsParentId = null;
+          }
           pushConversationUrl(c.conversationId);
           renderConversationList();
           await loadConversation(c.conversationId);
@@ -499,6 +531,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
           elements.list.appendChild(label);
           for (const c of pending) {
             elements.list.appendChild(buildConversationItem(c));
+            appendSubagentsIfActive(c.conversationId);
           }
           if (rest.length > 0) {
             const divider = document.createElement("div");
@@ -513,6 +546,92 @@ export const getWebUiClientScript = (markedSource: string): string => `
 
         for (const c of rest) {
           elements.list.appendChild(buildConversationItem(c));
+          appendSubagentsIfActive(c.conversationId);
+        }
+      };
+
+      const appendSubagentsIfActive = (conversationId) => {
+        const isActive = state.activeConversationId === conversationId ||
+          (state.parentConversationId && state.parentConversationId === conversationId) ||
+          (state.subagentsParentId && state.subagentsParentId === conversationId);
+        if (!isActive || state.subagents.length === 0) return;
+
+        const tree = document.createElement("div");
+        tree.className = "subagent-tree";
+
+        for (var si = 0; si < state.subagents.length; si++) {
+          var sub = state.subagents[si];
+          var isLast = si === state.subagents.length - 1;
+
+          var row = document.createElement("div");
+          row.className = "subagent-tree-item" +
+            (state.viewingSubagentId === sub.conversationId ? " active" : "") +
+            (isLast ? " last" : "");
+
+          if (sub.hasPendingApprovals) {
+            var dot = document.createElement("span");
+            dot.className = "approval-dot";
+            row.appendChild(dot);
+          }
+
+          var titleSpan = document.createElement("span");
+          titleSpan.className = "subagent-title";
+          titleSpan.textContent = sub.task.length > 50 ? sub.task.slice(0, 47) + "..." : sub.task;
+          titleSpan.title = sub.task;
+          row.appendChild(titleSpan);
+
+          (function(s, parentId) {
+            row.onclick = async function() {
+              state.viewingSubagentId = s.conversationId;
+              state.activeConversationId = s.conversationId;
+              state.parentConversationId = parentId;
+              replaceConversationUrl(s.conversationId);
+              renderConversationList();
+              await loadConversation(s.conversationId);
+              if (isMobile()) setSidebarOpen(false);
+            };
+          })(sub, conversationId);
+
+          tree.appendChild(row);
+        }
+
+        elements.list.appendChild(tree);
+      };
+
+      const loadSubagents = async (conversationId, force) => {
+        if (!force && state.subagentsParentId === conversationId && state.subagents.length > 0) {
+          return;
+        }
+        try {
+          const payload = await api("/api/conversations/" + encodeURIComponent(conversationId) + "/subagents");
+          state.subagents = payload.subagents || [];
+          state.subagentsParentId = conversationId;
+        } catch {
+          state.subagents = [];
+          state.subagentsParentId = null;
+        }
+        renderConversationList();
+      };
+
+      const updateSubagentUi = () => {
+        const isSubagent = !!state.viewingSubagentId;
+        const composerEl = document.getElementById("composer");
+        const bannerEl = document.getElementById("subagent-banner");
+
+        if (isSubagent) {
+          if (composerEl) composerEl.style.display = "none";
+          if (!bannerEl) {
+            const banner = document.createElement("div");
+            banner.id = "subagent-banner";
+            banner.className = "subagent-banner";
+            banner.innerHTML =
+              '<span class="subagent-banner-text">Subagent conversation (read-only)</span>';
+            const topbar = document.querySelector(".topbar");
+            if (topbar && topbar.parentNode) topbar.parentNode.insertBefore(banner, topbar.nextSibling);
+          }
+        } else {
+          if (composerEl) composerEl.style.display = "";
+          if (bannerEl) bannerEl.remove();
         }
       };
 
@@ -736,15 +855,46 @@ export const getWebUiClientScript = (markedSource: string): string => `
         if (window._resetBrowserPanel) window._resetBrowserPanel();
         const payload = await api("/api/conversations/" + encodeURIComponent(conversationId));
         elements.chatTitle.textContent = payload.conversation.title;
+        // Merge own pending approvals + subagent pending approvals
+        var allPendingApprovals = [].concat(
+          payload.conversation.pendingApprovals || payload.pendingApprovals || [],
+        );
+        if (Array.isArray(payload.subagentPendingApprovals)) {
+          payload.subagentPendingApprovals.forEach(function(sa) {
+            var subIdShort = sa.subagentId && sa.subagentId.length > 12 ? sa.subagentId.slice(0, 12) + "..." : (sa.subagentId || "");
+            allPendingApprovals.push({
+              approvalId: sa.approvalId,
+              tool: sa.tool,
+              input: sa.input,
+              _subagentId: sa.subagentId,
+              _subagentLabel: "subagent " + subIdShort,
+            });
+          });
+        }
         state.activeMessages = hydratePendingApprovals(
           payload.conversation.messages || [],
-          payload.conversation.pendingApprovals || payload.pendingApprovals || [],
+          allPendingApprovals,
         );
         state.contextTokens = typeof payload.conversation.contextTokens === "number" ? payload.conversation.contextTokens : 0;
         state.contextWindow = typeof payload.conversation.contextWindow === "number" ? payload.conversation.contextWindow : 0;
+
+        // Track subagent relationship
+        state.parentConversationId = payload.conversation.parentConversationId || null;
+        state.viewingSubagentId = payload.conversation.parentConversationId ? conversationId : null;
+        updateSubagentUi();
+
+        // Fetch subagents -- from this conversation if it's a parent, or from the parent if it's a subagent.
+        // Skip if we already have them cached for the same parent (avoids flicker when switching parent<->subagent).
+        var subagentParentId = payload.conversation.parentConversationId || conversationId;
+        if (state.subagentsParentId !== subagentParentId) {
+          loadSubagents(subagentParentId);
+        }
+
         updateContextRing();
         renderMessages(state.activeMessages, false, { forceScrollBottom: true });
-        elements.prompt.focus();
+        if (!state.viewingSubagentId) {
+          elements.prompt.focus();
+        }
         if (payload.hasActiveRun && !state.isStreaming) {
           setStreaming(true);
           streamConversationEvents(conversationId, { liveOnly: true }).finally(() => {
@@ -953,11 +1103,14 @@ export const getWebUiClientScript = (markedSource: string): string => `
                       const meta = [];
                       if (duration !== null) meta.push(duration + "ms");
                       if (detail) meta.push(detail);
-                      const toolText =
+                      let toolText =
                         "- done \\x60" +
                         toolName +
                         "\\x60" +
                         (meta.length > 0 ? " (" + meta.join(", ") + ")" : "");
+                      if (toolName === "spawn_subagent" && payload.output && typeof payload.output === "object" && payload.output.subagentId) {
+                        toolText += " [subagent:" + payload.output.subagentId + "]";
+                      }
                       assistantMessage._currentTools.push(toolText);
                       assistantMessage.metadata.toolActivity.push(toolText);
                       if (typeof payload.outputTokenEstimate === "number" && payload.outputTokenEstimate > 0 && state.contextWindow > 0) {
@@ -1058,6 +1211,42 @@ export const getWebUiClientScript = (markedSource: string): string => `
                       }
                       renderIfActiveConversation(true);
                     }
+                    if (eventName === "subagent:spawned" || eventName === "subagent:completed" || eventName === "subagent:error" || eventName === "subagent:stopped" || eventName === "subagent:approval_needed") {
+                      if (state.activeConversationId === conversationId || state.subagentsParentId === conversationId) {
+                        loadSubagents(conversationId, true);
+                      }
+                    }
+                    if (eventName === "subagent:approval_needed" && payload.approvalId && payload.tool) {
+                      var subIdShort = payload.subagentId && payload.subagentId.length > 12 ? payload.subagentId.slice(0, 12) + "..." : (payload.subagentId || "");
+                      var approvalReq = {
+                        approvalId: payload.approvalId,
+                        tool: payload.tool,
+                        input: payload.input || {},
+                        _subagentId: payload.subagentId,
+                        _subagentLabel: "subagent " + subIdShort,
+                      };
+                      if (!assistantMessage._pendingApprovals) assistantMessage._pendingApprovals = [];
+                      assistantMessage._pendingApprovals.push(approvalReq);
+                      // Show orange dot on parent conversation in sidebar
+                      var parentConv = state.conversations.find(function(c) { return c.conversationId === conversationId; });
+                      if (parentConv) parentConv.hasPendingApprovals = true;
+                      renderConversationList();
+                      renderIfActiveConversation(true);
+                    }
+                    if (eventName === "subagent:completed" || eventName === "subagent:error" || eventName === "subagent:stopped") {
+                      if (payload.subagentId && assistantMessage._pendingApprovals) {
+                        assistantMessage._pendingApprovals = assistantMessage._pendingApprovals.filter(
+                          function(req) { return req._subagentId !== payload.subagentId; }
+                        );
+                        // Clear orange dot if no more pending approvals
+                        var parentConv2 = state.conversations.find(function(c) { return c.conversationId === conversationId; });
+                        if (parentConv2 && (!assistantMessage._pendingApprovals || assistantMessage._pendingApprovals.length === 0)) {
+                          parentConv2.hasPendingApprovals = false;
+                        }
+                        renderConversationList();
+                        renderIfActiveConversation(true);
+                      }
+                    }
                     if (eventName === "run:completed") {
                       assistantMessage._activeActivities = [];
                       if (
@@ -1149,7 +1338,12 @@ export const getWebUiClientScript = (markedSource: string): string => `
           body: JSON.stringify(title ? { title } : {})
         });
         state.activeConversationId = payload.conversation.conversationId;
+        state.viewingSubagentId = null;
+        state.parentConversationId = null;
+        state.subagents = [];
+        state.subagentsParentId = null;
         state.confirmDeleteId = null;
+        updateSubagentUi();
         pushConversationUrl(state.activeConversationId);
         await loadConversations();
         if (shouldLoadConversation) {
@@ -1300,6 +1494,37 @@ export const getWebUiClientScript = (markedSource: string): string => `
               detail: "path: " + path,
             };
           }
+        }
+
+        if (toolName === "spawn_subagent") {
+          const task = getStringInputField(input, "task");
+          const short = task && task.length > 50 ? task.slice(0, 47) + "..." : task;
+          return {
+            kind: "tool",
+            tool: toolName,
+            label: "Spawning subagent" + (short ? ": " + short : ""),
+            detail: short ? "task: " + short : "",
+          };
+        }
+
+        if (toolName === "list_subagents") {
+          return {
+            kind: "tool",
+            tool: toolName,
+            label: "Listing subagents",
+            detail: "",
+          };
+        }
+
+        if (toolName === "message_subagent" || toolName === "stop_subagent") {
+          const subId = getStringInputField(input, "subagent_id");
+          const short = subId && subId.length > 12 ? subId.slice(0, 12) + "..." : subId;
+          return {
+            kind: "tool",
+            tool: toolName,
+            label: toolName.replace(/_/g, " ") + (short ? " (" + short + ")" : ""),
+            detail: short ? "subagent: " + short : "",
+          };
         }
 
         return {
@@ -1617,8 +1842,11 @@ export const getWebUiClientScript = (markedSource: string): string => `
                   const meta = [];
                   if (duration !== null) meta.push(duration + "ms");
                   if (detail) meta.push(detail);
-                  const toolText =
+                  let toolText =
                     "- done \\x60" + toolName + "\\x60" + (meta.length > 0 ? " (" + meta.join(", ") + ")" : "");
+                  if (toolName === "spawn_subagent" && payload.output && typeof payload.output === "object" && payload.output.subagentId) {
+                    toolText += " [subagent:" + payload.output.subagentId + "]";
+                  }
                   assistantMessage._currentTools.push(toolText);
                   if (!assistantMessage.metadata) assistantMessage.metadata = {};
                   if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
@@ -1728,6 +1956,40 @@ export const getWebUiClientScript = (markedSource: string): string => `
                     );
                   }
                   renderIfActiveConversation(true);
+                }
+                if (eventName === "subagent:spawned" || eventName === "subagent:completed" || eventName === "subagent:error" || eventName === "subagent:stopped" || eventName === "subagent:approval_needed") {
+                  if (state.activeConversationId === conversationId || state.subagentsParentId === conversationId) {
+                    loadSubagents(conversationId, true);
+                  }
+                }
+                if (eventName === "subagent:approval_needed" && payload.approvalId && payload.tool) {
+                  var subIdShort2 = payload.subagentId && payload.subagentId.length > 12 ? payload.subagentId.slice(0, 12) + "..." : (payload.subagentId || "");
+                  var approvalReq2 = {
+                    approvalId: payload.approvalId,
+                    tool: payload.tool,
+                    input: payload.input || {},
+                    _subagentId: payload.subagentId,
+                    _subagentLabel: "subagent " + subIdShort2,
+                  };
+                  if (!assistantMessage._pendingApprovals) assistantMessage._pendingApprovals = [];
+                  assistantMessage._pendingApprovals.push(approvalReq2);
+                  var parentConv3 = state.conversations.find(function(c) { return c.conversationId === conversationId; });
+                  if (parentConv3) parentConv3.hasPendingApprovals = true;
+                  renderConversationList();
+                  renderIfActiveConversation(true);
+                }
+                if (eventName === "subagent:completed" || eventName === "subagent:error" || eventName === "subagent:stopped") {
+                  if (payload.subagentId && assistantMessage._pendingApprovals) {
+                    assistantMessage._pendingApprovals = assistantMessage._pendingApprovals.filter(
+                      function(req) { return req._subagentId !== payload.subagentId; }
+                    );
+                    var parentConv4 = state.conversations.find(function(c) { return c.conversationId === conversationId; });
+                    if (parentConv4 && (!assistantMessage._pendingApprovals || assistantMessage._pendingApprovals.length === 0)) {
+                      parentConv4.hasPendingApprovals = false;
+                    }
+                    renderConversationList();
+                    renderIfActiveConversation(true);
+                  }
                 }
                 if (eventName === "run:completed") {
                   _totalSteps += typeof payload.result?.steps === "number" ? payload.result.steps : 0;
@@ -1854,6 +2116,11 @@ export const getWebUiClientScript = (markedSource: string): string => `
         state.confirmDeleteId = null;
         state.contextTokens = 0;
         state.contextWindow = 0;
+        state.viewingSubagentId = null;
+        state.parentConversationId = null;
+        state.subagents = [];
+        state.subagentsParentId = null;
+        updateSubagentUi();
         updateContextRing();
         pushConversationUrl(null);
         elements.chatTitle.textContent = "";
@@ -2070,6 +2337,19 @@ export const getWebUiClientScript = (markedSource: string): string => `
             renderMessages(state.activeMessages, false);
           }
           delete state.approvalRequestsInFlight[approvalId];
+        }
+      });
+
+      elements.messages.addEventListener("click", (e) => {
+        const link = e.target instanceof Element && e.target.closest(".subagent-link");
+        if (!link) return;
+        e.preventDefault();
+        const subId = link.getAttribute("data-subagent-id");
+        if (subId) {
+          state.viewingSubagentId = subId;
+          state.activeConversationId = subId;
+          replaceConversationUrl(subId);
+          loadConversation(subId);
         }
       });
 

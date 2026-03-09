@@ -271,6 +271,46 @@ export default {
 };
 ```
 
+## Subagents
+
+Poncho agents can spawn recursive copies of themselves as **subagents**. Each subagent runs in its own independent conversation with full access to the agent's tools and skills. The parent agent controls the subagent lifecycle and receives results directly.
+
+Subagents are useful when an agent needs to parallelize work, delegate a subtask, or isolate a line of investigation without polluting the main conversation context.
+
+### How it works
+
+When the agent decides to use a subagent, it calls `spawn_subagent` with a task description. The subagent runs to completion and the result is returned to the parent — the call is **blocking**, so the parent waits for the subagent to finish before continuing.
+
+The parent can also send follow-up messages to existing subagents with `message_subagent`, stop a running subagent with `stop_subagent`, or list all its subagents with `list_subagents`.
+
+### Available tools
+
+| Tool | Description |
+|------|-------------|
+| `spawn_subagent` | Create a new subagent with a task. Blocks until the subagent completes and returns the result. |
+| `message_subagent` | Send a follow-up message to an existing subagent. Blocks until it responds. |
+| `stop_subagent` | Stop a running subagent. |
+| `list_subagents` | List all subagents for the current conversation with their IDs, tasks, and statuses. |
+
+### Limits
+
+- **Max depth**: 3 levels of nesting (an agent can spawn a subagent, which can spawn another, but no deeper).
+- **Max concurrent**: 5 subagents per parent conversation.
+
+### Memory isolation
+
+Subagents have **read-only** access to the parent agent's persistent memory. They can recall information but cannot modify the main memory document. This prevents subagents from accidentally overwriting each other's memory updates.
+
+### Approvals
+
+When a subagent invokes a tool that requires approval, the approval request is **tunneled to the parent conversation**. You'll see the approval prompt inline in the parent's message thread with a label indicating which subagent is asking. The parent conversation also shows an orange dot in the sidebar while any subagent is waiting for approval.
+
+### Web UI
+
+In the web UI, subagent conversations appear **nested under their parent** in the sidebar (tree-style indentation). Clicking a subagent conversation shows it in read-only mode — you can view the full context but cannot send messages, since the parent agent controls the subagent.
+
+When the parent conversation is active, `spawn_subagent` tool calls in the tool activity timeline are clickable links that navigate to the subagent's conversation.
+
 ## Persistent Memory
 
 When `memory.enabled` is true in `poncho.config.js`, the harness enables a simple memory model:

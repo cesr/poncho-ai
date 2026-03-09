@@ -55,6 +55,7 @@ export interface ToolContext {
   workingDir: string;
   parameters: Record<string, unknown>;
   abortSignal?: AbortSignal;
+  conversationId?: string;
 }
 
 export type ToolHandler<TInput extends Record<string, unknown>, TOutput> = (
@@ -160,4 +161,16 @@ export type AgentEvent =
       active: boolean;
       url?: string;
       interactionAllowed: boolean;
+    }
+  | { type: "subagent:spawned"; subagentId: string; conversationId: string; task: string }
+  | { type: "subagent:completed"; subagentId: string; conversationId: string }
+  | { type: "subagent:error"; subagentId: string; conversationId: string; error: string }
+  | { type: "subagent:stopped"; subagentId: string; conversationId: string }
+  | {
+      type: "subagent:approval_needed";
+      subagentId: string;
+      conversationId: string;
+      tool: string;
+      approvalId: string;
+      input?: Record<string, unknown>;
     };

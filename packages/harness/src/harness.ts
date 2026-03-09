@@ -29,6 +29,8 @@ import { addPromptCacheBreakpoints } from "./prompt-cache.js";
 import { jsonSchemaToZod } from "./schema-converter.js";
 import type { SkillMetadata } from "./skill-context.js";
 import { createSkillTools, normalizeScriptPolicyPath } from "./skill-tools.js";
+import { createSubagentTools } from "./subagent-tools.js";
+import type { SubagentManager } from "./subagent-manager.js";
 import { LatitudeTelemetry } from "@latitude-data/telemetry";
 import { diag, DiagLogLevel } from "@opentelemetry/api";
 import {
@@ -502,6 +504,7 @@ export class AgentHarness {
 
   private parsedAgent?: ParsedAgent;
   private mcpBridge?: LocalMcpBridge;
+  private subagentManager?: SubagentManager;
 
   private resolveToolAccess(toolName: string): ToolAccess {
     const tools = this.loadedConfig?.tools;
@@ -545,6 +548,21 @@ export class AgentHarness {
       if (!this.isToolEnabled(tool.name)) continue;
       this.dispatcher.register(tool);
     }
+  }
+
+  unregisterTools(names: string[]): void {
+    this.dispatcher.unregisterMany(names);
+  }
+
+  setSubagentManager(manager: SubagentManager): void {
+    this.subagentManager = manager;
+    this.dispatcher.registerMany(
+      createSubagentTools(
+        manager,
+        () => this._currentRunConversationId,
+        () => this._currentRunOwnerId ?? "anonymous",
+      ),
+    );
   }
 
   private registerConfiguredBuiltInTools(config: PonchoConfig | undefined): void {
@@ -1060,6 +1078,8 @@ export class AgentHarness {
 
   /** Conversation ID of the currently executing run (set during run, cleared after). */
   private _currentRunConversationId?: string;
+  /** Owner ID of the currently executing run (used by subagent tools). */
+  private _currentRunOwnerId?: string;
 
   get browserSession(): unknown {
     return this._browserSession;
@@ -1180,8 +1200,12 @@ export class AgentHarness {
     }
     await this.refreshSkillsIfChanged();
 
-    // Track which conversation this run belongs to so browser tools resolve the right session
+    // Track which conversation/owner this run belongs to so browser & subagent tools resolve correctly
     this._currentRunConversationId = input.conversationId;
+    const ownerParam = input.parameters?.__ownerId;
+    if (typeof ownerParam === "string") {
+      this._currentRunOwnerId = ownerParam;
+    }
 
     const agent = this.parsedAgent as ParsedAgent;
     const runId = `run_${randomUUID()}`;
@@ -1859,6 +1883,7 @@ ${boundedMainMemory.trim()}`
         workingDir: this.workingDir,
         parameters: input.parameters ?? {},
         abortSignal: input.abortSignal,
+        conversationId: input.conversationId,
       };
 
       const toolResultsForModel: Array<{
