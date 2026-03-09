@@ -1,6 +1,6 @@
 {
   "name": "@poncho-ai/client",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "description": "TypeScript client for calling deployed Poncho agents",
   "repository": {
     "type": "git",
