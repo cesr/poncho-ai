@@ -1449,10 +1449,10 @@ export const createRequestHandler = async (options?: {
   // ---------------------------------------------------------------------------
   // Subagent manager -- allows the agent to spawn child agent conversations.
   // ---------------------------------------------------------------------------
-  const MAX_SUBAGENT_DEPTH = 3;
+  const MAX_SUBAGENT_NESTING = 3; // root → L1 → L2 = 3 levels; L2 cannot spawn further
   const MAX_CONCURRENT_SUBAGENTS = 5;
 
-  const activeSubagentRuns = new Map<string, { abortController: AbortController; harness: AgentHarness }>();
+  const activeSubagentRuns = new Map<string, { abortController: AbortController; harness: AgentHarness; parentConversationId: string }>();
 
   // Pending subagent approvals: when a subagent hits an approval checkpoint,
   // we store a resolver here so the approval endpoint can signal the waiting runSubagent.
@@ -1475,7 +1475,13 @@ export const createRequestHandler = async (options?: {
     return depth;
   };
 
-  const getRunningSubagentCount = (): number => activeSubagentRuns.size;
+  const getRunningSubagentCountForParent = (parentId: string): number => {
+    let count = 0;
+    for (const run of activeSubagentRuns.values()) {
+      if (run.parentConversationId === parentId) count += 1;
+    }
+    return count;
+  };
 
   const runSubagent = async (
     childConversationId: string,
@@ -1491,7 +1497,7 @@ export const createRequestHandler = async (options?: {
     await childHarness.initialize();
 
     const childAbortController = new AbortController();
-    activeSubagentRuns.set(childConversationId, { abortController: childAbortController, harness: childHarness });
+    activeSubagentRuns.set(childConversationId, { abortController: childAbortController, harness: childHarness, parentConversationId });
     activeConversationRuns.set(childConversationId, {
       ownerId,
       abortController: childAbortController,
@@ -1788,11 +1794,11 @@ export const createRequestHandler = async (options?: {
   const subagentManager: SubagentManager = {
     async spawn(opts): Promise<SubagentResult> {
       const depth = await getSubagentDepth(opts.parentConversationId);
-      if (depth >= MAX_SUBAGENT_DEPTH) {
-        throw new Error(`Maximum subagent depth (${MAX_SUBAGENT_DEPTH}) reached. Cannot spawn deeper subagents.`);
+      if (depth >= MAX_SUBAGENT_NESTING - 1) {
+        throw new Error(`Maximum subagent nesting (${MAX_SUBAGENT_NESTING} levels) reached. Cannot spawn deeper subagents.`);
       }
-      if (getRunningSubagentCount() >= MAX_CONCURRENT_SUBAGENTS) {
-        throw new Error(`Maximum concurrent subagents (${MAX_CONCURRENT_SUBAGENTS}) reached. Wait for running subagents to complete or stop some first.`);
+      if (getRunningSubagentCountForParent(opts.parentConversationId) >= MAX_CONCURRENT_SUBAGENTS) {
+        throw new Error(`Maximum concurrent subagents (${MAX_CONCURRENT_SUBAGENTS}) per parent reached. Wait for running subagents to complete or stop some first.`);
       }
 
       const conversation = await conversationStore.create(opts.ownerId, opts.task.slice(0, 80));
