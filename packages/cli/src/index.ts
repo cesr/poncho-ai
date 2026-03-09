@@ -26,6 +26,8 @@ import {
   type PonchoConfig,
   type Conversation,
   type ConversationStore,
+  type SubagentManager,
+  type SubagentResult,
   type UploadStore,
 } from "@poncho-ai/harness";
 import type { AgentEvent, FileInput, Message, RunInput } from "@poncho-ai/sdk";
@@ -1359,6 +1361,8 @@ export const createRequestHandler = async (options?: {
     finished: boolean;
   };
   const conversationEventStreams = new Map<string, ConversationEventStream>();
+  type EventCallback = (event: AgentEvent) => void;
+  const conversationEventCallbacks = new Map<string, Set<EventCallback>>();
   const broadcastEvent = (conversationId: string, event: AgentEvent): void => {
     let stream = conversationEventStreams.get(conversationId);
     if (!stream) {
@@ -1373,6 +1377,24 @@ export const createRequestHandler = async (options?: {
         stream.subscribers.delete(subscriber);
       }
     }
+    const cbs = conversationEventCallbacks.get(conversationId);
+    if (cbs) {
+      for (const cb of cbs) {
+        try { cb(event); } catch {}
+      }
+    }
+  };
+  const onConversationEvent = (conversationId: string, cb: EventCallback): (() => void) => {
+    let cbs = conversationEventCallbacks.get(conversationId);
+    if (!cbs) {
+      cbs = new Set();
+      conversationEventCallbacks.set(conversationId, cbs);
+    }
+    cbs.add(cb);
+    return () => {
+      cbs!.delete(cb);
+      if (cbs!.size === 0) conversationEventCallbacks.delete(conversationId);
+    };
   };
   const finishConversationStream = (conversationId: string): void => {
     const stream = conversationEventStreams.get(conversationId);
@@ -1412,6 +1434,445 @@ export const createRequestHandler = async (options?: {
     workingDir,
     agentId: identity.id,
   });
+
+  // ---------------------------------------------------------------------------
+  // Subagent manager -- allows the agent to spawn child agent conversations.
+  // ---------------------------------------------------------------------------
+  const MAX_SUBAGENT_DEPTH = 3;
+  const MAX_CONCURRENT_SUBAGENTS = 5;
+
+  const activeSubagentRuns = new Map<string, { abortController: AbortController; harness: AgentHarness }>();
+
+  // Pending subagent approvals: when a subagent hits an approval checkpoint,
+  // we store a resolver here so the approval endpoint can signal the waiting runSubagent.
+  type PendingSubagentApproval = {
+    resolve: (approved: boolean) => void;
+    childHarness: AgentHarness;
+    checkpoint: NonNullable<Conversation["pendingApprovals"]>[number];
+    childConversationId: string;
+    parentConversationId: string;
+  };
+  const pendingSubagentApprovals = new Map<string, PendingSubagentApproval>();
+
+  const getSubagentDepth = async (conversationId: string): Promise<number> => {
+    let depth = 0;
+    let current = await conversationStore.get(conversationId);
+    while (current?.parentConversationId) {
+      depth += 1;
+      current = await conversationStore.get(current.parentConversationId);
+    }
+    return depth;
+  };
+
+  const getRunningSubagentCount = (): number => activeSubagentRuns.size;
+
+  const runSubagent = async (
+    childConversationId: string,
+    parentConversationId: string,
+    task: string,
+    ownerId: string,
+  ): Promise<SubagentResult> => {
+    const childHarness = new AgentHarness({
+      workingDir,
+      environment: resolveHarnessEnvironment(),
+      uploadStore,
+    });
+    await childHarness.initialize();
+
+    const childAbortController = new AbortController();
+    activeSubagentRuns.set(childConversationId, { abortController: childAbortController, harness: childHarness });
+    activeConversationRuns.set(childConversationId, {
+      ownerId,
+      abortController: childAbortController,
+      runId: null,
+    });
+
+    // Wire up subagent manager on the child so it can spawn sub-subagents
+    childHarness.setSubagentManager(subagentManager);
+    // Subagents get read-only memory -- strip the write tool
+    childHarness.unregisterTools(["memory_main_update"]);
+
+    let assistantResponse = "";
+    let latestRunId = "";
+    const toolTimeline: string[] = [];
+    const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
+    let currentTools: string[] = [];
+    let currentText = "";
+
+    try {
+      const conversation = await conversationStore.get(childConversationId);
+      if (!conversation) throw new Error("Subagent conversation not found");
+
+      const historyMessages = [...conversation.messages];
+
+      for await (const event of childHarness.runWithTelemetry({
+        task,
+        conversationId: childConversationId,
+        parameters: {
+          __activeConversationId: childConversationId,
+          __ownerId: ownerId,
+        },
+        messages: historyMessages,
+        abortSignal: childAbortController.signal,
+      })) {
+        if (event.type === "run:started") {
+          latestRunId = event.runId;
+          const active = activeConversationRuns.get(childConversationId);
+          if (active) active.runId = event.runId;
+        }
+        if (event.type === "model:chunk") {
+          if (currentTools.length > 0) {
+            sections.push({ type: "tools", content: currentTools });
+            currentTools = [];
+          }
+          assistantResponse += event.content;
+          currentText += event.content;
+        }
+        if (event.type === "tool:started") {
+          if (currentText.length > 0) {
+            sections.push({ type: "text", content: currentText });
+            currentText = "";
+          }
+          const toolText = `- start \`${event.tool}\``;
+          toolTimeline.push(toolText);
+          currentTools.push(toolText);
+        }
+        if (event.type === "tool:completed") {
+          const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
+          toolTimeline.push(toolText);
+          currentTools.push(toolText);
+        }
+        if (event.type === "tool:error") {
+          const toolText = `- error \`${event.tool}\`: ${event.error}`;
+          toolTimeline.push(toolText);
+          currentTools.push(toolText);
+        }
+        if (event.type === "tool:approval:required") {
+          const toolText = `- approval required \`${event.tool}\``;
+          toolTimeline.push(toolText);
+          currentTools.push(toolText);
+          broadcastEvent(parentConversationId, {
+            type: "subagent:approval_needed",
+            subagentId: childConversationId,
+            conversationId: childConversationId,
+            tool: event.tool,
+            approvalId: event.approvalId,
+            input: event.input as Record<string, unknown> | undefined,
+          });
+        }
+        if (event.type === "tool:approval:checkpoint") {
+          // Persist checkpoint so the approval endpoint can find it
+          const cpConv = await conversationStore.get(childConversationId);
+          if (cpConv) {
+            const cpData: NonNullable<Conversation["pendingApprovals"]>[number] = {
+              approvalId: event.approvalId,
+              runId: latestRunId,
+              tool: event.tool,
+              toolCallId: event.toolCallId,
+              input: event.input,
+              checkpointMessages: [...historyMessages, ...event.checkpointMessages],
+              baseMessageCount: 0,
+              pendingToolCalls: event.pendingToolCalls,
+            };
+            cpConv.pendingApprovals = [cpData];
+            cpConv.updatedAt = Date.now();
+            await conversationStore.update(cpConv);
+
+            // Wait for approval decision (signaled by the approval endpoint)
+            const approved = await new Promise<boolean>((resolve) => {
+              pendingSubagentApprovals.set(event.approvalId, {
+                resolve,
+                childHarness,
+                checkpoint: cpData,
+                childConversationId,
+                parentConversationId,
+              });
+            });
+
+            // Execute tool and resume the run
+            let toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }>;
+            if (approved) {
+              const toolContext = {
+                runId: cpData.runId,
+                agentId: identity.id,
+                step: 0,
+                workingDir,
+                parameters: {},
+                conversationId: childConversationId,
+              };
+              const execResults = await childHarness.executeTools(
+                [{ id: cpData.toolCallId!, name: cpData.tool, input: cpData.input }],
+                toolContext,
+              );
+              toolResults = execResults.map(r => ({
+                callId: r.callId,
+                toolName: r.tool,
+                result: r.output,
+                error: r.error,
+              }));
+              const toolText = `- done \`${cpData.tool}\``;
+              toolTimeline.push(toolText);
+              currentTools.push(toolText);
+            } else {
+              toolResults = [{
+                callId: cpData.toolCallId!,
+                toolName: cpData.tool,
+                error: "Tool execution denied by user",
+              }];
+              const toolText = `- denied \`${cpData.tool}\``;
+              toolTimeline.push(toolText);
+              currentTools.push(toolText);
+            }
+
+            broadcastEvent(childConversationId,
+              approved
+                ? { type: "tool:approval:granted", approvalId: event.approvalId }
+                : { type: "tool:approval:denied", approvalId: event.approvalId },
+            );
+
+            // Clear pending approval from conversation
+            const cpConv2 = await conversationStore.get(childConversationId);
+            if (cpConv2) {
+              cpConv2.pendingApprovals = [];
+              await conversationStore.update(cpConv2);
+            }
+
+            // Resume the run -- process continuation events
+            const resumeMessages = [...cpData.checkpointMessages!];
+            for await (const resumeEvent of childHarness.continueFromToolResult({
+              messages: resumeMessages,
+              toolResults,
+              conversationId: childConversationId,
+              abortSignal: childAbortController.signal,
+            })) {
+              if (resumeEvent.type === "model:chunk") {
+                if (currentTools.length > 0) {
+                  sections.push({ type: "tools", content: currentTools });
+                  currentTools = [];
+                }
+                assistantResponse += resumeEvent.content;
+                currentText += resumeEvent.content;
+              }
+              if (resumeEvent.type === "tool:started") {
+                if (currentText.length > 0) {
+                  sections.push({ type: "text", content: currentText });
+                  currentText = "";
+                }
+                const tText = `- start \`${resumeEvent.tool}\``;
+                toolTimeline.push(tText);
+                currentTools.push(tText);
+              }
+              if (resumeEvent.type === "tool:completed") {
+                const tText = `- done \`${resumeEvent.tool}\` (${resumeEvent.duration}ms)`;
+                toolTimeline.push(tText);
+                currentTools.push(tText);
+              }
+              if (resumeEvent.type === "tool:error") {
+                const tText = `- error \`${resumeEvent.tool}\`: ${resumeEvent.error}`;
+                toolTimeline.push(tText);
+                currentTools.push(tText);
+              }
+              if (
+                resumeEvent.type === "run:completed" &&
+                assistantResponse.length === 0 &&
+                resumeEvent.result.response
+              ) {
+                assistantResponse = resumeEvent.result.response;
+              }
+              if (resumeEvent.type === "run:error") {
+                assistantResponse = assistantResponse || `[Error: ${resumeEvent.error.message}]`;
+              }
+              broadcastEvent(childConversationId, resumeEvent);
+            }
+          }
+        }
+        if (
+          event.type === "run:completed" &&
+          assistantResponse.length === 0 &&
+          event.result.response
+        ) {
+          assistantResponse = event.result.response;
+        }
+        if (event.type === "run:error") {
+          assistantResponse = assistantResponse || `[Error: ${event.error.message}]`;
+        }
+        broadcastEvent(childConversationId, event);
+      }
+
+      // Persist final assistant turn
+      if (currentTools.length > 0) sections.push({ type: "tools", content: currentTools });
+      if (currentText.length > 0) sections.push({ type: "text", content: currentText });
+
+      const conv = await conversationStore.get(childConversationId);
+      if (conv) {
+        if (assistantResponse.length > 0 || toolTimeline.length > 0) {
+          conv.messages.push({
+            role: "assistant",
+            content: assistantResponse,
+            metadata: toolTimeline.length > 0 || sections.length > 0
+              ? { toolActivity: toolTimeline, sections: sections.length > 0 ? sections : undefined } as Message["metadata"]
+              : undefined,
+          });
+        }
+        conv.subagentMeta = { ...conv.subagentMeta!, status: "completed" };
+        conv.updatedAt = Date.now();
+        await conversationStore.update(conv);
+      }
+
+      finishConversationStream(childConversationId);
+      broadcastEvent(parentConversationId, {
+        type: "subagent:completed",
+        subagentId: childConversationId,
+        conversationId: childConversationId,
+      });
+
+      const finalConv = await conversationStore.get(childConversationId);
+      return {
+        subagentId: childConversationId,
+        status: "completed",
+        latestMessages: finalConv?.messages.slice(-10),
+        result: finalConv?.subagentMeta?.result,
+      };
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[poncho][subagent] Error in subagent ${childConversationId}:`, errMsg);
+
+      const conv = await conversationStore.get(childConversationId);
+      if (conv) {
+        conv.subagentMeta = {
+          ...conv.subagentMeta!,
+          status: "error",
+          error: { code: "SUBAGENT_ERROR", message: errMsg },
+        };
+        conv.updatedAt = Date.now();
+        await conversationStore.update(conv);
+      }
+
+      finishConversationStream(childConversationId);
+      broadcastEvent(parentConversationId, {
+        type: "subagent:error",
+        subagentId: childConversationId,
+        conversationId: childConversationId,
+        error: errMsg,
+      });
+
+      return {
+        subagentId: childConversationId,
+        status: "error",
+        error: { code: "SUBAGENT_ERROR", message: errMsg },
+      };
+    } finally {
+      // Clean up any pending approval that was never resolved
+      for (const [aid, pa] of pendingSubagentApprovals) {
+        if (pa.childHarness === childHarness) {
+          pendingSubagentApprovals.delete(aid);
+        }
+      }
+      activeSubagentRuns.delete(childConversationId);
+      activeConversationRuns.delete(childConversationId);
+      try { await childHarness.shutdown(); } catch {}
+    }
+  };
+
+  const subagentManager: SubagentManager = {
+    async spawn(opts): Promise<SubagentResult> {
+      const depth = await getSubagentDepth(opts.parentConversationId);
+      if (depth >= MAX_SUBAGENT_DEPTH) {
+        throw new Error(`Maximum subagent depth (${MAX_SUBAGENT_DEPTH}) reached. Cannot spawn deeper subagents.`);
+      }
+      if (getRunningSubagentCount() >= MAX_CONCURRENT_SUBAGENTS) {
+        throw new Error(`Maximum concurrent subagents (${MAX_CONCURRENT_SUBAGENTS}) reached. Wait for running subagents to complete or stop some first.`);
+      }
+
+      const conversation = await conversationStore.create(opts.ownerId, opts.task.slice(0, 80));
+      conversation.parentConversationId = opts.parentConversationId;
+      conversation.subagentMeta = { task: opts.task, status: "running" };
+      conversation.messages = [{ role: "user", content: opts.task }];
+      conversation.updatedAt = Date.now();
+      await conversationStore.update(conversation);
+
+      broadcastEvent(opts.parentConversationId, {
+        type: "subagent:spawned",
+        subagentId: conversation.conversationId,
+        conversationId: conversation.conversationId,
+        task: opts.task,
+      });
+
+      return runSubagent(
+        conversation.conversationId,
+        opts.parentConversationId,
+        opts.task,
+        opts.ownerId,
+      );
+    },
+
+    async sendMessage(subagentId, message): Promise<SubagentResult> {
+      const conversation = await conversationStore.get(subagentId);
+      if (!conversation) {
+        console.error(`[poncho][subagent] sendMessage: conversation "${subagentId}" not found in store`);
+        throw new Error(`Subagent "${subagentId}" not found.`);
+      }
+      if (!conversation.parentConversationId) {
+        throw new Error(`Conversation "${subagentId}" is not a subagent.`);
+      }
+      // Recover subagentMeta if it was lost but the conversation is clearly a subagent
+      if (!conversation.subagentMeta) {
+        console.warn(`[poncho][subagent] sendMessage: conversation "${subagentId}" missing subagentMeta, recovering`);
+        conversation.subagentMeta = { task: conversation.title, status: "stopped" };
+        await conversationStore.update(conversation);
+      }
+      if (conversation.subagentMeta.status === "running") {
+        throw new Error(`Subagent "${subagentId}" is currently running. Wait for it to complete before sending a new message.`);
+      }
+
+      conversation.messages.push({ role: "user", content: message });
+      conversation.subagentMeta.status = "running";
+      conversation.updatedAt = Date.now();
+      await conversationStore.update(conversation);
+
+      return runSubagent(
+        subagentId,
+        conversation.parentConversationId,
+        message,
+        conversation.ownerId,
+      );
+    },
+
+    async stop(subagentId) {
+      const active = activeSubagentRuns.get(subagentId);
+      if (active) {
+        active.abortController.abort();
+      }
+      const conversation = await conversationStore.get(subagentId);
+      if (conversation?.subagentMeta && conversation.subagentMeta.status === "running") {
+        conversation.subagentMeta.status = "stopped";
+        conversation.updatedAt = Date.now();
+        await conversationStore.update(conversation);
+      }
+    },
+
+    async list(parentConversationId) {
+      const parentConv = await conversationStore.get(parentConversationId);
+      const summaries = await conversationStore.listSummaries(parentConv?.ownerId ?? "local-owner");
+      const childSummaries = summaries.filter((s) => s.parentConversationId === parentConversationId);
+      const results: Array<{ subagentId: string; task: string; status: string; messageCount: number }> = [];
+      for (const s of childSummaries) {
+        const c = await conversationStore.get(s.conversationId);
+        if (c) {
+          results.push({
+            subagentId: c.conversationId,
+            task: c.subagentMeta?.task ?? c.title,
+            status: c.subagentMeta?.status ?? "stopped",
+            messageCount: c.messages.length,
+          });
+        }
+      }
+      return results;
+    },
+  };
+
+  harness.setSubagentManager(subagentManager);
+
   // ---------------------------------------------------------------------------
   // Resume a run from a persisted checkpoint after approval.
   // Processes events the same way the interactive/messaging runners do.
@@ -2255,18 +2716,23 @@ export const createRequestHandler = async (options?: {
     }
 
     if (pathname === "/api/conversations" && request.method === "GET") {
-      const conversations = await conversationStore.list(ownerId);
+      const allSummaries = await conversationStore.listSummaries(ownerId);
+      const conversations = allSummaries.filter((c) => !c.parentConversationId);
+      // Derive parent-has-subagent-approvals from the in-memory map (no disk I/O)
+      const parentHasSubagentApprovals = new Set<string>();
+      for (const [, pa] of pendingSubagentApprovals) {
+        parentHasSubagentApprovals.add(pa.parentConversationId);
+      }
       writeJson(response, 200, {
-        conversations: conversations.map((conversation) => ({
-          conversationId: conversation.conversationId,
-          title: conversation.title,
-          runtimeRunId: conversation.runtimeRunId,
-          ownerId: conversation.ownerId,
-          tenantId: conversation.tenantId,
-          createdAt: conversation.createdAt,
-          updatedAt: conversation.updatedAt,
-          messageCount: conversation.messages.length,
-          hasPendingApprovals: Array.isArray(conversation.pendingApprovals) && conversation.pendingApprovals.length > 0,
+        conversations: conversations.map((c) => ({
+          conversationId: c.conversationId,
+          title: c.title,
+          ownerId: c.ownerId,
+          createdAt: c.createdAt,
+          updatedAt: c.updatedAt,
+          messageCount: c.messageCount ?? 0,
+          hasPendingApprovals:
+            !!c.hasPendingApprovals || parentHasSubagentApprovals.has(c.conversationId),
         })),
       });
       return;
@@ -2294,6 +2760,21 @@ export const createRequestHandler = async (options?: {
       const approvalId = decodeURIComponent(approvalMatch[1] ?? "");
       const body = (await readRequestBody(request)) as { approved?: boolean };
       const approved = body.approved === true;
+
+      // Check if this is a pending subagent approval (handled inline by runSubagent)
+      const pendingSubagent = pendingSubagentApprovals.get(approvalId);
+      if (pendingSubagent) {
+        pendingSubagentApprovals.delete(approvalId);
+        // Clear pendingApprovals from the subagent's conversation immediately
+        const childConv = await conversationStore.get(pendingSubagent.childConversationId);
+        if (childConv && Array.isArray(childConv.pendingApprovals)) {
+          childConv.pendingApprovals = childConv.pendingApprovals.filter(pa => pa.approvalId !== approvalId);
+          await conversationStore.update(childConv);
+        }
+        pendingSubagent.resolve(approved);
+        writeJson(response, 200, { ok: true, approvalId, approved });
+        return;
+      }
 
       // Find the approval in the conversation store (checkpoint-based flow)
       const conversations = await conversationStore.list(ownerId);
@@ -2431,6 +2912,32 @@ export const createRequestHandler = async (options?: {
       return;
     }
 
+    const subagentsMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/subagents$/);
+    if (subagentsMatch && request.method === "GET") {
+      const parentId = decodeURIComponent(subagentsMatch[1] ?? "");
+      // Use summaries to find child IDs, then only load those child files
+      const allSummaries = await conversationStore.listSummaries(ownerId);
+      const childSummaries = allSummaries.filter((s) => s.parentConversationId === parentId);
+      const subagents: Array<Record<string, unknown>> = [];
+      for (const s of childSummaries) {
+        const c = await conversationStore.get(s.conversationId);
+        if (c) {
+          subagents.push({
+            conversationId: c.conversationId,
+            title: c.title,
+            task: c.subagentMeta?.task ?? c.title,
+            status: c.subagentMeta?.status ?? "stopped",
+            messageCount: c.messages.length,
+            hasPendingApprovals: Array.isArray(c.pendingApprovals) && c.pendingApprovals.length > 0,
+            createdAt: c.createdAt,
+            updatedAt: c.updatedAt,
+          });
+        }
+      }
+      writeJson(response, 200, { subagents });
+      return;
+    }
+
     const conversationPathMatch = pathname.match(/^\/api\/conversations\/([^/]+)$/);
     if (conversationPathMatch) {
       const conversationId = decodeURIComponent(conversationPathMatch[1] ?? "");
@@ -2451,6 +2958,20 @@ export const createRequestHandler = async (options?: {
               input: a.input,
             }))
           : [];
+        // Collect pending approvals from subagent conversations (in-memory map, no disk I/O)
+        const subagentPending: Array<{ approvalId: string; tool: string; input: unknown; subagentId: string }> = [];
+        if (!conversation.parentConversationId) {
+          for (const [aid, pa] of pendingSubagentApprovals) {
+            if (pa.parentConversationId === conversationId) {
+              subagentPending.push({
+                approvalId: aid,
+                tool: pa.checkpoint.tool,
+                input: pa.checkpoint.input,
+                subagentId: pa.childConversationId,
+              });
+            }
+          }
+        }
         const activeStream = conversationEventStreams.get(conversationId);
         const hasActiveRun = !!activeStream && !activeStream.finished;
         writeJson(response, 200, {
@@ -2458,6 +2979,7 @@ export const createRequestHandler = async (options?: {
             ...conversation,
             pendingApprovals: storedPending,
           },
+          subagentPendingApprovals: subagentPending,
           hasActiveRun,
         });
         return;
@@ -2476,6 +2998,18 @@ export const createRequestHandler = async (options?: {
         return;
       }
       if (request.method === "DELETE") {
+        // Cascade: stop and delete all child subagent conversations
+        const allSummaries = await conversationStore.listSummaries(ownerId);
+        const childIds = allSummaries
+          .filter((s) => s.parentConversationId === conversationId)
+          .map((s) => s.conversationId);
+        for (const childId of childIds) {
+          const activeChild = activeSubagentRuns.get(childId);
+          if (activeChild) activeChild.abortController.abort();
+          activeSubagentRuns.delete(childId);
+          activeConversationRuns.delete(childId);
+          await conversationStore.delete(childId);
+        }
         await conversationStore.delete(conversationId);
         writeJson(response, 200, { ok: true });
         return;
@@ -2570,6 +3104,13 @@ export const createRequestHandler = async (options?: {
         writeJson(response, 404, {
           code: "CONVERSATION_NOT_FOUND",
           message: "Conversation not found",
+        });
+        return;
+      }
+      if (conversation.parentConversationId) {
+        writeJson(response, 403, {
+          code: "SUBAGENT_READ_ONLY",
+          message: "Subagent conversations are read-only. Only the parent agent can send messages.",
         });
         return;
       }
@@ -2680,6 +3221,14 @@ export const createRequestHandler = async (options?: {
           return;
         }
       }
+      // Forward subagent lifecycle events to the response so the client can update the sidebar.
+      // These events are broadcast via broadcastEvent but not emitted by the harness run loop.
+      const unsubSubagentEvents = onConversationEvent(conversationId, (evt) => {
+        if (evt.type.startsWith("subagent:")) {
+          try { response.write(formatSseEvent(evt)); } catch {}
+        }
+      });
+
       try {
         // Persist the user turn immediately so refreshing mid-run keeps chat context.
         conversation.messages = [...historyMessages, { role: "user", content: userContent }];
@@ -2724,7 +3273,7 @@ export const createRequestHandler = async (options?: {
         };
 
         const recallCorpus = (await conversationStore.list(ownerId))
-          .filter((item) => item.conversationId !== conversationId)
+          .filter((item) => item.conversationId !== conversationId && !item.parentConversationId)
           .slice(0, 20)
           .map((item) => ({
             conversationId: item.conversationId,
@@ -2745,6 +3294,7 @@ export const createRequestHandler = async (options?: {
             ...(bodyParameters ?? {}),
             __conversationRecallCorpus: recallCorpus,
             __activeConversationId: conversationId,
+            __ownerId: ownerId,
           },
           messages: historyMessages,
           files: files.length > 0 ? files : undefined,
@@ -2965,6 +3515,7 @@ export const createRequestHandler = async (options?: {
           }
         }
       } finally {
+        unsubSubagentEvents();
         const active = activeConversationRuns.get(conversationId);
         if (active && active.abortController === abortController) {
           activeConversationRuns.delete(conversationId);
@@ -3184,6 +3735,22 @@ export const createRequestHandler = async (options?: {
   handler._harness = harness;
   handler._cronJobs = cronJobs;
   handler._conversationStore = conversationStore;
+
+  // Recover stale subagent runs that were "running" when the server last stopped
+  try {
+    const allConvs = await conversationStore.list();
+    for (const conv of allConvs) {
+      if (conv.subagentMeta?.status === "running") {
+        conv.subagentMeta.status = "stopped";
+        conv.subagentMeta.error = { code: "SERVER_RESTART", message: "Interrupted by server restart" };
+        conv.updatedAt = Date.now();
+        await conversationStore.update(conv);
+      }
+    }
+  } catch (err) {
+    console.warn("[poncho][subagent] Failed to recover stale subagent runs:", err);
+  }
+
   return handler;
 };
 

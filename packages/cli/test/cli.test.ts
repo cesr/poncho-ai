@@ -17,6 +17,9 @@ vi.mock("@poncho-ai/harness", async (importOriginal) => {
   parseAgentMarkdown: actual.parseAgentMarkdown,
   AgentHarness: class MockHarness {
     async initialize(): Promise<void> {}
+    setSubagentManager(): void {}
+    get browserSession(): unknown { return undefined; }
+    async shutdown(): Promise<void> {}
     listTools(): Array<{ name: string; description: string }> {
       return [{ name: "echo", description: "Echo tool" }];
     }
