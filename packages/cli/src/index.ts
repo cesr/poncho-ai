@@ -636,6 +636,17 @@ For full control over outbound emails, use **tool mode** (\`mode: 'tool'\`) — 
 
 **Vercel deployments:** install \`@vercel/functions\` so Poncho can keep the serverless function alive while processing: \`npm install @vercel/functions\`
 
+## Subagents
+
+Your agent can spawn **subagents** — recursive copies of itself that run in independent conversations. Subagents are useful for parallelizing work or isolating subtasks.
+
+The agent gets four tools automatically: \`spawn_subagent\` (create and run a subagent), \`message_subagent\` (send follow-ups), \`stop_subagent\`, and \`list_subagents\`. Calls are blocking — the parent waits for the subagent to complete.
+
+- **Limits**: max 3 levels deep, max 5 concurrent subagents per parent.
+- **Memory**: subagents have read-only access to the parent's persistent memory.
+- **Approvals**: subagent tool approvals are tunneled to the parent conversation thread.
+- **Web UI**: subagent conversations appear nested under the parent in the sidebar.
+
 ## Deployment
 
 \`\`\`bash
