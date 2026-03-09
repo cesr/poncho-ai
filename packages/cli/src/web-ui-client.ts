@@ -1062,8 +1062,32 @@ export const getWebUiClientScript = (markedSource: string): string => `
                         updateContextRing();
                       }
                     }
+                    if (eventName === "tool:generating") {
+                      const toolName = payload.tool || "tool";
+                      if (!Array.isArray(assistantMessage._activeActivities)) {
+                        assistantMessage._activeActivities = [];
+                      }
+                      assistantMessage._activeActivities.push({
+                        kind: "generating",
+                        tool: toolName,
+                        label: "Preparing " + toolName,
+                      });
+                      if (assistantMessage._currentText.length > 0) {
+                        assistantMessage._sections.push({
+                          type: "text",
+                          content: assistantMessage._currentText,
+                        });
+                        assistantMessage._currentText = "";
+                      }
+                      const prepText =
+                        "- preparing \\x60" + toolName + "\\x60";
+                      assistantMessage._currentTools.push(prepText);
+                      assistantMessage.metadata.toolActivity.push(prepText);
+                      renderIfActiveConversation(true);
+                    }
                     if (eventName === "tool:started") {
                       const toolName = payload.tool || "tool";
+                      removeActiveActivityForTool(assistantMessage, toolName);
                       const startedActivity = addActiveActivityFromToolStart(
                         assistantMessage,
                         payload,
@@ -1075,14 +1099,24 @@ export const getWebUiClientScript = (markedSource: string): string => `
                         });
                         assistantMessage._currentText = "";
                       }
+                      const tick = "\\x60";
+                      const prepPrefix = "- preparing " + tick + toolName + tick;
+                      const prepToolIdx = assistantMessage._currentTools.indexOf(prepPrefix);
+                      if (prepToolIdx >= 0) {
+                        assistantMessage._currentTools.splice(prepToolIdx, 1);
+                      }
+                      const prepMetaIdx = assistantMessage.metadata.toolActivity.indexOf(prepPrefix);
+                      if (prepMetaIdx >= 0) {
+                        assistantMessage.metadata.toolActivity.splice(prepMetaIdx, 1);
+                      }
                       const detail =
                         startedActivity && typeof startedActivity.detail === "string"
                           ? startedActivity.detail.trim()
                           : "";
                       const toolText =
-                        "- start \\x60" +
+                        "- start " + tick +
                         toolName +
-                        "\\x60" +
+                        tick +
                         (detail ? " (" + detail + ")" : "");
                       assistantMessage._currentTools.push(toolText);
                       assistantMessage.metadata.toolActivity.push(toolText);
@@ -1805,26 +1839,57 @@ export const getWebUiClientScript = (markedSource: string): string => `
                     updateContextRing();
                   }
                 }
+                if (eventName === "tool:generating") {
+                  const toolName = payload.tool || "tool";
+                  if (!Array.isArray(assistantMessage._activeActivities)) {
+                    assistantMessage._activeActivities = [];
+                  }
+                  assistantMessage._activeActivities.push({
+                    kind: "generating",
+                    tool: toolName,
+                    label: "Preparing " + toolName,
+                  });
+                  if (assistantMessage._currentText.length > 0) {
+                    assistantMessage._sections.push({ type: "text", content: assistantMessage._currentText });
+                    assistantMessage._currentText = "";
+                  }
+                  if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                  if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                  const prepText = "- preparing \\x60" + toolName + "\\x60";
+                  assistantMessage._currentTools.push(prepText);
+                  assistantMessage.metadata.toolActivity.push(prepText);
+                  renderIfActiveConversation(true);
+                }
                 if (eventName === "tool:started") {
                   const toolName = payload.tool || "tool";
+                  removeActiveActivityForTool(assistantMessage, toolName);
                   const startedActivity = addActiveActivityFromToolStart(
                     assistantMessage,
                     payload,
                   );
-                  // If we have text accumulated, push it as a text section
                   if (assistantMessage._currentText.length > 0) {
                     assistantMessage._sections.push({ type: "text", content: assistantMessage._currentText });
                     assistantMessage._currentText = "";
+                  }
+                  if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                  if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                  const tick = "\\x60";
+                  const prepPrefix = "- preparing " + tick + toolName + tick;
+                  const prepToolIdx = assistantMessage._currentTools.indexOf(prepPrefix);
+                  if (prepToolIdx >= 0) {
+                    assistantMessage._currentTools.splice(prepToolIdx, 1);
+                  }
+                  const prepMetaIdx = assistantMessage.metadata.toolActivity.indexOf(prepPrefix);
+                  if (prepMetaIdx >= 0) {
+                    assistantMessage.metadata.toolActivity.splice(prepMetaIdx, 1);
                   }
                   const detail =
                     startedActivity && typeof startedActivity.detail === "string"
                       ? startedActivity.detail.trim()
                       : "";
                   const toolText =
-                    "- start \\x60" + toolName + "\\x60" + (detail ? " (" + detail + ")" : "");
+                    "- start " + tick + toolName + tick + (detail ? " (" + detail + ")" : "");
                   assistantMessage._currentTools.push(toolText);
-                  if (!assistantMessage.metadata) assistantMessage.metadata = {};
-                  if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
                   assistantMessage.metadata.toolActivity.push(toolText);
                   renderIfActiveConversation(true);
                 }

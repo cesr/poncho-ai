@@ -223,17 +223,17 @@ export class InMemoryConversationStore implements ConversationStore {
     }
   }
 
-  async list(ownerId = DEFAULT_OWNER): Promise<Conversation[]> {
+  async list(ownerId?: string): Promise<Conversation[]> {
     this.purgeExpired();
     return Array.from(this.conversations.values())
-      .filter((conversation) => conversation.ownerId === ownerId)
+      .filter((conversation) => !ownerId || conversation.ownerId === ownerId)
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
-  async listSummaries(ownerId = DEFAULT_OWNER): Promise<ConversationSummary[]> {
+  async listSummaries(ownerId?: string): Promise<ConversationSummary[]> {
     this.purgeExpired();
     return Array.from(this.conversations.values())
-      .filter((c) => c.ownerId === ownerId)
+      .filter((c) => !ownerId || c.ownerId === ownerId)
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .map((c) => ({
         conversationId: c.conversationId,
@@ -454,10 +454,10 @@ class FileConversationStore implements ConversationStore {
     await this.writing;
   }
 
-  async list(ownerId = DEFAULT_OWNER): Promise<Conversation[]> {
+  async list(ownerId?: string): Promise<Conversation[]> {
     await this.ensureLoaded();
     const summaries = Array.from(this.conversations.values())
-      .filter((conversation) => conversation.ownerId === ownerId)
+      .filter((conversation) => !ownerId || conversation.ownerId === ownerId)
       .sort((a, b) => b.updatedAt - a.updatedAt);
     const conversations: Conversation[] = [];
     for (const summary of summaries) {
@@ -469,10 +469,10 @@ class FileConversationStore implements ConversationStore {
     return conversations;
   }
 
-  async listSummaries(ownerId = DEFAULT_OWNER): Promise<ConversationSummary[]> {
+  async listSummaries(ownerId?: string): Promise<ConversationSummary[]> {
     await this.ensureLoaded();
     return Array.from(this.conversations.values())
-      .filter((c) => c.ownerId === ownerId)
+      .filter((c) => !ownerId || c.ownerId === ownerId)
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .map((c) => ({
         conversationId: c.conversationId,
@@ -751,10 +751,14 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
     }
   }
 
-  async list(ownerId = DEFAULT_OWNER): Promise<Conversation[]> {
+  async list(ownerId?: string): Promise<Conversation[]> {
     const kv = await this.client();
     if (!kv) {
       return await this.memoryFallback.list(ownerId);
+    }
+    if (!ownerId) {
+      // KV stores index per-owner; cross-owner listing not supported
+      return [];
     }
     const ids = await this.getOwnerConversationIds(ownerId);
     const conversations: Conversation[] = [];
@@ -772,10 +776,13 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
     return conversations.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
-  async listSummaries(ownerId = DEFAULT_OWNER): Promise<ConversationSummary[]> {
+  async listSummaries(ownerId?: string): Promise<ConversationSummary[]> {
     const kv = await this.client();
     if (!kv) {
       return await this.memoryFallback.listSummaries(ownerId);
+    }
+    if (!ownerId) {
+      return [];
     }
     const ids = await this.getOwnerConversationIds(ownerId);
     const summaries: ConversationSummary[] = [];

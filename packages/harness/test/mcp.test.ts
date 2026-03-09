@@ -126,6 +126,89 @@ describe("mcp bridge protocol transports", () => {
     expect(deleteSeen).toBe(true);
   });
 
+  it("sends custom headers alongside bearer token", async () => {
+    process.env.LINEAR_TOKEN = "token-123";
+    let capturedHeaders: Record<string, string | undefined> = {};
+    const server = createServer(async (req, res) => {
+      if (req.method === "DELETE") {
+        res.statusCode = 200;
+        res.end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = Buffer.concat(chunks).toString("utf8");
+      const payload = body.trim().length > 0 ? (JSON.parse(body) as any) : {};
+      capturedHeaders = {
+        authorization: req.headers.authorization,
+        "x-custom-id": req.headers["x-custom-id"] as string | undefined,
+        "x-another": req.headers["x-another"] as string | undefined,
+      };
+      if (payload.method === "initialize") {
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Mcp-Session-Id", "s");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              protocolVersion: "2025-03-26",
+              capabilities: { tools: { listChanged: true } },
+              serverInfo: { name: "remote", version: "1.0.0" },
+            },
+          }),
+        );
+        return;
+      }
+      if (payload.method === "notifications/initialized") {
+        res.statusCode = 202;
+        res.end();
+        return;
+      }
+      if (payload.method === "tools/list") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [
+                { name: "ping", inputSchema: { type: "object", properties: {} } },
+              ],
+            },
+          }),
+        );
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+    await new Promise<void>((r) => server.listen(0, () => r()));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Unexpected address");
+
+    const bridge = new LocalMcpBridge({
+      mcp: [
+        {
+          name: "custom-headers",
+          url: `http://127.0.0.1:${address.port}/mcp`,
+          auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" },
+          headers: { "X-Custom-Id": "user-42", "X-Another": "value" },
+        },
+      ],
+    });
+
+    await bridge.startLocalServers();
+    await bridge.discoverTools();
+
+    expect(capturedHeaders.authorization).toBe("Bearer token-123");
+    expect(capturedHeaders["x-custom-id"]).toBe("user-42");
+    expect(capturedHeaders["x-another"]).toBe("value");
+
+    await bridge.stopLocalServers();
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+
   it("fails fast on duplicate server names", () => {
     expect(
       () =>

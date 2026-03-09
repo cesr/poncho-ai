@@ -1682,15 +1682,14 @@ ${boundedMainMemory.trim()}`
             isEnabled: telemetryEnabled && !!this.latitudeTelemetry,
           },
         });
-        // Stream text chunks — enforce overall run timeout per chunk.
-        // The top-of-step timeout check cannot fire while we are
-        // blocked inside the textStream async iterator, so we race
-        // each next() call against the remaining time budget.
+        // Stream full response — use fullStream to get visibility into
+        // tool-call generation (tool-input-start) in addition to text deltas.
+        // Enforce overall run timeout per part.
         let fullText = "";
         let chunkCount = 0;
         const hasRunTimeout = timeoutMs > 0;
         const streamDeadline = hasRunTimeout ? start + timeoutMs : 0;
-        const textIterator = result.textStream[Symbol.asyncIterator]();
+        const fullStreamIterator = result.fullStream[Symbol.asyncIterator]();
         try {
           while (true) {
             if (isCancelled()) {
@@ -1714,21 +1713,17 @@ ${boundedMainMemory.trim()}`
                 return;
               }
             }
-            // Use a shorter timeout for the first chunk to detect
-            // non-responsive models quickly instead of waiting minutes.
-            // When no run timeout is set, only the first chunk is time-bounded.
             const remaining = hasRunTimeout ? streamDeadline - now() : Infinity;
             const timeout = chunkCount === 0
               ? Math.min(remaining, FIRST_CHUNK_TIMEOUT_MS)
               : hasRunTimeout ? remaining : 0;
-            let nextChunk: IteratorResult<string> | null;
+            let nextPart: IteratorResult<(typeof result.fullStream) extends AsyncIterable<infer T> ? T : never> | null;
             if (timeout <= 0 && chunkCount > 0) {
-              // No time budget — await the stream directly (development mode, no run timeout)
-              nextChunk = await textIterator.next();
+              nextPart = await fullStreamIterator.next();
             } else {
               let timer: ReturnType<typeof setTimeout> | undefined;
-              nextChunk = await Promise.race([
-                textIterator.next(),
+              nextPart = await Promise.race([
+                fullStreamIterator.next(),
                 new Promise<null>((resolve) => {
                   timer = setTimeout(() => resolve(null), timeout);
                 }),
@@ -1736,16 +1731,14 @@ ${boundedMainMemory.trim()}`
               clearTimeout(timer);
             }
 
-            if (nextChunk === null) {
+            if (nextPart === null) {
               const isFirstChunk = chunkCount === 0;
               console.error(
                 `[poncho][harness] Stream timeout waiting for ${isFirstChunk ? "first" : "next"} chunk: model="${modelName}", step=${step}, chunks=${chunkCount}, elapsed=${now() - start}ms`,
               );
               if (isFirstChunk) {
-                // Throw so the step-level retry logic can handle it.
                 throw new FirstChunkTimeoutError(modelName, FIRST_CHUNK_TIMEOUT_MS);
               }
-              // Mid-stream timeout: not retryable (partial response would be lost)
               yield pushEvent({
                 type: "run:error",
                 runId,
@@ -1757,14 +1750,20 @@ ${boundedMainMemory.trim()}`
               return;
             }
 
-            if (nextChunk.done) break;
-            chunkCount += 1;
-            fullText += nextChunk.value;
-            yield pushEvent({ type: "model:chunk", content: nextChunk.value });
+            if (nextPart.done) break;
+            const part = nextPart.value;
+
+            if (part.type === "text-delta") {
+              chunkCount += 1;
+              fullText += part.text;
+              yield pushEvent({ type: "model:chunk", content: part.text });
+            } else if (part.type === "tool-input-start") {
+              chunkCount += 1;
+              yield pushEvent({ type: "tool:generating", tool: part.toolName, toolCallId: part.id });
+            }
           }
         } finally {
-          // Best-effort cleanup of the underlying stream/connection.
-          textIterator.return?.(undefined)?.catch?.(() => {});
+          fullStreamIterator.return?.(undefined)?.catch?.(() => {});
         }
 
         if (isCancelled()) {
@@ -1773,8 +1772,6 @@ ${boundedMainMemory.trim()}`
         }
 
       // Check finish reason for error / abnormal completions.
-      // textStream silently swallows model-level errors – they only
-      // surface through finishReason (or fullStream, which we don't use).
       const finishReason = await result.finishReason;
 
       if (finishReason === "error") {

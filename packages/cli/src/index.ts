@@ -455,6 +455,10 @@ Connect remote MCP servers and expose their tools to the agent:
 # Add remote MCP server
 poncho mcp add --url https://mcp.example.com/github --name github --auth-bearer-env GITHUB_TOKEN
 
+# Server with custom headers (e.g. Arcade)
+poncho mcp add --url https://mcp.arcade.dev --name arcade \\
+  --auth-bearer-env ARCADE_API_KEY --header "Arcade-User-ID: user@example.com"
+
 # List configured servers
 poncho mcp list
 
@@ -536,6 +540,8 @@ export default {
       url: "https://mcp.example.com/github",
       auth: { type: "bearer", tokenEnv: "GITHUB_TOKEN" },
     },
+    // Custom headers for servers that require them (e.g. Arcade)
+    // { name: "arcade", url: "https://mcp.arcade.dev", auth: { type: "bearer", tokenEnv: "ARCADE_API_KEY" }, headers: { "Arcade-User-ID": "user@example.com" } },
   ],
   // Tool access: true (available), false (disabled), 'approval' (requires human approval)
   tools: {
@@ -3753,11 +3759,14 @@ export const createRequestHandler = async (options?: {
   handler._cronJobs = cronJobs;
   handler._conversationStore = conversationStore;
 
-  // Recover stale subagent runs that were "running" when the server last stopped
+  // Recover stale subagent runs that were "running" when the server last stopped.
+  // Pass no ownerId so we scan across all owners (not just "local-owner").
   try {
-    const allConvs = await conversationStore.list();
-    for (const conv of allConvs) {
-      if (conv.subagentMeta?.status === "running") {
+    const allSummaries = await conversationStore.listSummaries();
+    const subagentSummaries = allSummaries.filter((s) => s.parentConversationId);
+    for (const s of subagentSummaries) {
+      const conv = await conversationStore.get(s.conversationId);
+      if (conv?.subagentMeta?.status === "running") {
         conv.subagentMeta.status = "stopped";
         conv.subagentMeta.error = { code: "SERVER_RESTART", message: "Interrupted by server restart" };
         conv.updatedAt = Date.now();
@@ -4535,6 +4544,7 @@ export const mcpAdd = async (
     name?: string;
     envVars?: string[];
     authBearerEnv?: string;
+    headers?: string[];
   },
 ): Promise<void> => {
   const config = (await loadPonchoConfig(workingDir)) ?? { mcp: [] };
@@ -4548,6 +4558,18 @@ export const mcpAdd = async (
   if (!options.url.startsWith("http://") && !options.url.startsWith("https://")) {
     throw new Error("Invalid MCP URL. Expected http:// or https://.");
   }
+  const parsedHeaders: Record<string, string> | undefined =
+    options.headers && options.headers.length > 0
+      ? Object.fromEntries(
+          options.headers.map((h) => {
+            const idx = h.indexOf(":");
+            if (idx < 1) {
+              throw new Error(`Invalid header format "${h}". Expected "Name: value".`);
+            }
+            return [h.slice(0, idx).trim(), h.slice(idx + 1).trim()];
+          }),
+        )
+      : undefined;
   const serverName = options.name ?? normalizeMcpName({ url: options.url });
   mcp.push({
     name: serverName,
@@ -4559,6 +4581,7 @@ export const mcpAdd = async (
           tokenEnv: options.authBearerEnv,
         }
       : undefined,
+    headers: parsedHeaders,
   });
 
   await writeConfigFile(workingDir, { ...config, mcp });
@@ -4605,8 +4628,10 @@ export const mcpList = async (workingDir: string): Promise<void> => {
   for (const entry of mcp) {
     const auth =
       entry.auth?.type === "bearer" ? `auth=bearer:${entry.auth.tokenEnv}` : "auth=none";
+    const headerKeys = entry.headers ? Object.keys(entry.headers) : [];
+    const headerInfo = headerKeys.length > 0 ? `, headers=${headerKeys.join(",")}` : "";
     process.stdout.write(
-      `- ${entry.name ?? entry.url} (remote: ${entry.url}, ${auth})\n`,
+      `- ${entry.name ?? entry.url} (remote: ${entry.url}, ${auth}${headerInfo})\n`,
     );
   }
 };
@@ -4933,6 +4958,10 @@ export const buildCli = (): Command => {
       all.push(value);
       return all;
     }, [] as string[])
+    .option("--header <header>", "custom header as 'Name: value' (repeatable)", (value, all: string[]) => {
+      all.push(value);
+      return all;
+    }, [] as string[])
     .action(
       async (
         options: {
@@ -4940,6 +4969,7 @@ export const buildCli = (): Command => {
           name?: string;
           authBearerEnv?: string;
           env: string[];
+          header: string[];
         },
       ) => {
         await mcpAdd(process.cwd(), {
@@ -4947,6 +4977,7 @@ export const buildCli = (): Command => {
           name: options.name,
           envVars: options.env,
           authBearerEnv: options.authBearerEnv,
+          headers: options.header,
         });
       },
     );

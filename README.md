@@ -484,6 +484,11 @@ MCP (Model Context Protocol) is a standard for connecting AI agents to external 
 # Remote server (connect via URL)
 poncho mcp add --url https://mcp.example.com/github \
   --name github --auth-bearer-env GITHUB_TOKEN
+
+# Server with custom headers (e.g. Arcade)
+poncho mcp add --url https://mcp.arcade.dev --name arcade \
+  --auth-bearer-env ARCADE_API_KEY \
+  --header "Arcade-User-ID: user@example.com"
 ```
 
 ### Configure in poncho.config.js
@@ -495,6 +500,12 @@ export default {
       // Remote: connect to external server
       url: 'https://mcp.example.com/slack',
       auth: { type: 'bearer', tokenEnv: 'SLACK_TOKEN' },
+    },
+    {
+      // Server that requires custom headers (e.g. Arcade)
+      url: 'https://mcp.arcade.dev',
+      auth: { type: 'bearer', tokenEnv: 'ARCADE_API_KEY' },
+      headers: { 'Arcade-User-ID': 'user@example.com' },
     }
   ]
 }

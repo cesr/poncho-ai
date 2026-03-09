@@ -12,6 +12,7 @@ export interface RemoteMcpServerConfig {
     type: "bearer";
     tokenEnv?: string;
   };
+  headers?: Record<string, string>;
   timeoutMs?: number;
   reconnectAttempts?: number;
   reconnectDelayMs?: number;
@@ -46,18 +47,26 @@ class StreamableHttpMcpRpcClient implements McpRpcClient {
   private readonly endpoint: string;
   private readonly timeoutMs: number;
   private readonly bearerToken?: string;
+  private readonly customHeaders: Record<string, string>;
   private idCounter = 1;
   private initialized = false;
   private sessionId?: string;
 
-  constructor(endpoint: string, timeoutMs = 10_000, bearerToken?: string) {
+  constructor(
+    endpoint: string,
+    timeoutMs = 10_000,
+    bearerToken?: string,
+    customHeaders?: Record<string, string>,
+  ) {
     this.endpoint = endpoint;
     this.timeoutMs = timeoutMs;
     this.bearerToken = bearerToken;
+    this.customHeaders = customHeaders ?? {};
   }
 
   private buildHeaders(accept: string): Record<string, string> {
     const headers: Record<string, string> = {
+      ...this.customHeaders,
       "Content-Type": "application/json",
       Accept: accept,
     };
@@ -367,6 +376,7 @@ export class LocalMcpBridge {
           server.url,
           server.timeoutMs ?? 10_000,
           server.auth?.tokenEnv ? process.env[server.auth.tokenEnv] : undefined,
+          server.headers,
         ),
       );
     }
