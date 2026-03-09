@@ -1,5 +1,12 @@
 # @poncho-ai/messaging
 
+## 0.2.6
+
+### Patch Changes
+
+- Updated dependencies [[`cd6ccd7`](https://github.com/cesr/poncho-ai/commit/cd6ccd7846e16fbaf17167617666796320ec29ce)]:
+  - @poncho-ai/sdk@1.3.0
+
 ## 0.2.5
 
 ### Patch Changes
