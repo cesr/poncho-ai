@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import { defineTool, type ToolDefinition } from "@poncho-ai/sdk";
 
@@ -85,5 +85,28 @@ export const createWriteTool = (workingDir: string): ToolDefinition =>
       await mkdir(dirname(resolved), { recursive: true });
       await writeFile(resolved, content, "utf8");
       return { path, written: true };
+    },
+  });
+
+export const createDeleteTool = (workingDir: string): ToolDefinition =>
+  defineTool({
+    name: "delete_file",
+    description: "Delete a file at a path inside the working directory",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "File path relative to working directory",
+        },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    },
+    handler: async (input) => {
+      const path = typeof input.path === "string" ? input.path : "";
+      const resolved = resolveSafePath(workingDir, path);
+      await unlink(resolved);
+      return { path, deleted: true };
     },
   });

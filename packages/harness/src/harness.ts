@@ -15,7 +15,7 @@ import type { UploadStore } from "./upload-store.js";
 import { PONCHO_UPLOAD_SCHEME, deriveUploadKey } from "./upload-store.js";
 import { parseAgentFile, renderAgentPrompt, type ParsedAgent, type AgentFrontmatter } from "./agent-parser.js";
 import { loadPonchoConfig, resolveMemoryConfig, type PonchoConfig, type ToolAccess, type BuiltInToolToggles } from "./config.js";
-import { createDefaultTools, createWriteTool } from "./default-tools.js";
+import { createDefaultTools, createDeleteTool, createWriteTool } from "./default-tools.js";
 import {
   createMemoryStore,
   createMemoryTools,
@@ -324,6 +324,7 @@ The agent will respond in Slack threads when @mentioned. Each Slack thread maps 
    RESEND_API_KEY=re_...
    RESEND_WEBHOOK_SECRET=whsec_...
    RESEND_FROM=Agent <agent@yourdomain.com>
+   RESEND_REPLY_TO=support@yourdomain.com   # optional
    \`\`\`
 5. Add to \`poncho.config.js\`:
    \`\`\`javascript
@@ -526,7 +527,7 @@ export class AgentHarness {
   private isToolEnabled(name: string): boolean {
     const access = this.resolveToolAccess(name);
     if (access === false) return false;
-    if (name === "write_file") {
+    if (name === "write_file" || name === "delete_file") {
       return this.shouldEnableWriteTool();
     }
     return true;
@@ -573,6 +574,9 @@ export class AgentHarness {
     }
     if (this.isToolEnabled("write_file")) {
       this.registerIfMissing(createWriteTool(this.workingDir));
+    }
+    if (this.isToolEnabled("delete_file")) {
+      this.registerIfMissing(createDeleteTool(this.workingDir));
     }
   }
 

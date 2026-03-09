@@ -344,6 +344,7 @@ By default, Poncho includes built-in filesystem tools from the harness:
 | `list_directory` | List files and folders at a path |
 | `read_file` | Read UTF-8 text file contents |
 | `write_file` | Write UTF-8 text file contents (create or overwrite; gated by environment/policy) |
+| `delete_file` | Delete a file (requires approval by default; gated by environment/policy) |
 
 Additional skills can be installed via `poncho skills add <repo-or-path>` (or the `poncho add` alias).
 
@@ -353,13 +354,18 @@ Control whether any tool is available, requires approval, or is disabled via `po
 
 ```javascript
 tools: {
-  send_email: 'approval',   // available, requires human approval
-  write_file: false,         // disabled (agent never sees it)
-  read_file: true,           // available (same as default)
+  list_directory: true,        // available (default)
+  read_file: true,             // available (default)
+  write_file: true,            // gated by environment for writes
+  delete_file: 'approval',     // requires human approval
+  send_email: 'approval',      // requires human approval
   byEnvironment: {
+    production: {
+      write_file: false,
+      delete_file: false,
+    },
     development: {
-      send_email: true,      // skip approval in dev
-      write_file: true,
+      send_email: true,        // skip approval in dev
     },
   },
 }
@@ -371,7 +377,7 @@ Three access levels per tool:
 - `'approval'`: available, but triggers a human approval prompt before each call
 - `false`: disabled, tool is not registered and the agent never sees it
 
-This works for any tool — built-in harness tools (`write_file`, `read_file`, `list_directory`), adapter tools (`send_email`), MCP tools, and skill tools. Per-environment overrides in `byEnvironment` take priority over the top-level defaults.
+This works for any tool — built-in harness tools (`list_directory`, `read_file`, `write_file`, `delete_file`), adapter tools (`send_email`), MCP tools, and skill tools. Per-environment overrides in `byEnvironment` take priority over the top-level defaults.
 
 ### How skill discovery works
 
@@ -557,6 +563,7 @@ Available tools:
 - list_directory: List files and folders at a path
 - read_file: Read UTF-8 text file contents
 - write_file: Write UTF-8 text file contents (may be disabled by environment/policy)
+- delete_file: Delete a file (requires approval; may be disabled by environment/policy)
 - my_tool: Example custom tool loaded from a local skill (if present)
 - remote_tool: Example tool discovered from a configured remote MCP server (if connected)
 ```

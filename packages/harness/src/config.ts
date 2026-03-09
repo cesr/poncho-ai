@@ -39,6 +39,7 @@ export type BuiltInToolToggles = {
   list_directory?: boolean;
   read_file?: boolean;
   write_file?: boolean;
+  delete_file?: boolean;
 };
 
 export interface MessagingChannelConfig {
@@ -50,6 +51,7 @@ export interface MessagingChannelConfig {
   apiKeyEnv?: string;
   webhookSecretEnv?: string;
   fromEnv?: string;
+  replyToEnv?: string;
   allowedSenders?: string[];
   mode?: "auto-reply" | "tool";
   allowedRecipients?: string[];

@@ -108,6 +108,7 @@ Add environment variables to `.env`:
 RESEND_API_KEY=re_...
 RESEND_WEBHOOK_SECRET=whsec_...
 RESEND_FROM=Agent <agent@yourdomain.com>
+RESEND_REPLY_TO=support@yourdomain.com   # optional
 ```
 
 Add messaging to `poncho.config.js`:
@@ -165,6 +166,7 @@ messaging: [
     apiKeyEnv: 'MY_RESEND_API_KEY',
     webhookSecretEnv: 'MY_RESEND_WEBHOOK_SECRET',
     fromEnv: 'MY_RESEND_FROM',
+    replyToEnv: 'MY_RESEND_REPLY_TO',
   }
 ]
 ```

@@ -20,6 +20,7 @@ All credentials in `poncho.config.js` use **env var name** fields (`*Env` suffix
 | `messaging[].apiKeyEnv` | `RESEND_API_KEY` | Resend API key |
 | `messaging[].webhookSecretEnv` | `RESEND_WEBHOOK_SECRET` | Resend webhook signing secret |
 | `messaging[].fromEnv` | `RESEND_FROM` | Resend sender address |
+| `messaging[].replyToEnv` | `RESEND_REPLY_TO` | Resend reply-to address (optional) |
 | `mcp[].auth.tokenEnv` | *(user-defined)* | MCP server bearer token |
 
 ## Config File Reference (`poncho.config.js`)
@@ -42,35 +43,22 @@ export default {
   // Extra directories to scan for skills (skills/ is always scanned)
   skillPaths: ['.cursor/skills'],
 
-  // Skill-specific configuration
-  skills: {
-    '@poncho-ai/web-fetch': {
-      allowedDomains: ['*.github.com', 'api.example.com'],
-      timeout: 10000,              // 10 seconds (ms)
-      maxResponseSize: 1024 * 1024,  // 1MB
-    },
-    '@poncho-ai/code-execution': {
-      allowedLanguages: ['javascript', 'typescript'],
-      maxExecutionTime: 30000,     // 30 seconds (ms)
-    },
-    '@poncho-ai/shell': {
-      allowedCommands: ['ls', 'cat', 'grep'],
-    },
-  },
-
   // Tool access: true (available), false (disabled), 'approval' (requires human approval)
   // Any tool name works — harness tools, adapter tools (send_email), MCP tools, etc.
   tools: {
-    write_file: true,            // available (still gated by environment for writes)
-    send_email: 'approval',      // available, requires human approval before each call
-    list_directory: true,
+    list_directory: true,          // available (default)
+    read_file: true,               // available (default)
+    write_file: true,              // gated by environment for writes
+    delete_file: 'approval',       // requires human approval
+    send_email: 'approval',        // requires human approval
     byEnvironment: {
       production: {
-        write_file: false,       // disable writes in production
-        send_email: 'approval',  // keep approval in production
+        write_file: false,         // disable writes in production
+        delete_file: false,        // disable deletes in production
+        send_email: 'approval',    // keep approval in production
       },
       development: {
-        send_email: true,        // skip approval in dev
+        send_email: true,          // skip approval in dev
       },
     },
   },
@@ -123,6 +111,8 @@ export default {
   messaging: [
     { platform: 'slack' },                                 // Uses SLACK_BOT_TOKEN + SLACK_SIGNING_SECRET
     // { platform: 'slack', botTokenEnv: 'MY_BOT_TOKEN' }, // Custom env var names
+    { platform: 'resend' },                                // Uses RESEND_API_KEY + RESEND_WEBHOOK_SECRET + RESEND_FROM
+    // { platform: 'resend', mode: 'tool', replyToEnv: 'RESEND_REPLY_TO' }, // Tool mode with custom reply-to
   ],
 
   // File upload storage (default: local filesystem)
@@ -133,6 +123,17 @@ export default {
     // region: 'us-east-1',      // S3 region
     // endpoint: '...',          // S3-compatible endpoint
   },
+
+  // Browser automation (requires @poncho-ai/browser)
+  // browser: true,
+  // browser: {
+  //   viewport: { width: 1280, height: 720 },
+  //   quality: 80,
+  //   everyNthFrame: 2,
+  //   headless: true,
+  //   profileDir: '~/.poncho/browser-profiles',
+  //   executablePath: '/path/to/chromium',
+  // },
 
   // Headless mode: disable the built-in Web UI (API-only)
   // webUi: false,
@@ -177,6 +178,7 @@ Remote storage keys are namespaced and versioned, for example `poncho:v1:<agentI
 | `RESEND_API_KEY` | No | Resend API key (for email messaging) |
 | `RESEND_WEBHOOK_SECRET` | No | Resend webhook signing secret |
 | `RESEND_FROM` | No | Sender address for email replies |
+| `RESEND_REPLY_TO` | No | Reply-to address for outgoing emails (optional) |
 | `BLOB_READ_WRITE_TOKEN` | No | Vercel Blob token (for `uploads.provider: 'vercel-blob'`) |
 | `PONCHO_UPLOADS_BUCKET` | No | S3 bucket name (for `uploads.provider: 's3'`) |
 

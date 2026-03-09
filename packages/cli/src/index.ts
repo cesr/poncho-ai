@@ -545,11 +545,15 @@ export default {
   ],
   // Tool access: true (available), false (disabled), 'approval' (requires human approval)
   tools: {
+    list_directory: true,
+    read_file: true,
     write_file: true,           // gated by environment for writes
+    delete_file: 'approval',    // requires human approval
     send_email: 'approval',     // requires human approval
     byEnvironment: {
       production: {
         write_file: false,
+        delete_file: false,
       },
       development: {
         send_email: true,       // skip approval in dev
@@ -632,6 +636,7 @@ Connect your agent to email so users can interact by sending emails:
    RESEND_API_KEY=re_...
    RESEND_WEBHOOK_SECRET=whsec_...
    RESEND_FROM=Agent <agent@yourdomain.com>
+   RESEND_REPLY_TO=support@yourdomain.com   # optional
    \`\`\`
 5. Add to \`poncho.config.js\`:
    \`\`\`javascript
@@ -2367,6 +2372,7 @@ export const createRequestHandler = async (options?: {
           apiKeyEnv: channelConfig.apiKeyEnv,
           webhookSecretEnv: channelConfig.webhookSecretEnv,
           fromEnv: channelConfig.fromEnv,
+          replyToEnv: channelConfig.replyToEnv,
           allowedSenders: channelConfig.allowedSenders,
           mode: channelConfig.mode,
           allowedRecipients: channelConfig.allowedRecipients,

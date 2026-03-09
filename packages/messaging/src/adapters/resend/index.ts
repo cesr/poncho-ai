@@ -34,6 +34,7 @@ interface ResendClient {
       html?: string;
       cc?: string[];
       bcc?: string[];
+      reply_to?: string[];
       headers?: Record<string, string>;
       attachments?: Array<{ filename: string; content?: string; path?: string; contentType?: string }>;
     }): Promise<{ data?: { id: string }; error?: unknown }>;
@@ -158,6 +159,7 @@ export interface ResendAdapterOptions {
   apiKeyEnv?: string;
   webhookSecretEnv?: string;
   fromEnv?: string;
+  replyToEnv?: string;
   allowedSenders?: string[];
   mode?: "auto-reply" | "tool";
   allowedRecipients?: string[];
@@ -188,9 +190,11 @@ export class ResendAdapter implements MessagingAdapter {
   private apiKey = "";
   private webhookSecret = "";
   private fromAddress = "";
+  private replyToAddress = "";
   private readonly apiKeyEnv: string;
   private readonly webhookSecretEnv: string;
   private readonly fromEnv: string;
+  private readonly replyToEnv: string;
   private readonly allowedSenders: string[] | undefined;
   private readonly allowedRecipients: string[] | undefined;
   private readonly maxSendsPerRun: number;
@@ -208,6 +212,7 @@ export class ResendAdapter implements MessagingAdapter {
     this.apiKeyEnv = options.apiKeyEnv ?? "RESEND_API_KEY";
     this.webhookSecretEnv = options.webhookSecretEnv ?? "RESEND_WEBHOOK_SECRET";
     this.fromEnv = options.fromEnv ?? "RESEND_FROM";
+    this.replyToEnv = options.replyToEnv ?? "RESEND_REPLY_TO";
     this.allowedSenders = options.allowedSenders;
     this.mode = options.mode ?? "auto-reply";
     this.autoReply = this.mode !== "tool";
@@ -228,6 +233,7 @@ export class ResendAdapter implements MessagingAdapter {
     this.apiKey = process.env[this.apiKeyEnv] ?? "";
     this.webhookSecret = process.env[this.webhookSecretEnv] ?? "";
     this.fromAddress = process.env[this.fromEnv] ?? "";
+    this.replyToAddress = process.env[this.replyToEnv] ?? "";
 
     if (!this.apiKey) {
       throw new Error(
@@ -298,6 +304,7 @@ export class ResendAdapter implements MessagingAdapter {
       subject,
       text: content,
       html: markdownToEmailHtml(content),
+      reply_to: this.replyToAddress ? [this.replyToAddress] : undefined,
       headers,
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
     });
@@ -423,6 +430,7 @@ export class ResendAdapter implements MessagingAdapter {
       html: markdownToEmailHtml(body),
       cc: cc && cc.length > 0 ? cc : undefined,
       bcc: bcc && bcc.length > 0 ? bcc : undefined,
+      reply_to: this.replyToAddress ? [this.replyToAddress] : undefined,
       headers: Object.keys(headers).length > 0 ? headers : undefined,
     });
 
