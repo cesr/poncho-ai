@@ -1190,9 +1190,12 @@ export class AgentHarness {
         try {
           await capturePromise;
         } finally {
-          // Flush pending spans but do NOT shutdown — the LatitudeTelemetry
-          // instance is reused across runs. Shutdown happens in harness.shutdown().
-          await telemetry.flush().catch(() => {});
+          try {
+            await telemetry.flush();
+            console.info("[poncho][telemetry] flush completed");
+          } catch (flushErr) {
+            console.error("[poncho][telemetry] flush failed:", flushErr);
+          }
         }
       }
     } else {
