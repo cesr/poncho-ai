@@ -2509,11 +2509,11 @@ export const getWebUiClientScript = (markedSource: string): string => `
           renderMessages(state.activeMessages, state.isStreaming);
           loadConversations();
           if (!wasStreaming && state.activeConversationId) {
-            await streamConversationEvents(state.activeConversationId, { liveOnly: true });
-          }
-          if (!wasStreaming) {
-            setStreaming(false);
-            renderMessages(state.activeMessages, false);
+            const cid = state.activeConversationId;
+            await streamConversationEvents(cid, { liveOnly: true });
+            if (state.activeConversationId === cid) {
+              pollUntilRunIdle(cid);
+            }
           }
           return;
         }
@@ -2540,11 +2540,11 @@ export const getWebUiClientScript = (markedSource: string): string => `
         renderMessages(state.activeMessages, state.isStreaming);
         loadConversations();
         if (!wasStreaming && state.activeConversationId) {
-          await streamConversationEvents(state.activeConversationId, { liveOnly: true });
-        }
-        if (!wasStreaming) {
-          setStreaming(false);
-          renderMessages(state.activeMessages, false);
+          const cid = state.activeConversationId;
+          await streamConversationEvents(cid, { liveOnly: true });
+          if (state.activeConversationId === cid) {
+            pollUntilRunIdle(cid);
+          }
         }
       });
 
