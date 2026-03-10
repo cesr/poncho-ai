@@ -72,6 +72,7 @@ export const createModelProvider = (provider?: string, config?: ProviderConfig):
 
   const apiKeyEnv = config?.anthropic?.apiKeyEnv ?? "ANTHROPIC_API_KEY";
   const anthropic = createAnthropic({
+    name: "anthropic",
     apiKey: process.env[apiKeyEnv],
   });
   return (modelName: string) => anthropic(modelName);
