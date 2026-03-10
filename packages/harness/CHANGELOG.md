@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.20.9
+
+### Patch Changes
+
+- [`29cc075`](https://github.com/cesr/poncho-ai/commit/29cc075554077db177f93fd07af031da4a69ac51) Thanks [@cesr](https://github.com/cesr)! - Strip provider prefix from model names in AGENT.md (e.g. `anthropic/claude-sonnet-4-5` → `claude-sonnet-4-5`). The provider is extracted and used for routing; only the bare model name is sent to the API.
+
 ## 0.20.8
 
 ### Patch Changes
