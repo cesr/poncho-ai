@@ -1,5 +1,11 @@
 # @poncho-ai/messaging
 
+## 0.4.0
+
+### Minor Changes
+
+- [`3216e80`](https://github.com/cesr/poncho-ai/commit/3216e8072027896dd1cc5f29b1a7b0eea9ee1ff5) Thanks [@cesr](https://github.com/cesr)! - Add `allowedUserIds` option to Telegram adapter for restricting bot access to specific users.
+
 ## 0.3.0
 
 ### Minor Changes
