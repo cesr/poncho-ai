@@ -288,9 +288,9 @@ cron:
 - To carry context across cron runs, enable memory.
 - **IMPORTANT**: When adding a new cron job, always PRESERVE all existing cron jobs. Never remove or overwrite existing jobs unless the user explicitly asks you to replace or delete them. Read the full current \`cron:\` block before editing, and append the new job alongside the existing ones.
 
-## Messaging Integrations (Slack, etc.)
+## Messaging Integrations (Slack, Telegram, Email)
 
-Users can connect this agent to messaging platforms so it responds to @mentions.
+Users can connect this agent to messaging platforms so it responds to messages and @mentions.
 
 ### Slack Setup
 
@@ -312,6 +312,50 @@ Users can connect this agent to messaging platforms so it responds to @mentions.
 9. **Vercel only:** install \`@vercel/functions\` so the serverless function stays alive while processing messages (\`npm install @vercel/functions\`)
 
 The agent will respond in Slack threads when @mentioned. Each Slack thread maps to a separate Poncho conversation.
+
+### Telegram Setup
+
+1. Open Telegram and start a chat with @BotFather (https://t.me/BotFather)
+2. Send \`/newbot\` and follow the prompts to create your bot
+3. Copy the **Bot Token** (looks like \`123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11\`)
+4. Add env vars:
+   \`\`\`
+   TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+   TELEGRAM_WEBHOOK_SECRET=my-secret-token
+   \`\`\`
+   The webhook secret is optional but recommended. It can be any string up to 256 characters.
+5. Add to \`poncho.config.js\`:
+   \`\`\`javascript
+   messaging: [{ platform: 'telegram' }]
+   \`\`\`
+6. Register the webhook after deploying:
+   \`\`\`bash
+   curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \\
+     -H "Content-Type: application/json" \\
+     -d '{"url": "https://<deployed-url>/api/messaging/telegram", "secret_token": "<WEBHOOK_SECRET>"}'
+   \`\`\`
+   Omit \`secret_token\` if not using a webhook secret. For local dev, use a tunnel like ngrok and register the tunnel URL.
+7. **Vercel only:** install \`@vercel/functions\` so the serverless function stays alive while processing (\`npm install @vercel/functions\`)
+
+**How it works:**
+- **Private chats**: the bot responds to all messages.
+- **Groups**: the bot only responds when @mentioned. The mention is stripped before the message reaches the agent.
+- **Forum topics**: each topic in a supergroup is a separate conversation.
+- Photos and documents sent to the bot are forwarded as file attachments.
+- Use \`/new\` to reset the conversation. In groups, use \`/new@botusername\`.
+
+**Restricting access:**
+
+By default any Telegram user can message the bot. To restrict to specific users:
+
+\`\`\`javascript
+messaging: [{
+  platform: 'telegram',
+  allowedUserIds: [1056240469],
+}]
+\`\`\`
+
+Messages from anyone not on the list are silently ignored. Users can find their ID by messaging @userinfobot on Telegram.
 
 ### Email Setup (Resend)
 
