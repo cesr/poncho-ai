@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   AgentBridgeOptions,
   IncomingMessage,
@@ -7,13 +8,24 @@ import type {
 } from "./types.js";
 
 /**
- * Derive a stable conversation ID from a platform thread reference.
- * Format: `<platform>:<channelId>:<threadId>`
+ * Derive a deterministic UUID from a platform thread reference.
+ * SHA-256 hashes the composite key and formats 16 bytes as a UUID v4-shaped
+ * string, ensuring a valid UUID that's stable across requests for the same thread.
  */
 const conversationIdFromThread = (
   platform: string,
   ref: ThreadRef,
-): string => `${platform}:${ref.channelId}:${ref.platformThreadId}`;
+): string => {
+  const key = `${platform}:${ref.channelId}:${ref.platformThreadId}`;
+  const hex = createHash("sha256").update(key).digest("hex").slice(0, 32);
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    `4${hex.slice(13, 16)}`,
+    ((parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, "0") + hex.slice(18, 20),
+    hex.slice(20, 32),
+  ].join("-");
+};
 
 export class AgentBridge {
   private readonly adapter: MessagingAdapter;
