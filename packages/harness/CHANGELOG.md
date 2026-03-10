@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.20.4
+
+### Patch Changes
+
+- [`c35f676`](https://github.com/cesr/poncho-ai/commit/c35f676cdc548a3db9212ae7909302a5b876bc40) Thanks [@cesr](https://github.com/cesr)! - Switch Latitude telemetry to use BatchSpanProcessor (default) instead of SimpleSpanProcessor. Sends all spans from a trace together in one OTLP batch, matching Latitude's expected integration pattern.
+
 ## 0.20.3
 
 ### Patch Changes
