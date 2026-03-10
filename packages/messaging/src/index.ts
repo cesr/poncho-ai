@@ -15,6 +15,8 @@ export { SlackAdapter } from "./adapters/slack/index.js";
 export type { SlackAdapterOptions } from "./adapters/slack/index.js";
 export { ResendAdapter } from "./adapters/resend/index.js";
 export type { ResendAdapterOptions } from "./adapters/resend/index.js";
+export { TelegramAdapter } from "./adapters/telegram/index.js";
+export type { TelegramAdapterOptions } from "./adapters/telegram/index.js";
 
 export {
   buildReplyHeaders,

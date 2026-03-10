@@ -17,6 +17,8 @@ All credentials in `poncho.config.js` use **env var name** fields (`*Env` suffix
 | `telemetry.latitude.projectIdEnv` | `LATITUDE_PROJECT_ID` | Latitude project ID |
 | `messaging[].botTokenEnv` | `SLACK_BOT_TOKEN` | Slack bot token |
 | `messaging[].signingSecretEnv` | `SLACK_SIGNING_SECRET` | Slack signing secret |
+| `messaging[].botTokenEnv` | `TELEGRAM_BOT_TOKEN` | Telegram bot token |
+| `messaging[].webhookSecretEnv` | `TELEGRAM_WEBHOOK_SECRET` | Telegram webhook secret (optional) |
 | `messaging[].apiKeyEnv` | `RESEND_API_KEY` | Resend API key |
 | `messaging[].webhookSecretEnv` | `RESEND_WEBHOOK_SECRET` | Resend webhook signing secret |
 | `messaging[].fromEnv` | `RESEND_FROM` | Resend sender address |
@@ -113,6 +115,8 @@ export default {
   messaging: [
     { platform: 'slack' },                                 // Uses SLACK_BOT_TOKEN + SLACK_SIGNING_SECRET
     // { platform: 'slack', botTokenEnv: 'MY_BOT_TOKEN' }, // Custom env var names
+    { platform: 'telegram' },                              // Uses TELEGRAM_BOT_TOKEN (+ optional TELEGRAM_WEBHOOK_SECRET)
+    // { platform: 'telegram', botTokenEnv: 'MY_TG_TOKEN' }, // Custom env var names
     { platform: 'resend' },                                // Uses RESEND_API_KEY + RESEND_WEBHOOK_SECRET + RESEND_FROM
     // { platform: 'resend', mode: 'tool', replyToEnv: 'RESEND_REPLY_TO' }, // Tool mode with custom reply-to
   ],
@@ -177,6 +181,8 @@ Remote storage keys are namespaced and versioned, for example `poncho:v1:<agentI
 | `REDIS_URL` | No | For Redis state storage |
 | `SLACK_BOT_TOKEN` | No | Slack Bot Token (for messaging integration) |
 | `SLACK_SIGNING_SECRET` | No | Slack Signing Secret (for messaging integration) |
+| `TELEGRAM_BOT_TOKEN` | No | Telegram Bot Token (from @BotFather) |
+| `TELEGRAM_WEBHOOK_SECRET` | No | Telegram webhook secret token (optional) |
 | `RESEND_API_KEY` | No | Resend API key (for email messaging) |
 | `RESEND_WEBHOOK_SECRET` | No | Resend webhook signing secret |
 | `RESEND_FROM` | No | Sender address for email replies |

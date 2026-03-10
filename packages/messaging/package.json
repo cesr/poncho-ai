@@ -46,6 +46,7 @@
     "agent",
     "messaging",
     "slack",
+    "telegram",
     "email",
     "resend"
   ],

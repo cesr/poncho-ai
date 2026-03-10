@@ -78,6 +78,7 @@ Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` 
 - [Web UI](docs/features.md#web-ui)
 - Messaging
   - [Slack](docs/features.md#slack)
+  - [Telegram](docs/features.md#telegram)
   - [Email (Resend)](docs/features.md#email-resend)
   - [Custom Adapters](docs/features.md#custom-messaging-adapters)
 - [Browser Automation](docs/features.md#browser-automation-experimental)
@@ -927,7 +928,7 @@ You are a helpful customer support agent for Acme Corp.
 ## Further Documentation
 
 - **[HTTP API & Client SDK](docs/api.md)** — REST endpoints, SSE streaming, TypeScript client, file attachments, custom UIs
-- **[Platform Features](docs/features.md)** — Web UI, Slack & email messaging, browser automation, persistent memory
+- **[Platform Features](docs/features.md)** — Web UI, Slack/Telegram/email messaging, browser automation, persistent memory
 - **[Configuration & Security](docs/configuration.md)** — `poncho.config.js` reference, environment variables, observability, auth
 - **[Error Handling & Troubleshooting](docs/troubleshooting.md)** — Error codes, recovery, common issues
 

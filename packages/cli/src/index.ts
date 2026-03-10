@@ -36,6 +36,7 @@ import {
   AgentBridge,
   ResendAdapter,
   SlackAdapter,
+  TelegramAdapter,
   type AgentRunner,
   type MessagingAdapter,
   type RouteRegistrar,
@@ -626,6 +627,32 @@ Connect your agent to Slack so it responds to @mentions:
 
 **Vercel deployments:** install \`@vercel/functions\` so Poncho can keep the serverless function alive while processing: \`npm install @vercel/functions\`
 
+## Messaging (Telegram)
+
+Connect your agent to Telegram so it responds to messages and @mentions:
+
+1. Talk to [@BotFather](https://t.me/BotFather) on Telegram, send \`/newbot\`, and follow the prompts
+2. Copy the Bot Token
+3. Set env vars:
+   \`\`\`
+   TELEGRAM_BOT_TOKEN=123456:ABC-...
+   TELEGRAM_WEBHOOK_SECRET=my-secret-token   # optional but recommended
+   \`\`\`
+4. Add to \`poncho.config.js\`:
+   \`\`\`javascript
+   messaging: [{ platform: 'telegram' }]
+   \`\`\`
+5. Register the webhook after deploying:
+   \`\`\`bash
+   curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \\
+     -H "Content-Type: application/json" \\
+     -d '{"url": "https://<your-url>/api/messaging/telegram", "secret_token": "<SECRET>"}'
+   \`\`\`
+
+The bot responds to all messages in private chats and only to @mentions in groups. Use \`/new\` to reset the conversation.
+
+**Vercel deployments:** install \`@vercel/functions\` so Poncho can keep the serverless function alive while processing: \`npm install @vercel/functions\`
+
 ## Messaging (Email via Resend)
 
 Connect your agent to email so users can interact by sending emails:
@@ -1155,8 +1182,34 @@ CMD ["node","server.js"]
   return writtenPaths;
 };
 
+const serializeJs = (value: unknown, indent = 0): string => {
+  const pad = "  ".repeat(indent);
+  const padInner = "  ".repeat(indent + 1);
+  if (value === null || value === undefined) return String(value);
+  if (typeof value === "boolean" || typeof value === "number") return String(value);
+  if (typeof value === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "[]";
+    const items = value.map((v) => `${padInner}${serializeJs(v, indent + 1)}`);
+    return `[\n${items.join(",\n")},\n${pad}]`;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).filter(
+      ([, v]) => v !== undefined,
+    );
+    if (entries.length === 0) return "{}";
+    const safeKey = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
+    const lines = entries.map(([k, v]) => {
+      const key = safeKey.test(k) ? k : JSON.stringify(k);
+      return `${padInner}${key}: ${serializeJs(v, indent + 1)}`;
+    });
+    return `{\n${lines.join(",\n")},\n${pad}}`;
+  }
+  return String(value);
+};
+
 const renderConfigFile = (config: PonchoConfig): string =>
-  `export default ${JSON.stringify(config, null, 2)}\n`;
+  `export default ${serializeJs(config)}\n`;
 
 const writeConfigFile = async (workingDir: string, config: PonchoConfig): Promise<void> => {
   const serialized = renderConfigFile(config);
@@ -2420,6 +2473,27 @@ export const createRequestHandler = async (options?: {
         } catch (err) {
           console.warn(
             `  Resend email messaging disabled: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      } else if (channelConfig.platform === "telegram") {
+        const adapter = new TelegramAdapter({
+          botTokenEnv: channelConfig.botTokenEnv,
+          webhookSecretEnv: channelConfig.webhookSecretEnv,
+        });
+        const bridge = new AgentBridge({
+          adapter,
+          runner: messagingRunner,
+          waitUntil: waitUntilHook,
+          ownerId: "local-owner",
+        });
+        try {
+          await bridge.start();
+          adapter.registerRoutes(messagingRouteRegistrar);
+          messagingBridges.push(bridge);
+          console.log(`  Telegram messaging enabled at /api/messaging/telegram`);
+        } catch (err) {
+          console.warn(
+            `  Telegram messaging disabled: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
       }

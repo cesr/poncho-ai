@@ -65,9 +65,11 @@ export class AgentBridge {
         message.threadRef,
       );
 
-      const titleParts = [message.sender.id];
+      const platformTag = `[${message.platform.charAt(0).toUpperCase()}${message.platform.slice(1)}]`;
+      const senderLabel = message.sender.name || message.sender.id;
+      const titleParts = [platformTag, senderLabel];
       if (message.subject) titleParts.push(message.subject);
-      const title = titleParts.join(" — ") || `${message.platform} thread`;
+      const title = titleParts.join(" ") || `${message.platform} thread`;
 
       const conversation = await this.runner.getOrCreateConversation(
         conversationId,

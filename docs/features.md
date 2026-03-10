@@ -89,6 +89,86 @@ messaging: [
 ]
 ```
 
+### Telegram
+
+#### 1. Create a Telegram Bot
+
+1. Open [Telegram](https://telegram.org) and start a chat with [@BotFather](https://t.me/BotFather)
+2. Send `/newbot` and follow the prompts to create your bot
+3. Copy the **Bot Token** (looks like `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`)
+
+> **Privacy mode** is enabled by default, which means the bot only receives messages that @mention it in groups. This is the desired behavior -- no changes needed.
+
+#### 2. Configure your agent
+
+Add environment variables to `.env`:
+
+```
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+TELEGRAM_WEBHOOK_SECRET=my-secret-token
+```
+
+The webhook secret is optional but recommended. It can be any string up to 256 characters (`A-Z`, `a-z`, `0-9`, `_`, `-`).
+
+Add messaging to `poncho.config.js`:
+
+```javascript
+export default {
+  // ... your existing config ...
+  messaging: [
+    { platform: 'telegram' }
+  ]
+}
+```
+
+#### 3. Set up the webhook
+
+After deploying your agent, register the webhook URL with Telegram:
+
+```bash
+curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://<your-deployed-agent>/api/messaging/telegram", "secret_token": "<YOUR_WEBHOOK_SECRET>"}'
+```
+
+Omit the `secret_token` field if you're not using a webhook secret.
+
+For local development, use a tunnel like [ngrok](https://ngrok.com) to expose your local server, then register the tunnel URL as the webhook.
+
+#### 4. Deploy
+
+The messaging endpoint works on all deployment targets (Vercel, Docker, Fly.io, etc.).
+
+**Vercel deployments:** install `@vercel/functions` so Poncho can keep the serverless function alive while the agent processes messages:
+
+```bash
+npm install @vercel/functions
+```
+
+#### How it works
+
+- **Private chats**: the bot responds to all messages.
+- **Groups**: the bot only responds when @mentioned (e.g., `@mybot what's the weather?`). The mention is stripped before the message reaches the agent.
+- **Forum topics**: each topic in a supergroup is treated as a separate conversation.
+- The bot shows a "typing..." indicator while processing.
+- Long responses are automatically split into multiple messages (4096 char limit).
+- **Photos and documents** sent to the bot are forwarded to the agent as file attachments.
+- Use `/new` to reset the conversation and start fresh. In groups, use `/new@botusername`.
+
+#### Custom environment variable names
+
+If you need different env var names (e.g., running multiple Telegram integrations):
+
+```javascript
+messaging: [
+  {
+    platform: 'telegram',
+    botTokenEnv: 'MY_TELEGRAM_BOT_TOKEN',
+    webhookSecretEnv: 'MY_TELEGRAM_WEBHOOK_SECRET',
+  }
+]
+```
+
 ### Email (Resend)
 
 #### 1. Set up Resend
@@ -195,7 +275,7 @@ In tool mode the agent can call `send_email` with:
 
 ### Custom Messaging Adapters
 
-The `MessagingAdapter` interface from `@poncho-ai/messaging` is the extension point for adding other messaging platforms (SendGrid, Postmark, Discord, Telegram, etc.). Implement the interface and wire it with `AgentBridge`:
+The `MessagingAdapter` interface from `@poncho-ai/messaging` is the extension point for adding other messaging platforms (SendGrid, Postmark, Discord, etc.). Implement the interface and wire it with `AgentBridge`:
 
 ```typescript
 import { AgentBridge, type MessagingAdapter } from '@poncho-ai/messaging';

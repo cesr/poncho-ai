@@ -44,7 +44,7 @@ export type BuiltInToolToggles = {
 };
 
 export interface MessagingChannelConfig {
-  platform: "slack" | "resend";
+  platform: "slack" | "resend" | "telegram";
   // Slack
   botTokenEnv?: string;
   signingSecretEnv?: string;
