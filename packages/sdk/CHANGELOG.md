@@ -1,5 +1,14 @@
 # @poncho-ai/sdk
 
+## 1.4.0
+
+### Minor Changes
+
+- [`075b9ac`](https://github.com/cesr/poncho-ai/commit/075b9ac3556847af913bf2b58f030575c3b99852) Thanks [@cesr](https://github.com/cesr)! - Batch tool approvals, fix serverless session persistence and adapter init
+  - Batch tool approvals: all approval-requiring tool calls in a single step are now collected and presented together instead of one at a time.
+  - Fix messaging adapter route registration: routes are only registered after successful initialization, preventing "Adapter not initialised" errors on Vercel.
+  - Add stateless signed-cookie sessions so web UI auth survives serverless cold starts.
+
 ## 1.3.0
 
 ### Minor Changes
