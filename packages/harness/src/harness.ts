@@ -929,6 +929,20 @@ export class AgentHarness {
         DiagLogLevel.ERROR,
       );
       this.latitudeTelemetry = new LatitudeTelemetry(latitudeApiKey, { disableBatch: true });
+      // Diagnostic: log every span that passes through the pipeline
+      const provider = (this.latitudeTelemetry as unknown as { nodeProvider: { addSpanProcessor(p: unknown): void } }).nodeProvider;
+      if (provider?.addSpanProcessor) {
+        provider.addSpanProcessor({
+          onStart() {},
+          onEnd(span: { name: string; spanContext(): { traceId: string }; parentSpanId?: string }) {
+            console.info(
+              `[poncho][otel-diag] span ended: name="${span.name}" traceId=${span.spanContext().traceId} parent=${span.parentSpanId ?? "none"}`,
+            );
+          },
+          forceFlush() { return Promise.resolve(); },
+          shutdown() { return Promise.resolve(); },
+        });
+      }
     } else if (telemetryEnabled && latitudeBlock && (!latitudeApiKey || !latitudeProjectId)) {
       const missing: string[] = [];
       if (!latitudeApiKey) missing.push(`${latApiKeyEnv} env var`);
