@@ -1,6 +1,6 @@
 {
   "name": "@poncho-ai/harness",
-  "version": "0.20.4",
+  "version": "0.20.5",
   "description": "Agent execution runtime - conversation loop, tool dispatch, streaming",
   "repository": {
     "type": "git",
