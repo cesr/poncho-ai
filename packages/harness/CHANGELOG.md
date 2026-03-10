@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.20.5
+
+### Patch Changes
+
+- [`8286e1e`](https://github.com/cesr/poncho-ai/commit/8286e1ef244208d74e1daf8ef1c2a1a3afb1459e) Thanks [@cesr](https://github.com/cesr)! - Match Latitude telemetry integration exactly to their documented Vercel AI SDK pattern — no custom constructor options.
+
 ## 0.20.4
 
 ### Patch Changes
