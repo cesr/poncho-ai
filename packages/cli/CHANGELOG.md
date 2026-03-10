@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.21.2
+
+### Patch Changes
+
+- [`d06eb30`](https://github.com/cesr/poncho-ai/commit/d06eb30d896e30232b8667a93e28994ac71fedf0) Thanks [@cesr](https://github.com/cesr)! - Use `waitUntil` for messaging webhook route handlers on Vercel so the function stays alive for the full email processing after responding with 200.
+
 ## 0.21.1
 
 ### Patch Changes
