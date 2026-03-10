@@ -1036,7 +1036,25 @@ export const getWebUiClientScript = (markedSource: string): string => `
             var payload = await api("/api/conversations/" + encodeURIComponent(conversationId));
             if (state.activeConversationId !== conversationId) return;
             if (payload.conversation) {
-              state.activeMessages = payload.conversation.messages || [];
+              var allPending = [].concat(
+                payload.conversation.pendingApprovals || [],
+              );
+              if (Array.isArray(payload.subagentPendingApprovals)) {
+                payload.subagentPendingApprovals.forEach(function(sa) {
+                  var subIdShort = sa.subagentId && sa.subagentId.length > 12 ? sa.subagentId.slice(0, 12) + "..." : (sa.subagentId || "");
+                  allPending.push({
+                    approvalId: sa.approvalId,
+                    tool: sa.tool,
+                    input: sa.input,
+                    _subagentId: sa.subagentId,
+                    _subagentLabel: "subagent " + subIdShort,
+                  });
+                });
+              }
+              state.activeMessages = hydratePendingApprovals(
+                payload.conversation.messages || [],
+                allPending,
+              );
               renderMessages(state.activeMessages, payload.hasActiveRun);
             }
             if (payload.hasActiveRun) {
