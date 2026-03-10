@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.20.7
+
+### Patch Changes
+
+- [`8999a47`](https://github.com/cesr/poncho-ai/commit/8999a477b6e73ffb7c942a9cc5c85e704ec158b8) Thanks [@cesr](https://github.com/cesr)! - Enable token usage and cost tracking in Latitude telemetry by setting `recordInputs` and `recordOutputs` in the Vercel AI SDK's `experimental_telemetry` config.
+
 ## 0.20.6
 
 ### Patch Changes
