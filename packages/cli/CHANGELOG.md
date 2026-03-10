@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.20.1
+
+### Patch Changes
+
+- [`a9563b0`](https://github.com/cesr/poncho-ai/commit/a9563b03dfbdb6eb8cc9536be72b2bfd76c042ef) Thanks [@cesr](https://github.com/cesr)! - Fix approval resume dying on Vercel: wrap the post-approval tool execution and run resumption in waitUntil so the serverless function stays alive until the work completes.
+
 ## 0.20.0
 
 ### Minor Changes
