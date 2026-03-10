@@ -1,5 +1,11 @@
 # @poncho-ai/messaging
 
+## 0.2.8
+
+### Patch Changes
+
+- [`deb134e`](https://github.com/cesr/poncho-ai/commit/deb134e8a6ecf38d85dc200f57998e33406eff61) Thanks [@cesr](https://github.com/cesr)! - Retry Resend API requests on transient socket errors (common on Vercel cold starts).
+
 ## 0.2.7
 
 ### Patch Changes
