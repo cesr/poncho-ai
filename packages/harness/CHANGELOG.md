@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.20.0
+
+### Minor Changes
+
+- [`5df6b5f`](https://github.com/cesr/poncho-ai/commit/5df6b5fcdc98e0445bea504dc9d077f02d1e954f) Thanks [@cesr](https://github.com/cesr)! - Add polling fallback for web UI on serverless deployments: when the SSE event stream is unavailable (different instance from the webhook handler), the UI polls the conversation every 2 seconds until the run completes. Conversations now track a persisted `runStatus` field.
+
 ## 0.19.1
 
 ### Patch Changes
