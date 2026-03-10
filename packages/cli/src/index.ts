@@ -889,6 +889,7 @@ const ensureRuntimeCliDependency = async (
   projectDir: string,
   cliVersion: string,
   config?: PonchoConfig,
+  target?: string,
 ): Promise<{ paths: string[]; addedDeps: string[] }> => {
   const packageJsonPath = resolve(projectDir, "package.json");
   const content = await readFile(packageJsonPath, "utf8");
@@ -920,6 +921,11 @@ const ensureRuntimeCliDependency = async (
         addedDeps.push(dep.name);
       }
     }
+  }
+
+  if (target === "vercel" && !dependencies["@vercel/functions"]) {
+    dependencies["@vercel/functions"] = "^1.0.0";
+    addedDeps.push("@vercel/functions");
   }
 
   parsed.dependencies = dependencies;
@@ -1137,6 +1143,7 @@ CMD ["node","server.js"]
     projectDir,
     cliVersion,
     config,
+    target,
   );
   const depNote = addedDeps.length > 0 ? ` (added ${addedDeps.join(", ")})` : "";
   for (const p of packagePaths) {
