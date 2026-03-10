@@ -1,5 +1,16 @@
 # @poncho-ai/messaging
 
+## 0.3.0
+
+### Minor Changes
+
+- [`de28ef5`](https://github.com/cesr/poncho-ai/commit/de28ef5acceed921269d15816acd392f5208f03d) Thanks [@cesr](https://github.com/cesr)! - Add Telegram messaging adapter with private/group chat support, file attachments, /new command, and typing indicators.
+
+### Patch Changes
+
+- Updated dependencies [[`de28ef5`](https://github.com/cesr/poncho-ai/commit/de28ef5acceed921269d15816acd392f5208f03d)]:
+  - @poncho-ai/sdk@1.4.1
+
 ## 0.2.9
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@poncho-ai/browser",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Browser automation for Poncho agents, powered by agent-browser",
   "repository": {
     "type": "git",
