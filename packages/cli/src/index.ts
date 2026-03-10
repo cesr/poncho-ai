@@ -2909,55 +2909,67 @@ export const createRequestHandler = async (options?: {
       const checkpointRef = allApprovals[0]!;
 
       const resumeWork = (async () => {
-        const toolContext = {
-          runId: checkpointRef.runId,
-          agentId: identity.id,
-          step: 0,
-          workingDir,
-          parameters: {},
-        };
+        try {
+          const toolContext = {
+            runId: checkpointRef.runId,
+            agentId: identity.id,
+            step: 0,
+            workingDir,
+            parameters: {},
+          };
 
-        // Collect tool calls to execute: approved approval-gated tools + auto-approved deferred tools
-        const approvalToolCallIds = new Set(allApprovals.map(a => a.toolCallId));
-        const callsToExecute: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
-        const deniedResults: Array<{ callId: string; toolName: string; error: string }> = [];
+          // Collect tool calls to execute: approved approval-gated tools + auto-approved deferred tools
+          const approvalToolCallIds = new Set(allApprovals.map(a => a.toolCallId));
+          const callsToExecute: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
+          const deniedResults: Array<{ callId: string; toolName: string; error: string }> = [];
 
-        for (const a of allApprovals) {
-          if (a.decision === "approved" && a.toolCallId) {
-            callsToExecute.push({ id: a.toolCallId, name: a.tool, input: a.input });
-          } else if (a.decision === "denied" && a.toolCallId) {
-            deniedResults.push({ callId: a.toolCallId, toolName: a.tool, error: "Tool execution denied by user" });
+          for (const a of allApprovals) {
+            if (a.decision === "approved" && a.toolCallId) {
+              callsToExecute.push({ id: a.toolCallId, name: a.tool, input: a.input });
+            } else if (a.decision === "denied" && a.toolCallId) {
+              deniedResults.push({ callId: a.toolCallId, toolName: a.tool, error: "Tool execution denied by user" });
+            }
+          }
+
+          // Auto-approved tools that were deferred alongside the approval-needing ones
+          const pendingToolCalls = checkpointRef.pendingToolCalls ?? [];
+          for (const tc of pendingToolCalls) {
+            if (!approvalToolCallIds.has(tc.id)) {
+              callsToExecute.push(tc);
+            }
+          }
+
+          let toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }> = [...deniedResults];
+          if (callsToExecute.length > 0) {
+            const execResults = await harness.executeTools(callsToExecute, toolContext);
+            toolResults.push(...execResults.map(r => ({
+              callId: r.callId,
+              toolName: r.tool,
+              result: r.output,
+              error: r.error,
+            })));
+          }
+
+          await resumeRunFromCheckpoint(
+            conversationId,
+            foundConversation!,
+            checkpointRef,
+            toolResults,
+          );
+        } catch (err) {
+          console.error("[approval-resume] failed:", err instanceof Error ? err.message : err);
+          const conv = await conversationStore.get(conversationId);
+          if (conv) {
+            conv.runStatus = "idle";
+            conv.updatedAt = Date.now();
+            await conversationStore.update(conv);
           }
         }
-
-        // Auto-approved tools that were deferred alongside the approval-needing ones
-        const pendingToolCalls = checkpointRef.pendingToolCalls ?? [];
-        for (const tc of pendingToolCalls) {
-          if (!approvalToolCallIds.has(tc.id)) {
-            callsToExecute.push(tc);
-          }
-        }
-
-        let toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }> = [...deniedResults];
-        if (callsToExecute.length > 0) {
-          const execResults = await harness.executeTools(callsToExecute, toolContext);
-          toolResults.push(...execResults.map(r => ({
-            callId: r.callId,
-            toolName: r.tool,
-            result: r.output,
-            error: r.error,
-          })));
-        }
-
-        await resumeRunFromCheckpoint(
-          conversationId,
-          foundConversation!,
-          checkpointRef,
-          toolResults,
-        );
       })();
       if (waitUntilHook) {
         waitUntilHook(resumeWork);
+      } else {
+        await resumeWork;
       }
 
       writeJson(response, 200, { ok: true, approvalId, approved, batchComplete: true });
