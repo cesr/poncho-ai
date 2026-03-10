@@ -2081,8 +2081,16 @@ export const createRequestHandler = async (options?: {
         }
         conv.runtimeRunId = latestRunId || conv.runtimeRunId;
         conv.pendingApprovals = [];
+        conv.runStatus = "idle";
         if (runContextTokens > 0) conv.contextTokens = runContextTokens;
         if (runContextWindow > 0) conv.contextWindow = runContextWindow;
+        conv.updatedAt = Date.now();
+        await conversationStore.update(conv);
+      }
+    } else {
+      const conv = await conversationStore.get(conversationId);
+      if (conv) {
+        conv.runStatus = "idle";
         conv.updatedAt = Date.now();
         await conversationStore.update(conv);
       }
@@ -2340,21 +2348,19 @@ export const createRequestHandler = async (options?: {
     },
   };
 
+  let waitUntilHook: ((promise: Promise<unknown>) => void) | undefined;
+  if (process.env.VERCEL) {
+    try {
+      const modName = "@vercel/functions";
+      const mod = await import(/* webpackIgnore: true */ modName);
+      waitUntilHook = mod.waitUntil;
+    } catch {
+      // @vercel/functions not installed -- fall through to no-op.
+    }
+  }
+
   const messagingBridges: AgentBridge[] = [];
   if (config?.messaging && config.messaging.length > 0) {
-    let waitUntilHook: ((promise: Promise<unknown>) => void) | undefined;
-    if (process.env.VERCEL) {
-      try {
-        // Dynamic require via variable so TypeScript doesn't attempt static
-        // resolution of @vercel/functions (only present in Vercel deployments).
-        const modName = "@vercel/functions";
-        const mod = await import(/* webpackIgnore: true */ modName);
-        waitUntilHook = mod.waitUntil;
-      } catch {
-        // @vercel/functions not installed -- fall through to no-op.
-      }
-    }
-
     for (const channelConfig of config.messaging) {
       if (channelConfig.platform === "slack") {
         const adapter = new SlackAdapter({
@@ -2896,12 +2902,13 @@ export const createRequestHandler = async (options?: {
 
       // All approvals in the batch are decided — execute and resume
       foundConversation.pendingApprovals = [];
+      foundConversation.runStatus = "running";
       await conversationStore.update(foundConversation);
 
       // Use the first approval as the checkpoint reference (all share the same checkpoint data)
       const checkpointRef = allApprovals[0]!;
 
-      void (async () => {
+      const resumeWork = (async () => {
         const toolContext = {
           runId: checkpointRef.runId,
           agentId: identity.id,
@@ -2949,6 +2956,9 @@ export const createRequestHandler = async (options?: {
           toolResults,
         );
       })();
+      if (waitUntilHook) {
+        waitUntilHook(resumeWork);
+      }
 
       writeJson(response, 200, { ok: true, approvalId, approved, batchComplete: true });
       return;
