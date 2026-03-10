@@ -32,7 +32,6 @@ import { createSkillTools, normalizeScriptPolicyPath } from "./skill-tools.js";
 import { createSubagentTools } from "./subagent-tools.js";
 import type { SubagentManager } from "./subagent-manager.js";
 import { LatitudeTelemetry } from "@latitude-data/telemetry";
-import { diag, DiagLogLevel } from "@opentelemetry/api";
 import {
   isSiblingScriptsPattern,
   matchesRelativeScriptPattern,
@@ -915,22 +914,7 @@ export class AgentHarness {
     const rawProjectId = process.env[latProjectIdEnv];
     const latitudeProjectId = rawProjectId ? parseInt(rawProjectId, 10) : undefined;
     if (telemetryEnabled && latitudeApiKey && latitudeProjectId) {
-      diag.setLogger(
-        {
-          error: (msg, ...args) => {
-            if (typeof msg === "string" && msg.includes("Attempted duplicate registration")) return;
-            console.error(`[poncho][otel] ${msg}`, ...args);
-          },
-          warn: () => {},
-          info: () => {},
-          debug: () => {},
-          verbose: () => {},
-        },
-        DiagLogLevel.ERROR,
-      );
-      this.latitudeTelemetry = new LatitudeTelemetry(latitudeApiKey, {
-        instrumentations: {},
-      });
+      this.latitudeTelemetry = new LatitudeTelemetry(latitudeApiKey);
     } else if (telemetryEnabled && latitudeBlock && (!latitudeApiKey || !latitudeProjectId)) {
       const missing: string[] = [];
       if (!latitudeApiKey) missing.push(`${latApiKeyEnv} env var`);
