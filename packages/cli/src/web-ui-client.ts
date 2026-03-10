@@ -286,8 +286,15 @@ export const getWebUiClientScript = (markedSource: string): string => `
             );
           })
           .join("");
+        const batchButtons = requests.length > 1
+          ? '<div class="approval-batch-actions">' +
+            '<button class="approval-batch-btn approve" data-approval-batch="approve">Approve all (' + requests.length + ')</button>' +
+            '<button class="approval-batch-btn deny" data-approval-batch="deny">Deny all (' + requests.length + ')</button>' +
+            "</div>"
+          : "";
         return (
           '<div class="approval-requests">' +
+          batchButtons +
           rows +
           "</div>"
         );
@@ -2399,45 +2406,20 @@ export const getWebUiClientScript = (markedSource: string): string => `
         openLightbox(img.src);
       });
 
-      elements.messages.addEventListener("click", async (event) => {
-        const target = event.target;
-        if (!(target instanceof Element)) {
-          return;
-        }
-        const button = target.closest(".approval-action-btn");
-        if (!button) {
-          return;
-        }
-        const approvalId = button.getAttribute("data-approval-id") || "";
-        const decision = button.getAttribute("data-approval-decision") || "";
-        if (!approvalId || (decision !== "approve" && decision !== "deny")) {
-          return;
-        }
-        if (state.approvalRequestsInFlight[approvalId]) {
-          return;
-        }
+      const submitApproval = async (approvalId, decision, opts) => {
+        const wasStreaming = opts && opts.wasStreaming;
         state.approvalRequestsInFlight[approvalId] = true;
-        const wasStreaming = state.isStreaming;
-        if (!wasStreaming) {
-          setStreaming(true);
-        }
         updatePendingApproval(approvalId, (request) => ({
           ...request,
           state: "submitting",
           pendingDecision: decision,
         }));
-        renderMessages(state.activeMessages, state.isStreaming);
         try {
           await api("/api/approvals/" + encodeURIComponent(approvalId), {
             method: "POST",
             body: JSON.stringify({ approved: decision === "approve" }),
           });
           updatePendingApproval(approvalId, () => null);
-          renderMessages(state.activeMessages, state.isStreaming);
-          loadConversations();
-          if (!wasStreaming && state.activeConversationId) {
-            await streamConversationEvents(state.activeConversationId, { liveOnly: true });
-          }
         } catch (error) {
           const isStale = error && error.payload && error.payload.code === "APPROVAL_NOT_FOUND";
           if (isStale) {
@@ -2451,13 +2433,77 @@ export const getWebUiClientScript = (markedSource: string): string => `
               _error: errMsg,
             }));
           }
-          renderMessages(state.activeMessages, state.isStreaming);
         } finally {
+          delete state.approvalRequestsInFlight[approvalId];
+        }
+      };
+
+      elements.messages.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+          return;
+        }
+
+        // Batch approve/deny all
+        const batchBtn = target.closest(".approval-batch-btn");
+        if (batchBtn) {
+          const decision = batchBtn.getAttribute("data-approval-batch") || "";
+          if (decision !== "approve" && decision !== "deny") return;
+          const messages = state.activeMessages || [];
+          const pending = [];
+          for (const m of messages) {
+            if (Array.isArray(m._pendingApprovals)) {
+              for (const req of m._pendingApprovals) {
+                if (req.approvalId && req.state !== "submitting" && !state.approvalRequestsInFlight[req.approvalId]) {
+                  pending.push(req.approvalId);
+                }
+              }
+            }
+          }
+          if (pending.length === 0) return;
+          const wasStreaming = state.isStreaming;
+          if (!wasStreaming) setStreaming(true);
+          renderMessages(state.activeMessages, state.isStreaming);
+          await Promise.all(pending.map((aid) => submitApproval(aid, decision, { wasStreaming })));
+          renderMessages(state.activeMessages, state.isStreaming);
+          loadConversations();
+          if (!wasStreaming && state.activeConversationId) {
+            await streamConversationEvents(state.activeConversationId, { liveOnly: true });
+          }
           if (!wasStreaming) {
             setStreaming(false);
             renderMessages(state.activeMessages, false);
           }
-          delete state.approvalRequestsInFlight[approvalId];
+          return;
+        }
+
+        // Individual approve/deny
+        const button = target.closest(".approval-action-btn");
+        if (!button) {
+          return;
+        }
+        const approvalId = button.getAttribute("data-approval-id") || "";
+        const decision = button.getAttribute("data-approval-decision") || "";
+        if (!approvalId || (decision !== "approve" && decision !== "deny")) {
+          return;
+        }
+        if (state.approvalRequestsInFlight[approvalId]) {
+          return;
+        }
+        const wasStreaming = state.isStreaming;
+        if (!wasStreaming) {
+          setStreaming(true);
+        }
+        renderMessages(state.activeMessages, state.isStreaming);
+        await submitApproval(approvalId, decision, { wasStreaming });
+        renderMessages(state.activeMessages, state.isStreaming);
+        loadConversations();
+        if (!wasStreaming && state.activeConversationId) {
+          await streamConversationEvents(state.activeConversationId, { liveOnly: true });
+        }
+        if (!wasStreaming) {
+          setStreaming(false);
+          renderMessages(state.activeMessages, false);
         }
       });
 

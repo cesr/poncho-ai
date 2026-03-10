@@ -1470,7 +1470,7 @@ export const createRequestHandler = async (options?: {
   // Pending subagent approvals: when a subagent hits an approval checkpoint,
   // we store a resolver here so the approval endpoint can signal the waiting runSubagent.
   type PendingSubagentApproval = {
-    resolve: (approved: boolean) => void;
+    resolve: (decidedApprovals: NonNullable<Conversation["pendingApprovals"]>) => void;
     childHarness: AgentHarness;
     checkpoint: NonNullable<Conversation["pendingApprovals"]>[number];
     childConversationId: string;
@@ -1591,84 +1591,86 @@ export const createRequestHandler = async (options?: {
           });
         }
         if (event.type === "tool:approval:checkpoint") {
-          // Persist checkpoint so the approval endpoint can find it
           const cpConv = await conversationStore.get(childConversationId);
           if (cpConv) {
-            const cpData: NonNullable<Conversation["pendingApprovals"]>[number] = {
-              approvalId: event.approvalId,
+            const allCpData: NonNullable<Conversation["pendingApprovals"]> = event.approvals.map(a => ({
+              approvalId: a.approvalId,
               runId: latestRunId,
-              tool: event.tool,
-              toolCallId: event.toolCallId,
-              input: event.input,
+              tool: a.tool,
+              toolCallId: a.toolCallId,
+              input: a.input,
               checkpointMessages: [...historyMessages, ...event.checkpointMessages],
               baseMessageCount: 0,
               pendingToolCalls: event.pendingToolCalls,
-            };
-            cpConv.pendingApprovals = [cpData];
+            }));
+            cpConv.pendingApprovals = allCpData;
             cpConv.updatedAt = Date.now();
             await conversationStore.update(cpConv);
 
-            // Wait for approval decision (signaled by the approval endpoint)
-            const approved = await new Promise<boolean>((resolve) => {
-              pendingSubagentApprovals.set(event.approvalId, {
-                resolve,
-                childHarness,
-                checkpoint: cpData,
-                childConversationId,
-                parentConversationId,
-              });
+            // Wait for all approval decisions (signaled by the approval endpoint
+            // once every entry in the batch has a decision)
+            const decidedApprovals = await new Promise<NonNullable<Conversation["pendingApprovals"]>>((resolve) => {
+              for (const cpData of allCpData) {
+                pendingSubagentApprovals.set(cpData.approvalId, {
+                  resolve,
+                  childHarness,
+                  checkpoint: cpData,
+                  childConversationId,
+                  parentConversationId,
+                });
+              }
             });
 
-            // Execute tool and resume the run
-            let toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }>;
-            if (approved) {
-              const toolContext = {
-                runId: cpData.runId,
-                agentId: identity.id,
-                step: 0,
-                workingDir,
-                parameters: {},
-                conversationId: childConversationId,
-              };
-              const execResults = await childHarness.executeTools(
-                [{ id: cpData.toolCallId!, name: cpData.tool, input: cpData.input }],
-                toolContext,
-              );
-              toolResults = execResults.map(r => ({
+            // Execute approved tools and collect results
+            const checkpointRef = allCpData[0]!;
+            const toolContext = {
+              runId: checkpointRef.runId,
+              agentId: identity.id,
+              step: 0,
+              workingDir,
+              parameters: {},
+              conversationId: childConversationId,
+            };
+
+            const approvalToolCallIds = new Set(decidedApprovals.map(a => a.toolCallId));
+            const callsToExecute: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
+            const deniedResults: Array<{ callId: string; toolName: string; error: string }> = [];
+
+            for (const a of decidedApprovals) {
+              if (a.decision === "approved" && a.toolCallId) {
+                callsToExecute.push({ id: a.toolCallId, name: a.tool, input: a.input });
+                const toolText = `- done \`${a.tool}\``;
+                toolTimeline.push(toolText);
+                currentTools.push(toolText);
+              } else if (a.toolCallId) {
+                deniedResults.push({ callId: a.toolCallId, toolName: a.tool, error: "Tool execution denied by user" });
+                const toolText = `- denied \`${a.tool}\``;
+                toolTimeline.push(toolText);
+                currentTools.push(toolText);
+              }
+            }
+
+            // Auto-approved tools that were deferred alongside approval-needing ones
+            const pendingToolCalls = checkpointRef.pendingToolCalls ?? [];
+            for (const tc of pendingToolCalls) {
+              if (!approvalToolCallIds.has(tc.id)) {
+                callsToExecute.push(tc);
+              }
+            }
+
+            let toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }> = [...deniedResults];
+            if (callsToExecute.length > 0) {
+              const execResults = await childHarness.executeTools(callsToExecute, toolContext);
+              toolResults.push(...execResults.map(r => ({
                 callId: r.callId,
                 toolName: r.tool,
                 result: r.output,
                 error: r.error,
-              }));
-              const toolText = `- done \`${cpData.tool}\``;
-              toolTimeline.push(toolText);
-              currentTools.push(toolText);
-            } else {
-              toolResults = [{
-                callId: cpData.toolCallId!,
-                toolName: cpData.tool,
-                error: "Tool execution denied by user",
-              }];
-              const toolText = `- denied \`${cpData.tool}\``;
-              toolTimeline.push(toolText);
-              currentTools.push(toolText);
-            }
-
-            broadcastEvent(childConversationId,
-              approved
-                ? { type: "tool:approval:granted", approvalId: event.approvalId }
-                : { type: "tool:approval:denied", approvalId: event.approvalId },
-            );
-
-            // Clear pending approval from conversation
-            const cpConv2 = await conversationStore.get(childConversationId);
-            if (cpConv2) {
-              cpConv2.pendingApprovals = [];
-              await conversationStore.update(cpConv2);
+              })));
             }
 
             // Resume the run -- process continuation events
-            const resumeMessages = [...cpData.checkpointMessages!];
+            const resumeMessages = [...checkpointRef.checkpointMessages!];
             for await (const resumeEvent of childHarness.continueFromToolResult({
               messages: resumeMessages,
               toolResults,
@@ -1993,16 +1995,16 @@ export const createRequestHandler = async (options?: {
         if (event.type === "tool:approval:checkpoint") {
           const conv = await conversationStore.get(conversationId);
           if (conv) {
-            conv.pendingApprovals = [{
-              approvalId: event.approvalId,
+            conv.pendingApprovals = event.approvals.map(a => ({
+              approvalId: a.approvalId,
               runId: latestRunId,
-              tool: event.tool,
-              toolCallId: event.toolCallId,
-              input: event.input,
+              tool: a.tool,
+              toolCallId: a.toolCallId,
+              input: a.input,
               checkpointMessages: [...fullCheckpointMessages, ...event.checkpointMessages],
               baseMessageCount: 0,
               pendingToolCalls: event.pendingToolCalls,
-            }];
+            }));
             conv.updatedAt = Date.now();
             await conversationStore.update(conv);
           }
@@ -2270,16 +2272,16 @@ export const createRequestHandler = async (options?: {
           if (event.type === "tool:approval:checkpoint") {
             await updateConversation((c) => {
               c.messages = buildMessages();
-              c.pendingApprovals = [{
-                approvalId: event.approvalId,
+              c.pendingApprovals = event.approvals.map(a => ({
+                approvalId: a.approvalId,
                 runId: latestRunId,
-                tool: event.tool,
-                toolCallId: event.toolCallId,
-                input: event.input,
+                tool: a.tool,
+                toolCallId: a.toolCallId,
+                input: a.input,
                 checkpointMessages: event.checkpointMessages,
                 baseMessageCount: historyMessages.length,
                 pendingToolCalls: event.pendingToolCalls,
-              }];
+              }));
             });
             checkpointedRun = true;
           }
@@ -2359,9 +2361,9 @@ export const createRequestHandler = async (options?: {
           waitUntil: waitUntilHook,
           ownerId: "local-owner",
         });
-        adapter.registerRoutes(messagingRouteRegistrar);
         try {
           await bridge.start();
+          adapter.registerRoutes(messagingRouteRegistrar);
           messagingBridges.push(bridge);
           console.log(`  Slack messaging enabled at /api/messaging/slack`);
         } catch (err) {
@@ -2386,9 +2388,9 @@ export const createRequestHandler = async (options?: {
           waitUntil: waitUntilHook,
           ownerId: "local-owner",
         });
-        adapter.registerRoutes(messagingRouteRegistrar);
         try {
           await bridge.start();
+          adapter.registerRoutes(messagingRouteRegistrar);
           messagingBridges.push(bridge);
           const adapterTools = adapter.getToolDefinitions?.() ?? [];
           if (adapterTools.length > 0) {
@@ -2412,6 +2414,10 @@ export const createRequestHandler = async (options?: {
   const authToken = process.env[authTokenEnv] ?? "";
   const authRequired = config?.auth?.required ?? false;
   const requireAuth = authRequired && authToken.length > 0;
+
+  if (requireAuth) {
+    sessionStore.setSigningKey(authToken);
+  }
 
   const webUiEnabled = config?.webUi !== false;
   const isProduction = resolveHarnessEnvironment() === "production";
@@ -2501,8 +2507,10 @@ export const createRequestHandler = async (options?: {
     }
 
     const cookies = parseCookies(request);
-    const sessionId = cookies.poncho_session;
-    const session = sessionId ? sessionStore.get(sessionId) : undefined;
+    const cookieValue = cookies.poncho_session;
+    const session = cookieValue
+      ? (sessionStore.get(cookieValue) ?? sessionStore.restoreFromSigned(cookieValue))
+      : undefined;
     const ownerId = session?.ownerId ?? "local-owner";
     const requiresCsrfValidation =
       request.method !== "GET" && request.method !== "HEAD" && request.method !== "OPTIONS";
@@ -2553,7 +2561,8 @@ export const createRequestHandler = async (options?: {
       }
       loginRateLimiter.registerSuccess(ip);
       const createdSession = sessionStore.create(ownerId);
-      setCookie(response, "poncho_session", createdSession.sessionId, {
+      const signedValue = sessionStore.signSession(createdSession);
+      setCookie(response, "poncho_session", signedValue ?? createdSession.sessionId, {
         httpOnly: true,
         secure: secureCookies,
         sameSite: "Lax",
@@ -2795,14 +2804,32 @@ export const createRequestHandler = async (options?: {
       // Check if this is a pending subagent approval (handled inline by runSubagent)
       const pendingSubagent = pendingSubagentApprovals.get(approvalId);
       if (pendingSubagent) {
-        pendingSubagentApprovals.delete(approvalId);
-        // Clear pendingApprovals from the subagent's conversation immediately
+        pendingSubagent.checkpoint.decision = approved ? "approved" : "denied";
+
+        broadcastEvent(pendingSubagent.childConversationId,
+          approved
+            ? { type: "tool:approval:granted", approvalId }
+            : { type: "tool:approval:denied", approvalId },
+        );
+
         const childConv = await conversationStore.get(pendingSubagent.childConversationId);
-        if (childConv && Array.isArray(childConv.pendingApprovals)) {
-          childConv.pendingApprovals = childConv.pendingApprovals.filter(pa => pa.approvalId !== approvalId);
+        const allApprovals = childConv?.pendingApprovals ?? [];
+        const allDecided = allApprovals.length > 0 && allApprovals.every(pa => pa.decision != null);
+
+        if (allDecided) {
+          // All approvals in the batch are decided — resolve the subagent
+          for (const pa of allApprovals) {
+            pendingSubagentApprovals.delete(pa.approvalId);
+          }
+          if (childConv) {
+            childConv.pendingApprovals = [];
+            await conversationStore.update(childConv);
+          }
+          pendingSubagent.resolve(allApprovals);
+        } else if (childConv) {
           await conversationStore.update(childConv);
         }
-        pendingSubagent.resolve(approved);
+
         writeJson(response, 200, { ok: true, approvalId, approved });
         return;
       }
@@ -2832,7 +2859,6 @@ export const createRequestHandler = async (options?: {
       const conversationId = foundConversation.conversationId;
 
       if (!foundApproval.checkpointMessages || !foundApproval.toolCallId) {
-        // Legacy approval without checkpoint data — cannot resume
         foundConversation.pendingApprovals = (foundConversation.pendingApprovals ?? [])
           .filter(a => a.approvalId !== approvalId);
         await conversationStore.update(foundConversation);
@@ -2843,55 +2869,82 @@ export const createRequestHandler = async (options?: {
         return;
       }
 
-      // Clear this approval from the conversation before resuming
-      foundConversation.pendingApprovals = (foundConversation.pendingApprovals ?? [])
-        .filter(a => a.approvalId !== approvalId);
-      await conversationStore.update(foundConversation);
+      // Record the decision on this approval entry
+      foundApproval.decision = approved ? "approved" : "denied";
 
-      // Initialize the event stream so the web UI can connect immediately
       broadcastEvent(conversationId,
         approved
           ? { type: "tool:approval:granted", approvalId }
           : { type: "tool:approval:denied", approvalId },
       );
 
-      // Resume the run asynchronously (tool execution + continuation)
+      const allApprovals = foundConversation.pendingApprovals ?? [];
+      const allDecided = allApprovals.length > 0 && allApprovals.every(a => a.decision != null);
+
+      if (!allDecided) {
+        // Still waiting for more decisions — persist and respond
+        await conversationStore.update(foundConversation);
+        writeJson(response, 200, { ok: true, approvalId, approved, batchComplete: false });
+        return;
+      }
+
+      // All approvals in the batch are decided — execute and resume
+      foundConversation.pendingApprovals = [];
+      await conversationStore.update(foundConversation);
+
+      // Use the first approval as the checkpoint reference (all share the same checkpoint data)
+      const checkpointRef = allApprovals[0]!;
+
       void (async () => {
-        let toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }>;
-        if (approved) {
-          const toolContext = {
-            runId: foundApproval.runId,
-            agentId: identity.id,
-            step: 0,
-            workingDir,
-            parameters: {},
-          };
-          const execResults = await harness.executeTools(
-            [{ id: foundApproval.toolCallId!, name: foundApproval.tool, input: foundApproval.input }],
-            toolContext,
-          );
-          toolResults = execResults.map(r => ({
+        const toolContext = {
+          runId: checkpointRef.runId,
+          agentId: identity.id,
+          step: 0,
+          workingDir,
+          parameters: {},
+        };
+
+        // Collect tool calls to execute: approved approval-gated tools + auto-approved deferred tools
+        const approvalToolCallIds = new Set(allApprovals.map(a => a.toolCallId));
+        const callsToExecute: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
+        const deniedResults: Array<{ callId: string; toolName: string; error: string }> = [];
+
+        for (const a of allApprovals) {
+          if (a.decision === "approved" && a.toolCallId) {
+            callsToExecute.push({ id: a.toolCallId, name: a.tool, input: a.input });
+          } else if (a.decision === "denied" && a.toolCallId) {
+            deniedResults.push({ callId: a.toolCallId, toolName: a.tool, error: "Tool execution denied by user" });
+          }
+        }
+
+        // Auto-approved tools that were deferred alongside the approval-needing ones
+        const pendingToolCalls = checkpointRef.pendingToolCalls ?? [];
+        for (const tc of pendingToolCalls) {
+          if (!approvalToolCallIds.has(tc.id)) {
+            callsToExecute.push(tc);
+          }
+        }
+
+        let toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }> = [...deniedResults];
+        if (callsToExecute.length > 0) {
+          const execResults = await harness.executeTools(callsToExecute, toolContext);
+          toolResults.push(...execResults.map(r => ({
             callId: r.callId,
             toolName: r.tool,
             result: r.output,
             error: r.error,
-          }));
-        } else {
-          toolResults = [{
-            callId: foundApproval.toolCallId!,
-            toolName: foundApproval.tool,
-            error: "Tool execution denied by user",
-          }];
+          })));
         }
+
         await resumeRunFromCheckpoint(
           conversationId,
           foundConversation!,
-          foundApproval!,
+          checkpointRef,
           toolResults,
         );
       })();
 
-      writeJson(response, 200, { ok: true, approvalId, approved });
+      writeJson(response, 200, { ok: true, approvalId, approved, batchComplete: true });
       return;
     }
 
@@ -3410,16 +3463,16 @@ export const createRequestHandler = async (options?: {
                   }]
                 : []),
             ];
-            conversation.pendingApprovals = [{
-              approvalId: event.approvalId,
+            conversation.pendingApprovals = event.approvals.map(a => ({
+              approvalId: a.approvalId,
               runId: latestRunId,
-              tool: event.tool,
-              toolCallId: event.toolCallId,
-              input: event.input,
+              tool: a.tool,
+              toolCallId: a.toolCallId,
+              input: a.input,
               checkpointMessages: event.checkpointMessages,
               baseMessageCount: historyMessages.length,
               pendingToolCalls: event.pendingToolCalls,
-            }];
+            }));
             conversation.updatedAt = Date.now();
             await conversationStore.update(conversation);
             checkpointedRun = true;

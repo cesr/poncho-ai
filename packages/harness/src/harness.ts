@@ -1913,7 +1913,14 @@ ${boundedMainMemory.trim()}`
         name: string;
         input: Record<string, unknown>;
       }> = [];
+      const approvalNeeded: Array<{
+        approvalId: string;
+        id: string;
+        name: string;
+        input: Record<string, unknown>;
+      }> = [];
 
+      // Phase 1: classify all tool calls
       for (const call of toolCalls) {
         if (isCancelled()) {
           yield emitCancellation();
@@ -1921,54 +1928,66 @@ ${boundedMainMemory.trim()}`
         }
         const runtimeToolName = exposedToolNames.get(call.name) ?? call.name;
         yield pushEvent({ type: "tool:started", tool: runtimeToolName, input: call.input });
-        const requiresApproval = this.requiresApprovalForToolCall(
-          runtimeToolName,
-          call.input,
-        );
-        if (requiresApproval) {
-          const approvalId = `approval_${randomUUID()}`;
+        if (this.requiresApprovalForToolCall(runtimeToolName, call.input)) {
+          approvalNeeded.push({
+            approvalId: `approval_${randomUUID()}`,
+            id: call.id,
+            name: runtimeToolName,
+            input: call.input,
+          });
+        } else {
+          approvedCalls.push({
+            id: call.id,
+            name: runtimeToolName,
+            input: call.input,
+          });
+        }
+      }
+
+      // Phase 2a: if any tools need approval, emit events for ALL of them and checkpoint
+      if (approvalNeeded.length > 0) {
+        for (const an of approvalNeeded) {
           yield pushEvent({
             type: "tool:approval:required",
-            tool: runtimeToolName,
-            input: call.input,
-            approvalId,
+            tool: an.name,
+            input: an.input,
+            approvalId: an.approvalId,
           });
-
-          const assistantContent = JSON.stringify({
-            text: fullText,
-            tool_calls: toolCalls.map(tc => ({
-              id: tc.id,
-              name: exposedToolNames.get(tc.name) ?? tc.name,
-              input: tc.input,
-            })),
-          });
-          const assistantMsg: Message = {
-            role: "assistant",
-            content: assistantContent,
-            metadata: { timestamp: now(), id: randomUUID(), step },
-          };
-          const deltaMessages = [...messages.slice(inputMessageCount), assistantMsg];
-          yield pushEvent({
-            type: "tool:approval:checkpoint",
-            approvalId,
-            tool: runtimeToolName,
-            toolCallId: call.id,
-            input: call.input,
-            checkpointMessages: deltaMessages,
-            pendingToolCalls: toolCalls.map(tc => ({
-              id: tc.id,
-              name: exposedToolNames.get(tc.name) ?? tc.name,
-              input: tc.input,
-            })),
-          });
-          return;
         }
-        approvedCalls.push({
-          id: call.id,
-          name: runtimeToolName,
-          input: call.input,
+
+        const assistantContent = JSON.stringify({
+          text: fullText,
+          tool_calls: toolCalls.map(tc => ({
+            id: tc.id,
+            name: exposedToolNames.get(tc.name) ?? tc.name,
+            input: tc.input,
+          })),
         });
+        const assistantMsg: Message = {
+          role: "assistant",
+          content: assistantContent,
+          metadata: { timestamp: now(), id: randomUUID(), step },
+        };
+        const deltaMessages = [...messages.slice(inputMessageCount), assistantMsg];
+        yield pushEvent({
+          type: "tool:approval:checkpoint",
+          approvals: approvalNeeded.map(an => ({
+            approvalId: an.approvalId,
+            tool: an.name,
+            toolCallId: an.id,
+            input: an.input,
+          })),
+          checkpointMessages: deltaMessages,
+          pendingToolCalls: toolCalls.map(tc => ({
+            id: tc.id,
+            name: exposedToolNames.get(tc.name) ?? tc.name,
+            input: tc.input,
+          })),
+        });
+        return;
       }
+
+      // Phase 2b: no approvals needed — execute all auto-approved calls
       const batchStart = now();
       if (isCancelled()) {
         yield emitCancellation();

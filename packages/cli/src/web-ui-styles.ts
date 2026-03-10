@@ -801,6 +801,30 @@ export const WEB_UI_STYLES = `
       opacity: 0.55;
       cursor: not-allowed;
     }
+    .approval-batch-actions {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    .approval-batch-btn {
+      border-radius: 6px;
+      border: 1px solid var(--border-5);
+      background: var(--surface-4);
+      color: var(--fg-approval-btn);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 10px;
+      cursor: pointer;
+    }
+    .approval-batch-btn:hover { background: var(--surface-7); }
+    .approval-batch-btn.approve {
+      border-color: var(--approve-border);
+      color: var(--approve);
+    }
+    .approval-batch-btn.deny {
+      border-color: var(--deny-border);
+      color: var(--deny);
+    }
     .user-bubble {
       background: var(--bg-elevated);
       border: 1px solid var(--border-2);

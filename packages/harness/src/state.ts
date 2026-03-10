@@ -35,6 +35,7 @@ export interface Conversation {
     checkpointMessages?: Message[];
     baseMessageCount?: number;
     pendingToolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }>;
+    decision?: "approved" | "denied";
   }>;
   ownerId: string;
   tenantId: string | null;

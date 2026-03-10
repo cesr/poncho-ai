@@ -1,4 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -165,9 +165,14 @@ type SessionRecord = {
 export class SessionStore {
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly ttlMs: number;
+  private signingKey: string | undefined;
 
   constructor(ttlMs = 1000 * 60 * 60 * 8) {
     this.ttlMs = ttlMs;
+  }
+
+  setSigningKey(key: string): void {
+    if (key) this.signingKey = key;
   }
 
   create(ownerId = DEFAULT_OWNER): SessionRecord {
@@ -199,6 +204,68 @@ export class SessionStore {
 
   delete(sessionId: string): void {
     this.sessions.delete(sessionId);
+  }
+
+  /**
+   * Encode a session into a signed cookie value that survives serverless
+   * cold starts. Format: `base64url(payload).signature`
+   */
+  signSession(session: SessionRecord): string | undefined {
+    if (!this.signingKey) return undefined;
+    const payload = Buffer.from(
+      JSON.stringify({
+        sid: session.sessionId,
+        o: session.ownerId,
+        csrf: session.csrfToken,
+        exp: session.expiresAt,
+      }),
+    ).toString("base64url");
+    const sig = createHmac("sha256", this.signingKey)
+      .update(payload)
+      .digest("base64url");
+    return `${payload}.${sig}`;
+  }
+
+  /**
+   * Restore a session from a signed cookie value. Returns the session
+   * (also added to the in-memory store) or undefined if invalid/expired.
+   */
+  restoreFromSigned(cookieValue: string): SessionRecord | undefined {
+    if (!this.signingKey) return undefined;
+    const dotIdx = cookieValue.lastIndexOf(".");
+    if (dotIdx <= 0) return undefined;
+
+    const payload = cookieValue.slice(0, dotIdx);
+    const sig = cookieValue.slice(dotIdx + 1);
+    const expected = createHmac("sha256", this.signingKey)
+      .update(payload)
+      .digest("base64url");
+    if (sig.length !== expected.length) return undefined;
+    if (
+      !timingSafeEqual(Buffer.from(sig, "utf8"), Buffer.from(expected, "utf8"))
+    )
+      return undefined;
+
+    try {
+      const data = JSON.parse(
+        Buffer.from(payload, "base64url").toString("utf8"),
+      ) as { sid?: string; o?: string; csrf?: string; exp?: number };
+      if (!data.sid || !data.o || !data.csrf || !data.exp) return undefined;
+      if (Date.now() > data.exp) return undefined;
+
+      const session: SessionRecord = {
+        sessionId: data.sid,
+        ownerId: data.o,
+        csrfToken: data.csrf,
+        createdAt: data.exp - this.ttlMs,
+        expiresAt: data.exp,
+        lastSeenAt: Date.now(),
+      };
+      this.sessions.set(session.sessionId, session);
+      return session;
+    } catch {
+      return undefined;
+    }
   }
 }
 

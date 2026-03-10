@@ -149,10 +149,12 @@ export type AgentEvent =
   | { type: "tool:approval:denied"; approvalId: string; reason?: string }
   | {
       type: "tool:approval:checkpoint";
-      approvalId: string;
-      tool: string;
-      toolCallId: string;
-      input: Record<string, unknown>;
+      approvals: Array<{
+        approvalId: string;
+        tool: string;
+        toolCallId: string;
+        input: Record<string, unknown>;
+      }>;
       checkpointMessages: Message[];
       pendingToolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
     }
