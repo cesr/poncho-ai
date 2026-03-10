@@ -9,6 +9,30 @@ import type {
   RouteRegistrar,
   ThreadRef,
 } from "../../types.js";
+
+const isSocketError = (err: unknown): boolean =>
+  err instanceof TypeError &&
+  err.message === "fetch failed" &&
+  (err as { cause?: { code?: string } }).cause?.code === "UND_ERR_SOCKET";
+
+async function fetchWithRetry(
+  input: string | URL | Request,
+  init?: RequestInit,
+  retries = 2,
+): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetch(input, init);
+    } catch (err) {
+      if (attempt < retries && isSocketError(err)) {
+        await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 import {
   buildReplyHeaders,
   buildReplySubject,
@@ -550,7 +574,7 @@ export class ResendAdapter implements MessagingAdapter {
 
     if (emailId) {
       try {
-        const resp = await fetch(
+        const resp = await fetchWithRetry(
           `https://api.resend.com/emails/receiving/${emailId}`,
           { headers: { Authorization: `Bearer ${this.apiKey}` } },
         );
@@ -624,7 +648,7 @@ export class ResendAdapter implements MessagingAdapter {
     // Fetch attachment metadata (with download_url) from the Resend API
     let attachments: Array<{ filename?: string; content_type?: string; download_url?: string }> = [];
     try {
-      const resp = await fetch(
+      const resp = await fetchWithRetry(
         `https://api.resend.com/emails/receiving/${emailId}/attachments`,
         { headers: { Authorization: `Bearer ${this.apiKey}` } },
       );
@@ -644,7 +668,7 @@ export class ResendAdapter implements MessagingAdapter {
     for (const att of attachments) {
       if (!att.download_url) continue;
       try {
-        const resp = await fetch(att.download_url);
+        const resp = await fetchWithRetry(att.download_url);
         if (!resp.ok) continue;
         const buf = Buffer.from(await resp.arrayBuffer());
         results.push({
