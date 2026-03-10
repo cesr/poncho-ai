@@ -1116,11 +1116,16 @@ export class AgentHarness {
       // Sanitize path for Latitude's DOCUMENT_PATH_REGEXP: /^([\w-]+\/)*([\w-.])+$/
       const path = rawPath.replace(/[^\w\-./]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '') || 'agent';
 
-      const conversationUuid = input.conversationId ?? (
+      const rawConversationId = input.conversationId ?? (
         typeof input.parameters?.__activeConversationId === "string"
           ? input.parameters.__activeConversationId
           : undefined
       );
+      // Latitude expects a UUID v4 for documentLogUuid; only pass it if valid
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const conversationUuid = rawConversationId && UUID_RE.test(rawConversationId)
+        ? rawConversationId
+        : undefined;
 
       console.info(
         `[poncho][telemetry] Latitude telemetry active – projectId=${projectId}, path="${path}"${conversationUuid ? `, conversation="${conversationUuid}"` : ""}`,
