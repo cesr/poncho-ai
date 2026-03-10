@@ -1,5 +1,12 @@
 # @poncho-ai/cli
 
+## 0.21.1
+
+### Patch Changes
+
+- Updated dependencies [[`deb134e`](https://github.com/cesr/poncho-ai/commit/deb134e8a6ecf38d85dc200f57998e33406eff61)]:
+  - @poncho-ai/messaging@0.2.8
+
 ## 0.21.0
 
 ### Minor Changes
