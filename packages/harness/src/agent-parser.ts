@@ -155,7 +155,9 @@ export const parseAgentMarkdown = (content: string): ParsedAgent => {
     throw new Error("Invalid AGENT.md: frontmatter requires a non-empty `name`.");
   }
 
-  const modelValue = asRecord(parsed.model);
+  const modelValue = typeof parsed.model === "string"
+    ? { name: parsed.model }
+    : asRecord(parsed.model);
   const limitsValue = asRecord(parsed.limits);
   const parseTools = (
     key: "allowed-tools" | "approval-required",

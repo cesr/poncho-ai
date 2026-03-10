@@ -1665,6 +1665,9 @@ ${boundedMainMemory.trim()}`
         const modelName = agent.frontmatter.model?.name ?? "claude-opus-4-5";
         const temperature = agent.frontmatter.model?.temperature ?? 0.2;
         const maxTokens = agent.frontmatter.model?.maxTokens;
+        if (step === 1) {
+          console.info(`[poncho] model="${modelName}" provider="${agent.frontmatter.model?.provider ?? "anthropic"}"`);
+        }
 
         const modelInstance = this.modelProvider(modelName);
         const cachedMessages = addPromptCacheBreakpoints(coreMessages, modelInstance);
