@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.21.3
+
+### Patch Changes
+
+- [`db92933`](https://github.com/cesr/poncho-ai/commit/db92933273ba490ad4b758bfcf0d6b26c64735d0) Thanks [@cesr](https://github.com/cesr)! - Fall back to polling after approval when SSE stream ends immediately (Vercel).
+
 ## 0.21.2
 
 ### Patch Changes
