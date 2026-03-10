@@ -50,11 +50,13 @@ export default {
     read_file: true,               // available (default)
     write_file: true,              // gated by environment for writes
     delete_file: 'approval',       // requires human approval
+    delete_directory: 'approval',  // requires human approval
     send_email: 'approval',        // requires human approval
     byEnvironment: {
       production: {
         write_file: false,         // disable writes in production
         delete_file: false,        // disable deletes in production
+        delete_directory: false,   // disable deletes in production
         send_email: 'approval',    // keep approval in production
       },
       development: {

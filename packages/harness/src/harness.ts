@@ -15,7 +15,7 @@ import type { UploadStore } from "./upload-store.js";
 import { PONCHO_UPLOAD_SCHEME, deriveUploadKey } from "./upload-store.js";
 import { parseAgentFile, renderAgentPrompt, type ParsedAgent, type AgentFrontmatter } from "./agent-parser.js";
 import { loadPonchoConfig, resolveMemoryConfig, type PonchoConfig, type ToolAccess, type BuiltInToolToggles } from "./config.js";
-import { createDefaultTools, createDeleteTool, createWriteTool } from "./default-tools.js";
+import { createDefaultTools, createDeleteDirectoryTool, createDeleteTool, createWriteTool } from "./default-tools.js";
 import {
   createMemoryStore,
   createMemoryTools,
@@ -527,7 +527,7 @@ export class AgentHarness {
   private isToolEnabled(name: string): boolean {
     const access = this.resolveToolAccess(name);
     if (access === false) return false;
-    if (name === "write_file" || name === "delete_file") {
+    if (name === "write_file" || name === "delete_file" || name === "delete_directory") {
       return this.shouldEnableWriteTool();
     }
     return true;
@@ -577,6 +577,9 @@ export class AgentHarness {
     }
     if (this.isToolEnabled("delete_file")) {
       this.registerIfMissing(createDeleteTool(this.workingDir));
+    }
+    if (this.isToolEnabled("delete_directory")) {
+      this.registerIfMissing(createDeleteDirectoryTool(this.workingDir));
     }
   }
 

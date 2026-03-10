@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import { defineTool, type ToolDefinition } from "@poncho-ai/sdk";
 
@@ -107,6 +107,33 @@ export const createDeleteTool = (workingDir: string): ToolDefinition =>
       const path = typeof input.path === "string" ? input.path : "";
       const resolved = resolveSafePath(workingDir, path);
       await unlink(resolved);
+      return { path, deleted: true };
+    },
+  });
+
+export const createDeleteDirectoryTool = (workingDir: string): ToolDefinition =>
+  defineTool({
+    name: "delete_directory",
+    description: "Recursively delete a directory and all its contents inside the working directory",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Directory path relative to working directory",
+        },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    },
+    handler: async (input) => {
+      const path = typeof input.path === "string" ? input.path : "";
+      if (!path) throw new Error("Path must not be empty.");
+      const resolved = resolveSafePath(workingDir, path);
+      if (resolved === resolve(workingDir)) {
+        throw new Error("Cannot delete the working directory root.");
+      }
+      await rm(resolved, { recursive: true });
       return { path, deleted: true };
     },
   });

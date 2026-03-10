@@ -164,6 +164,62 @@ export const getWebUiClientScript = (markedSource: string): string => `
         }
       };
 
+      // During streaming, incomplete backtick sequences cause marked to
+      // swallow all subsequent text into an invisible code element. This
+      // helper detects unclosed fences and inline code delimiters and
+      // appends the missing closing so marked can render partial text.
+      const closeStreamingMarkdown = (text) => {
+        const BT = "\\x60";
+        let result = text;
+
+        // 1. Unclosed fenced code blocks (lines starting with 3+ backticks)
+        const lines = result.split("\\n");
+        let openFenceLen = 0;
+        for (let li = 0; li < lines.length; li++) {
+          const trimmed = lines[li].trimStart();
+          let btCount = 0;
+          while (btCount < trimmed.length && trimmed[btCount] === BT) btCount++;
+          if (btCount >= 3) {
+            if (openFenceLen === 0) {
+              openFenceLen = btCount;
+            } else if (btCount >= openFenceLen) {
+              openFenceLen = 0;
+            }
+          }
+        }
+        if (openFenceLen > 0) {
+          let fence = "";
+          for (let k = 0; k < openFenceLen; k++) fence += BT;
+          return result + "\\n" + fence;
+        }
+
+        // 2. Unclosed inline code delimiters
+        let idx = 0;
+        let inCode = false;
+        let delimLen = 0;
+        while (idx < result.length) {
+          if (result[idx] === BT) {
+            let run = 0;
+            while (idx < result.length && result[idx] === BT) { run++; idx++; }
+            if (!inCode) {
+              inCode = true;
+              delimLen = run;
+            } else if (run === delimLen) {
+              inCode = false;
+            }
+          } else {
+            idx++;
+          }
+        }
+        if (inCode) {
+          let closing = "";
+          for (let k = 0; k < delimLen; k++) closing += BT;
+          result += closing;
+        }
+
+        return result;
+      };
+
       const extractToolActivity = (value) => {
         const source = String(value || "");
         let markerIndex = source.lastIndexOf("\\n### Tool activity\\n");
@@ -761,7 +817,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
                 // Show current text being typed
                 if (isStreaming && i === messages.length - 1 && m._currentText) {
                   const textDiv = document.createElement("div");
-                  textDiv.innerHTML = renderAssistantMarkdown(m._currentText);
+                  textDiv.innerHTML = renderAssistantMarkdown(closeStreamingMarkdown(m._currentText));
                   content.appendChild(textDiv);
                 }
               } else {

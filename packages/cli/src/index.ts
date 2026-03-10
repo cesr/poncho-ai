@@ -549,11 +549,13 @@ export default {
     read_file: true,
     write_file: true,           // gated by environment for writes
     delete_file: 'approval',    // requires human approval
+    delete_directory: 'approval', // requires human approval
     send_email: 'approval',     // requires human approval
     byEnvironment: {
       production: {
         write_file: false,
         delete_file: false,
+        delete_directory: false,
       },
       development: {
         send_email: true,       // skip approval in dev

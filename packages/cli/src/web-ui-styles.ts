@@ -270,6 +270,22 @@ export const WEB_UI_STYLES = `
       flex-direction: column;
       padding: 12px 8px;
     }
+    .sidebar-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .sidebar-agent-name {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--fg-strong);
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding-left: 10px;
+    }
     .new-chat-btn {
       background: transparent;
       border: 0;
@@ -282,6 +298,7 @@ export const WEB_UI_STYLES = `
       gap: 8px;
       font-size: 13px;
       cursor: pointer;
+      flex-shrink: 0;
       transition: background 0.15s, color 0.15s;
     }
     .new-chat-btn:hover { color: var(--fg); }
@@ -1180,6 +1197,9 @@ export const WEB_UI_STYLES = `
       .shell.sidebar-open .sidebar { transform: translateX(0); }
       .sidebar-toggle { display: grid; place-items: center; }
       .topbar-new-chat { display: grid; place-items: center; }
+      .sidebar-header { padding-right: 130px; }
+      .sidebar-agent-name { padding-left: 0; }
+      .new-chat-btn { order: -1; }
       .poncho-badge {
         display: none;
         position: fixed;
@@ -1319,15 +1339,17 @@ export const WEB_UI_STYLES = `
       font-size: 13px;
     }
     @media (max-width: 768px) {
+      .main-body { flex-direction: column; }
       .browser-panel {
-        position: fixed;
-        inset: 0;
-        width: 100% !important;
+        position: relative;
+        order: -1;
+        max-height: 35vh;
         flex: none !important;
-        z-index: 200;
+        width: auto !important;
+        border-bottom: 1px solid var(--border-1);
       }
       .browser-panel-resize { display: none !important; }
-      .main-chat.has-browser { flex: 1 1 auto !important; min-width: 0; }
+      .main-chat.has-browser { flex: 1 1 auto !important; min-width: 0; min-height: 0; }
     }
 
     /* --- Subagent UI --- */
