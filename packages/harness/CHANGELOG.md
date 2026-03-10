@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.20.1
+
+### Patch Changes
+
+- [`ec1bb60`](https://github.com/cesr/poncho-ai/commit/ec1bb601d4f47c1b50c391cdc169cbe1623b52aa) Thanks [@cesr](https://github.com/cesr)! - Log telemetry flush errors instead of silently swallowing them, improving diagnostics when traces fail to export.
+
 ## 0.20.0
 
 ### Minor Changes
