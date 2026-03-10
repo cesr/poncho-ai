@@ -1,5 +1,12 @@
 # @poncho-ai/cli
 
+## 0.21.12
+
+### Patch Changes
+
+- Updated dependencies [[`0ec1f69`](https://github.com/cesr/poncho-ai/commit/0ec1f69a56b6424967d994663294adbbde1b9257)]:
+  - @poncho-ai/harness@0.20.8
+
 ## 0.21.11
 
 ### Patch Changes

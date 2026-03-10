@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.20.8
+
+### Patch Changes
+
+- [`0ec1f69`](https://github.com/cesr/poncho-ai/commit/0ec1f69a56b6424967d994663294adbbde1b9257) Thanks [@cesr](https://github.com/cesr)! - Support flat string `model: claude-opus-4-6` shorthand in AGENT.md frontmatter (in addition to nested `model: { name: ... }`). Log the resolved model name on first step for deployment debugging.
+
 ## 0.20.7
 
 ### Patch Changes
