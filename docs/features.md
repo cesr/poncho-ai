@@ -155,6 +155,21 @@ npm install @vercel/functions
 - **Photos and documents** sent to the bot are forwarded to the agent as file attachments.
 - Use `/new` to reset the conversation and start fresh. In groups, use `/new@botusername`.
 
+#### Restricting access
+
+By default any Telegram user can message your bot. To restrict it to specific users, add their numeric Telegram user IDs:
+
+```javascript
+messaging: [
+  {
+    platform: 'telegram',
+    allowedUserIds: [1056240469, 9876543210],
+  }
+]
+```
+
+Messages from anyone not on the list are silently ignored. You can find your user ID by messaging [@userinfobot](https://t.me/userinfobot) on Telegram.
+
 #### Custom environment variable names
 
 If you need different env var names (e.g., running multiple Telegram integrations):

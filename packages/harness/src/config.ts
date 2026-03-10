@@ -57,6 +57,8 @@ export interface MessagingChannelConfig {
   mode?: "auto-reply" | "tool";
   allowedRecipients?: string[];
   maxSendsPerRun?: number;
+  // Telegram
+  allowedUserIds?: number[];
 }
 
 export interface PonchoConfig extends McpConfig {

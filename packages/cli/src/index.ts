@@ -2479,6 +2479,7 @@ export const createRequestHandler = async (options?: {
         const adapter = new TelegramAdapter({
           botTokenEnv: channelConfig.botTokenEnv,
           webhookSecretEnv: channelConfig.webhookSecretEnv,
+          allowedUserIds: channelConfig.allowedUserIds,
         });
         const bridge = new AgentBridge({
           adapter,

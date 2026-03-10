@@ -29,6 +29,7 @@ const NEW_COMMAND_RE = /^\/new(?:@(\S+))?$/i;
 export interface TelegramAdapterOptions {
   botTokenEnv?: string;
   webhookSecretEnv?: string;
+  allowedUserIds?: number[];
 }
 
 const collectBody = (req: http.IncomingMessage): Promise<string> =>
@@ -50,6 +51,7 @@ export class TelegramAdapter implements MessagingAdapter {
   private botId = 0;
   private readonly botTokenEnv: string;
   private readonly webhookSecretEnv: string;
+  private readonly allowedUserIds: number[] | undefined;
   private handler: IncomingMessageHandler | undefined;
   private readonly sessionCounters = new Map<string, number>();
   private lastUpdateId = 0;
@@ -58,6 +60,10 @@ export class TelegramAdapter implements MessagingAdapter {
     this.botTokenEnv = options.botTokenEnv ?? "TELEGRAM_BOT_TOKEN";
     this.webhookSecretEnv =
       options.webhookSecretEnv ?? "TELEGRAM_WEBHOOK_SECRET";
+    this.allowedUserIds =
+      options.allowedUserIds && options.allowedUserIds.length > 0
+        ? options.allowedUserIds
+        : undefined;
   }
 
   // -----------------------------------------------------------------------
@@ -195,6 +201,15 @@ export class TelegramAdapter implements MessagingAdapter {
       res.writeHead(200);
       res.end();
       return;
+    }
+
+    // -- User allowlist -----------------------------------------------------
+    if (this.allowedUserIds && message.from) {
+      if (!this.allowedUserIds.includes(message.from.id)) {
+        res.writeHead(200);
+        res.end();
+        return;
+      }
     }
 
     const chatId = String(message.chat.id);
