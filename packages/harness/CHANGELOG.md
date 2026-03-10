@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.20.13
+
+### Patch Changes
+
+- [`735eb64`](https://github.com/cesr/poncho-ai/commit/735eb6467831263671d56b58a79c736c602e594b) Thanks [@cesr](https://github.com/cesr)! - Add Telegram setup instructions to injected agent development context.
+
 ## 0.20.12
 
 ### Patch Changes
