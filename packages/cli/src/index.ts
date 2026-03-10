@@ -2520,7 +2520,9 @@ export const createRequestHandler = async (options?: {
     if (messagingByMethod) {
       const routeHandler = messagingByMethod.get(request.method ?? "");
       if (routeHandler) {
-        await routeHandler(request, response);
+        const work = routeHandler(request, response);
+        if (waitUntilHook) waitUntilHook(work);
+        await work;
         return;
       }
     }
