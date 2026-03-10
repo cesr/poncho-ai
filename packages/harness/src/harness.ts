@@ -1681,6 +1681,8 @@ ${boundedMainMemory.trim()}`
           ...(typeof maxTokens === "number" ? { maxTokens } : {}),
           experimental_telemetry: {
             isEnabled: telemetryEnabled && !!this.latitudeTelemetry,
+            recordInputs: true,
+            recordOutputs: true,
           },
         });
         // Stream full response — use fullStream to get visibility into
