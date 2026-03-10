@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.20.3
+
+### Patch Changes
+
+- [`9b38474`](https://github.com/cesr/poncho-ai/commit/9b38474a25bfb54cec108d1d3eae664aaed37ccf) Thanks [@cesr](https://github.com/cesr)! - Make approval resume robust: wrap in try/catch to always clear runStatus, and await the work when waitUntil is unavailable so the resume completes before the response is sent.
+
 ## 0.20.2
 
 ### Patch Changes
