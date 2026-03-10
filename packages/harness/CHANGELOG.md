@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.20.10
+
+### Patch Changes
+
+- [`45fc930`](https://github.com/cesr/poncho-ai/commit/45fc93066547f8ba01eb6f2fcdff560f18da3451) Thanks [@cesr](https://github.com/cesr)! - Use clean `anthropic` provider name in telemetry instead of `anthropic.messages`, so Latitude correctly identifies the model.
+
 ## 0.20.9
 
 ### Patch Changes
