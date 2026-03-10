@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.20.2
+
+### Patch Changes
+
+- [`dcb1b51`](https://github.com/cesr/poncho-ai/commit/dcb1b51ed3be9147c982ed75e3784de38e77bc2f) Thanks [@cesr](https://github.com/cesr)! - Fix polling fallback wiping approval buttons: hydrate pending approvals on each poll cycle so the approve/deny UI stays visible.
+
 ## 0.20.1
 
 ### Patch Changes
