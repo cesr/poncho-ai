@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.20.3
+
+### Patch Changes
+
+- [`28046fb`](https://github.com/cesr/poncho-ai/commit/28046fb39aea00968ac532c25db4f0d654e21876) Thanks [@cesr](https://github.com/cesr)! - Add diagnostic span processor to log telemetry span details for debugging trace export issues.
+
 ## 0.20.2
 
 ### Patch Changes
