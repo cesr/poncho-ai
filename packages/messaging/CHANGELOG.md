@@ -1,5 +1,11 @@
 # @poncho-ai/messaging
 
+## 0.2.9
+
+### Patch Changes
+
+- [`e9b801f`](https://github.com/cesr/poncho-ai/commit/e9b801f0c70ffab6cb434b7adf05df22b29ea9fe) Thanks [@cesr](https://github.com/cesr)! - Derive deterministic UUIDs for messaging conversation IDs instead of composite strings. Fixes Latitude telemetry rejection and ensures consistency with web UI/API conversations.
+
 ## 0.2.8
 
 ### Patch Changes
