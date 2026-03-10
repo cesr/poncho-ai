@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.20.6
+
+### Patch Changes
+
+- [`afbcc7b`](https://github.com/cesr/poncho-ai/commit/afbcc7b188258b7d193aa1f6f9f4462c2841ceec) Thanks [@cesr](https://github.com/cesr)! - Fix Latitude telemetry traces being silently dropped when conversation IDs are not valid UUIDs (e.g. Resend/Slack-derived IDs). Only pass conversationUuid to Latitude when it matches UUID v4 format.
+
 ## 0.20.5
 
 ### Patch Changes
