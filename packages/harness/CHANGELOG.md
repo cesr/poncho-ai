@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.20.2
+
+### Patch Changes
+
+- [`ec7d7a8`](https://github.com/cesr/poncho-ai/commit/ec7d7a80bf84855d19454c52053375fe86815ae4) Thanks [@cesr](https://github.com/cesr)! - Upgrade `@latitude-data/telemetry` to ^2.0.4 which adds baggage propagation for Latitude attributes on all child spans, fixing traces not appearing in the Latitude platform.
+
 ## 0.20.1
 
 ### Patch Changes
