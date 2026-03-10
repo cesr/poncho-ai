@@ -2148,9 +2148,10 @@ export const createRequestHandler = async (options?: {
         await conversationStore.update(fresh);
       };
 
-      // Persist user turn immediately so the web UI shows it while the agent runs.
+      // Persist user turn and mark the run as active so the web UI can detect it.
       await updateConversation((c) => {
         c.messages = [...historyMessages, { role: "user" as const, content: userContent }];
+        c.runStatus = "running";
       });
 
       let latestRunId = "";
@@ -2317,8 +2318,13 @@ export const createRequestHandler = async (options?: {
           c.messages = buildMessages();
           c.runtimeRunId = latestRunId || c.runtimeRunId;
           c.pendingApprovals = [];
+          c.runStatus = "idle";
           if (runContextTokens > 0) c.contextTokens = runContextTokens;
           if (runContextWindow > 0) c.contextWindow = runContextWindow;
+        });
+      } else {
+        await updateConversation((c) => {
+          c.runStatus = "idle";
         });
       }
       finishConversationStream(conversationId);
@@ -3057,7 +3063,7 @@ export const createRequestHandler = async (options?: {
           }
         }
         const activeStream = conversationEventStreams.get(conversationId);
-        const hasActiveRun = !!activeStream && !activeStream.finished;
+        const hasActiveRun = (!!activeStream && !activeStream.finished) || conversation.runStatus === "running";
         writeJson(response, 200, {
           conversation: {
             ...conversation,

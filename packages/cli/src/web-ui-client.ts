@@ -962,8 +962,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
           setStreaming(true);
           streamConversationEvents(conversationId, { liveOnly: true }).finally(() => {
             if (state.activeConversationId === conversationId) {
-              setStreaming(false);
-              renderMessages(state.activeMessages, false);
+              pollUntilRunIdle(conversationId);
             }
           });
         }
@@ -1028,6 +1027,30 @@ export const getWebUiClientScript = (markedSource: string): string => `
           if (e.key === "Enter") { e.preventDefault(); input.blur(); }
           if (e.key === "Escape") { input.value = current; input.blur(); }
         });
+      };
+
+      const pollUntilRunIdle = (conversationId) => {
+        const poll = async () => {
+          if (state.activeConversationId !== conversationId) return;
+          try {
+            var payload = await api("/api/conversations/" + encodeURIComponent(conversationId));
+            if (state.activeConversationId !== conversationId) return;
+            if (payload.conversation) {
+              state.activeMessages = payload.conversation.messages || [];
+              renderMessages(state.activeMessages, payload.hasActiveRun);
+            }
+            if (payload.hasActiveRun) {
+              setTimeout(poll, 2000);
+            } else {
+              setStreaming(false);
+              renderMessages(state.activeMessages, false);
+            }
+          } catch {
+            setStreaming(false);
+            renderMessages(state.activeMessages, false);
+          }
+        };
+        setTimeout(poll, 1500);
       };
 
       const streamConversationEvents = (conversationId, options) => {

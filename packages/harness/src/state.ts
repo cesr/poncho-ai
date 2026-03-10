@@ -37,6 +37,7 @@ export interface Conversation {
     pendingToolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }>;
     decision?: "approved" | "denied";
   }>;
+  runStatus?: "running" | "idle";
   ownerId: string;
   tenantId: string | null;
   contextTokens?: number;
