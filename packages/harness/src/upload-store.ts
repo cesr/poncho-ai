@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { UploadsConfig } from "./config.js";
 
@@ -127,11 +128,30 @@ const mimeToExt = (mediaType: string): string =>
 // Local filesystem implementation
 // ---------------------------------------------------------------------------
 
+const isServerlessEnv = (): boolean => {
+  const cwd = process.cwd();
+  const home = homedir();
+  return (
+    process.env.VERCEL === "1" ||
+    process.env.VERCEL_ENV !== undefined ||
+    process.env.VERCEL_URL !== undefined ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined ||
+    process.env.AWS_EXECUTION_ENV?.includes("AWS_Lambda") === true ||
+    process.env.LAMBDA_TASK_ROOT !== undefined ||
+    process.env.NOW_REGION !== undefined ||
+    cwd.startsWith("/var/task") ||
+    home.startsWith("/var/task") ||
+    process.env.SERVERLESS === "1"
+  );
+};
+
 export class LocalUploadStore implements UploadStore {
   private readonly uploadsDir: string;
 
   constructor(workingDir: string) {
-    this.uploadsDir = resolve(workingDir, ".poncho", "uploads");
+    this.uploadsDir = isServerlessEnv()
+      ? "/tmp/.poncho/uploads"
+      : resolve(workingDir, ".poncho", "uploads");
   }
 
   async put(_key: string, data: Buffer, mediaType: string): Promise<string> {
