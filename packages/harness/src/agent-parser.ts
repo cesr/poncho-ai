@@ -155,9 +155,32 @@ export const parseAgentMarkdown = (content: string): ParsedAgent => {
     throw new Error("Invalid AGENT.md: frontmatter requires a non-empty `name`.");
   }
 
-  const modelValue = typeof parsed.model === "string"
-    ? { name: parsed.model }
-    : asRecord(parsed.model);
+  const KNOWN_PROVIDERS = new Set(["anthropic", "openai"]);
+  const splitProviderPrefix = (raw: string): { provider?: string; name: string } => {
+    const slashIdx = raw.indexOf("/");
+    if (slashIdx > 0) {
+      const prefix = raw.slice(0, slashIdx).toLowerCase();
+      if (KNOWN_PROVIDERS.has(prefix)) {
+        return { provider: prefix, name: raw.slice(slashIdx + 1) };
+      }
+    }
+    return { name: raw };
+  };
+  const modelValue: Record<string, unknown> = (() => {
+    if (typeof parsed.model === "string") {
+      const { provider, name } = splitProviderPrefix(parsed.model);
+      return provider ? { provider, name } : { name };
+    }
+    const rec = asRecord(parsed.model);
+    if (typeof rec.name === "string") {
+      const { provider, name } = splitProviderPrefix(rec.name);
+      rec.name = name;
+      if (provider && typeof rec.provider !== "string") {
+        rec.provider = provider;
+      }
+    }
+    return rec;
+  })();
   const limitsValue = asRecord(parsed.limits);
   const parseTools = (
     key: "allowed-tools" | "approval-required",
