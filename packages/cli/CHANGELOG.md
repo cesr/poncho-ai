@@ -1,5 +1,14 @@
 # @poncho-ai/cli
 
+## 0.19.1
+
+### Patch Changes
+
+- [`470563b`](https://github.com/cesr/poncho-ai/commit/470563b96bbb5d2c6358a1c89dd3b52beb7799c8) Thanks [@cesr](https://github.com/cesr)! - Fix LocalUploadStore ENOENT on Vercel: use /tmp for uploads on serverless environments instead of the read-only working directory.
+
+- Updated dependencies [[`470563b`](https://github.com/cesr/poncho-ai/commit/470563b96bbb5d2c6358a1c89dd3b52beb7799c8)]:
+  - @poncho-ai/harness@0.19.1
+
 ## 0.19.0
 
 ### Minor Changes
