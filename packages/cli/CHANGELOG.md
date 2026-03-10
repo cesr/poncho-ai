@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.21.0
+
+### Minor Changes
+
+- [`c5d94c5`](https://github.com/cesr/poncho-ai/commit/c5d94c5854081ac23e91f7104047354ad1a415ef) Thanks [@cesr](https://github.com/cesr)! - Automatically add `@vercel/functions` to project dependencies when running `poncho build vercel`. This ensures `waitUntil` is available for keeping serverless functions alive during webhook processing and approval resume.
+
 ## 0.20.3
 
 ### Patch Changes
