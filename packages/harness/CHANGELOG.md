@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.21.1
+
+### Patch Changes
+
+- [`76294e9`](https://github.com/cesr/poncho-ai/commit/76294e95035bf3abbb19c28871a33f82351c49ec) Thanks [@cesr](https://github.com/cesr)! - Add `provider` and `cdpUrl` to the `PonchoConfig.browser` type for cloud and remote browser configurations.
+
 ## 0.21.0
 
 ### Minor Changes
