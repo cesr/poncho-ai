@@ -74,6 +74,62 @@ export function createBrowserTools(
       },
     },
     {
+      name: "browser_click_text",
+      description:
+        "Click the first visible element on the page that contains the given text. " +
+        "Use this when an element doesn't appear in the snapshot — e.g. styled divs acting as buttons. " +
+        "By default matches substring (case-insensitive); set exact=true for exact text match.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          text: {
+            type: "string",
+            description: "The visible text of the element to click",
+          },
+          exact: {
+            type: "boolean",
+            description:
+              "If true, match the exact full text (case-sensitive). Default: false (substring, case-insensitive).",
+          },
+        },
+        required: ["text"],
+      },
+      handler: async (input: BrowserToolInput) => {
+        const session = getSession();
+        const text = String(input.text ?? "");
+        if (!text) throw new Error("text is required");
+        const exact = input.exact === true;
+        await session.clickText(getConversationId(), text, exact);
+        return { clicked: text, exact };
+      },
+    },
+    {
+      name: "browser_execute_js",
+      description:
+        "Execute JavaScript in the current page context and return the result. " +
+        "Use this to inspect or interact with the DOM when snapshot refs aren't available — " +
+        "e.g. finding elements by text content, getting bounding boxes, or clicking elements by selector. " +
+        "The script is evaluated via page.evaluate(); return a value to get it back.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          script: {
+            type: "string",
+            description:
+              "JavaScript code to evaluate in the page. Use a return statement or expression to get a result back.",
+          },
+        },
+        required: ["script"],
+      },
+      handler: async (input: BrowserToolInput) => {
+        const session = getSession();
+        const script = String(input.script ?? "");
+        if (!script) throw new Error("script is required");
+        const result = await session.executeJs(getConversationId(), script);
+        return { result: result ?? null };
+      },
+    },
+    {
       name: "browser_type",
       description:
         "Type text into a form field identified by its ref from the last snapshot. " +

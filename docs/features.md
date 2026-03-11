@@ -321,11 +321,13 @@ export default {
 }
 ```
 
-When `browser` is enabled, the agent gets eight tools:
+When `browser` is enabled, the agent gets ten tools:
 
 - `browser_open` — Navigate to a URL. Starts real-time viewport streaming.
 - `browser_snapshot` — Get the page as a compact accessibility tree with element refs (`@e1`, `@e2`, ...).
 - `browser_click` — Click an element by ref.
+- `browser_click_text` — Click the first visible element containing a given text string. Useful for elements that don't appear in the accessibility snapshot (e.g. styled `<div>` buttons with no ARIA roles or identifiers). Supports exact and substring matching.
+- `browser_execute_js` — Run JavaScript in the page context. Use this to inspect the DOM, find elements by text/class, get bounding boxes, or programmatically click elements that can't be targeted by other tools.
 - `browser_type` — Type text into a form field by ref.
 - `browser_content` — Get the visible text content of the current page as plain text.
 - `browser_screenshot` — Take a PNG screenshot (sent to the model as an image).
@@ -333,6 +335,8 @@ When `browser` is enabled, the agent gets eight tools:
 - `browser_close` — Save session and close the browser.
 
 The agent uses the snapshot/ref pattern: call `browser_snapshot` to get refs, then `browser_click @e2` or `browser_type @e3 "hello"`. Re-snapshot after each interaction since refs change when the page updates.
+
+For elements that don't appear in the snapshot (styled divs, custom components without ARIA attributes), use `browser_click_text` to click by visible text, or `browser_execute_js` for DOM-level interaction.
 
 ### Live viewport
 

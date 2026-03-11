@@ -62,6 +62,51 @@ async function getBrowserManagerCtor(): Promise<new () => BrowserManagerInstance
 
 const MAX_TABS = 8;
 
+/**
+ * Init script that forces new-tab navigations (window.open, target="_blank")
+ * to open in the current tab. Runs before page scripts on every navigation.
+ */
+const SAME_TAB_INIT_SCRIPT = `
+(() => {
+  // Override window.open to navigate in-place
+  try {
+    const origOpen = window.open;
+    window.open = function(url, target, features) {
+      if (url) {
+        location.href = url;
+        return window;
+      }
+      return origOpen.call(this, url, target, features);
+    };
+  } catch {}
+
+  // Rewrite target="_blank" on existing and future links
+  try {
+    const rewrite = (el) => {
+      if (el.tagName === 'A' && el.target === '_blank') {
+        el.target = '_self';
+      }
+    };
+    // Catch links already in the DOM
+    document.addEventListener('DOMContentLoaded', () => {
+      document.querySelectorAll('a[target="_blank"]').forEach(rewrite);
+    });
+    // Catch dynamically added links
+    new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        for (const node of m.addedNodes) {
+          if (node.nodeType !== 1) continue;
+          rewrite(node);
+          if (node.querySelectorAll) {
+            node.querySelectorAll('a[target="_blank"]').forEach(rewrite);
+          }
+        }
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  } catch {}
+})();
+`;
+
 // Per-conversation tab state
 interface ConversationTab {
   tabIndex: number;
@@ -164,6 +209,21 @@ export class BrowserSession {
   }
 
   /**
+   * Force all new-tab navigations (window.open, target="_blank") to open
+   * in the current tab instead. Agents operate on a single tab at a time
+   * and can't see or interact with popups.
+   */
+  private async installSameTabScript(mgr: BrowserManagerInstance): Promise<void> {
+    const ctx = mgr.getContext();
+    if (!ctx) return;
+    try {
+      await ctx.addInitScript({ content: SAME_TAB_INIT_SCRIPT });
+    } catch (err) {
+      console.warn("[poncho][browser] Failed to install same-tab init script:", (err as Error)?.message ?? err);
+    }
+  }
+
+  /**
    * Override the user-agent via CDP on the current page target.
    * CDP Network.setUserAgentOverride is per-target, so call per-tab.
    */
@@ -218,6 +278,9 @@ export class BrowserSession {
     if (this.stealthEnabled) {
       await this.installContextStealth(mgr);
     }
+
+    // Redirect new-tab navigations into the current tab
+    await this.installSameTabScript(mgr);
 
     try {
       const cdp = await mgr.getCDPSession();
@@ -470,6 +533,32 @@ export class BrowserSession {
       const pixels = amount ?? 600;
       const delta = direction === "down" ? pixels : -pixels;
       await page.evaluate(`window.scrollBy(0, ${delta})`);
+    } finally {
+      this.unlock();
+    }
+  }
+
+  async clickText(conversationId: string, text: string, exact?: boolean): Promise<void> {
+    await this.lock();
+    try {
+      const mgr = await this.ensureManager();
+      const tab = await this.switchToConversation(mgr, conversationId);
+      const selector = exact ? `text="${text}"` : `text=${text}`;
+      const locator = mgr.getLocator(selector);
+      await locator.click();
+      tab.url = mgr.getPage().url();
+    } finally {
+      this.unlock();
+    }
+  }
+
+  async executeJs(conversationId: string, script: string): Promise<unknown> {
+    await this.lock();
+    try {
+      const mgr = await this.ensureManager();
+      await this.switchToConversation(mgr, conversationId);
+      const page = mgr.getPage();
+      return await page.evaluate(script);
     } finally {
       this.unlock();
     }
