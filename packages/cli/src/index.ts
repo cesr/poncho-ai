@@ -1093,10 +1093,22 @@ export default async function handler(req, res) {
     } catch {
       // AGENT.md may not exist yet during init; skip cron generation
     }
+    let existingVercelConfig: Record<string, unknown> = {};
+    try {
+      const raw = await readFile(vercelConfigPath, "utf8");
+      existingVercelConfig = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      // No existing vercel.json or invalid JSON — start fresh
+    }
+    const existingFunctions = (existingVercelConfig.functions ?? {}) as Record<string, Record<string, unknown>>;
+    const existingApiEntry = existingFunctions["api/index.mjs"] ?? {};
     const vercelConfig: Record<string, unknown> = {
+      ...existingVercelConfig,
       version: 2,
       functions: {
+        ...existingFunctions,
         "api/index.mjs": {
+          ...existingApiEntry,
           includeFiles:
             "{AGENT.md,poncho.config.js,skills/**,tests/**,node_modules/.pnpm/marked@*/node_modules/marked/lib/marked.umd.js}",
         },
