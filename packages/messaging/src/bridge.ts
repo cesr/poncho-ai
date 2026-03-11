@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
   AgentBridgeOptions,
+  FileAttachment,
   IncomingMessage,
   MessagingAdapter,
   AgentRunner,
@@ -53,6 +54,7 @@ export class AgentBridge {
   }
 
   private async handleMessage(message: IncomingMessage): Promise<void> {
+    const MAX_CONTINUATIONS = 10;
     let cleanup: (() => Promise<void>) | undefined;
 
     this.adapter.resetRequestState?.();
@@ -71,36 +73,64 @@ export class AgentBridge {
       if (message.subject) titleParts.push(message.subject);
       const title = titleParts.join(" ") || `${message.platform} thread`;
 
-      const conversation = await this.runner.getOrCreateConversation(
-        conversationId,
-        {
-          platform: message.platform,
-          ownerId: this.ownerIdOverride ?? message.sender.id,
-          title,
-        },
-      );
-
       const senderLine = message.sender.name
         ? `From: ${message.sender.name} <${message.sender.id}>`
         : `From: ${message.sender.id}`;
       const subjectLine = message.subject ? `Subject: ${message.subject}` : "";
       const header = [senderLine, subjectLine].filter(Boolean).join("\n");
-      const task = `${header}\n\n${message.text}`;
 
-      const result = await this.runner.run(conversationId, {
-        task,
-        messages: conversation.messages,
-        files: message.files,
-        metadata: {
-          platform: message.platform,
-          sender: message.sender,
-          threadId: message.threadRef.platformThreadId,
-        },
-      });
+      let currentTask = `${header}\n\n${message.text}`;
+      let currentFiles = message.files;
+      let accumulatedResponse = "";
+      let accumulatedFiles: FileAttachment[] = [];
+      let totalSteps = 0;
+      let stepBudget = 0;
+      let continuationCount = 0;
+
+      while (true) {
+        const conversation = await this.runner.getOrCreateConversation(
+          conversationId,
+          {
+            platform: message.platform,
+            ownerId: this.ownerIdOverride ?? message.sender.id,
+            title,
+          },
+        );
+
+        const result = await this.runner.run(conversationId, {
+          task: currentTask,
+          messages: conversation.messages,
+          files: currentFiles,
+          metadata: {
+            platform: message.platform,
+            sender: message.sender,
+            threadId: message.threadRef.platformThreadId,
+          },
+        });
+
+        accumulatedResponse += result.response;
+        if (result.files) accumulatedFiles.push(...result.files);
+        totalSteps += result.steps ?? 0;
+        if (typeof result.maxSteps === "number") stepBudget = result.maxSteps;
+
+        if (
+          result.continuation &&
+          continuationCount < MAX_CONTINUATIONS &&
+          (stepBudget <= 0 || totalSteps < stepBudget)
+        ) {
+          continuationCount++;
+          console.log(`[agent-bridge] continuation ${continuationCount}/${MAX_CONTINUATIONS} for ${conversationId}`);
+          currentTask = "Continue";
+          currentFiles = undefined;
+          continue;
+        }
+
+        break;
+      }
 
       if (this.adapter.autoReply) {
-        await this.adapter.sendReply(message.threadRef, result.response, {
-          files: result.files,
+        await this.adapter.sendReply(message.threadRef, accumulatedResponse, {
+          files: accumulatedFiles.length > 0 ? accumulatedFiles : undefined,
         });
       } else if (!this.adapter.hasSentInCurrentRequest) {
         console.warn("[agent-bridge] tool mode completed without send_email being called; no reply sent");

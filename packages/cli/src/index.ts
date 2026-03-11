@@ -1499,6 +1499,47 @@ export const createRequestHandler = async (options?: {
       }
     }
   };
+  type BrowserSessionForStatus = {
+    isActiveFor: (cid: string) => boolean;
+    getUrl: (cid: string) => string | undefined;
+  };
+  // Write a raw SSE event to all event-stream subscribers for a conversation
+  // without buffering it (ephemeral events like browser:status shouldn't replay
+  // on reconnect).
+  const broadcastRawSse = (conversationId: string, event: string, data: unknown): void => {
+    const stream = conversationEventStreams.get(conversationId);
+    if (!stream) return;
+    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    for (const subscriber of stream.subscribers) {
+      try {
+        subscriber.write(payload);
+      } catch {
+        stream.subscribers.delete(subscriber);
+      }
+    }
+  };
+  const emitBrowserStatusIfActive = (
+    conversationId: string,
+    event: AgentEvent,
+    directResponse?: ServerResponse,
+  ): void => {
+    const bs = harness.browserSession as BrowserSessionForStatus | undefined;
+    if (
+      event.type !== "tool:completed" ||
+      !event.tool.startsWith("browser_") ||
+      !bs?.isActiveFor(conversationId)
+    ) return;
+    const statusPayload = {
+      active: true,
+      url: bs.getUrl(conversationId) ?? null,
+      interactionAllowed: true,
+    };
+    const raw = `event: browser:status\ndata: ${JSON.stringify(statusPayload)}\n\n`;
+    if (directResponse && !directResponse.destroyed) {
+      try { directResponse.write(raw); } catch {}
+    }
+    broadcastRawSse(conversationId, "browser:status", statusPayload);
+  };
   const onConversationEvent = (conversationId: string, cb: EventCallback): (() => void) => {
     let cbs = conversationEventCallbacks.get(conversationId);
     if (!cbs) {
@@ -2113,6 +2154,7 @@ export const createRequestHandler = async (options?: {
         }
         await telemetry.emit(event);
         broadcastEvent(conversationId, event);
+        emitBrowserStatusIfActive(conversationId, event);
       }
     } catch (err) {
       console.error("[resume-run] error:", err instanceof Error ? err.message : err);
@@ -2262,6 +2304,9 @@ export const createRequestHandler = async (options?: {
       let checkpointedRun = false;
       let runContextTokens = 0;
       let runContextWindow = 0;
+      let runContinuation = false;
+      let runSteps = 0;
+      let runMaxSteps: number | undefined;
 
       const buildMessages = (): Message[] => {
         const draftSections: Array<{ type: "text" | "tools"; content: string | string[] }> = [
@@ -2385,12 +2430,13 @@ export const createRequestHandler = async (options?: {
             });
             checkpointedRun = true;
           }
-          if (
-            event.type === "run:completed" &&
-            assistantResponse.length === 0 &&
-            event.result.response
-          ) {
-            assistantResponse = event.result.response;
+          if (event.type === "run:completed") {
+            if (assistantResponse.length === 0 && event.result.response) {
+              assistantResponse = event.result.response;
+            }
+            runContinuation = event.result.continuation === true;
+            runSteps = event.result.steps;
+            if (typeof event.result.maxSteps === "number") runMaxSteps = event.result.maxSteps;
           }
           if (event.type === "run:error") {
             assistantResponse = assistantResponse || `[Error: ${event.error.message}]`;
@@ -2432,10 +2478,15 @@ export const createRequestHandler = async (options?: {
         runConversations.delete(latestRunId);
       }
 
-      console.log("[messaging-runner] run complete, response length:", assistantResponse.length);
+      console.log("[messaging-runner] run complete, response length:", assistantResponse.length, runContinuation ? "(continuation)" : "");
       const response = assistantResponse;
 
-      return { response };
+      return {
+        response,
+        continuation: runContinuation,
+        steps: runSteps,
+        maxSteps: runMaxSteps,
+      };
     },
   };
 
@@ -3635,6 +3686,7 @@ export const createRequestHandler = async (options?: {
             // Client disconnected (e.g. browser refresh). Continue processing
             // so the run completes and conversation is persisted.
           }
+          emitBrowserStatusIfActive(conversationId, event, response);
         }
         // Finalize sections
         if (currentTools.length > 0) {

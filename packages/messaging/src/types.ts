@@ -123,6 +123,9 @@ export interface AgentRunner {
   ): Promise<{
     response: string;
     files?: FileAttachment[];
+    continuation?: boolean;
+    steps?: number;
+    maxSteps?: number;
   }>;
 }
 
