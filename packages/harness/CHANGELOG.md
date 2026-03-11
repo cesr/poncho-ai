@@ -1,5 +1,13 @@
 # @poncho-ai/harness
 
+## 0.21.0
+
+### Minor Changes
+
+- [#33](https://github.com/cesr/poncho-ai/pull/33) [`f611bb9`](https://github.com/cesr/poncho-ai/commit/f611bb9137142de923d90502ece597d5cd6a5d3e) Thanks [@cesr](https://github.com/cesr)! - Add built-in `poncho_docs` tool for on-demand documentation discovery
+
+  Agents in development mode can now call `poncho_docs` with a topic (`api`, `features`, `configuration`, `troubleshooting`) to load detailed framework documentation on demand. Docs are embedded at build time from `docs/*.md` at the repo root, keeping a single source of truth that stays in sync with releases.
+
 ## 0.20.14
 
 ### Patch Changes
