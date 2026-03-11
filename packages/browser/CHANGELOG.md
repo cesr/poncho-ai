@@ -1,5 +1,11 @@
 # @poncho-ai/browser
 
+## 0.5.0
+
+### Minor Changes
+
+- [`540c8e6`](https://github.com/cesr/poncho-ai/commit/540c8e6d895a95c2f215deb4af219069543371d9) Thanks [@cesr](https://github.com/cesr)! - Add `browser_click_text` and `browser_execute_js` tools for interacting with elements that don't appear in the accessibility snapshot (e.g. styled divs acting as buttons). Also force new-tab navigations (`window.open`, `target="_blank"`) to stay in the current tab so agents don't lose context.
+
 ## 0.4.0
 
 ### Minor Changes
