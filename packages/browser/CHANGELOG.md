@@ -1,5 +1,11 @@
 # @poncho-ai/browser
 
+## 0.6.1
+
+### Patch Changes
+
+- Pass `@sparticuz/chromium` recommended args (--no-sandbox, --disable-gpu, etc.) when launching on serverless platforms. Fixes Chromium sandbox crash on Vercel/Lambda.
+
 ## 0.6.0
 
 ### Minor Changes

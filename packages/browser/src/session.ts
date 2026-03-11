@@ -258,23 +258,26 @@ export class BrowserSession {
   }
 
   /**
-   * Resolve executablePath for local launches. When no explicit path is set
-   * and we're on a serverless platform, try `@sparticuz/chromium` automatically.
+   * Resolve executablePath and launch args for serverless platforms.
+   * When `@sparticuz/chromium` is installed, uses its executable and
+   * recommended args (--no-sandbox, --disable-gpu, etc.).
    */
-  private async resolveExecutablePath(): Promise<string | undefined> {
-    if (this.config.executablePath) return this.config.executablePath;
-    if (!this.isServerless) return undefined;
+  private async resolveServerlessChromium(): Promise<{
+    executablePath?: string;
+    args?: string[];
+  }> {
+    if (this.config.executablePath) return { executablePath: this.config.executablePath };
+    if (!this.isServerless) return {};
     try {
-      // Dynamic require — @sparticuz/chromium is an optional peer dependency
-      // that the user installs in their agent project for serverless runtimes.
       const spec = ["@sparticuz", "chromium"].join("/");
       const mod = await import(/* webpackIgnore: true */ spec);
       const chromium = mod.default ?? mod;
-      const path = await chromium.executablePath();
-      console.log(`[poncho][browser] Auto-detected @sparticuz/chromium: ${path}`);
-      return path;
+      const executablePath = await chromium.executablePath();
+      const args: string[] = Array.isArray(chromium.args) ? chromium.args : [];
+      console.log(`[poncho][browser] Auto-detected @sparticuz/chromium: ${executablePath} (${args.length} args)`);
+      return { executablePath, args };
     } catch {
-      return undefined;
+      return {};
     }
   }
 
@@ -283,13 +286,13 @@ export class BrowserSession {
     const mgr = new Ctor();
 
     const viewport = this.config.viewport ?? { width: 1280, height: 720 };
-    const executablePath = await this.resolveExecutablePath();
+    const serverless = await this.resolveServerlessChromium();
 
     const launchOpts: Record<string, unknown> = {
       action: "launch",
       headless: this.config.headless ?? true,
       viewport: { width: viewport.width ?? 1280, height: viewport.height ?? 720 },
-      executablePath,
+      executablePath: serverless.executablePath,
     };
 
     if (this.config.cdpUrl) {
@@ -306,15 +309,27 @@ export class BrowserSession {
       launchOpts.profile = profileDir;
     }
 
+    // Merge args: serverless chromium args (--no-sandbox etc.) + stealth args
+    const baseArgs: string[] = serverless.args ?? [];
+
     if (this.stealthEnabled) {
       const ua = this.stealthUserAgent!;
       launchOpts.userAgent = ua;
       if (!this.isRemote) {
-        launchOpts.args = buildStealthArgs(ua);
+        const stealthArgs = buildStealthArgs(ua);
+        const merged = [...baseArgs];
+        for (const arg of stealthArgs) {
+          if (!merged.includes(arg)) merged.push(arg);
+        }
+        launchOpts.args = merged;
       }
       console.log("[poncho][browser] Launching with stealth mode enabled (UA: " + ua + ")");
     } else if (this.config.userAgent) {
       launchOpts.userAgent = this.config.userAgent;
+    }
+
+    if (!launchOpts.args && baseArgs.length > 0) {
+      launchOpts.args = baseArgs;
     }
 
     await mgr.launch(launchOpts as Parameters<BrowserManagerInstance["launch"]>[0]);
