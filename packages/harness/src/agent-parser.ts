@@ -43,7 +43,15 @@ export interface AgentFrontmatter {
     mcp?: string[];
     scripts?: string[];
   };
+  compaction?: CompactionConfig;
   cron?: Record<string, CronJobConfig>;
+}
+
+export interface CompactionConfig {
+  enabled: boolean;
+  trigger: number;
+  keepRecentMessages: number;
+  instructions?: string;
 }
 
 export interface ParsedAgent {
@@ -276,6 +284,26 @@ export const parseAgentMarkdown = (content: string): ParsedAgent => {
                 : undefined,
           }
         : undefined,
+    compaction: (() => {
+      const raw = asRecord(parsed.compaction);
+      if (Object.keys(raw).length === 0) return undefined;
+      const enabled = raw.enabled !== false;
+      const trigger = typeof raw.trigger === "number" ? raw.trigger : 0.80;
+      if (trigger < 0.1 || trigger > 1) {
+        throw new Error(
+          "Invalid AGENT.md frontmatter compaction.trigger: must be between 0.1 and 1.",
+        );
+      }
+      const keepRecentMessages =
+        typeof raw.keepRecentMessages === "number"
+          ? Math.max(2, Math.floor(raw.keepRecentMessages))
+          : 6;
+      const instructions =
+        typeof raw.instructions === "string" && raw.instructions.trim()
+          ? raw.instructions.trim()
+          : undefined;
+      return { enabled, trigger, keepRecentMessages, instructions };
+    })(),
     cron: parseCronJobs(parsed.cron),
   };
 

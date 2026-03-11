@@ -191,13 +191,14 @@ const handleSlash = async (
   command: string,
   state: InteractiveState,
   conversationStore: ConversationStore,
+  harness: AgentHarness,
 ): Promise<{ shouldExit: boolean }> => {
   const [rawCommand, ...args] = command.trim().split(/\s+/);
   const norm = rawCommand.toLowerCase();
   if (norm === "/help") {
     console.log(
       gray(
-        "commands> /help /clear /exit /tools /attach <path> /files /list /open <id> /new [title] /delete [id] /continue /reset [all]",
+        "commands> /help /clear /exit /tools /attach <path> /files /list /open <id> /new [title] /delete [id] /continue /compact [focus] /reset [all]",
       ),
     );
     return { shouldExit: false };
@@ -352,6 +353,29 @@ const handleSlash = async (
     }
     return { shouldExit: false };
   }
+  if (norm === "/compact") {
+    if (state.messages.length < 4) {
+      console.log(gray("compact> not enough messages to compact"));
+      return { shouldExit: false };
+    }
+    const focusHint = args.join(" ").trim() || undefined;
+    console.log(gray("compact> compacting conversation..."));
+    const result = await harness.compact(
+      state.messages,
+      focusHint ? { instructions: focusHint } : undefined,
+    );
+    if (result.compacted) {
+      state.messages = result.messages;
+      console.log(
+        gray(
+          `compact> done (${result.messagesBefore} → ${result.messagesAfter} messages)`,
+        ),
+      );
+    } else {
+      console.log(yellow(`compact> ${result.warning ?? "compaction skipped"}`));
+    }
+    return { shouldExit: false };
+  }
   console.log(yellow(`Unknown command: ${command}`));
   return { shouldExit: false };
 };
@@ -471,6 +495,7 @@ export const runInteractiveInk = async ({
         trimmed,
         interactiveState,
         conversationStore,
+        harness,
       );
       if (slashResult.shouldExit) {
         break;
@@ -617,6 +642,20 @@ export const runInteractiveInk = async ({
           } else if (event.type === "run:cancelled") {
             clearThinking();
             runCancelled = true;
+          } else if (event.type === "compaction:completed") {
+            clearThinking();
+            if (event.compactedMessages) {
+              messages.length = 0;
+              messages.push(...event.compactedMessages);
+            }
+            console.log(
+              gray(
+                `compact> ${event.messagesBefore} → ${event.messagesAfter} messages (${event.tokensBefore.toLocaleString()} → ${event.tokensAfter.toLocaleString()} tokens est.)`,
+              ),
+            );
+          } else if (event.type === "compaction:warning") {
+            clearThinking();
+            console.log(gray(`compact> ${event.reason}`));
           } else if (event.type === "model:response") {
             usage = event.usage;
           } else if (event.type === "run:completed" && !sawChunk) {

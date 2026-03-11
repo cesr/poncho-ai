@@ -25,6 +25,7 @@ export interface Conversation {
   conversationId: string;
   title: string;
   messages: Message[];
+  compactedHistory?: Message[];
   runtimeRunId?: string;
   pendingApprovals?: Array<{
     approvalId: string;

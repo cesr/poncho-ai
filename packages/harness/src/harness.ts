@@ -24,7 +24,7 @@ import {
 import { LocalMcpBridge } from "./mcp.js";
 import { createModelProvider, getModelContextWindow, type ModelProviderFactory, type ProviderConfig } from "./model-factory.js";
 import { buildSkillContextWindow, loadSkillMetadata } from "./skill-context.js";
-import { streamText, type ModelMessage } from "ai";
+import { generateText, streamText, type ModelMessage } from "ai";
 import { addPromptCacheBreakpoints } from "./prompt-cache.js";
 import { jsonSchemaToZod } from "./schema-converter.js";
 import type { SkillMetadata } from "./skill-context.js";
@@ -40,6 +40,13 @@ import {
 } from "./tool-policy.js";
 import { ToolDispatcher, type ToolCall, type ToolExecutionResult } from "./tool-dispatcher.js";
 import { ensureAgentIdentity } from "./agent-identity.js";
+import {
+  compactMessages,
+  estimateTotalTokens,
+  resolveCompactionConfig,
+  type CompactMessagesOptions,
+  type CompactResult,
+} from "./compaction.js";
 
 export interface HarnessOptions {
   workingDir?: string;
@@ -57,7 +64,6 @@ export interface HarnessRunOutput {
 }
 
 const now = (): number => Date.now();
-const MAX_CONTEXT_MESSAGES = 40;
 const FIRST_CHUNK_TIMEOUT_MS = 300_000; // 300s to receive the first chunk from the model
 const MAX_TRANSIENT_STEP_RETRIES = 2;
 
@@ -78,11 +84,6 @@ const SKILL_TOOL_NAMES = [
   "list_skill_scripts",
   "run_skill_script",
 ] as const;
-
-const trimMessageWindow = (messages: Message[]): Message[] =>
-  messages.length <= MAX_CONTEXT_MESSAGES
-    ? messages
-    : messages.slice(messages.length - MAX_CONTEXT_MESSAGES);
 
 const isAbortError = (error: unknown): boolean => {
   if (!error || typeof error !== "object") {
@@ -1250,6 +1251,20 @@ export class AgentHarness {
     }
   }
 
+  async compact(
+    messages: Message[],
+    options?: CompactMessagesOptions,
+  ): Promise<CompactResult> {
+    if (!this.parsedAgent) {
+      await this.initialize();
+    }
+    const agent = this.parsedAgent!;
+    const modelName = agent.frontmatter.model?.name ?? "claude-opus-4-5";
+    const modelInstance = this.modelProvider(modelName);
+    const config = resolveCompactionConfig(agent.frontmatter.compaction);
+    return compactMessages(modelInstance, messages, config, options);
+  }
+
   async *run(input: RunInput): AsyncGenerator<AgentEvent> {
     if (!this.parsedAgent) {
       await this.initialize();
@@ -1713,18 +1728,68 @@ ${boundedMainMemory.trim()}`
 
           return [];
         };
-        const coreMessages: ModelMessage[] = (
-          await Promise.all(trimMessageWindow(messages).map(convertMessage))
-        ).flat();
 
         const modelName = agent.frontmatter.model?.name ?? "claude-opus-4-5";
-        const temperature = agent.frontmatter.model?.temperature ?? 0.2;
-        const maxTokens = agent.frontmatter.model?.maxTokens;
         if (step === 1) {
           console.info(`[poncho] model="${modelName}" provider="${agent.frontmatter.model?.provider ?? "anthropic"}"`);
         }
-
         const modelInstance = this.modelProvider(modelName);
+
+        // --- Auto-compaction (step 1 only) ---
+        // On step 2+ the messages array contains harness-internal formats
+        // (JSON-stringified tool_calls / tool results) that must not leak
+        // into the conversation store via compactedMessages.
+        const compactionConfig = resolveCompactionConfig(agent.frontmatter.compaction);
+        if (compactionConfig.enabled && step === 1) {
+          const toolDefsJson = JSON.stringify(
+            dispatcherTools.map((t) => ({
+              name: t.name,
+              description: t.description,
+              inputSchema: t.inputSchema,
+            })),
+          );
+          const estimated = estimateTotalTokens(integrityPrompt, messages, toolDefsJson);
+          const lastReportedInput = totalInputTokens > 0 ? totalInputTokens : 0;
+          const effectiveTokens = Math.max(estimated, lastReportedInput);
+
+          if (effectiveTokens > compactionConfig.trigger * contextWindow) {
+            yield pushEvent({ type: "compaction:started", estimatedTokens: effectiveTokens });
+
+            const compactResult = await compactMessages(
+              modelInstance,
+              messages,
+              compactionConfig,
+            );
+            if (compactResult.compacted) {
+              messages.length = 0;
+              messages.push(...compactResult.messages);
+              // Strip the trailing user task message so runners can use
+              // compactedMessages directly as historyMessages without
+              // duplicating the user turn they append themselves.
+              const emittedMessages = [...compactResult.messages];
+              if (emittedMessages.length > 0 && emittedMessages[emittedMessages.length - 1].role === "user") {
+                emittedMessages.pop();
+              }
+              yield pushEvent({
+                type: "compaction:completed",
+                tokensBefore: effectiveTokens,
+                tokensAfter: estimateTotalTokens(integrityPrompt, messages, toolDefsJson),
+                messagesBefore: compactResult.messagesBefore!,
+                compactedMessages: emittedMessages,
+                messagesAfter: compactResult.messagesAfter!,
+              });
+            } else if (compactResult.warning) {
+              yield pushEvent({ type: "compaction:warning", reason: compactResult.warning });
+            }
+          }
+        }
+
+        const coreMessages: ModelMessage[] = (
+          await Promise.all(messages.map(convertMessage))
+        ).flat();
+
+        const temperature = agent.frontmatter.model?.temperature ?? 0.2;
+        const maxTokens = agent.frontmatter.model?.maxTokens;
         const cachedMessages = addPromptCacheBreakpoints(coreMessages, modelInstance);
 
         const telemetryEnabled = this.loadedConfig?.telemetry?.enabled !== false;

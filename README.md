@@ -48,6 +48,7 @@ Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` 
 - **Multimodal inputs**: attach images, PDFs, and other files via the Web UI, API, or client SDK.
 - **Browser automation**: headless Chromium with live viewport streaming, snapshot/ref interaction, and session persistence.
 - **Subagents**: agents can spawn recursive copies of themselves for parallel work, with independent conversations, read-only memory, and approval tunneling.
+- **Context compaction**: automatic summarization of older messages when the context window fills up, keeping conversations going indefinitely.
 - **Pluggable storage + memory**: local files for dev or hosted stores (e.g. Upstash), with optional persistent memory + recall.
 - **Testing + observability**: `poncho test` workflows and OpenTelemetry traces/events.
 
@@ -83,6 +84,7 @@ Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` 
   - [Custom Adapters](docs/features.md#custom-messaging-adapters)
 - [Browser Automation](docs/features.md#browser-automation-experimental)
 - [Subagents](docs/features.md#subagents)
+- [Context Compaction](docs/features.md#context-compaction)
 - [Persistent Memory](docs/features.md#persistent-memory)
 
 ### Reference
@@ -243,6 +245,13 @@ model:
 limits:
   maxSteps: 50                 # Max turns before stopping
   timeout: 300                 # Max runtime in seconds (5 min)
+
+# Context compaction is on by default. Override defaults here:
+# compaction:
+#   enabled: false               # Disable auto-compaction
+#   trigger: 0.80                # Fraction of context window to trigger (default: 0.80)
+#   keepRecentMessages: 6        # Recent messages to preserve after compaction (default: 6)
+#   instructions: "Focus on code changes and decisions"  # Optional focus hint
 
 # Optional tool intent (declarative; policy is still enforced in config)
 allowed-tools:
@@ -611,6 +620,7 @@ Interactive mode uses native terminal I/O (readline + stdout), so it behaves lik
 | `/new [title]` | Start a new conversation |
 | `/delete [id]` | Delete a conversation |
 | `/continue` | Continue the last response |
+| `/compact [focus]` | Summarize older messages to free context space |
 | `/reset [all]` | Reset conversation or all state |
 
 In the web UI, click the send button while streaming (it changes to a stop icon) to stop

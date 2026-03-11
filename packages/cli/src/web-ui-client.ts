@@ -852,6 +852,28 @@ export const getWebUiClientScript = (markedSource: string): string => `
             }
             wrap.appendChild(content);
             row.appendChild(wrap);
+          } else if (m.metadata && m.metadata.isCompactionSummary) {
+            row.className = "message-row compaction-divider-row";
+            const wrapper = document.createElement("div");
+            wrapper.className = "compaction-wrapper";
+            const divider = document.createElement("div");
+            divider.className = "compaction-divider";
+            divider.innerHTML = '<span class="compaction-divider-label">context compacted <span class="compaction-chevron">▸</span></span>';
+            divider.style.cursor = "pointer";
+            const summaryEl = document.createElement("div");
+            summaryEl.className = "compaction-summary hidden";
+            var rawContent = typeof m.content === "string" ? m.content : "";
+            var cleanContent = rawContent.replace(/^\\[CONTEXT COMPACTION\\][^\\n]*\\n*/, "").replace(/<\\/?summary>/g, "").trim();
+            summaryEl.innerHTML = renderAssistantMarkdown(cleanContent);
+            divider.addEventListener("click", function() {
+              var isHidden = summaryEl.classList.contains("hidden");
+              summaryEl.classList.toggle("hidden");
+              var chevron = divider.querySelector(".compaction-chevron");
+              if (chevron) chevron.textContent = isHidden ? "▾" : "▸";
+            });
+            wrapper.appendChild(divider);
+            wrapper.appendChild(summaryEl);
+            row.appendChild(wrapper);
           } else {
             const bubble = document.createElement("div");
             bubble.className = "user-bubble";
@@ -934,8 +956,19 @@ export const getWebUiClientScript = (markedSource: string): string => `
             });
           });
         }
+        var displayMessages = payload.conversation.messages || [];
+        var compactedHistory = payload.conversation.compactedHistory;
+        if (Array.isArray(compactedHistory) && compactedHistory.length > 0) {
+          var dividerMsg = { role: "user", content: "", metadata: { isCompactionSummary: true } };
+          var summaryMsg = displayMessages.find(function(m) { return m.metadata && m.metadata.isCompactionSummary; });
+          if (summaryMsg) {
+            dividerMsg = summaryMsg;
+            displayMessages = displayMessages.filter(function(m) { return m !== summaryMsg; });
+          }
+          displayMessages = [].concat(compactedHistory, [dividerMsg], displayMessages);
+        }
         state.activeMessages = hydratePendingApprovals(
-          payload.conversation.messages || [],
+          displayMessages,
           allPendingApprovals,
         );
         state.contextTokens = typeof payload.conversation.contextTokens === "number" ? payload.conversation.contextTokens : 0;
@@ -1277,6 +1310,19 @@ export const getWebUiClientScript = (markedSource: string): string => `
                         errorMsg;
                       assistantMessage._currentTools.push(toolText);
                       assistantMessage.metadata.toolActivity.push(toolText);
+                      renderIfActiveConversation(true);
+                    }
+                    if (eventName === "compaction:started") {
+                      ensureActiveActivities(assistantMessage).push({
+                        kind: "compaction",
+                        tool: "__compaction__",
+                        label: "Compacting context",
+                      });
+                      renderIfActiveConversation(true);
+                    }
+                    if (eventName === "compaction:completed") {
+                      didCompact = true;
+                      removeActiveActivityForTool(assistantMessage, "__compaction__");
                       renderIfActiveConversation(true);
                     }
                     if (eventName === "browser:status" && payload.active) {
@@ -1811,6 +1857,31 @@ export const getWebUiClientScript = (markedSource: string): string => `
         if (!messageText || state.isStreaming) {
           return;
         }
+        if (messageText.toLowerCase().startsWith("/compact")) {
+          const focusHint = messageText.slice("/compact".length).trim() || undefined;
+          const conversationId = state.activeConversationId;
+          if (!conversationId) {
+            alert("No active conversation to compact.");
+            return;
+          }
+          try {
+            const data = await api(
+              "/api/conversations/" + encodeURIComponent(conversationId) + "/compact",
+              {
+                method: "POST",
+                body: JSON.stringify(focusHint ? { instructions: focusHint } : {}),
+              },
+            );
+            if (data.compacted) {
+              await loadConversation(conversationId);
+            } else {
+              alert(data.warning || "Nothing to compact.");
+            }
+          } catch (e) {
+            alert("Compact failed: " + (e.message || e));
+          }
+          return;
+        }
         const filesToSend = [...state.pendingFiles];
         state.pendingFiles = [];
         renderAttachmentPreview();
@@ -1845,6 +1916,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
         state.activeMessages = localMessages;
         renderMessages(localMessages, true, { forceScrollBottom: true });
         let conversationId = state.activeConversationId;
+        let didCompact = false;
         const streamAbortController = new AbortController();
         state.activeStreamAbortController = streamAbortController;
         state.activeStreamRunId = null;
@@ -2050,6 +2122,19 @@ export const getWebUiClientScript = (markedSource: string): string => `
                   assistantMessage.metadata.toolActivity.push(toolText);
                   renderIfActiveConversation(true);
                 }
+                if (eventName === "compaction:started") {
+                  ensureActiveActivities(assistantMessage).push({
+                    kind: "compaction",
+                    tool: "__compaction__",
+                    label: "Compacting context",
+                  });
+                  renderIfActiveConversation(true);
+                }
+                if (eventName === "compaction:completed") {
+                  didCompact = true;
+                  removeActiveActivityForTool(assistantMessage, "__compaction__");
+                  renderIfActiveConversation(true);
+                }
                 if (eventName === "browser:status" && payload.active) {
                   if (window._connectBrowserStream) window._connectBrowserStream();
                 }
@@ -2223,6 +2308,9 @@ export const getWebUiClientScript = (markedSource: string): string => `
           }
           state.activeStreamRunId = null;
           setStreaming(false);
+          if (didCompact && conversationId) {
+            loadConversation(conversationId).catch(function() {});
+          }
           elements.prompt.focus();
         }
       };

@@ -9,6 +9,7 @@ export interface WebUiConversation {
   conversationId: string;
   title: string;
   messages: Message[];
+  compactedHistory?: Message[];
   runtimeRunId?: string;
   ownerId: string;
   tenantId: string | null;

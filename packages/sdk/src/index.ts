@@ -36,6 +36,7 @@ export interface Message {
     step?: number;
     toolActivity?: string[];
     sections?: Array<{ type: "text" | "tools"; content: string | string[] }>;
+    isCompactionSummary?: boolean;
   };
 }
 
@@ -176,4 +177,14 @@ export type AgentEvent =
       tool: string;
       approvalId: string;
       input?: Record<string, unknown>;
-    };
+    }
+  | { type: "compaction:started"; estimatedTokens: number }
+  | {
+      type: "compaction:completed";
+      tokensBefore: number;
+      tokensAfter: number;
+      messagesBefore: number;
+      messagesAfter: number;
+      compactedMessages?: Message[];
+    }
+  | { type: "compaction:warning"; reason: string };

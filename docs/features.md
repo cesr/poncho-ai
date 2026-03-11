@@ -462,6 +462,77 @@ In the web UI, subagent conversations appear **nested under their parent** in th
 
 When the parent conversation is active, `spawn_subagent` tool calls in the tool activity timeline are clickable links that navigate to the subagent's conversation.
 
+## Context Compaction
+
+Long conversations can exhaust the model's context window. Context compaction automatically summarizes older messages to free space, letting conversations continue indefinitely.
+
+### How it works
+
+Before each agent turn, the harness estimates current token usage (using a chars/4 heuristic calibrated against actual model-reported usage). When usage exceeds the configured trigger threshold (default: 80% of the context window), the harness:
+
+1. Finds a safe split point that preserves recent messages and avoids breaking tool call/result pairs.
+2. Sends the older messages to the model for summarization via a dedicated `generateText` call.
+3. Replaces the compacted messages with a single summary message, then continues the conversation.
+
+If summarization fails (e.g. the model errors out), the harness emits a warning and continues with the original messages — compaction never blocks the conversation.
+
+### Configuration
+
+Add a `compaction` block to your `AGENT.md` frontmatter:
+
+```yaml
+---
+name: my-agent
+compaction:
+  enabled: true              # default: true when block is present
+  trigger: 0.80              # context usage fraction to trigger (default: 0.80)
+  keepRecentMessages: 6      # messages to preserve after split (default: 6, min: 2)
+  instructions: "Focus on code changes and decisions"  # optional focus hint
+---
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `true` | Enable/disable auto-compaction |
+| `trigger` | `0.80` | Fraction of context window at which compaction triggers (0.1–1.0) |
+| `keepRecentMessages` | `6` | Number of recent messages to preserve (minimum 2) |
+| `instructions` | *(none)* | Optional instructions to guide the summarization (e.g. "focus on technical decisions") |
+
+Compaction is **on by default** for all agents. To disable it, add `compaction: { enabled: false }` to your frontmatter. To customize thresholds, add a `compaction` block with the options you want to override.
+
+### Manual compaction
+
+Use the `/compact` command to compact on demand, without waiting for the automatic trigger:
+
+- **CLI**: type `/compact` or `/compact <focus hint>` (e.g. `/compact focus on the API design decisions`)
+- **Web UI**: type `/compact` in the message input
+
+The optional focus hint is passed as a one-time instruction to the summarization model.
+
+### Events
+
+The harness emits these events during compaction:
+
+| Event | When |
+|-------|------|
+| `compaction:started` | Auto-compaction triggered (includes estimated token count) |
+| `compaction:completed` | Compaction succeeded (includes before/after token and message counts) |
+| `compaction:warning` | Compaction skipped or failed (includes reason) |
+
+### Programmatic use
+
+The `AgentHarness` exposes a `compact()` method for use outside the run loop:
+
+```typescript
+const result = await harness.compact(messages, {
+  instructions: "Focus on the user's requirements",
+});
+
+if (result.compacted) {
+  console.log(`${result.messagesBefore} → ${result.messagesAfter} messages`);
+}
+```
+
 ## Persistent Memory
 
 When `memory.enabled` is true in `poncho.config.js`, the harness enables a simple memory model:

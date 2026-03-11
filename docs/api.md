@@ -20,6 +20,7 @@ Your deployed agent exposes these endpoints:
 | `POST /api/conversations/:conversationId/messages` | Stream a new assistant response |
 | `GET /api/conversations/:conversationId/events` | Attach to live SSE stream |
 | `POST /api/conversations/:conversationId/stop` | Cancel an in-flight run |
+| `POST /api/conversations/:conversationId/compact` | Compact conversation context (summarize older messages) |
 | `POST /api/approvals/:approvalId` | Resolve tool approval request |
 | `GET /api/uploads/:key` | Retrieve uploaded file |
 | `GET\|POST /api/cron/:jobName` | Trigger a cron job (see [Cron Jobs](../README.md#cron-jobs)) |
@@ -120,6 +121,7 @@ async function streamMessage(conversationId: string, message: string) {
 Useful optional endpoints for richer UIs:
 
 - `POST /api/conversations/:conversationId/stop` with `{ "runId": "<run-id>" }` to cancel an in-flight run
+- `POST /api/conversations/:conversationId/compact` with optional `{ "instructions": "focus hint" }` to summarize older messages and free context space (returns 409 if a run is active)
 - `GET /api/conversations/:conversationId/events` to attach/re-attach to a live event stream
 - `POST /api/approvals/:approvalId` with `{ "approved": true|false }` to resolve `tool:approval:required`
 

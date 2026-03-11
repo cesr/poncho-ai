@@ -837,6 +837,58 @@ export const WEB_UI_STYLES = `
       word-break: break-word;
       white-space: pre-wrap;
     }
+    .compaction-divider-row { justify-content: center; }
+    .compaction-wrapper { width: 100%; }
+    .compaction-divider {
+      display: flex;
+      align-items: center;
+      width: 100%;
+      gap: 12px;
+      cursor: pointer;
+    }
+    .compaction-divider:hover .compaction-divider-label { color: var(--fg); }
+    .compaction-divider::before,
+    .compaction-divider::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: var(--border-2);
+    }
+    .compaction-divider-label {
+      font-size: 11px;
+      color: var(--fg-muted);
+      white-space: nowrap;
+      text-transform: lowercase;
+      letter-spacing: 0.03em;
+      transition: color 0.15s;
+    }
+    .compaction-chevron {
+      display: inline-block;
+      font-size: 10px;
+      margin-left: 2px;
+    }
+    .compaction-summary {
+      margin-top: 10px;
+      padding: 12px 16px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-2);
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--fg-muted);
+      overflow-wrap: break-word;
+    }
+    .compaction-summary.hidden { display: none; }
+    .compaction-summary h1, .compaction-summary h2, .compaction-summary h3,
+    .compaction-summary h4, .compaction-summary h5, .compaction-summary h6 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--fg);
+      margin: 8px 0 4px;
+    }
+    .compaction-summary p { margin: 4px 0; }
+    .compaction-summary ul, .compaction-summary ol { margin: 4px 0; padding-left: 20px; }
+    .compaction-summary code { font-size: 12px; }
     .empty-state {
       display: flex;
       flex-direction: column;

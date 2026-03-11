@@ -1,5 +1,6 @@
 export * from "./agent-parser.js";
 export * from "./agent-identity.js";
+export * from "./compaction.js";
 export * from "./config.js";
 export * from "./default-tools.js";
 export * from "./harness.js";

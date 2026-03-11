@@ -391,7 +391,7 @@ While a response is streaming, you can stop it:
 
 Stopping is best-effort and keeps partial assistant output/tool activity already produced.
 
-Interactive CLI commands: \`/help\`, \`/clear\`, \`/tools\`, \`/exit\`, \`/attach <path>\`, \`/files\`, \`/list\`, \`/open <id>\`, \`/new [title]\`, \`/delete [id]\`, \`/continue\`, \`/reset [all]\`.
+Interactive CLI commands: \`/help\`, \`/clear\`, \`/tools\`, \`/exit\`, \`/attach <path>\`, \`/files\`, \`/list\`, \`/open <id>\`, \`/new [title]\`, \`/delete [id]\`, \`/continue\`, \`/compact [focus]\`, \`/reset [all]\`.
 
 ## Common Commands
 
@@ -2287,6 +2287,7 @@ export const createRequestHandler = async (options?: {
       console.log("[messaging-runner] starting run for", conversationId, "task:", input.task.slice(0, 80));
 
       const historyMessages = [...input.messages];
+      const preRunMessages = [...input.messages];
       const userContent = input.task;
 
       // Read-modify-write helper: always fetches the latest version from
@@ -2441,6 +2442,22 @@ export const createRequestHandler = async (options?: {
               }));
             });
             checkpointedRun = true;
+          }
+          if (event.type === "compaction:completed") {
+            if (event.compactedMessages) {
+              historyMessages.length = 0;
+              historyMessages.push(...event.compactedMessages);
+
+              const preservedFromHistory = historyMessages.length - 1;
+              const removedCount = preRunMessages.length - Math.max(0, preservedFromHistory);
+              await updateConversation((c) => {
+                const existingHistory = c.compactedHistory ?? [];
+                c.compactedHistory = [
+                  ...existingHistory,
+                  ...preRunMessages.slice(0, removedCount),
+                ];
+              });
+            }
           }
           if (event.type === "run:completed") {
             if (assistantResponse.length === 0 && event.result.response) {
@@ -3386,6 +3403,51 @@ export const createRequestHandler = async (options?: {
       return;
     }
 
+    const conversationCompactMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/compact$/);
+    if (conversationCompactMatch && request.method === "POST") {
+      const conversationId = decodeURIComponent(conversationCompactMatch[1] ?? "");
+      const conversation = await conversationStore.get(conversationId);
+      if (!conversation || conversation.ownerId !== ownerId) {
+        writeJson(response, 404, {
+          code: "CONVERSATION_NOT_FOUND",
+          message: "Conversation not found",
+        });
+        return;
+      }
+      const activeRun = activeConversationRuns.get(conversationId);
+      if (activeRun && activeRun.ownerId === ownerId && !activeRun.abortController.signal.aborted) {
+        writeJson(response, 409, {
+          code: "RUN_IN_PROGRESS",
+          message: "Cannot compact while a run is active",
+        });
+        return;
+      }
+      const body = (await readRequestBody(request)) as { instructions?: string };
+      const instructions = typeof body.instructions === "string" ? body.instructions.trim() || undefined : undefined;
+      const result = await harness.compact(
+        conversation.messages,
+        instructions ? { instructions } : undefined,
+      );
+      if (result.compacted) {
+        const existingHistory = conversation.compactedHistory ?? [];
+        const preservedCount = result.messages.length - 1; // exclude summary
+        const removedCount = conversation.messages.length - preservedCount;
+        conversation.compactedHistory = [
+          ...existingHistory,
+          ...conversation.messages.slice(0, removedCount),
+        ];
+        conversation.messages = result.messages;
+        await conversationStore.update(conversation);
+      }
+      writeJson(response, 200, {
+        compacted: result.compacted,
+        messagesBefore: result.messagesBefore,
+        messagesAfter: result.messagesAfter,
+        warning: result.warning,
+      });
+      return;
+    }
+
     const conversationMessageMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
     if (conversationMessageMatch && request.method === "POST") {
       const conversationId = decodeURIComponent(conversationMessageMatch[1] ?? "");
@@ -3466,6 +3528,7 @@ export const createRequestHandler = async (options?: {
         Connection: "keep-alive",
       });
       const historyMessages = [...conversation.messages];
+      const preRunMessages = [...conversation.messages];
       let latestRunId = conversation.runtimeRunId ?? "";
       let assistantResponse = "";
       const toolTimeline: string[] = [];
@@ -3474,6 +3537,7 @@ export const createRequestHandler = async (options?: {
       let currentTools: string[] = [];
       let runCancelled = false;
       let checkpointedRun = false;
+      let didCompact = false;
       let runContextTokens = conversation.contextTokens ?? 0;
       let runContextWindow = conversation.contextWindow ?? 0;
       let userContent: Message["content"] = messageText;
@@ -3639,6 +3703,21 @@ export const createRequestHandler = async (options?: {
             toolTimeline.push(toolText);
             currentTools.push(toolText);
           }
+          if (event.type === "compaction:completed") {
+            didCompact = true;
+            if (event.compactedMessages) {
+              historyMessages.length = 0;
+              historyMessages.push(...event.compactedMessages);
+
+              const preservedFromHistory = historyMessages.length - 1; // exclude summary
+              const removedCount = preRunMessages.length - Math.max(0, preservedFromHistory);
+              const existingHistory = conversation.compactedHistory ?? [];
+              conversation.compactedHistory = [
+                ...existingHistory,
+                ...preRunMessages.slice(0, removedCount),
+              ];
+            }
+          }
           if (event.type === "step:completed") {
             await persistDraftAssistantTurn();
           }
@@ -3691,9 +3770,12 @@ export const createRequestHandler = async (options?: {
             assistantResponse = event.result.response;
           }
           await telemetry.emit(event);
-          broadcastEvent(conversationId, event);
+          const sseEvent = event.type === "compaction:completed" && event.compactedMessages
+            ? { ...event, compactedMessages: undefined }
+            : event;
+          broadcastEvent(conversationId, sseEvent);
           try {
-            response.write(formatSseEvent(event));
+            response.write(formatSseEvent(sseEvent));
           } catch {
             // Client disconnected (e.g. browser refresh). Continue processing
             // so the run completes and conversation is persisted.
