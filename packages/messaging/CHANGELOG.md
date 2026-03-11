@@ -1,5 +1,11 @@
 # @poncho-ai/messaging
 
+## 0.5.0
+
+### Minor Changes
+
+- [`8ef9316`](https://github.com/cesr/poncho-ai/commit/8ef93165084b4df581e39a1581b1ead64b7b3f42) Thanks [@cesr](https://github.com/cesr)! - Add auto-continuation support for messaging adapters (Telegram, Slack, Resend) on serverless platforms. When `PONCHO_MAX_DURATION` is set, agent runs that hit the soft deadline now automatically resume with "Continue" messages, matching the web UI and client SDK behavior.
+
 ## 0.4.0
 
 ### Minor Changes
