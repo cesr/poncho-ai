@@ -564,6 +564,7 @@ export default {
     },
   },
   // browser: true, // Enable browser automation tools (requires @poncho-ai/browser)
+  // browser: { provider: 'browserbase' }, // Cloud browser for serverless (Vercel, Lambda)
   // webUi: false, // Disable built-in UI for API-only deployments
   // uploads: { provider: 'local' }, // 'local' | 'vercel-blob' | 's3'
 };
@@ -1022,10 +1023,40 @@ await startDevServer(Number.isNaN(port) ? 3000 : port, { workingDir: process.cwd
 `;
 
   if (target === "vercel") {
+    // Build @vercel/nft trace hints for packages that are dynamically loaded
+    // at runtime.  Bare `import("pkg")` with a string literal is enough for
+    // nft to include the package in the bundle.  Using async import() avoids
+    // blocking the module graph at cold start; .catch() prevents errors when
+    // an optional package isn't installed.
+    const traceHints: string[] = [];
+
+    let browserEnabled = false;
+    try {
+      const cfg = await loadPonchoConfig(projectDir);
+      browserEnabled = !!cfg?.browser;
+    } catch { /* best-effort */ }
+
+    if (browserEnabled) {
+      traceHints.push(`import("@poncho-ai/browser").catch(() => {});`);
+
+      const projectPkgPath = resolve(projectDir, "package.json");
+      try {
+        const raw = await readFile(projectPkgPath, "utf8");
+        const pkg = JSON.parse(raw) as { dependencies?: Record<string, string> };
+        if (pkg.dependencies?.["@sparticuz/chromium"]) {
+          traceHints.push(`import("@sparticuz/chromium").catch(() => {});`);
+        }
+      } catch { /* best-effort */ }
+    }
+
+    const traceBlock = traceHints.length > 0
+      ? `\n${traceHints.join("\n")}\n`
+      : "";
+
     const entryPath = resolve(projectDir, "api", "index.mjs");
     await writeScaffoldFile(
       entryPath,
-      `import "marked";
+      `import "marked";${traceBlock}
 import { createRequestHandler } from "@poncho-ai/cli";
 let handlerPromise;
 export default async function handler(req, res) {

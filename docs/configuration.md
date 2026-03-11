@@ -141,6 +141,8 @@ export default {
   //   executablePath: '/path/to/chromium',
   //   stealth: true,           // Anti-bot-detection (default: true)
   //   userAgent: 'custom UA',  // Override the default stealth user-agent
+  //   provider: 'browserbase', // Cloud browser: 'browserbase' | 'browseruse' | 'kernel'
+  //   cdpUrl: 'wss://...',     // Or connect via CDP URL (alternative to provider)
   // },
 
   // Headless mode: disable the built-in Web UI (API-only)

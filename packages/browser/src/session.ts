@@ -244,25 +244,74 @@ export class BrowserSession {
     }
   }
 
+  private get isRemote(): boolean {
+    return !!(this.config.provider || this.config.cdpUrl);
+  }
+
+  private get isServerless(): boolean {
+    return !!(
+      process.env.VERCEL ||
+      process.env.AWS_LAMBDA_FUNCTION_NAME ||
+      process.env.AWS_EXECUTION_ENV ||
+      process.env.SERVERLESS
+    );
+  }
+
+  /**
+   * Resolve executablePath for local launches. When no explicit path is set
+   * and we're on a serverless platform, try `@sparticuz/chromium` automatically.
+   */
+  private async resolveExecutablePath(): Promise<string | undefined> {
+    if (this.config.executablePath) return this.config.executablePath;
+    if (!this.isServerless) return undefined;
+    try {
+      // Dynamic require — @sparticuz/chromium is an optional peer dependency
+      // that the user installs in their agent project for serverless runtimes.
+      const spec = ["@sparticuz", "chromium"].join("/");
+      const mod = await import(/* webpackIgnore: true */ spec);
+      const chromium = mod.default ?? mod;
+      const path = await chromium.executablePath();
+      console.log(`[poncho][browser] Auto-detected @sparticuz/chromium: ${path}`);
+      return path;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async launchFreshManager(): Promise<BrowserManagerInstance> {
     const Ctor = await getBrowserManagerCtor();
     const mgr = new Ctor();
 
     const viewport = this.config.viewport ?? { width: 1280, height: 720 };
-    await mkdir(this.profileDir, { recursive: true });
+    const executablePath = await this.resolveExecutablePath();
 
     const launchOpts: Record<string, unknown> = {
       action: "launch",
       headless: this.config.headless ?? true,
       viewport: { width: viewport.width ?? 1280, height: viewport.height ?? 720 },
-      executablePath: this.config.executablePath,
-      profile: this.profileDir,
+      executablePath,
     };
+
+    if (this.config.cdpUrl) {
+      launchOpts.cdpUrl = this.config.cdpUrl;
+      console.log(`[poncho][browser] Connecting via CDP: ${this.config.cdpUrl}`);
+    } else if (this.config.provider) {
+      launchOpts.provider = this.config.provider;
+      console.log(`[poncho][browser] Using cloud provider: ${this.config.provider}`);
+    } else {
+      const profileDir = this.isServerless && !this.config.profileDir
+        ? join(tmpdir(), "poncho-browser", this.sessionId)
+        : this.profileDir;
+      await mkdir(profileDir, { recursive: true });
+      launchOpts.profile = profileDir;
+    }
 
     if (this.stealthEnabled) {
       const ua = this.stealthUserAgent!;
       launchOpts.userAgent = ua;
-      launchOpts.args = buildStealthArgs(ua);
+      if (!this.isRemote) {
+        launchOpts.args = buildStealthArgs(ua);
+      }
       console.log("[poncho][browser] Launching with stealth mode enabled (UA: " + ua + ")");
     } else if (this.config.userAgent) {
       launchOpts.userAgent = this.config.userAgent;

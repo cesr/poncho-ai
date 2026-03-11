@@ -379,23 +379,48 @@ pnpm add @poncho-ai/browser
 
 Then set `browser: true` in `poncho.config.js`. Chromium is downloaded automatically via a `postinstall` hook (skipped when `CI` or `SERVERLESS` env vars are set).
 
-**Serverless deployments** (Lambda, Vercel, etc.): use `@sparticuz/chromium` instead of the bundled Chromium:
+### Cloud browser providers (Vercel, Lambda, serverless)
+
+Serverless platforms like Vercel don't have a local Chromium binary. Use a cloud browser provider instead:
+
+**[Browserbase](https://browserbase.com)** (recommended):
+
+```javascript
+// poncho.config.js
+export default {
+  browser: {
+    provider: "browserbase",
+  },
+};
+```
+
+Set `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` as environment variables on your deployment platform.
+
+**[Browser Use](https://browseruse.com)**:
+
+```javascript
+browser: {
+  provider: "browseruse",
+}
+```
+
+Set `BROWSER_USE_API_KEY` as an environment variable.
+
+**Direct CDP connection** (connect to any remote browser):
+
+```javascript
+browser: {
+  cdpUrl: "wss://your-browser-service.example.com",
+}
+```
+
+**`@sparticuz/chromium`** (Vercel / Lambda — bundles a stripped Chromium binary):
 
 ```bash
 pnpm add @sparticuz/chromium
 ```
 
-```javascript
-// poncho.config.js
-import chromium from "@sparticuz/chromium";
-
-export default {
-  browser: {
-    executablePath: await chromium.executablePath(),
-    headless: true,
-  },
-};
-```
+When `@sparticuz/chromium` is installed and a serverless environment is detected (Vercel, AWS Lambda), the browser package automatically resolves the executable path and uses `/tmp` for the ephemeral profile directory. No config changes needed beyond `browser: true`.
 
 ## Subagents
 

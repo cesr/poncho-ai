@@ -70,4 +70,11 @@ export interface BrowserConfig {
    *  user-agent, and passes anti-automation Chrome flags. */
   stealth?: boolean;
   storagePersistence?: BrowserStoragePersistence;
+  /** Cloud browser provider. Requires the provider's API key env var to be set
+   *  (e.g. `BROWSERBASE_API_KEY` + `BROWSERBASE_PROJECT_ID` for Browserbase).
+   *  When set, the browser runs remotely instead of launching a local Chromium. */
+  provider?: "browserbase" | "browseruse" | "kernel";
+  /** Connect to an existing browser via Chrome DevTools Protocol URL or port.
+   *  Mutually exclusive with `provider`. */
+  cdpUrl?: string;
 }

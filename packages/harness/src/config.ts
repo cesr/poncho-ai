@@ -135,6 +135,12 @@ export interface PonchoConfig extends McpConfig {
         userAgent?: string;
         /** Reduce bot-detection fingerprints. Defaults to `true`. */
         stealth?: boolean;
+        /** Cloud browser provider for serverless/remote deployments.
+         *  Requires the provider's API key env var (e.g. `BROWSERBASE_API_KEY`). */
+        provider?: "browserbase" | "browseruse" | "kernel";
+        /** Connect to an existing browser via CDP URL or port.
+         *  Mutually exclusive with `provider`. */
+        cdpUrl?: string;
       };
 }
 
