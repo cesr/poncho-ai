@@ -1,5 +1,16 @@
 # @poncho-ai/harness
 
+## 0.22.0
+
+### Minor Changes
+
+- [`6f0abfd`](https://github.com/cesr/poncho-ai/commit/6f0abfd9f729b545cf293741ee813f705910aaf3) Thanks [@cesr](https://github.com/cesr)! - Add context compaction for long conversations. Automatically summarizes older messages when the context window fills up, keeping conversations going indefinitely. Includes auto-compaction in the run loop, `/compact` command, Web UI divider with expandable summary, and visual history preservation.
+
+### Patch Changes
+
+- Updated dependencies [[`6f0abfd`](https://github.com/cesr/poncho-ai/commit/6f0abfd9f729b545cf293741ee813f705910aaf3)]:
+  - @poncho-ai/sdk@1.5.0
+
 ## 0.21.1
 
 ### Patch Changes
