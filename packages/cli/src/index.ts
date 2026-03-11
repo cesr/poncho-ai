@@ -3526,6 +3526,7 @@ export const createRequestHandler = async (options?: {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
       });
       const historyMessages = [...conversation.messages];
       const preRunMessages = [...conversation.messages];
@@ -3584,10 +3585,14 @@ export const createRequestHandler = async (options?: {
       });
 
       try {
-        // Persist the user turn immediately so refreshing mid-run keeps chat context.
+        // Persist the user turn so refreshing mid-run keeps chat context.
+        // Fire-and-forget: the write chain in the store serializes file ops,
+        // and persistDraftAssistantTurn won't run until LLM events arrive.
         conversation.messages = [...historyMessages, { role: "user", content: userContent }];
         conversation.updatedAt = Date.now();
-        await conversationStore.update(conversation);
+        conversationStore.update(conversation).catch((err) => {
+          console.error("[poncho] Failed to persist user turn:", err);
+        });
 
         const persistDraftAssistantTurn = async (): Promise<void> => {
           const draftSections: Array<{ type: "text" | "tools"; content: string | string[] }> = [
@@ -3626,27 +3631,45 @@ export const createRequestHandler = async (options?: {
           await conversationStore.update(conversation);
         };
 
-        const recallCorpus = (await conversationStore.list(ownerId))
-          .filter((item) => item.conversationId !== conversationId && !item.parentConversationId)
-          .slice(0, 20)
-          .map((item) => ({
-            conversationId: item.conversationId,
-            title: item.title,
-            updatedAt: item.updatedAt,
-            content: item.messages
-              .slice(-6)
-              .map((message) => `${message.role}: ${typeof message.content === "string" ? message.content : getTextContent(message)}`)
-              .join("\n")
-              .slice(0, 2000),
-          }))
-          .filter((item) => item.content.length > 0);
+        let cachedRecallCorpus: unknown[] | undefined;
+        const lazyRecallCorpus = async () => {
+          if (cachedRecallCorpus) return cachedRecallCorpus;
+          const _rc0 = performance.now();
+          let recallConversations: Conversation[];
+          if (typeof conversationStore.listSummaries === "function") {
+            const recallSummaries = (await conversationStore.listSummaries(ownerId))
+              .filter((s) => s.conversationId !== conversationId && !s.parentConversationId)
+              .slice(0, 20);
+            recallConversations = (
+              await Promise.all(recallSummaries.map((s) => conversationStore.get(s.conversationId)))
+            ).filter((c): c is NonNullable<typeof c> => c != null);
+          } else {
+            recallConversations = (await conversationStore.list(ownerId))
+              .filter((item) => item.conversationId !== conversationId && !item.parentConversationId)
+              .slice(0, 20);
+          }
+          cachedRecallCorpus = recallConversations
+            .map((item) => ({
+              conversationId: item.conversationId,
+              title: item.title,
+              updatedAt: item.updatedAt,
+              content: item.messages
+                .slice(-6)
+                .map((message) => `${message.role}: ${typeof message.content === "string" ? message.content : getTextContent(message)}`)
+                .join("\n")
+                .slice(0, 2000),
+            }))
+            .filter((item) => item.content.length > 0);
+          console.info(`[poncho] recall corpus fetched lazily (${cachedRecallCorpus.length} items, ${(performance.now() - _rc0).toFixed(1)}ms)`);
+          return cachedRecallCorpus;
+        };
 
         for await (const event of harness.runWithTelemetry({
           task: messageText,
           conversationId,
           parameters: {
             ...(bodyParameters ?? {}),
-            __conversationRecallCorpus: recallCorpus,
+            __conversationRecallCorpus: lazyRecallCorpus,
             __activeConversationId: conversationId,
             __ownerId: ownerId,
           },
@@ -3675,7 +3698,6 @@ export const createRequestHandler = async (options?: {
             runCancelled = true;
           }
           if (event.type === "model:chunk") {
-            // If we have tools accumulated and text starts again, push tools as a section
             if (currentTools.length > 0) {
               sections.push({ type: "tools", content: currentTools });
               currentTools = [];

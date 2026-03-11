@@ -646,6 +646,7 @@ class FileStateStore implements StateStore {
 
 interface RawKeyValueClient {
   get(key: string): Promise<string | undefined>;
+  mget(keys: string[]): Promise<(string | undefined)[]>;
   set(key: string, value: string, ttl?: number): Promise<void>;
   del(key: string): Promise<void>;
 }
@@ -760,21 +761,18 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
       return await this.memoryFallback.list(ownerId);
     }
     if (!ownerId) {
-      // KV stores index per-owner; cross-owner listing not supported
       return [];
     }
     const ids = await this.getOwnerConversationIds(ownerId);
+    if (ids.length === 0) return [];
+    const convKeys = await Promise.all(ids.map((id) => this.conversationKey(id)));
+    const rawValues = await kv.mget(convKeys);
     const conversations: Conversation[] = [];
-    for (const id of ids) {
-      const raw = await kv.get(await this.conversationKey(id));
-      if (!raw) {
-        continue;
-      }
+    for (const raw of rawValues) {
+      if (!raw) continue;
       try {
         conversations.push(JSON.parse(raw) as Conversation);
-      } catch {
-        // Skip invalid records.
-      }
+      } catch { /* skip invalid records */ }
     }
     return conversations.sort((a, b) => b.updatedAt - a.updatedAt);
   }
@@ -788,21 +786,27 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
       return [];
     }
     const ids = await this.getOwnerConversationIds(ownerId);
+    if (ids.length === 0) return [];
+    const metaKeys = await Promise.all(ids.map((id) => this.conversationMetaKey(id)));
+    const rawValues = await kv.mget(metaKeys);
     const summaries: ConversationSummary[] = [];
-    for (const id of ids) {
-      const meta = await this.getConversationMeta(id);
-      if (meta && meta.ownerId === ownerId) {
-        summaries.push({
-          conversationId: meta.conversationId,
-          title: meta.title,
-          updatedAt: meta.updatedAt,
-          createdAt: meta.createdAt,
-          ownerId: meta.ownerId,
-          parentConversationId: meta.parentConversationId,
-          messageCount: meta.messageCount,
-          hasPendingApprovals: meta.hasPendingApprovals,
-        });
-      }
+    for (const raw of rawValues) {
+      if (!raw) continue;
+      try {
+        const meta = JSON.parse(raw) as ConversationMeta;
+        if (meta.ownerId === ownerId) {
+          summaries.push({
+            conversationId: meta.conversationId,
+            title: meta.title,
+            updatedAt: meta.updatedAt,
+            createdAt: meta.createdAt,
+            ownerId: meta.ownerId,
+            parentConversationId: meta.parentConversationId,
+            messageCount: meta.messageCount,
+            hasPendingApprovals: meta.hasPendingApprovals,
+          });
+        }
+      } catch { /* skip invalid records */ }
     }
     return summaries.sort((a, b) => b.updatedAt - a.updatedAt);
   }
@@ -948,6 +952,19 @@ class UpstashConversationStore extends KeyValueConversationStoreBase {
         const payload = (await response.json()) as { result?: string | null };
         return payload.result ?? undefined;
       },
+      mget: async (keys: string[]) => {
+        if (keys.length === 0) return [];
+        const path = keys.map((k) => encodeURIComponent(k)).join("/");
+        const response = await fetch(`${this.baseUrl}/mget/${path}`, {
+          method: "POST",
+          headers: this.headers(),
+        });
+        if (!response.ok) {
+          return keys.map(() => undefined);
+        }
+        const payload = (await response.json()) as { result?: (string | null)[] };
+        return (payload.result ?? []).map((v) => v ?? undefined);
+      },
       set: async (key: string, value: string, ttl?: number) => {
         const endpoint =
           typeof ttl === "number"
@@ -1042,6 +1059,7 @@ class RedisLikeConversationStore extends KeyValueConversationStoreBase {
   private readonly clientPromise: Promise<
     | {
         get: (key: string) => Promise<string | null>;
+        mGet: (keys: readonly string[]) => Promise<(string | null)[]>;
         set: (key: string, value: string, options?: { EX?: number }) => Promise<unknown>;
         del: (key: string) => Promise<unknown>;
       }
@@ -1056,6 +1074,7 @@ class RedisLikeConversationStore extends KeyValueConversationStoreBase {
           createClient: (options: { url: string }) => {
             connect: () => Promise<unknown>;
             get: (key: string) => Promise<string | null>;
+            mGet: (keys: readonly string[]) => Promise<(string | null)[]>;
             set: (key: string, value: string, options?: { EX?: number }) => Promise<unknown>;
             del: (key: string) => Promise<unknown>;
           };
@@ -1078,6 +1097,11 @@ class RedisLikeConversationStore extends KeyValueConversationStoreBase {
       get: async (key: string) => {
         const value = await client.get(key);
         return value ?? undefined;
+      },
+      mget: async (keys: string[]) => {
+        if (keys.length === 0) return [];
+        const values = await client.mGet(keys);
+        return values.map((v: string | null) => v ?? undefined);
       },
       set: async (key: string, value: string, ttl?: number) => {
         if (typeof ttl === "number") {
@@ -1260,6 +1284,18 @@ class DynamoDbConversationStore extends KeyValueConversationStoreBase {
             },
           }),
         );
+      },
+      mget: async (keys: string[]) => {
+        if (keys.length === 0) return [];
+        return Promise.all(keys.map(async (key) => {
+          const result = (await client.send(
+            new client.GetItemCommand({
+              TableName: this.table,
+              Key: { runId: { S: key } },
+            }),
+          )) as { Item?: { value?: { S?: string } } };
+          return result.Item?.value?.S;
+        }));
       },
       del: async (key: string) => {
         await client.send(

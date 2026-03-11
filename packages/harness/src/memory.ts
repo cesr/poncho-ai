@@ -658,10 +658,10 @@ export const createMemoryTools = (
           typeof input.excludeConversationId === "string"
             ? input.excludeConversationId
             : "";
-        const corpus = asRecallCorpus(context.parameters.__conversationRecallCorpus).slice(
-          0,
-          maxRecallConversations,
-        );
+        const rawCorpus = context.parameters.__conversationRecallCorpus;
+        const resolvedCorpus =
+          typeof rawCorpus === "function" ? await (rawCorpus as () => Promise<unknown>)() : rawCorpus;
+        const corpus = asRecallCorpus(resolvedCorpus).slice(0, maxRecallConversations);
         const results = corpus
           .filter((item) =>
             excludeConversationId ? item.conversationId !== excludeConversationId : true,

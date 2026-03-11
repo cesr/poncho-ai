@@ -545,6 +545,7 @@ export class AgentHarness {
   private loadedConfig?: PonchoConfig;
   private loadedSkills: SkillMetadata[] = [];
   private skillFingerprint = "";
+  private lastSkillRefreshAt = 0;
   private readonly activeSkillNames = new Set<string>();
   private readonly registeredMcpToolNames = new Set<string>();
   private latitudeTelemetry?: LatitudeTelemetry;
@@ -879,10 +880,17 @@ export class AgentHarness {
     );
   }
 
+  private static readonly SKILL_REFRESH_DEBOUNCE_MS = 3000;
+
   private async refreshSkillsIfChanged(): Promise<void> {
     if (this.environment !== "development") {
       return;
     }
+    const elapsed = Date.now() - this.lastSkillRefreshAt;
+    if (this.lastSkillRefreshAt > 0 && elapsed < AgentHarness.SKILL_REFRESH_DEBOUNCE_MS) {
+      return;
+    }
+    this.lastSkillRefreshAt = Date.now();
     try {
       const latestSkills = await loadSkillMetadata(
         this.workingDir,
@@ -1269,6 +1277,10 @@ export class AgentHarness {
     if (!this.parsedAgent) {
       await this.initialize();
     }
+    // Start memory fetch early so it overlaps with skill refresh I/O
+    const memoryPromise = this.memoryStore
+      ? this.memoryStore.getMainMemory()
+      : undefined;
     await this.refreshSkillsIfChanged();
 
     // Track which conversation/owner this run belongs to so browser & subagent tools resolve correctly
@@ -1328,9 +1340,7 @@ Each conversation gets its own browser tab sharing a single browser instance. Ca
     const promptWithSkills = this.skillContextWindow
       ? `${systemPrompt}${developmentContext}\n\n${this.skillContextWindow}${browserContext}`
       : `${systemPrompt}${developmentContext}${browserContext}`;
-    const mainMemory = this.memoryStore
-      ? await this.memoryStore.getMainMemory()
-      : undefined;
+    const mainMemory = await memoryPromise;
     const boundedMainMemory =
       mainMemory && mainMemory.content.length > 4000
         ? `${mainMemory.content.slice(0, 4000)}\n...[truncated]`
@@ -1445,6 +1455,8 @@ ${boundedMainMemory.trim()}`
     let totalOutputTokens = 0;
     let totalCachedTokens = 0;
     let transientStepRetryCount = 0;
+    let cachedCoreMessages: ModelMessage[] = [];
+    let convertedUpTo = 0;
 
     for (let step = 1; step <= maxSteps; step += 1) {
       try {
@@ -1784,15 +1796,26 @@ ${boundedMainMemory.trim()}`
           }
         }
 
-        const coreMessages: ModelMessage[] = (
-          await Promise.all(messages.map(convertMessage))
-        ).flat();
+        // Only convert messages added since the last step
+        if (convertedUpTo > messages.length) {
+          // Compaction replaced the array — invalidate cache
+          cachedCoreMessages = [];
+          convertedUpTo = 0;
+        }
+        const newMessages = messages.slice(convertedUpTo);
+        const newCoreMessages: ModelMessage[] = newMessages.length > 0
+          ? (await Promise.all(newMessages.map(convertMessage))).flat()
+          : [];
+        cachedCoreMessages = [...cachedCoreMessages, ...newCoreMessages];
+        convertedUpTo = messages.length;
+        const coreMessages = cachedCoreMessages;
 
         const temperature = agent.frontmatter.model?.temperature ?? 0.2;
         const maxTokens = agent.frontmatter.model?.maxTokens;
         const cachedMessages = addPromptCacheBreakpoints(coreMessages, modelInstance);
 
         const telemetryEnabled = this.loadedConfig?.telemetry?.enabled !== false;
+
 
         const result = await streamText({
           model: modelInstance,
