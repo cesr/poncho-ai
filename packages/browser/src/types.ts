@@ -62,5 +62,12 @@ export interface BrowserConfig {
   sessionName?: string;
   executablePath?: string;
   headless?: boolean;
+  /** Custom user-agent string. When `stealth` is enabled a realistic Chrome UA
+   *  is used by default — set this to override it. */
+  userAgent?: string;
+  /** Reduce bot-detection fingerprints. Defaults to `true`.
+   *  Patches navigator.webdriver, injects window.chrome shim, sets a realistic
+   *  user-agent, and passes anti-automation Chrome flags. */
+  stealth?: boolean;
   storagePersistence?: BrowserStoragePersistence;
 }

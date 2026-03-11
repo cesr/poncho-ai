@@ -315,6 +315,8 @@ export default {
     everyNthFrame: 2,
     headless: true,
     profileDir: "~/.poncho/browser-profiles",
+    stealth: true,           // Anti-bot-detection (default: true)
+    userAgent: "custom UA",  // Override the default stealth user-agent
   },
 }
 ```
@@ -339,6 +341,29 @@ The web UI shows a real-time browser viewport panel alongside the chat when a br
 ### Session persistence
 
 Browser sessions are stored in profile directories (`~/.poncho/browser-profiles/<agent-id>/`). Cookies, localStorage, and other browser state persist across runs, so the agent can pick up where it left off (e.g., staying logged in across cron job runs).
+
+### Stealth mode
+
+Stealth mode is **enabled by default** (`stealth: true`) and reduces bot-detection fingerprints so websites treat the browser like a regular user session. It applies:
+
+- A realistic Chrome user-agent string (matching the host OS)
+- `--disable-blink-features=AutomationControlled` flag
+- `navigator.webdriver` overridden to `false`
+- `window.chrome` shim for headless Chromium
+- Fake `navigator.plugins` (3 standard Chrome plugins)
+- `navigator.languages` fallback (`['en-US', 'en']`)
+- WebGL vendor/renderer patched to hide SwiftShader
+- `Notification.permission` patched for headless mode
+- Browser-level `--user-agent` flag (covers Web Workers)
+
+To disable stealth mode (e.g., for trusted internal sites), set `stealth: false`. To use a custom user-agent while keeping other stealth patches, set `userAgent`:
+
+```javascript
+browser: {
+  stealth: true,             // default
+  userAgent: "MyBot/1.0",    // overrides the auto-detected Chrome UA
+}
+```
 
 ### Setup
 

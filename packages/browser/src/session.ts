@@ -1,5 +1,5 @@
 import { resolve, join } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, platform } from "node:os";
 import { mkdir, readFile, unlink } from "node:fs/promises";
 import type {
   BrowserConfig,
@@ -10,16 +10,26 @@ import type {
   KeyboardInputEvent,
   ScrollInputEvent,
 } from "./types.js";
+import { defaultUserAgent, buildStealthArgs, STEALTH_INIT_SCRIPT } from "./stealth.js";
 
 type FrameListener = (frame: BrowserFrame) => void;
 type StatusListener = (status: BrowserStatus) => void;
 
 let BrowserManagerCtor: (new () => BrowserManagerInstance) | undefined;
 
+interface CDPSessionHandle {
+  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+}
+
+interface BrowserContextHandle {
+  addInitScript(script: string | { path?: string; content?: string }): Promise<void>;
+}
+
 interface BrowserManagerInstance {
   isLaunched(): boolean;
   launch(options: Record<string, unknown>): Promise<void>;
   getPage(): { url(): string; title(): Promise<string>; screenshot(opts?: Record<string, unknown>): Promise<Buffer>; goBack(): Promise<unknown>; goForward(): Promise<unknown>; evaluate(fn: string | (() => unknown)): Promise<unknown> };
+  getContext(): BrowserContextHandle | null;
   getSnapshot(options?: { interactive?: boolean; compact?: boolean }): Promise<{ tree: string; refs: Record<string, unknown> }>;
   getLocatorFromRef(ref: string): { click(): Promise<void> } | null;
   getLocator(selector: string): { fill(text: string): Promise<void>; click(): Promise<void> };
@@ -36,7 +46,7 @@ interface BrowserManagerInstance {
   isScreencasting(): boolean;
   injectMouseEvent(params: Record<string, unknown>): Promise<void>;
   injectKeyboardEvent(params: Record<string, unknown>): Promise<void>;
-  getCDPSession(): Promise<{ send(method: string, params?: Record<string, unknown>): Promise<unknown> }>;
+  getCDPSession(): Promise<CDPSessionHandle>;
   saveStorageState(path: string): Promise<void>;
   close(): Promise<void>;
   setViewport(width: number, height: number): Promise<void>;
@@ -69,6 +79,12 @@ export class BrowserSession {
 
   // Tab management: conversationId → tab state
   private readonly tabs = new Map<string, ConversationTab>();
+
+  // Whether context-level stealth init script has been installed
+  private _contextStealthInstalled = false;
+
+  // Track which tabs have had per-page CDP UA override applied
+  private readonly _uaOverrideApplied = new Set<string>();
 
   // Serialization lock for tab-switching operations
   private _lockQueue: Array<() => void> = [];
@@ -116,6 +132,58 @@ export class BrowserSession {
   // Core browser + tab management
   // -----------------------------------------------------------------------
 
+  private get stealthEnabled(): boolean {
+    return this.config.stealth !== false;
+  }
+
+  private get stealthUserAgent(): string | undefined {
+    if (this.config.userAgent) return this.config.userAgent;
+    if (this.stealthEnabled) return defaultUserAgent();
+    return undefined;
+  }
+
+  /**
+   * Install the stealth init script on the Playwright BrowserContext.
+   * This runs before ALL page scripts on every navigation across every tab.
+   * Only needs to be called once per browser launch.
+   */
+  private async installContextStealth(mgr: BrowserManagerInstance): Promise<void> {
+    if (this._contextStealthInstalled) return;
+    const ctx = mgr.getContext();
+    if (!ctx) {
+      console.warn("[poncho][browser] Cannot install stealth: no browser context");
+      return;
+    }
+    try {
+      await ctx.addInitScript({ content: STEALTH_INIT_SCRIPT });
+      this._contextStealthInstalled = true;
+      console.log("[poncho][browser] Stealth init script installed on context");
+    } catch (err) {
+      console.warn("[poncho][browser] Failed to install stealth init script:", (err as Error)?.message ?? err);
+    }
+  }
+
+  /**
+   * Override the user-agent via CDP on the current page target.
+   * CDP Network.setUserAgentOverride is per-target, so call per-tab.
+   */
+  private async overrideUserAgentOnPage(mgr: BrowserManagerInstance, conversationId: string): Promise<void> {
+    if (this._uaOverrideApplied.has(conversationId)) return;
+    const ua = this.stealthUserAgent;
+    if (!ua) return;
+    try {
+      const cdp = await mgr.getCDPSession();
+      await cdp.send("Network.setUserAgentOverride", {
+        userAgent: ua,
+        acceptLanguage: "en-US,en;q=0.9",
+        platform: platform() === "darwin" ? "macOS" : platform() === "win32" ? "Win32" : "Linux x86_64",
+      });
+      this._uaOverrideApplied.add(conversationId);
+    } catch (err) {
+      console.warn("[poncho][browser] Failed to override UA via CDP:", (err as Error)?.message ?? err);
+    }
+  }
+
   private async launchFreshManager(): Promise<BrowserManagerInstance> {
     const Ctor = await getBrowserManagerCtor();
     const mgr = new Ctor();
@@ -123,13 +191,33 @@ export class BrowserSession {
     const viewport = this.config.viewport ?? { width: 1280, height: 720 };
     await mkdir(this.profileDir, { recursive: true });
 
-    await mgr.launch({
+    const launchOpts: Record<string, unknown> = {
       action: "launch",
       headless: this.config.headless ?? true,
       viewport: { width: viewport.width ?? 1280, height: viewport.height ?? 720 },
       executablePath: this.config.executablePath,
       profile: this.profileDir,
-    });
+    };
+
+    if (this.stealthEnabled) {
+      const ua = this.stealthUserAgent!;
+      launchOpts.userAgent = ua;
+      launchOpts.args = buildStealthArgs(ua);
+      console.log("[poncho][browser] Launching with stealth mode enabled (UA: " + ua + ")");
+    } else if (this.config.userAgent) {
+      launchOpts.userAgent = this.config.userAgent;
+    }
+
+    await mgr.launch(launchOpts as Parameters<BrowserManagerInstance["launch"]>[0]);
+
+    // Reset stealth tracking for fresh browser
+    this._contextStealthInstalled = false;
+    this._uaOverrideApplied.clear();
+
+    // Install context-level stealth (covers all tabs, all navigations)
+    if (this.stealthEnabled) {
+      await this.installContextStealth(mgr);
+    }
 
     try {
       const cdp = await mgr.getCDPSession();
@@ -149,6 +237,8 @@ export class BrowserSession {
       // Manager exists but is dead/stale -- discard it
       try { await this.manager.close(); } catch { /* */ }
       this.manager = undefined;
+      this._contextStealthInstalled = false;
+      this._uaOverrideApplied.clear();
       // Clear tab state since they belonged to the dead browser
       for (const [cid, tab] of this.tabs) {
         if (tab.tabIndex >= 0) {
@@ -186,6 +276,7 @@ export class BrowserSession {
     oldest.tab.url = undefined;
     this.emitStatus(oldest.cid);
     this.tabs.delete(oldest.cid);
+    this._uaOverrideApplied.delete(oldest.cid);
   }
 
   /** Reconcile tab indices with the manager's actual page list. */
@@ -267,6 +358,8 @@ export class BrowserSession {
         console.log("[poncho][browser] Browser died mid-open, relaunching...");
         try { await this.manager?.close(); } catch { /* */ }
         this.manager = undefined;
+        this._contextStealthInstalled = false;
+        this._uaOverrideApplied.clear();
         for (const [, t] of this.tabs) {
           if (t.tabIndex >= 0) { t.tabIndex = -1; t.active = false; t.url = undefined; }
         }
@@ -281,6 +374,13 @@ export class BrowserSession {
   private async _doOpen(conversationId: string, url: string): Promise<{ title?: string }> {
     const mgr = await this.ensureManager();
     const tab = await this.switchToConversation(mgr, conversationId);
+
+    // Ensure context-level stealth is installed (covers reused managers too)
+    if (this.stealthEnabled) {
+      await this.installContextStealth(mgr);
+      await this.overrideUserAgentOnPage(mgr, conversationId);
+    }
+
     const page = mgr.getPage();
 
     await (page as unknown as { goto(url: string, opts?: Record<string, unknown>): Promise<unknown> })
@@ -402,6 +502,7 @@ export class BrowserSession {
       tab.url = undefined;
       this.emitStatus(conversationId);
       this.tabs.delete(conversationId);
+      this._uaOverrideApplied.delete(conversationId);
     } finally {
       this.unlock();
     }
@@ -632,6 +733,8 @@ export class BrowserSession {
     await this.persistStorageState();
     try { await this.manager?.close(); } catch { /* */ }
     this.manager = undefined;
+    this._contextStealthInstalled = false;
+    this._uaOverrideApplied.clear();
     for (const [cid, tab] of this.tabs) {
       tab.active = false;
       tab.url = undefined;

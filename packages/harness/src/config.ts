@@ -130,6 +130,11 @@ export interface PonchoConfig extends McpConfig {
         sessionName?: string;
         executablePath?: string;
         headless?: boolean;
+        /** Custom user-agent string. When stealth is enabled (default) a
+         *  realistic Chrome UA is used automatically. */
+        userAgent?: string;
+        /** Reduce bot-detection fingerprints. Defaults to `true`. */
+        stealth?: boolean;
       };
 }
 

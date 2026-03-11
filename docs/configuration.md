@@ -139,6 +139,8 @@ export default {
   //   headless: true,
   //   profileDir: '~/.poncho/browser-profiles',
   //   executablePath: '/path/to/chromium',
+  //   stealth: true,           // Anti-bot-detection (default: true)
+  //   userAgent: 'custom UA',  // Override the default stealth user-agent
   // },
 
   // Headless mode: disable the built-in Web UI (API-only)
