@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import { defineTool, type ToolDefinition } from "@poncho-ai/sdk";
+import { PONCHO_DOCS } from "./generated/poncho-docs.js";
 
 const resolveSafePath = (workingDir: string, inputPath: string): string => {
   const base = resolve(workingDir);
@@ -137,3 +138,32 @@ export const createDeleteDirectoryTool = (workingDir: string): ToolDefinition =>
       return { path, deleted: true };
     },
   });
+
+const PONCHO_DOCS_TOPICS = Object.keys(PONCHO_DOCS);
+
+export const ponchoDocsTool: ToolDefinition = defineTool({
+  name: "poncho_docs",
+  description:
+    "Read detailed Poncho framework documentation by topic. " +
+    `Available topics: ${PONCHO_DOCS_TOPICS.join(", ")}.`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      topic: {
+        type: "string",
+        enum: PONCHO_DOCS_TOPICS,
+        description: "Documentation topic to read",
+      },
+    },
+    required: ["topic"],
+    additionalProperties: false,
+  },
+  handler: async (input) => {
+    const topic = typeof input.topic === "string" ? input.topic : "";
+    const content = PONCHO_DOCS[topic];
+    if (!content) {
+      return { error: `Unknown topic "${topic}". Available: ${PONCHO_DOCS_TOPICS.join(", ")}` };
+    }
+    return { topic, content };
+  },
+});

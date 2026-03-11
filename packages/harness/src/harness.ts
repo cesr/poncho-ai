@@ -15,7 +15,7 @@ import type { UploadStore } from "./upload-store.js";
 import { PONCHO_UPLOAD_SCHEME, deriveUploadKey } from "./upload-store.js";
 import { parseAgentFile, renderAgentPrompt, type ParsedAgent, type AgentFrontmatter } from "./agent-parser.js";
 import { loadPonchoConfig, resolveMemoryConfig, type PonchoConfig, type ToolAccess, type BuiltInToolToggles } from "./config.js";
-import { createDefaultTools, createDeleteDirectoryTool, createDeleteTool, createWriteTool } from "./default-tools.js";
+import { createDefaultTools, createDeleteDirectoryTool, createDeleteTool, createWriteTool, ponchoDocsTool } from "./default-tools.js";
 import {
   createMemoryStore,
   createMemoryTools,
@@ -479,7 +479,15 @@ Since all fields have defaults, you only need to specify \`*Env\` when your env 
 - If shell/CLI access is unavailable, ask the user to run needed commands and provide exact copy-paste commands.
 - For setup, skills, MCP, auth, storage, telemetry, or "how do I..." questions, proactively read \`README.md\` with \`read_file\` before answering.
 - Prefer quoting concrete commands and examples from \`README.md\` over guessing.
-- Keep edits minimal, preserve unrelated settings/code, and summarize what changed.`;
+- Keep edits minimal, preserve unrelated settings/code, and summarize what changed.
+
+## Detailed Documentation
+
+For topics not covered above, use the \`poncho_docs\` tool to load full documentation on demand:
+- \`api\` — HTTP API endpoints, SSE events, TypeScript client SDK, file attachments, upload providers
+- \`features\` — Web UI details, browser automation, subagents, persistent memory, custom messaging adapters
+- \`configuration\` — Full config reference, env vars, auth types, storage, telemetry, tool approval
+- \`troubleshooting\` — Error codes, recoverable vs fatal errors, common issues and fixes`;
 
 /**
  * Detect FileContentPart objects ({ type:"file", data, mediaType }) in a tool
@@ -623,6 +631,9 @@ export class AgentHarness {
     }
     if (this.isToolEnabled("delete_directory")) {
       this.registerIfMissing(createDeleteDirectoryTool(this.workingDir));
+    }
+    if (this.environment === "development" && this.isToolEnabled("poncho_docs")) {
+      this.registerIfMissing(ponchoDocsTool);
     }
   }
 
