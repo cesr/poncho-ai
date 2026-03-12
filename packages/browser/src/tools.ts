@@ -222,6 +222,30 @@ export function createBrowserTools(
       },
     },
     {
+      name: "browser_clear_cookies",
+      description:
+        "Delete browser cookies. By default clears all cookies. " +
+        "Pass a url to only delete cookies that would be sent to that URL " +
+        "(e.g. \"https://example.com\" removes cookies for example.com and its subdomains). " +
+        "Also removes them from persisted storage so they won't be restored on next launch.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description:
+              "Optional URL to scope deletion to (e.g. \"https://example.com\"). Omit to clear all cookies.",
+          },
+        },
+      },
+      handler: async (input: BrowserToolInput) => {
+        const session = getSession();
+        const url = input.url ? String(input.url) : undefined;
+        const { cleared } = await session.clearCookies(getConversationId(), url);
+        return { cleared, scope: url ?? "all" };
+      },
+    },
+    {
       name: "browser_close",
       description:
         "Close the browser tab for this conversation. Call this when you're done with browser tasks to free resources.",

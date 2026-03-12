@@ -676,6 +676,42 @@ export class BrowserSession {
     }
   }
 
+  async clearCookies(conversationId: string, url?: string): Promise<{ cleared: number }> {
+    await this.lock();
+    try {
+      const mgr = await this.ensureManager();
+      await this.switchToConversation(mgr, conversationId);
+      const cdp = await mgr.getCDPSession();
+
+      let cleared = 0;
+
+      if (url) {
+        const { cookies } = (await cdp.send("Network.getCookies", { urls: [url] })) as {
+          cookies: Array<{ name: string; domain: string; path: string }>;
+        };
+        cleared = cookies.length;
+        for (const cookie of cookies) {
+          await cdp.send("Network.deleteCookies", {
+            name: cookie.name,
+            domain: cookie.domain,
+            path: cookie.path,
+          });
+        }
+      } else {
+        const { cookies } = (await cdp.send("Network.getCookies")) as {
+          cookies: Array<unknown>;
+        };
+        cleared = cookies.length;
+        await cdp.send("Network.clearBrowserCookies");
+      }
+
+      await this.clearPersistedCookies(url);
+      return { cleared };
+    } finally {
+      this.unlock();
+    }
+  }
+
   // -----------------------------------------------------------------------
   // Screencast (one active at a time, tied to the viewed conversation)
   // -----------------------------------------------------------------------
@@ -878,6 +914,38 @@ export class BrowserSession {
       }
     } catch (err) {
       console.warn("[poncho][browser] Failed to restore storage state:", (err as Error)?.message ?? err);
+    }
+  }
+
+  private async clearPersistedCookies(url?: string): Promise<void> {
+    const persistence = this.config.storagePersistence;
+    if (!persistence) return;
+    try {
+      const json = await persistence.load();
+      if (!json) return;
+      const state = JSON.parse(json) as {
+        cookies?: Array<Record<string, unknown>>;
+        origins?: Array<{ origin: string; localStorage: Array<{ name: string; value: string }> }>;
+      };
+      if (!state.cookies?.length) return;
+
+      if (url) {
+        let host: string;
+        try { host = new URL(url).hostname.toLowerCase(); } catch { return; }
+        state.cookies = state.cookies.filter((c) => {
+          const raw = String(c.domain ?? "").toLowerCase();
+          const bare = raw.replace(/^\./, "");
+          if (host === bare) return false;
+          if (raw.startsWith(".") && host.endsWith("." + bare)) return false;
+          return true;
+        });
+      } else {
+        state.cookies = [];
+      }
+
+      await persistence.save(JSON.stringify(state));
+    } catch (err) {
+      console.warn("[poncho][browser] Failed to clear persisted cookies:", (err as Error)?.message ?? err);
     }
   }
 
