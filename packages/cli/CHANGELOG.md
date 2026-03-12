@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.25.2
+
+### Patch Changes
+
+- [`6e56468`](https://github.com/cesr/poncho-ai/commit/6e564680ce24394e59086907affc0bf29f073e32) Thanks [@cesr](https://github.com/cesr)! - Add no-cache headers to vercel.json for API routes to prevent Vercel edge from caching dynamic endpoints.
+
 ## 0.25.1
 
 ### Patch Changes
