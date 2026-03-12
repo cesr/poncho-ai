@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.25.4
+
+### Patch Changes
+
+- [`827eb1d`](https://github.com/cesr/poncho-ai/commit/827eb1d231c9d70febfb47cfe00af74d32b3badd) Thanks [@cesr](https://github.com/cesr)! - Revert unnecessary Cache-Control headers from JSON API responses (the root cause was a missing ownerId, not edge caching).
+
 ## 0.25.3
 
 ### Patch Changes
