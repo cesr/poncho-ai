@@ -4034,7 +4034,7 @@ export const createRequestHandler = async (options?: {
         }
 
         try {
-          const summaries = await conversationStore.listSummaries();
+          const summaries = await conversationStore.listSummaries(cronOwnerId);
           const targetSummaries = new Map<string, ConversationSummary>();
           for (const s of summaries) {
             if (s.channelMeta?.platform !== cronJob.channel) continue;
@@ -4457,7 +4457,7 @@ export const startDevServer = async (
               return;
             }
             try {
-              const summaries = await store.listSummaries();
+              const summaries = await store.listSummaries("local-owner");
               const targetSummaries = new Map<string, ConversationSummary>();
               for (const s of summaries) {
                 if (s.channelMeta?.platform !== config.channel) continue;
