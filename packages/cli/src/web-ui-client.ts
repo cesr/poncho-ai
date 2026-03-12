@@ -151,15 +151,23 @@ export const getWebUiClientScript = (markedSource: string): string => `
           .replace(/"/g, "&quot;")
           .replace(/'/g, "&#39;");
 
+      const _mdCache = new Map();
       const renderAssistantMarkdown = (value) => {
         const source = String(value || "").trim();
         if (!source) return "<p></p>";
 
+        const cached = _mdCache.get(source);
+        if (cached !== undefined) return cached;
+
         try {
-          return marked.parse(source);
+          const result = marked.parse(source);
+          _mdCache.set(source, result);
+          if (_mdCache.size > 500) {
+            _mdCache.delete(_mdCache.keys().next().value);
+          }
+          return result;
         } catch (error) {
           console.error("Markdown parsing error:", error);
-          // Fallback to escaped text
           return "<p>" + escapeHtml(source) + "</p>";
         }
       };
@@ -1133,12 +1141,24 @@ export const getWebUiClientScript = (markedSource: string): string => `
         const liveOnly = options && options.liveOnly;
         return new Promise((resolve) => {
           const localMessages = state.activeMessages || [];
+          let _rafId = 0;
           const renderIfActiveConversation = (streaming) => {
             if (state.activeConversationId !== conversationId) {
               return;
             }
             state.activeMessages = localMessages;
-            renderMessages(localMessages, streaming);
+            if (!streaming) {
+              if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
+              renderMessages(localMessages, false);
+              return;
+            }
+            if (!_rafId) {
+              _rafId = requestAnimationFrame(() => {
+                _rafId = 0;
+                if (state.activeConversationId !== conversationId) return;
+                renderMessages(localMessages, true);
+              });
+            }
           };
           let assistantMessage = localMessages[localMessages.length - 1];
           if (!assistantMessage || assistantMessage.role !== "assistant") {
@@ -1954,12 +1974,24 @@ export const getWebUiClientScript = (markedSource: string): string => `
           }
           state.activeStreamConversationId = conversationId;
           const streamConversationId = conversationId;
+          let _rafId = 0;
           const renderIfActiveConversation = (streaming) => {
             if (state.activeConversationId !== streamConversationId) {
               return;
             }
             state.activeMessages = localMessages;
-            renderMessages(localMessages, streaming);
+            if (!streaming) {
+              if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
+              renderMessages(localMessages, false);
+              return;
+            }
+            if (!_rafId) {
+              _rafId = requestAnimationFrame(() => {
+                _rafId = 0;
+                if (state.activeConversationId !== streamConversationId) return;
+                renderMessages(localMessages, true);
+              });
+            }
           };
           const finalizeAssistantMessage = () => {
             assistantMessage._activeActivities = [];
