@@ -825,6 +825,25 @@ export const WEB_UI_STYLES = `
       border-color: var(--deny-border);
       color: var(--deny);
     }
+    .approval-request-item.resolved {
+      opacity: 0.7;
+    }
+    .approval-resolved-status {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+    .approval-resolved-status code {
+      font-family: ui-monospace, "SF Mono", "Fira Code", monospace;
+      letter-spacing: 0;
+      color: var(--fg-strong);
+    }
+    .approval-resolved-status.approve {
+      color: var(--approve);
+    }
+    .approval-resolved-status.deny {
+      color: var(--deny);
+    }
     .user-bubble {
       background: var(--bg-elevated);
       border: 1px solid var(--border-2);

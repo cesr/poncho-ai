@@ -3103,6 +3103,20 @@ export const createRequestHandler = async (options?: {
       // Use the first approval as the checkpoint reference (all share the same checkpoint data)
       const checkpointRef = allApprovals[0]!;
 
+      // Reset the event stream so new SSE subscribers can connect to the
+      // resumed run (the previous run's stream was marked finished).
+      const prevStream = conversationEventStreams.get(conversationId);
+      if (prevStream) {
+        prevStream.finished = false;
+        prevStream.buffer = [];
+      } else {
+        conversationEventStreams.set(conversationId, {
+          buffer: [],
+          subscribers: new Set(),
+          finished: false,
+        });
+      }
+
       const resumeWork = (async () => {
         try {
           const toolContext = {
@@ -3143,6 +3157,16 @@ export const createRequestHandler = async (options?: {
               result: r.output,
               error: r.error,
             })));
+          }
+
+          // If approved tools activated the browser, notify connected clients
+          const bs = harness.browserSession as BrowserSessionForStatus | undefined;
+          if (bs?.isActiveFor(conversationId)) {
+            broadcastRawSse(conversationId, "browser:status", {
+              active: true,
+              url: bs.getUrl(conversationId) ?? null,
+              interactionAllowed: true,
+            });
           }
 
           await resumeRunFromCheckpoint(

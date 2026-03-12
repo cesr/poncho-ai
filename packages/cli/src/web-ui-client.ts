@@ -250,14 +250,25 @@ export const getWebUiClientScript = (markedSource: string): string => `
             const approvalId = typeof req.approvalId === "string" ? req.approvalId : "";
             const tool = typeof req.tool === "string" ? req.tool : "tool";
             const input = req.input != null ? req.input : {};
+            const subagentLabel = req._subagentLabel
+              ? ' <span style="color: var(--text-3); font-size: 11px;">(from ' + escapeHtml(req._subagentLabel) + ')</span>'
+              : "";
+            if (req.state === "resolved") {
+              const isApproved = req.resolvedDecision === "approve";
+              const label = isApproved ? "Approved" : "Denied";
+              const cls = isApproved ? "approve" : "deny";
+              return (
+                '<div class="approval-request-item resolved">' +
+                '<div class="approval-resolved-status ' + cls + '">' + label + ': <code>' +
+                escapeHtml(tool) + "</code>" + subagentLabel + "</div>" +
+                "</div>"
+              );
+            }
             const submitting = req.state === "submitting";
             const approveLabel = submitting && req.pendingDecision === "approve" ? "Approving..." : "Approve";
             const denyLabel = submitting && req.pendingDecision === "deny" ? "Denying..." : "Deny";
             const errorHtml = req._error
               ? '<div style="color: var(--deny); font-size: 11px; margin-top: 4px;">Submit failed: ' + escapeHtml(req._error) + "</div>"
-              : "";
-            const subagentLabel = req._subagentLabel
-              ? ' <span style="color: var(--text-3); font-size: 11px;">(from ' + escapeHtml(req._subagentLabel) + ')</span>'
               : "";
             return (
               '<div class="approval-request-item">' +
@@ -286,10 +297,11 @@ export const getWebUiClientScript = (markedSource: string): string => `
             );
           })
           .join("");
-        const batchButtons = requests.length > 1
+        const actionableCount = requests.filter((r) => r.state !== "resolved").length;
+        const batchButtons = actionableCount > 1
           ? '<div class="approval-batch-actions">' +
-            '<button class="approval-batch-btn approve" data-approval-batch="approve">Approve all (' + requests.length + ')</button>' +
-            '<button class="approval-batch-btn deny" data-approval-batch="deny">Deny all (' + requests.length + ')</button>' +
+            '<button class="approval-batch-btn approve" data-approval-batch="approve">Approve all (' + actionableCount + ')</button>' +
+            '<button class="approval-batch-btn deny" data-approval-batch="deny">Deny all (' + actionableCount + ')</button>' +
             "</div>"
           : "";
         return (
@@ -416,6 +428,14 @@ export const getWebUiClientScript = (markedSource: string): string => `
           return true;
         }
         return false;
+      };
+
+      const clearResolvedApprovals = (message) => {
+        if (Array.isArray(message._pendingApprovals)) {
+          message._pendingApprovals = message._pendingApprovals.filter(
+            (req) => req.state !== "resolved",
+          );
+        }
       };
 
       const toUiPendingApprovals = (pendingApprovals) => {
@@ -810,12 +830,16 @@ export const getWebUiClientScript = (markedSource: string): string => `
                     );
                   }
                 });
-                // While streaming, show current tools if any
-                if (isStreaming && i === messages.length - 1 && m._currentTools && m._currentTools.length > 0) {
-                  content.insertAdjacentHTML(
-                    "beforeend",
-                    renderToolActivity(m._currentTools, m._pendingApprovals || [], m._toolImages || []),
-                  );
+                // While streaming, show current tools and/or pending approvals
+                if (isStreaming && i === messages.length - 1) {
+                  const hasCurrentTools = m._currentTools && m._currentTools.length > 0;
+                  const hasStreamApprovals = Array.isArray(m._pendingApprovals) && m._pendingApprovals.length > 0;
+                  if (hasCurrentTools || hasStreamApprovals) {
+                    content.insertAdjacentHTML(
+                      "beforeend",
+                      renderToolActivity(m._currentTools || [], m._pendingApprovals || [], m._toolImages || []),
+                    );
+                  }
                 }
                 // When reloading with unresolved approvals, show them even when not streaming
                 if (!isStreaming && pendingApprovals.length > 0 && lastToolsSectionIndex < 0) {
@@ -1091,6 +1115,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
               renderMessages(state.activeMessages, payload.hasActiveRun);
             }
             if (payload.hasActiveRun) {
+              if (window._connectBrowserStream) window._connectBrowserStream();
               setTimeout(poll, 2000);
             } else {
               setStreaming(false);
@@ -1182,6 +1207,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
                     }
                     if (eventName === "model:chunk") {
                       const chunk = String(payload.content || "");
+                      if (chunk.length > 0) clearResolvedApprovals(assistantMessage);
                       if (assistantMessage._currentTools.length > 0 && chunk.length > 0) {
                         assistantMessage._sections.push({
                           type: "tools",
@@ -1223,6 +1249,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
                       renderIfActiveConversation(true);
                     }
                     if (eventName === "tool:started") {
+                      clearResolvedApprovals(assistantMessage);
                       const toolName = payload.tool || "tool";
                       removeActiveActivityForTool(assistantMessage, toolName);
                       const startedActivity = addActiveActivityFromToolStart(
@@ -1377,7 +1404,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
                         typeof payload.approvalId === "string" ? payload.approvalId : "";
                       if (approvalId && Array.isArray(assistantMessage._pendingApprovals)) {
                         assistantMessage._pendingApprovals = assistantMessage._pendingApprovals.filter(
-                          (req) => req.approvalId !== approvalId,
+                          (req) => req.approvalId !== approvalId || req.state === "resolved",
                         );
                       }
                       renderIfActiveConversation(true);
@@ -1390,7 +1417,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
                         typeof payload.approvalId === "string" ? payload.approvalId : "";
                       if (approvalId && Array.isArray(assistantMessage._pendingApprovals)) {
                         assistantMessage._pendingApprovals = assistantMessage._pendingApprovals.filter(
-                          (req) => req.approvalId !== approvalId,
+                          (req) => req.approvalId !== approvalId || req.state === "resolved",
                         );
                       }
                       renderIfActiveConversation(true);
@@ -1993,7 +2020,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
               try {
                 if (eventName === "model:chunk") {
                   const chunk = String(payload.content || "");
-                  // If we have tools accumulated and text starts again, push tools as a section
+                  if (chunk.length > 0) clearResolvedApprovals(assistantMessage);
                   if (assistantMessage._currentTools.length > 0 && chunk.length > 0) {
                     assistantMessage._sections.push({ type: "tools", content: assistantMessage._currentTools });
                     assistantMessage._currentTools = [];
@@ -2037,6 +2064,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
                   renderIfActiveConversation(true);
                 }
                 if (eventName === "tool:started") {
+                  clearResolvedApprovals(assistantMessage);
                   const toolName = payload.tool || "tool";
                   removeActiveActivityForTool(assistantMessage, toolName);
                   const startedActivity = addActiveActivityFromToolStart(
@@ -2191,7 +2219,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
                     typeof payload.approvalId === "string" ? payload.approvalId : "";
                   if (approvalId && Array.isArray(assistantMessage._pendingApprovals)) {
                     assistantMessage._pendingApprovals = assistantMessage._pendingApprovals.filter(
-                      (req) => req.approvalId !== approvalId,
+                      (req) => req.approvalId !== approvalId || req.state === "resolved",
                     );
                   }
                   renderIfActiveConversation(true);
@@ -2206,7 +2234,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
                     typeof payload.approvalId === "string" ? payload.approvalId : "";
                   if (approvalId && Array.isArray(assistantMessage._pendingApprovals)) {
                     assistantMessage._pendingApprovals = assistantMessage._pendingApprovals.filter(
-                      (req) => req.approvalId !== approvalId,
+                      (req) => req.approvalId !== approvalId || req.state === "resolved",
                     );
                   }
                   renderIfActiveConversation(true);
@@ -2535,21 +2563,17 @@ export const getWebUiClientScript = (markedSource: string): string => `
         openLightbox(img.src);
       });
 
-      const submitApproval = async (approvalId, decision, opts) => {
-        const wasStreaming = opts && opts.wasStreaming;
+      const submitApproval = (approvalId, decision) => {
         state.approvalRequestsInFlight[approvalId] = true;
         updatePendingApproval(approvalId, (request) => ({
           ...request,
-          state: "submitting",
-          pendingDecision: decision,
+          state: "resolved",
+          resolvedDecision: decision,
         }));
-        try {
-          await api("/api/approvals/" + encodeURIComponent(approvalId), {
-            method: "POST",
-            body: JSON.stringify({ approved: decision === "approve" }),
-          });
-          updatePendingApproval(approvalId, () => null);
-        } catch (error) {
+        api("/api/approvals/" + encodeURIComponent(approvalId), {
+          method: "POST",
+          body: JSON.stringify({ approved: decision === "approve" }),
+        }).catch((error) => {
           const isStale = error && error.payload && error.payload.code === "APPROVAL_NOT_FOUND";
           if (isStale) {
             updatePendingApproval(approvalId, () => null);
@@ -2559,12 +2583,14 @@ export const getWebUiClientScript = (markedSource: string): string => `
               ...request,
               state: "pending",
               pendingDecision: null,
+              resolvedDecision: null,
               _error: errMsg,
             }));
           }
-        } finally {
+          renderMessages(state.activeMessages, state.isStreaming);
+        }).finally(() => {
           delete state.approvalRequestsInFlight[approvalId];
-        }
+        });
       };
 
       elements.messages.addEventListener("click", async (event) => {
@@ -2583,7 +2609,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
           for (const m of messages) {
             if (Array.isArray(m._pendingApprovals)) {
               for (const req of m._pendingApprovals) {
-                if (req.approvalId && req.state !== "submitting" && !state.approvalRequestsInFlight[req.approvalId]) {
+                if (req.approvalId && req.state !== "resolved" && !state.approvalRequestsInFlight[req.approvalId]) {
                   pending.push(req.approvalId);
                 }
               }
@@ -2592,8 +2618,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
           if (pending.length === 0) return;
           const wasStreaming = state.isStreaming;
           if (!wasStreaming) setStreaming(true);
-          renderMessages(state.activeMessages, state.isStreaming);
-          await Promise.all(pending.map((aid) => submitApproval(aid, decision, { wasStreaming })));
+          pending.forEach((aid) => submitApproval(aid, decision));
           renderMessages(state.activeMessages, state.isStreaming);
           loadConversations();
           if (!wasStreaming && state.activeConversationId) {
@@ -2623,8 +2648,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
         if (!wasStreaming) {
           setStreaming(true);
         }
-        renderMessages(state.activeMessages, state.isStreaming);
-        await submitApproval(approvalId, decision, { wasStreaming });
+        submitApproval(approvalId, decision);
         renderMessages(state.activeMessages, state.isStreaming);
         loadConversations();
         if (!wasStreaming && state.activeConversationId) {
