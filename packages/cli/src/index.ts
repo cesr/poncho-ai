@@ -2167,6 +2167,16 @@ export const createRequestHandler = async (options?: {
             }));
             conv.updatedAt = Date.now();
             await conversationStore.update(conv);
+
+            if (conv.channelMeta?.platform === "telegram") {
+              const tgAdapter = messagingAdapters.get("telegram") as TelegramAdapter | undefined;
+              if (tgAdapter) {
+                void tgAdapter.sendApprovalRequest(
+                  conv.channelMeta.channelId,
+                  event.approvals.map(a => ({ approvalId: a.approvalId, tool: a.tool, input: a.input })),
+                ).catch(() => {});
+              }
+            }
           }
           checkpointedRun = true;
         }
@@ -2474,6 +2484,25 @@ export const createRequestHandler = async (options?: {
               }));
             });
             checkpointedRun = true;
+
+            // Send inline keyboard approval buttons to Telegram
+            const conv = await conversationStore.get(conversationId);
+            if (conv?.channelMeta?.platform === "telegram") {
+              const tgAdapter = messagingAdapters.get("telegram") as TelegramAdapter | undefined;
+              if (tgAdapter) {
+                const approvals = event.approvals.map(a => ({
+                  approvalId: a.approvalId,
+                  tool: a.tool,
+                  input: a.input,
+                }));
+                void tgAdapter.sendApprovalRequest(
+                  conv.channelMeta.channelId,
+                  approvals,
+                ).catch((err: unknown) => {
+                  console.error("[messaging-runner] failed to send Telegram approval request:", err instanceof Error ? err.message : err);
+                });
+              }
+            }
           }
           if (event.type === "compaction:completed") {
             if (event.compactedMessages) {
@@ -2633,6 +2662,180 @@ export const createRequestHandler = async (options?: {
           waitUntil: waitUntilHook,
           ownerId: "local-owner",
         });
+        adapter.onApprovalDecision(async (approvalId: string, approved: boolean, _chatId: string) => {
+          // Check subagent approvals first
+          const pendingSubagent = pendingSubagentApprovals.get(approvalId);
+          if (pendingSubagent) {
+            pendingSubagent.checkpoint.decision = approved ? "approved" : "denied";
+            await adapter.updateApprovalMessage(approvalId, approved ? "approved" : "denied", pendingSubagent.checkpoint.tool);
+
+            broadcastEvent(pendingSubagent.childConversationId,
+              approved
+                ? { type: "tool:approval:granted", approvalId }
+                : { type: "tool:approval:denied", approvalId },
+            );
+
+            const childConv = await conversationStore.get(pendingSubagent.childConversationId);
+            const allApprovals = childConv?.pendingApprovals ?? [];
+            const allDecided = allApprovals.length > 0 && allApprovals.every(pa => pa.decision != null);
+
+            if (allDecided) {
+              for (const pa of allApprovals) pendingSubagentApprovals.delete(pa.approvalId);
+              if (childConv) {
+                childConv.pendingApprovals = [];
+                await conversationStore.update(childConv);
+              }
+              pendingSubagent.resolve(allApprovals);
+            } else if (childConv) {
+              await conversationStore.update(childConv);
+            }
+            return;
+          }
+
+          // Regular (non-subagent) approval
+          const conversations = await conversationStore.list("local-owner");
+          let foundConversation: Conversation | undefined;
+          let foundApproval: NonNullable<Conversation["pendingApprovals"]>[number] | undefined;
+          for (const conv of conversations) {
+            if (!Array.isArray(conv.pendingApprovals)) continue;
+            const match = conv.pendingApprovals.find(a => a.approvalId === approvalId);
+            if (match) {
+              foundConversation = conv;
+              foundApproval = match;
+              break;
+            }
+          }
+
+          if (!foundConversation || !foundApproval) {
+            console.warn("[telegram-approval] approval not found:", approvalId);
+            return;
+          }
+
+          await adapter.updateApprovalMessage(approvalId, approved ? "approved" : "denied", foundApproval.tool);
+
+          foundApproval.decision = approved ? "approved" : "denied";
+
+          broadcastEvent(foundConversation.conversationId,
+            approved
+              ? { type: "tool:approval:granted", approvalId }
+              : { type: "tool:approval:denied", approvalId },
+          );
+
+          const allApprovals = foundConversation.pendingApprovals ?? [];
+          const allDecided = allApprovals.length > 0 && allApprovals.every(a => a.decision != null);
+
+          if (!allDecided) {
+            await conversationStore.update(foundConversation);
+            return;
+          }
+
+          // All decided — resume the run
+          const conversationId = foundConversation.conversationId;
+          const checkpointRef = allApprovals[0]!;
+          foundConversation.pendingApprovals = [];
+          foundConversation.runStatus = "running";
+          await conversationStore.update(foundConversation);
+
+          const prevStream = conversationEventStreams.get(conversationId);
+          if (prevStream) {
+            prevStream.finished = false;
+            prevStream.buffer = [];
+          } else {
+            conversationEventStreams.set(conversationId, {
+              buffer: [],
+              subscribers: new Set(),
+              finished: false,
+            });
+          }
+
+          const resumeWork = (async () => {
+            let stopTyping: (() => Promise<void>) | undefined;
+            try {
+              const threadRef: import("@poncho-ai/messaging").ThreadRef = {
+                platformThreadId: foundConversation!.channelMeta!.platformThreadId,
+                channelId: foundConversation!.channelMeta!.channelId,
+              };
+              stopTyping = await adapter.indicateProcessing(threadRef);
+
+              const toolContext = {
+                runId: checkpointRef.runId,
+                agentId: identity.id,
+                step: 0,
+                workingDir,
+                parameters: {},
+              };
+
+              const approvalToolCallIds = new Set(allApprovals.map(a => a.toolCallId));
+              const callsToExecute: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
+              const deniedResults: Array<{ callId: string; toolName: string; error: string }> = [];
+
+              for (const a of allApprovals) {
+                if (a.decision === "approved" && a.toolCallId) {
+                  callsToExecute.push({ id: a.toolCallId, name: a.tool, input: a.input });
+                } else if (a.decision === "denied" && a.toolCallId) {
+                  deniedResults.push({ callId: a.toolCallId, toolName: a.tool, error: "Tool execution denied by user" });
+                }
+              }
+
+              const pendingToolCalls = checkpointRef.pendingToolCalls ?? [];
+              for (const tc of pendingToolCalls) {
+                if (!approvalToolCallIds.has(tc.id)) callsToExecute.push(tc);
+              }
+
+              let toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }> = [...deniedResults];
+              if (callsToExecute.length > 0) {
+                const execResults = await harness.executeTools(callsToExecute, toolContext);
+                toolResults.push(...execResults.map(r => ({
+                  callId: r.callId,
+                  toolName: r.tool,
+                  result: r.output,
+                  error: r.error,
+                })));
+              }
+
+              // Capture pre-resume text length so we only send new content
+              const preResumeConv = await conversationStore.get(conversationId);
+              const preResumeLastMsg = preResumeConv?.messages[preResumeConv.messages.length - 1];
+              const preResumeTextLength = preResumeLastMsg?.role === "assistant" && typeof preResumeLastMsg.content === "string"
+                ? preResumeLastMsg.content.length
+                : 0;
+
+              await resumeRunFromCheckpoint(
+                conversationId,
+                foundConversation!,
+                checkpointRef,
+                toolResults,
+              );
+
+              // Send only the NEW text produced by the resumed run to Telegram
+              const updatedConv = await conversationStore.get(conversationId);
+              if (updatedConv?.channelMeta?.platform === "telegram") {
+                const lastMsg = updatedConv.messages[updatedConv.messages.length - 1];
+                const fullText = lastMsg?.role === "assistant" && typeof lastMsg.content === "string"
+                  ? lastMsg.content
+                  : "";
+                const newText = fullText.slice(preResumeTextLength).trim();
+                if (newText) {
+                  await adapter.sendReply(threadRef, newText);
+                }
+              }
+            } catch (err) {
+              console.error("[telegram-approval-resume] failed:", err instanceof Error ? err.message : err);
+              const conv = await conversationStore.get(conversationId);
+              if (conv) {
+                conv.runStatus = "idle";
+                conv.updatedAt = Date.now();
+                await conversationStore.update(conv);
+              }
+            } finally {
+              if (stopTyping) await stopTyping().catch(() => {});
+            }
+          })();
+          if (waitUntilHook) {
+            waitUntilHook(resumeWork);
+          }
+        });
+
         try {
           await bridge.start();
           adapter.registerRoutes(messagingRouteRegistrar);
@@ -3205,12 +3408,37 @@ export const createRequestHandler = async (options?: {
             });
           }
 
+          // Capture pre-resume text so Telegram reply only includes new content
+          const preConv = await conversationStore.get(conversationId);
+          const preLast = preConv?.messages[preConv.messages.length - 1];
+          const preLen = preLast?.role === "assistant" && typeof preLast.content === "string"
+            ? preLast.content.length : 0;
+
           await resumeRunFromCheckpoint(
             conversationId,
             foundConversation!,
             checkpointRef,
             toolResults,
           );
+
+          // If the conversation originated from Telegram, send the new response text
+          const postConv = await conversationStore.get(conversationId);
+          if (postConv?.channelMeta?.platform === "telegram") {
+            const tgAdapter = messagingAdapters.get("telegram") as TelegramAdapter | undefined;
+            if (tgAdapter) {
+              const lastMsg = postConv.messages[postConv.messages.length - 1];
+              const full = lastMsg?.role === "assistant" && typeof lastMsg.content === "string"
+                ? lastMsg.content : "";
+              const newText = full.slice(preLen).trim();
+              if (newText) {
+                const ref: import("@poncho-ai/messaging").ThreadRef = {
+                  platformThreadId: postConv.channelMeta.platformThreadId,
+                  channelId: postConv.channelMeta.channelId,
+                };
+                await tgAdapter.sendReply(ref, newText);
+              }
+            }
+          }
         } catch (err) {
           console.error("[approval-resume] failed:", err instanceof Error ? err.message : err);
           const conv = await conversationStore.get(conversationId);

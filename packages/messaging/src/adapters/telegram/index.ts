@@ -9,15 +9,19 @@ import type {
 } from "../../types.js";
 import { verifyTelegramSecret } from "./verify.js";
 import {
+  type TelegramInlineKeyboardButton,
   type TelegramMessage,
   type TelegramUpdate,
+  answerCallbackQuery,
   downloadFile,
+  editMessageText,
   getFile,
   getMe,
   isBotMentioned,
   sendChatAction,
   sendDocument,
   sendMessage,
+  sendMessageWithKeyboard,
   sendPhoto,
   splitMessage,
   stripMention,
@@ -25,6 +29,18 @@ import {
 
 const TYPING_INTERVAL_MS = 4_000;
 const NEW_COMMAND_RE = /^\/new(?:@(\S+))?$/i;
+
+export interface TelegramApprovalInfo {
+  approvalId: string;
+  tool: string;
+  input: Record<string, unknown>;
+}
+
+export type TelegramApprovalDecisionHandler = (
+  approvalId: string,
+  approved: boolean,
+  chatId: string,
+) => Promise<void>;
 
 export interface TelegramAdapterOptions {
   botTokenEnv?: string;
@@ -53,7 +69,9 @@ export class TelegramAdapter implements MessagingAdapter {
   private readonly webhookSecretEnv: string;
   private readonly allowedUserIds: number[] | undefined;
   private handler: IncomingMessageHandler | undefined;
+  private approvalDecisionHandler: TelegramApprovalDecisionHandler | undefined;
   private readonly sessionCounters = new Map<string, number>();
+  private readonly approvalMessageIds = new Map<string, { chatId: string; messageId: number }>();
   private lastUpdateId = 0;
 
   constructor(options: TelegramAdapterOptions = {}) {
@@ -149,6 +167,92 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   // -----------------------------------------------------------------------
+  // Approval support
+  // -----------------------------------------------------------------------
+
+  onApprovalDecision(handler: TelegramApprovalDecisionHandler): void {
+    this.approvalDecisionHandler = handler;
+  }
+
+  async sendApprovalRequest(
+    chatId: string,
+    approvals: TelegramApprovalInfo[],
+    opts?: { message_thread_id?: number },
+  ): Promise<void> {
+    const MAX_INPUT_LENGTH = 3500;
+
+    for (const approval of approvals) {
+      let inputSummary = Object.entries(approval.input)
+        .map(([k, v]) => `  ${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+        .join("\n");
+
+      if (inputSummary.length > MAX_INPUT_LENGTH) {
+        inputSummary = inputSummary.slice(0, MAX_INPUT_LENGTH) + "\n  …(truncated)";
+      }
+
+      const text = [
+        `🔧 Tool approval required: ${approval.tool}`,
+        "",
+        inputSummary ? `Input:\n${inputSummary}` : "(no input)",
+      ].join("\n");
+
+      const keyboard: TelegramInlineKeyboardButton[][] = [
+        [
+          { text: "✅ Approve", callback_data: `a:${approval.approvalId}` },
+          { text: "❌ Deny", callback_data: `d:${approval.approvalId}` },
+        ],
+      ];
+
+      try {
+        const messageId = await sendMessageWithKeyboard(
+          this.botToken,
+          chatId,
+          text,
+          keyboard,
+          { message_thread_id: opts?.message_thread_id },
+        );
+        this.approvalMessageIds.set(approval.approvalId, {
+          chatId,
+          messageId,
+        });
+      } catch (err) {
+        console.error(
+          "[telegram-adapter] failed to send approval request:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
+
+  async updateApprovalMessage(
+    approvalId: string,
+    decision: "approved" | "denied",
+    tool: string,
+  ): Promise<void> {
+    const tracked = this.approvalMessageIds.get(approvalId);
+    if (!tracked) return;
+
+    const icon = decision === "approved" ? "✅" : "❌";
+    const label = decision === "approved" ? "Approved" : "Denied";
+    const text = `${icon} ${label}: ${tool}`;
+
+    try {
+      await editMessageText(
+        this.botToken,
+        tracked.chatId,
+        tracked.messageId,
+        text,
+      );
+    } catch (err) {
+      console.warn(
+        "[telegram-adapter] failed to update approval message:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+    this.approvalMessageIds.delete(approvalId);
+  }
+
+  // -----------------------------------------------------------------------
   // HTTP request handling
   // -----------------------------------------------------------------------
 
@@ -186,6 +290,19 @@ export class TelegramAdapter implements MessagingAdapter {
       return;
     }
     this.lastUpdateId = payload.update_id;
+
+    // -- Callback query (inline keyboard button press) ---------------------
+    if (payload.callback_query) {
+      res.writeHead(200);
+      res.end();
+      void this.handleCallbackQuery(payload.callback_query).catch((err) => {
+        console.error(
+          "[telegram-adapter] callback_query error:",
+          err instanceof Error ? err.message : err,
+        );
+      });
+      return;
+    }
 
     const message = payload.message;
     if (!message) {
@@ -311,6 +428,48 @@ export class TelegramAdapter implements MessagingAdapter {
         err,
       );
     });
+  }
+
+  // -----------------------------------------------------------------------
+  // Callback query handling
+  // -----------------------------------------------------------------------
+
+  private async handleCallbackQuery(
+    query: import("./utils.js").TelegramCallbackQuery,
+  ): Promise<void> {
+    if (this.allowedUserIds && !this.allowedUserIds.includes(query.from.id)) {
+      await answerCallbackQuery(this.botToken, query.id, {
+        text: "You are not authorized to approve tools.",
+      });
+      return;
+    }
+
+    const data = query.data;
+    if (!data) {
+      await answerCallbackQuery(this.botToken, query.id);
+      return;
+    }
+
+    const isApprove = data.startsWith("a:");
+    const isDeny = data.startsWith("d:");
+    if (!isApprove && !isDeny) {
+      await answerCallbackQuery(this.botToken, query.id);
+      return;
+    }
+
+    const approvalId = data.slice(2);
+    const approved = isApprove;
+    const chatId = query.message?.chat.id
+      ? String(query.message.chat.id)
+      : undefined;
+
+    await answerCallbackQuery(this.botToken, query.id, {
+      text: approved ? "Approved" : "Denied",
+    });
+
+    if (this.approvalDecisionHandler && chatId) {
+      await this.approvalDecisionHandler(approvalId, approved, chatId);
+    }
   }
 
   // -----------------------------------------------------------------------

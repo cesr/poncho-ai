@@ -55,9 +55,22 @@ export interface TelegramMessage {
   message_thread_id?: number;
 }
 
+export interface TelegramCallbackQuery {
+  id: string;
+  from: TelegramUser;
+  message?: TelegramMessage;
+  data?: string;
+}
+
+export interface TelegramInlineKeyboardButton {
+  text: string;
+  callback_data?: string;
+}
+
 export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +270,72 @@ export const sendDocument = async (
   if (!result.ok) {
     throw new Error(`Telegram sendDocument failed: ${result.description}`);
   }
+};
+
+// ---------------------------------------------------------------------------
+// Inline keyboard messages
+// ---------------------------------------------------------------------------
+
+export const sendMessageWithKeyboard = async (
+  token: string,
+  chatId: number | string,
+  text: string,
+  keyboard: TelegramInlineKeyboardButton[][],
+  opts?: { reply_to_message_id?: number; message_thread_id?: number },
+): Promise<number> => {
+  const body: Record<string, unknown> = {
+    chat_id: chatId,
+    text,
+    reply_markup: { inline_keyboard: keyboard },
+  };
+  if (opts?.reply_to_message_id) {
+    body.reply_parameters = {
+      message_id: opts.reply_to_message_id,
+      allow_sending_without_reply: true,
+    };
+  }
+  if (opts?.message_thread_id) {
+    body.message_thread_id = opts.message_thread_id;
+  }
+  const result = await telegramFetch(token, "sendMessage", body);
+  if (!result.ok) {
+    throw new Error(`Telegram sendMessage (keyboard) failed: ${result.description}`);
+  }
+  const msg = result.result as { message_id: number };
+  return msg.message_id;
+};
+
+export const editMessageText = async (
+  token: string,
+  chatId: number | string,
+  messageId: number,
+  text: string,
+  opts?: { reply_markup?: { inline_keyboard: TelegramInlineKeyboardButton[][] } },
+): Promise<void> => {
+  const body: Record<string, unknown> = {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+  };
+  if (opts?.reply_markup) {
+    body.reply_markup = opts.reply_markup;
+  }
+  const result = await telegramFetch(token, "editMessageText", body);
+  if (!result.ok) {
+    throw new Error(`Telegram editMessageText failed: ${result.description}`);
+  }
+};
+
+export const answerCallbackQuery = async (
+  token: string,
+  callbackQueryId: string,
+  opts?: { text?: string },
+): Promise<void> => {
+  const body: Record<string, unknown> = {
+    callback_query_id: callbackQueryId,
+  };
+  if (opts?.text) body.text = opts.text;
+  await telegramFetch(token, "answerCallbackQuery", body);
 };
 
 // ---------------------------------------------------------------------------
