@@ -1,5 +1,13 @@
 # @poncho-ai/cli
 
+## 0.24.2
+
+### Patch Changes
+
+- [`70c4cfc`](https://github.com/cesr/poncho-ai/commit/70c4cfcb8d70e8b382157a82f2dc341bf526226b) Thanks [@cesr](https://github.com/cesr)! - Improve tool approval UX: optimistic approve/deny, fix browser panel not opening after approval, and restore real-time SSE streaming for resumed runs.
+
+- [`ab4c1cb`](https://github.com/cesr/poncho-ai/commit/ab4c1cb0729a68ba0f296fd37380b5c228abfb5b) Thanks [@cesr](https://github.com/cesr)! - Fix browser hangs during long conversations in the web UI by throttling streaming renders with requestAnimationFrame and caching markdown parse output.
+
 ## 0.24.1
 
 ### Patch Changes
