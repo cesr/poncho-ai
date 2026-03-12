@@ -1550,6 +1550,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
               }
             };
             processChunks().finally(() => {
+              if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
               if (state.activeConversationId === conversationId) {
                 state.activeMessages = localMessages;
               }
@@ -1967,6 +1968,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
         const streamAbortController = new AbortController();
         state.activeStreamAbortController = streamAbortController;
         state.activeStreamRunId = null;
+        let _rafId = 0;
         setStreaming(true);
         try {
           if (!conversationId) {
@@ -1974,7 +1976,6 @@ export const getWebUiClientScript = (markedSource: string): string => `
           }
           state.activeStreamConversationId = conversationId;
           const streamConversationId = conversationId;
-          let _rafId = 0;
           const renderIfActiveConversation = (streaming) => {
             if (state.activeConversationId !== streamConversationId) {
               return;
@@ -2343,6 +2344,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
           await loadConversations();
           // Don't reload the conversation - we already have the latest state with tool chips
         } catch (error) {
+          if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
           if (streamAbortController.signal.aborted) {
             assistantMessage._activeActivities = [];
             if (assistantMessage._currentTools.length > 0) {
@@ -2360,6 +2362,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
             renderMessages(localMessages, false);
           }
         } finally {
+          if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
           if (state.activeStreamAbortController === streamAbortController) {
             state.activeStreamAbortController = null;
           }
