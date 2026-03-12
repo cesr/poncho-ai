@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.25.3
+
+### Patch Changes
+
+- [`63f0ad5`](https://github.com/cesr/poncho-ai/commit/63f0ad509c3e673244b514341aec556a23ba5c9f) Thanks [@cesr](https://github.com/cesr)! - Fix channel-targeted cron jobs returning "no known chats" when using KV conversation stores (Upstash, Vercel KV). The listSummaries call now passes the owner ID so the KV store can look up conversations.
+
 ## 0.25.2
 
 ### Patch Changes
