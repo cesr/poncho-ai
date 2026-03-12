@@ -1123,6 +1123,14 @@ export default async function handler(req, res) {
             "{AGENT.md,poncho.config.js,skills/**,tests/**,node_modules/.pnpm/marked@*/node_modules/marked/lib/marked.umd.js}",
         },
       },
+      headers: [
+        {
+          source: "/api/(.*)",
+          headers: [
+            { key: "Cache-Control", value: "private, no-cache, no-store, must-revalidate" },
+          ],
+        },
+      ],
       routes: [{ src: "/(.*)", dest: "/api/index.mjs" }],
     };
     if (vercelCrons && vercelCrons.length > 0) {
