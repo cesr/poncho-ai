@@ -1,5 +1,11 @@
 # @poncho-ai/messaging
 
+## 0.6.0
+
+### Minor Changes
+
+- [`d1e1bfb`](https://github.com/cesr/poncho-ai/commit/d1e1bfbf35b18788ab79231ca675774e949f5116) Thanks [@cesr](https://github.com/cesr)! - Add proactive scheduled messaging via channel-targeted cron jobs. Cron jobs with `channel: telegram` (or `slack`) now automatically discover known conversations and send the agent's response directly to each chat, continuing the existing conversation history.
+
 ## 0.5.1
 
 ### Patch Changes
