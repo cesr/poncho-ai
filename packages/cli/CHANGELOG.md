@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.25.1
+
+### Patch Changes
+
+- [`7343d7e`](https://github.com/cesr/poncho-ai/commit/7343d7e239b39d367dac09722826e3c179e7f271) Thanks [@cesr](https://github.com/cesr)! - Add Cache-Control headers to all JSON API responses to prevent Vercel CDN from caching dynamic endpoints like cron jobs.
+
 ## 0.25.0
 
 ### Minor Changes
