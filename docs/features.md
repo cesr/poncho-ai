@@ -184,6 +184,22 @@ messaging: [
 ]
 ```
 
+#### Proactive scheduled messages
+
+You can have the agent proactively message Telegram chats on a cron schedule. Add `channel: telegram` to any cron job in your `AGENT.md` frontmatter:
+
+```yaml
+cron:
+  daily-checkin:
+    schedule: "0 9 * * *"
+    task: "Check in with the user about their plans for today"
+    channel: telegram
+```
+
+The system auto-discovers all Telegram chats the bot has interacted with and sends the agent's response to each one. No chat IDs need to be configured -- filtering is handled by `allowedUserIds` if set. The agent runs with the full conversation history for each chat, so it has context from prior interactions.
+
+The bot must have received at least one message from a user before it can send proactive messages to that chat (Telegram API requirement).
+
 ### Email (Resend)
 
 #### 1. Set up Resend

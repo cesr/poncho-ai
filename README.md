@@ -264,6 +264,10 @@ cron:
     schedule: "0 9 * * *"     # Standard 5-field cron expression
     timezone: "America/New_York" # Optional IANA timezone (default: UTC)
     task: "Generate the daily sales report and email it to the team"
+  morning-checkin:
+    schedule: "0 8 * * 1-5"
+    task: "Check in with the user about their day"
+    channel: telegram          # Send proactively to all Telegram chats
 ---
 ```
 
@@ -802,6 +806,33 @@ Each key under `cron` is the job name. Fields per job:
 | `schedule` | Yes | Standard 5-field cron expression (minute hour day month weekday) |
 | `task` | Yes | The prompt sent to the agent as the initial message |
 | `timezone` | No | IANA timezone string (default: `"UTC"`) |
+| `channel` | No | Messaging platform to deliver to (e.g. `telegram`). See below. |
+
+### Proactive messaging via channels
+
+Add `channel` to a cron job to have the agent proactively send messages to a messaging platform on schedule:
+
+```yaml
+---
+name: my-agent
+cron:
+  daily-checkin:
+    schedule: "0 9 * * *"
+    task: "Check in with the user about their plans for today"
+    channel: telegram
+---
+```
+
+When `channel` is set, the cron job:
+
+1. Auto-discovers all chats the bot has had on that platform (no chat IDs to configure)
+2. Runs the agent per-chat with the full conversation history, so it has context from prior interactions
+3. Sends the agent's response to each chat
+
+**Requirements:**
+- The messaging platform must be configured in `poncho.config.js` (e.g. `messaging: [{ platform: 'telegram' }]`)
+- The bot must have received at least one message from the user before it can send proactive messages (Telegram API requirement)
+- Existing conversations created before this feature are automatically recognized after the user sends their next message
 
 ### How cron jobs run
 
@@ -810,7 +841,7 @@ Each key under `cron` is the job name. Fields per job:
 - **Docker / Fly.io**: The in-process scheduler activates automatically since these use `startDevServer()`.
 - **Lambda**: Use AWS EventBridge (CloudWatch Events) to trigger `GET /api/cron/<jobName>` on schedule. Include the `Authorization: Bearer <token>` header.
 
-Each cron invocation creates a **fresh conversation** (no accumulated history). To carry context between runs, enable [memory](docs/features.md#persistent-memory).
+Standard cron jobs (without `channel`) create a **fresh conversation** each run (no accumulated history). To carry context between runs, enable [memory](docs/features.md#persistent-memory). Channel-targeted cron jobs reuse the existing messaging conversation, so history carries over automatically.
 
 ### Manual triggers
 

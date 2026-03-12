@@ -10,7 +10,7 @@ export type {
   ThreadRef,
 } from "./types.js";
 
-export { AgentBridge } from "./bridge.js";
+export { AgentBridge, conversationIdFromThread } from "./bridge.js";
 export { SlackAdapter } from "./adapters/slack/index.js";
 export type { SlackAdapterOptions } from "./adapters/slack/index.js";
 export { ResendAdapter } from "./adapters/resend/index.js";

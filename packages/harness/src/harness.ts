@@ -280,6 +280,10 @@ cron:
     schedule: "0 9 * * *"        # Standard 5-field cron expression
     timezone: "America/New_York" # Optional IANA timezone (default: UTC)
     task: "Generate the daily sales report"
+  telegram-checkin:
+    schedule: "0 18 * * 1-5"
+    channel: telegram              # Proactive message to all known Telegram chats
+    task: "Send an end-of-day summary to the user"
 \`\`\`
 
 - Each cron job triggers an autonomous agent run with the specified task, creating a fresh conversation.
@@ -288,6 +292,7 @@ cron:
 - Jobs can also be triggered manually: \`GET /api/cron/<jobName>\`.
 - To carry context across cron runs, enable memory.
 - **IMPORTANT**: When adding a new cron job, always PRESERVE all existing cron jobs. Never remove or overwrite existing jobs unless the user explicitly asks you to replace or delete them. Read the full current \`cron:\` block before editing, and append the new job alongside the existing ones.
+- **Proactive channel messaging**: Adding \`channel: telegram\` (or \`slack\`) makes the cron job send its response directly to all known conversations on that platform, instead of creating a standalone conversation. The agent continues the existing conversation history for context. A chat must have at least one prior user message for auto-discovery to find it.
 
 ## Messaging Integrations (Slack, Telegram, Email)
 

@@ -50,6 +50,11 @@ export interface Conversation {
     result?: import("@poncho-ai/sdk").RunResult;
     error?: import("@poncho-ai/sdk").AgentFailure;
   };
+  channelMeta?: {
+    platform: string;
+    channelId: string;
+    platformThreadId: string;
+  };
   createdAt: number;
   updatedAt: number;
 }
@@ -247,6 +252,7 @@ export class InMemoryConversationStore implements ConversationStore {
         parentConversationId: c.parentConversationId,
         messageCount: c.messages.length,
         hasPendingApprovals: Array.isArray(c.pendingApprovals) && c.pendingApprovals.length > 0,
+        channelMeta: c.channelMeta,
       }));
   }
 
@@ -305,6 +311,11 @@ export type ConversationSummary = {
   parentConversationId?: string;
   messageCount?: number;
   hasPendingApprovals?: boolean;
+  channelMeta?: {
+    platform: string;
+    channelId: string;
+    platformThreadId: string;
+  };
 };
 
 type ConversationStoreFile = {
@@ -319,6 +330,11 @@ type ConversationStoreFile = {
     parentConversationId?: string;
     messageCount?: number;
     hasPendingApprovals?: boolean;
+    channelMeta?: {
+      platform: string;
+      channelId: string;
+      platformThreadId: string;
+    };
   }>;
 };
 
@@ -451,6 +467,7 @@ class FileConversationStore implements ConversationStore {
         parentConversationId: conversation.parentConversationId,
         messageCount: conversation.messages.length,
         hasPendingApprovals: Array.isArray(conversation.pendingApprovals) && conversation.pendingApprovals.length > 0,
+        channelMeta: conversation.channelMeta,
       });
       await this.writeIndex();
     });
@@ -486,6 +503,7 @@ class FileConversationStore implements ConversationStore {
         parentConversationId: c.parentConversationId,
         messageCount: c.messageCount,
         hasPendingApprovals: c.hasPendingApprovals,
+        channelMeta: c.channelMeta,
       }));
   }
 
@@ -660,6 +678,11 @@ type ConversationMeta = {
   parentConversationId?: string;
   messageCount?: number;
   hasPendingApprovals?: boolean;
+  channelMeta?: {
+    platform: string;
+    channelId: string;
+    platformThreadId: string;
+  };
 };
 
 abstract class KeyValueConversationStoreBase implements ConversationStore {
@@ -804,6 +827,7 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
             parentConversationId: meta.parentConversationId,
             messageCount: meta.messageCount,
             hasPendingApprovals: meta.hasPendingApprovals,
+            channelMeta: meta.channelMeta,
           });
         }
       } catch { /* skip invalid records */ }
@@ -867,6 +891,7 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
         parentConversationId: nextConversation.parentConversationId,
         messageCount: nextConversation.messages.length,
         hasPendingApprovals: Array.isArray(nextConversation.pendingApprovals) && nextConversation.pendingApprovals.length > 0,
+        channelMeta: nextConversation.channelMeta,
       } satisfies ConversationMeta),
       this.ttl,
     );

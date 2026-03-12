@@ -13,7 +13,7 @@ import type {
  * SHA-256 hashes the composite key and formats 16 bytes as a UUID v4-shaped
  * string, ensuring a valid UUID that's stable across requests for the same thread.
  */
-const conversationIdFromThread = (
+export const conversationIdFromThread = (
   platform: string,
   ref: ThreadRef,
 ): string => {
@@ -94,6 +94,8 @@ export class AgentBridge {
             platform: message.platform,
             ownerId: this.ownerIdOverride ?? message.sender.id,
             title,
+            channelId: message.threadRef.channelId,
+            platformThreadId: message.threadRef.platformThreadId,
           },
         );
 

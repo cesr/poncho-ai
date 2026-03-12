@@ -105,7 +105,13 @@ export interface MessagingAdapter {
 export interface AgentRunner {
   getOrCreateConversation(
     conversationId: string,
-    meta: { platform: string; ownerId: string; title?: string },
+    meta: {
+      platform: string;
+      ownerId: string;
+      title?: string;
+      channelId?: string;
+      platformThreadId?: string;
+    },
   ): Promise<{ messages: Message[] }>;
 
   run(

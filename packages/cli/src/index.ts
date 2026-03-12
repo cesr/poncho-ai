@@ -26,6 +26,7 @@ import {
   type PonchoConfig,
   type Conversation,
   type ConversationStore,
+  type ConversationSummary,
   type SubagentManager,
   type SubagentResult,
   type UploadStore,
@@ -600,6 +601,10 @@ cron:
   daily-report:
     schedule: "0 9 * * *"
     task: "Generate the daily sales report"
+  morning-checkin:
+    schedule: "0 8 * * 1-5"
+    task: "Check in with the user about their day"
+    channel: telegram
 \`\`\`
 
 - \`poncho dev\`: jobs run via an in-process scheduler.
@@ -607,6 +612,8 @@ cron:
 - Docker/Fly.io: scheduler runs automatically.
 - Lambda: use AWS EventBridge to trigger \`GET /api/cron/<jobName>\` with \`Authorization: Bearer <token>\`.
 - Trigger manually: \`curl http://localhost:3000/api/cron/daily-report\`
+
+Add \`channel: telegram\` (or another platform) to have the agent proactively send the response to all known chats on that platform. The bot must have received at least one message from each user first.
 
 ## Messaging (Slack)
 
@@ -1440,6 +1447,7 @@ export type RequestHandler = ((
   _harness?: AgentHarness;
   _cronJobs?: Record<string, CronJobConfig>;
   _conversationStore?: ConversationStore;
+  _messagingAdapters?: Map<string, MessagingAdapter>;
 };
 
 export const createRequestHandler = async (options?: {
@@ -2268,15 +2276,31 @@ export const createRequestHandler = async (options?: {
     async getOrCreateConversation(conversationId, meta) {
       const existing = await conversationStore.get(conversationId);
       if (existing) {
+        if (!existing.channelMeta && meta.channelId) {
+          existing.channelMeta = {
+            platform: meta.platform,
+            channelId: meta.channelId,
+            platformThreadId: meta.platformThreadId ?? meta.channelId,
+          };
+          await conversationStore.update(existing);
+        }
         return { messages: existing.messages };
       }
       const now = Date.now();
+      const channelMeta = meta.channelId
+        ? {
+            platform: meta.platform,
+            channelId: meta.channelId,
+            platformThreadId: meta.platformThreadId ?? meta.channelId,
+          }
+        : undefined;
       const conversation = {
         conversationId,
         title: meta.title ?? `${meta.platform} thread`,
         messages: [] as Message[],
         ownerId: meta.ownerId,
         tenantId: null,
+        channelMeta,
         createdAt: now,
         updatedAt: now,
       };
@@ -2530,6 +2554,7 @@ export const createRequestHandler = async (options?: {
     }
   }
 
+  const messagingAdapters = new Map<string, MessagingAdapter>();
   const messagingBridges: AgentBridge[] = [];
   if (config?.messaging && config.messaging.length > 0) {
     for (const channelConfig of config.messaging) {
@@ -2548,6 +2573,7 @@ export const createRequestHandler = async (options?: {
           await bridge.start();
           adapter.registerRoutes(messagingRouteRegistrar);
           messagingBridges.push(bridge);
+          messagingAdapters.set("slack", adapter);
           console.log(`  Slack messaging enabled at /api/messaging/slack`);
         } catch (err) {
           console.warn(
@@ -2575,6 +2601,7 @@ export const createRequestHandler = async (options?: {
           await bridge.start();
           adapter.registerRoutes(messagingRouteRegistrar);
           messagingBridges.push(bridge);
+          messagingAdapters.set("resend", adapter);
           const adapterTools = adapter.getToolDefinitions?.() ?? [];
           if (adapterTools.length > 0) {
             harness.registerTools(adapterTools);
@@ -2602,6 +2629,7 @@ export const createRequestHandler = async (options?: {
           await bridge.start();
           adapter.registerRoutes(messagingRouteRegistrar);
           messagingBridges.push(bridge);
+          messagingAdapters.set("telegram", adapter);
           console.log(`  Telegram messaging enabled at /api/messaging/telegram`);
         } catch (err) {
           console.warn(
@@ -3983,6 +4011,109 @@ export const createRequestHandler = async (options?: {
       const cronOwnerId = ownerId;
       const start = Date.now();
 
+      if (cronJob.channel && !continueConversationId) {
+        const adapter = messagingAdapters.get(cronJob.channel);
+        if (!adapter) {
+          writeJson(response, 200, {
+            status: "skipped",
+            reason: `${cronJob.channel} adapter not available`,
+            duration: Date.now() - start,
+          });
+          return;
+        }
+
+        try {
+          const summaries = await conversationStore.listSummaries();
+          const targetSummaries = new Map<string, ConversationSummary>();
+          for (const s of summaries) {
+            if (s.channelMeta?.platform !== cronJob.channel) continue;
+            const key = s.channelMeta.channelId;
+            const existing = targetSummaries.get(key);
+            if (!existing || s.updatedAt > (existing.updatedAt ?? 0)) {
+              targetSummaries.set(key, s);
+            }
+          }
+
+          if (targetSummaries.size === 0) {
+            writeJson(response, 200, {
+              status: "skipped",
+              reason: `no known ${cronJob.channel} chats`,
+              duration: Date.now() - start,
+            });
+            return;
+          }
+
+          const chatResults: Array<{ chatId: string; status: string; steps?: number }> = [];
+          for (const [chatId, summary] of targetSummaries) {
+            const conv = await conversationStore.get(summary.conversationId);
+            if (!conv) continue;
+
+            const task = `[Scheduled: ${jobName}]\n${cronJob.task}`;
+            const historyMessages = [...conv.messages];
+            try {
+              let assistantResponse = "";
+              let steps = 0;
+              for await (const event of harness.runWithTelemetry({
+                task,
+                conversationId: conv.conversationId,
+                parameters: { __activeConversationId: conv.conversationId },
+                messages: historyMessages,
+              })) {
+                if (event.type === "model:chunk") {
+                  assistantResponse += event.content;
+                }
+                if (event.type === "run:completed") {
+                  steps = event.result.steps;
+                  if (!assistantResponse && event.result.response) {
+                    assistantResponse = event.result.response;
+                  }
+                }
+                await telemetry.emit(event);
+              }
+
+              conv.messages = [
+                ...historyMessages,
+                { role: "user" as const, content: task },
+                ...(assistantResponse ? [{ role: "assistant" as const, content: assistantResponse }] : []),
+              ];
+              conv.updatedAt = Date.now();
+              await conversationStore.update(conv);
+
+              if (assistantResponse) {
+                try {
+                  await adapter.sendReply(
+                    {
+                      channelId: chatId,
+                      platformThreadId: conv.channelMeta?.platformThreadId ?? chatId,
+                    },
+                    assistantResponse,
+                  );
+                } catch (sendError) {
+                  console.error(`[cron] ${jobName}: send to ${chatId} failed:`, sendError instanceof Error ? sendError.message : sendError);
+                }
+              }
+              chatResults.push({ chatId, status: "completed", steps });
+            } catch (runError) {
+              chatResults.push({ chatId, status: "error" });
+              console.error(`[cron] ${jobName}: run for chat ${chatId} failed:`, runError instanceof Error ? runError.message : runError);
+            }
+          }
+
+          writeJson(response, 200, {
+            status: "completed",
+            chats: chatResults.length,
+            results: chatResults,
+            duration: Date.now() - start,
+          });
+        } catch (error) {
+          writeJson(response, 500, {
+            code: "CRON_RUN_ERROR",
+            message: error instanceof Error ? error.message : "Unknown error",
+          });
+        }
+        return;
+      }
+
       try {
         let conversation;
         let historyMessages: Message[] = [];
@@ -4154,6 +4285,7 @@ export const createRequestHandler = async (options?: {
   handler._harness = harness;
   handler._cronJobs = cronJobs;
   handler._conversationStore = conversationStore;
+  handler._messagingAdapters = messagingAdapters;
 
   // Recover stale subagent runs that were "running" when the server last stopped.
   // Pass no ownerId so we scan across all owners (not just "local-owner").
@@ -4196,6 +4328,94 @@ export const startDevServer = async (
   type CronJob = InstanceType<typeof Cron>;
   let activeJobs: CronJob[] = [];
 
+  type CronRunResult = {
+    response: string;
+    steps: number;
+    assistantMetadata?: Message["metadata"];
+    hasContent: boolean;
+  };
+
+  const runCronAgent = async (
+    harnessRef: AgentHarness,
+    task: string,
+    conversationId: string,
+    historyMessages: Message[],
+  ): Promise<CronRunResult> => {
+    let assistantResponse = "";
+    let steps = 0;
+    const toolTimeline: string[] = [];
+    const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
+    let currentTools: string[] = [];
+    let currentText = "";
+    for await (const event of harnessRef.runWithTelemetry({
+      task,
+      conversationId,
+      parameters: { __activeConversationId: conversationId },
+      messages: historyMessages,
+    })) {
+      if (event.type === "model:chunk") {
+        if (currentTools.length > 0) {
+          sections.push({ type: "tools", content: currentTools });
+          currentTools = [];
+        }
+        assistantResponse += event.content;
+        currentText += event.content;
+      }
+      if (event.type === "tool:started") {
+        if (currentText.length > 0) {
+          sections.push({ type: "text", content: currentText });
+          currentText = "";
+        }
+        const toolText = `- start \`${event.tool}\``;
+        toolTimeline.push(toolText);
+        currentTools.push(toolText);
+      }
+      if (event.type === "tool:completed") {
+        const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
+        toolTimeline.push(toolText);
+        currentTools.push(toolText);
+      }
+      if (event.type === "tool:error") {
+        const toolText = `- error \`${event.tool}\`: ${event.error}`;
+        toolTimeline.push(toolText);
+        currentTools.push(toolText);
+      }
+      if (event.type === "run:completed") {
+        steps = event.result.steps;
+        if (!assistantResponse && event.result.response) {
+          assistantResponse = event.result.response;
+        }
+      }
+    }
+    if (currentTools.length > 0) {
+      sections.push({ type: "tools", content: currentTools });
+    }
+    if (currentText.length > 0) {
+      sections.push({ type: "text", content: currentText });
+    }
+    const hasContent = assistantResponse.length > 0 || toolTimeline.length > 0;
+    const assistantMetadata =
+      toolTimeline.length > 0 || sections.length > 0
+        ? ({
+            toolActivity: [...toolTimeline],
+            sections: sections.length > 0 ? sections : undefined,
+          } as Message["metadata"])
+        : undefined;
+    return { response: assistantResponse, steps, assistantMetadata, hasContent };
+  };
+
+  const buildCronMessages = (
+    task: string,
+    historyMessages: Message[],
+    result: CronRunResult,
+  ): Message[] => [
+    ...historyMessages,
+    { role: "user" as const, content: task },
+    ...(result.hasContent
+      ? [{ role: "assistant" as const, content: result.response, metadata: result.assistantMetadata }]
+      : []),
+  ];
+
   const scheduleCronJobs = (jobs: Record<string, CronJobConfig>): void => {
     for (const job of activeJobs) {
       job.stop();
@@ -4205,9 +4425,10 @@ export const startDevServer = async (
     const entries = Object.entries(jobs);
     if (entries.length === 0) return;
 
-    const harness = handler._harness;
+    const harnessRef = handler._harness;
     const store = handler._conversationStore;
-    if (!harness || !store) return;
+    const adapters = handler._messagingAdapters;
+    if (!harnessRef || !store) return;
 
     for (const [jobName, config] of entries) {
       const job = new Cron(
@@ -4217,82 +4438,88 @@ export const startDevServer = async (
           const timestamp = new Date().toISOString();
           process.stdout.write(`[cron] ${jobName} started at ${timestamp}\n`);
           const start = Date.now();
+
+          if (config.channel) {
+            const adapter = adapters?.get(config.channel);
+            if (!adapter) {
+              process.stderr.write(`[cron] ${jobName}: ${config.channel} adapter not available, skipping\n`);
+              return;
+            }
+            try {
+              const summaries = await store.listSummaries();
+              const targetSummaries = new Map<string, ConversationSummary>();
+              for (const s of summaries) {
+                if (s.channelMeta?.platform !== config.channel) continue;
+                const key = s.channelMeta.channelId;
+                const existing = targetSummaries.get(key);
+                if (!existing || s.updatedAt > (existing.updatedAt ?? 0)) {
+                  targetSummaries.set(key, s);
+                }
+              }
+
+              if (targetSummaries.size === 0) {
+                process.stdout.write(`[cron] ${jobName}: no known ${config.channel} chats, skipping\n`);
+                return;
+              }
+
+              let totalChats = 0;
+              for (const [chatId, summary] of targetSummaries) {
+                const conversation = await store.get(summary.conversationId);
+                if (!conversation) continue;
+
+                const task = `[Scheduled: ${jobName}]\n${config.task}`;
+                const historyMessages = [...conversation.messages];
+
+                try {
+                  const result = await runCronAgent(harnessRef, task, conversation.conversationId, historyMessages);
+
+                  conversation.messages = buildCronMessages(task, historyMessages, result);
+                  conversation.updatedAt = Date.now();
+                  await store.update(conversation);
+
+                  if (result.response) {
+                    try {
+                      await adapter.sendReply(
+                        {
+                          channelId: chatId,
+                          platformThreadId: conversation.channelMeta?.platformThreadId ?? chatId,
+                        },
+                        result.response,
+                      );
+                    } catch (sendError) {
+                      const sendMsg = sendError instanceof Error ? sendError.message : String(sendError);
+                      process.stderr.write(`[cron] ${jobName}: send to ${chatId} failed: ${sendMsg}\n`);
+                    }
+                  }
+                  totalChats++;
+                } catch (runError) {
+                  const runMsg = runError instanceof Error ? runError.message : String(runError);
+                  process.stderr.write(`[cron] ${jobName}: run for chat ${chatId} failed: ${runMsg}\n`);
+                }
+              }
+
+              const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+              process.stdout.write(`[cron] ${jobName} completed in ${elapsed}s (${totalChats} chats)\n`);
+            } catch (error) {
+              const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+              const msg = error instanceof Error ? error.message : String(error);
+              process.stderr.write(`[cron] ${jobName} failed after ${elapsed}s: ${msg}\n`);
+            }
+            return;
+          }
+
           try {
             const conversation = await store.create(
               "local-owner",
               `[cron] ${jobName} ${timestamp}`,
             );
-            let assistantResponse = "";
-            let steps = 0;
-            const toolTimeline: string[] = [];
-            const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
-            let currentTools: string[] = [];
-            let currentText = "";
-            for await (const event of harness.runWithTelemetry({
-              task: config.task,
-              conversationId: conversation.conversationId,
-              parameters: { __activeConversationId: conversation.conversationId },
-              messages: [],
-            })) {
-              if (event.type === "model:chunk") {
-                if (currentTools.length > 0) {
-                  sections.push({ type: "tools", content: currentTools });
-                  currentTools = [];
-                }
-                assistantResponse += event.content;
-                currentText += event.content;
-              }
-              if (event.type === "tool:started") {
-                if (currentText.length > 0) {
-                  sections.push({ type: "text", content: currentText });
-                  currentText = "";
-                }
-                const toolText = `- start \`${event.tool}\``;
-                toolTimeline.push(toolText);
-                currentTools.push(toolText);
-              }
-              if (event.type === "tool:completed") {
-                const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
-                toolTimeline.push(toolText);
-                currentTools.push(toolText);
-              }
-              if (event.type === "tool:error") {
-                const toolText = `- error \`${event.tool}\`: ${event.error}`;
-                toolTimeline.push(toolText);
-                currentTools.push(toolText);
-              }
-              if (event.type === "run:completed") {
-                steps = event.result.steps;
-                if (!assistantResponse && event.result.response) {
-                  assistantResponse = event.result.response;
-                }
-              }
-            }
-            if (currentTools.length > 0) {
-              sections.push({ type: "tools", content: currentTools });
-            }
-            if (currentText.length > 0) {
-              sections.push({ type: "text", content: currentText });
-            }
-            const hasContent = assistantResponse.length > 0 || toolTimeline.length > 0;
-            const assistantMetadata =
-              toolTimeline.length > 0 || sections.length > 0
-                ? ({
-                    toolActivity: [...toolTimeline],
-                    sections: sections.length > 0 ? sections : undefined,
-                  } as Message["metadata"])
-                : undefined;
-            conversation.messages = [
-              { role: "user", content: config.task },
-              ...(hasContent
-                ? [{ role: "assistant" as const, content: assistantResponse, metadata: assistantMetadata }]
-                : []),
-            ];
+            const result = await runCronAgent(harnessRef, config.task, conversation.conversationId, []);
+            conversation.messages = buildCronMessages(config.task, [], result);
             conversation.updatedAt = Date.now();
             await store.update(conversation);
             const elapsed = ((Date.now() - start) / 1000).toFixed(1);
             process.stdout.write(
-              `[cron] ${jobName} completed in ${elapsed}s (${steps} steps)\n`,
+              `[cron] ${jobName} completed in ${elapsed}s (${result.steps} steps)\n`,
             );
           } catch (error) {
             const elapsed = ((Date.now() - start) / 1000).toFixed(1);

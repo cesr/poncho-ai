@@ -27,6 +27,7 @@ export interface CronJobConfig {
   schedule: string;
   task: string;
   timezone?: string;
+  channel?: string;
 }
 
 export interface AgentFrontmatter {
@@ -138,10 +139,16 @@ const parseCronJobs = (
       validateTimezone(timezone, path);
     }
 
+    const channel =
+      typeof jobValue.channel === "string" && jobValue.channel.trim()
+        ? jobValue.channel.trim()
+        : undefined;
+
     jobs[jobName] = {
       schedule: jobValue.schedule.trim(),
       task: jobValue.task,
       timezone,
+      channel,
     };
   }
   return jobs;
