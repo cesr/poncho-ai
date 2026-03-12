@@ -1,5 +1,16 @@
 # @poncho-ai/cli
 
+## 0.26.0
+
+### Minor Changes
+
+- [`26be28a`](https://github.com/cesr/poncho-ai/commit/26be28a958f2eb27dd78225f1cf80b67b16d673d) Thanks [@cesr](https://github.com/cesr)! - Add tool approval support in Telegram via inline keyboard buttons. When the agent needs approval for a tool call, the bot sends Approve/Deny buttons to the chat. After all decisions are made, the run resumes and the response is delivered. Approvals from the web UI for Telegram conversations are also routed back to the chat.
+
+### Patch Changes
+
+- Updated dependencies [[`26be28a`](https://github.com/cesr/poncho-ai/commit/26be28a958f2eb27dd78225f1cf80b67b16d673d)]:
+  - @poncho-ai/messaging@0.7.0
+
 ## 0.25.4
 
 ### Patch Changes
