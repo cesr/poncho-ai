@@ -1,5 +1,13 @@
 # @poncho-ai/browser
 
+## 0.6.3
+
+### Patch Changes
+
+- [`35f3f54`](https://github.com/cesr/poncho-ai/commit/35f3f54b17ff50253ab01dbcfe19c643dd6c7e00) Thanks [@cesr](https://github.com/cesr)! - Add `browser_clear_cookies` tool for deleting browser cookies
+
+  Agents with `browser: true` can now call `browser_clear_cookies` to delete cookies from the live browser and persisted storage. Accepts an optional `url` parameter to scope deletion to a specific site (e.g. "https://example.com"); omit to clear all cookies.
+
 ## 0.6.2
 
 ### Patch Changes
