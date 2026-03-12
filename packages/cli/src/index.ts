@@ -75,10 +75,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 
 const writeJson = (response: ServerResponse, statusCode: number, payload: unknown) => {
-  response.writeHead(statusCode, {
-    "Content-Type": "application/json",
-    "Cache-Control": "private, no-cache, no-store, must-revalidate",
-  });
+  response.writeHead(statusCode, { "Content-Type": "application/json" });
   response.end(JSON.stringify(payload));
 };
 
