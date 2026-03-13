@@ -1,8 +1,8 @@
 # Poncho
 
-Poncho is a general agent harness built for the web.
+Poncho is a cloud agent harness.
 
-Develop locally with `poncho dev`, then deploy the same agent to production (serverless functions, long-lived servers, containers, or edge) with your own:
+Develop locally with `poncho dev`, then deploy the same agent to production (serverless, containers, long-lived servers, etc.) with your own:
 
 - Skills and scripts
 - Tools and MCP servers
