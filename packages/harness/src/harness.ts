@@ -15,7 +15,7 @@ import type { UploadStore } from "./upload-store.js";
 import { PONCHO_UPLOAD_SCHEME, deriveUploadKey } from "./upload-store.js";
 import { parseAgentFile, renderAgentPrompt, type ParsedAgent, type AgentFrontmatter } from "./agent-parser.js";
 import { loadPonchoConfig, resolveMemoryConfig, type PonchoConfig, type ToolAccess, type BuiltInToolToggles } from "./config.js";
-import { createDefaultTools, createDeleteDirectoryTool, createDeleteTool, createWriteTool, ponchoDocsTool } from "./default-tools.js";
+import { createDefaultTools, createDeleteDirectoryTool, createDeleteTool, createEditTool, createWriteTool, ponchoDocsTool } from "./default-tools.js";
 import {
   createMemoryStore,
   createMemoryTools,
@@ -224,7 +224,7 @@ You are running locally in development mode. Treat this as an editable agent wor
 ## Understanding Your Environment
 
 - Built-in tools: \`list_directory\` and \`read_file\`
-- \`write_file\` is available in development (disabled by default in production)
+- \`write_file\` and \`edit_file\` are available in development (disabled by default in production)
 - A starter local skill is included (\`starter-echo\`)
 - Bash/shell commands are **not** available unless you install and enable a shell tool/skill
 - Git operations are only available if a git-capable tool/skill is configured
@@ -485,6 +485,7 @@ Since all fields have defaults, you only need to specify \`*Env\` when your env 
 - If shell/CLI access is unavailable, ask the user to run needed commands and provide exact copy-paste commands.
 - For setup, skills, MCP, auth, storage, telemetry, or "how do I..." questions, proactively read \`README.md\` with \`read_file\` before answering.
 - Prefer quoting concrete commands and examples from \`README.md\` over guessing.
+- Prefer \`edit_file\` for targeted changes to existing files (uses exact string matching); use \`write_file\` only for creating new files or full rewrites.
 - Keep edits minimal, preserve unrelated settings/code, and summarize what changed.
 
 ## Detailed Documentation
@@ -585,7 +586,7 @@ export class AgentHarness {
   private isToolEnabled(name: string): boolean {
     const access = this.resolveToolAccess(name);
     if (access === false) return false;
-    if (name === "write_file" || name === "delete_file" || name === "delete_directory") {
+    if (name === "write_file" || name === "edit_file" || name === "delete_file" || name === "delete_directory") {
       return this.shouldEnableWriteTool();
     }
     return true;
@@ -632,6 +633,9 @@ export class AgentHarness {
     }
     if (this.isToolEnabled("write_file")) {
       this.registerIfMissing(createWriteTool(this.workingDir));
+    }
+    if (this.isToolEnabled("edit_file")) {
+      this.registerIfMissing(createEditTool(this.workingDir));
     }
     if (this.isToolEnabled("delete_file")) {
       this.registerIfMissing(createDeleteTool(this.workingDir));

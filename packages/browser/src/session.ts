@@ -779,7 +779,12 @@ export class BrowserSession {
       this.tabs.set(conversationId, tab);
     }
     tab.frameListeners.add(listener);
-    return () => { tab!.frameListeners.delete(listener); };
+    return () => {
+      tab!.frameListeners.delete(listener);
+      if (tab!.frameListeners.size === 0 && this._screencastConversation === conversationId) {
+        this.stopScreencast().catch(() => {});
+      }
+    };
   }
 
   onStatus(conversationId: string, listener: StatusListener): () => void {

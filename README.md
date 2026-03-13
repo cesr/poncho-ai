@@ -358,6 +358,7 @@ By default, Poncho includes built-in filesystem tools from the harness:
 | `list_directory` | List files and folders at a path |
 | `read_file` | Read UTF-8 text file contents |
 | `write_file` | Write UTF-8 text file contents (create or overwrite; gated by environment/policy) |
+| `edit_file` | Edit a file by replacing an exact string match with new content (gated by environment/policy) |
 | `delete_file` | Delete a file (requires approval by default; gated by environment/policy) |
 | `delete_directory` | Recursively delete a directory (requires approval by default; gated by environment/policy) |
 
@@ -372,12 +373,14 @@ tools: {
   list_directory: true,        // available (default)
   read_file: true,             // available (default)
   write_file: true,            // gated by environment for writes
+  edit_file: true,             // gated by environment for writes
     delete_file: 'approval',      // requires human approval
     delete_directory: 'approval', // requires human approval
     send_email: 'approval',      // requires human approval
   byEnvironment: {
     production: {
       write_file: false,
+      edit_file: false,
       delete_file: false,
       delete_directory: false,
     },
@@ -394,7 +397,7 @@ Three access levels per tool:
 - `'approval'`: available, but triggers a human approval prompt before each call
 - `false`: disabled, tool is not registered and the agent never sees it
 
-This works for any tool — built-in harness tools (`list_directory`, `read_file`, `write_file`, `delete_file`, `delete_directory`), adapter tools (`send_email`), MCP tools, and skill tools. Per-environment overrides in `byEnvironment` take priority over the top-level defaults.
+This works for any tool — built-in harness tools (`list_directory`, `read_file`, `write_file`, `edit_file`, `delete_file`, `delete_directory`), adapter tools (`send_email`), MCP tools, and skill tools. Per-environment overrides in `byEnvironment` take priority over the top-level defaults.
 
 ### How skill discovery works
 
@@ -580,6 +583,7 @@ Available tools:
 - list_directory: List files and folders at a path
 - read_file: Read UTF-8 text file contents
 - write_file: Write UTF-8 text file contents (may be disabled by environment/policy)
+- edit_file: Edit a file by replacing an exact string match (may be disabled by environment/policy)
 - delete_file: Delete a file (requires approval; may be disabled by environment/policy)
 - delete_directory: Recursively delete a directory (requires approval; may be disabled by environment/policy)
 - my_tool: Example custom tool loaded from a local skill (if present)

@@ -92,9 +92,10 @@ self.addEventListener("fetch", (event) => {
 });
 `;
 
-export const renderWebUiHtml = (options?: { agentName?: string }): string => {
+export const renderWebUiHtml = (options?: { agentName?: string; isDev?: boolean }): string => {
   const agentInitial = (options?.agentName ?? "A").charAt(0).toUpperCase();
   const agentName = options?.agentName ?? "Agent";
+  const pageTitle = options?.isDev ? `[dev] ${agentName}` : agentName;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -108,7 +109,7 @@ export const renderWebUiHtml = (options?: { agentName?: string }): string => {
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <title>${agentName}</title>
+  <title>${pageTitle}</title>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inconsolata:400,700">
   <style>
 ${WEB_UI_STYLES}

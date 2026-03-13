@@ -39,6 +39,7 @@ export type BuiltInToolToggles = {
   list_directory?: boolean;
   read_file?: boolean;
   write_file?: boolean;
+  edit_file?: boolean;
   delete_file?: boolean;
   delete_directory?: boolean;
 };

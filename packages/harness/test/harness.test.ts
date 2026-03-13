@@ -1,10 +1,11 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
 import type { ToolContext } from "@poncho-ai/sdk";
 import { AgentHarness } from "../src/harness.js";
+import { createEditTool } from "../src/default-tools.js";
 import { loadSkillMetadata } from "../src/skill-context.js";
 
 const stubContext: ToolContext = {
@@ -39,6 +40,7 @@ model:
     expect(names).toContain("list_directory");
     expect(names).toContain("read_file");
     expect(names).toContain("write_file");
+    expect(names).toContain("edit_file");
   });
 
   it("disables write_file by default in production environment", async () => {
@@ -64,6 +66,7 @@ model:
     expect(names).toContain("list_directory");
     expect(names).toContain("read_file");
     expect(names).not.toContain("write_file");
+    expect(names).not.toContain("edit_file");
   });
 
   it("allows disabling built-in tools via poncho.config.js", async () => {
@@ -1229,4 +1232,64 @@ allowed-tools:
     await new Promise<void>((resolveClose) => mcpServer.close(() => resolveClose()));
   });
 
+});
+
+describe("edit_file tool", () => {
+  it("replaces a unique string match in a file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-edit-tool-"));
+    const filePath = join(dir, "test.txt");
+    await writeFile(filePath, "hello world\nfoo bar\nbaz qux\n", "utf8");
+
+    const tool = createEditTool(dir);
+    const result = await tool.handler(
+      { path: "test.txt", old_str: "foo bar", new_str: "replaced" },
+      stubContext,
+    );
+
+    expect(result).toEqual({ path: "test.txt", edited: true });
+    const content = await readFile(filePath, "utf8");
+    expect(content).toBe("hello world\nreplaced\nbaz qux\n");
+  });
+
+  it("errors when old_str is not found in the file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-edit-tool-notfound-"));
+    await writeFile(join(dir, "test.txt"), "hello world\n", "utf8");
+
+    const tool = createEditTool(dir);
+    await expect(
+      tool.handler({ path: "test.txt", old_str: "nonexistent", new_str: "x" }, stubContext),
+    ).rejects.toThrow("old_str not found in file");
+  });
+
+  it("errors when old_str matches multiple locations", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-edit-tool-multi-"));
+    await writeFile(join(dir, "test.txt"), "aaa\nbbb\naaa\n", "utf8");
+
+    const tool = createEditTool(dir);
+    await expect(
+      tool.handler({ path: "test.txt", old_str: "aaa", new_str: "ccc" }, stubContext),
+    ).rejects.toThrow("old_str appears multiple times");
+  });
+
+  it("deletes matched content when new_str is empty", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-edit-tool-delete-"));
+    const filePath = join(dir, "test.txt");
+    await writeFile(filePath, "keep this\nremove this\nkeep this too\n", "utf8");
+
+    const tool = createEditTool(dir);
+    await tool.handler({ path: "test.txt", old_str: "remove this\n", new_str: "" }, stubContext);
+
+    const content = await readFile(filePath, "utf8");
+    expect(content).toBe("keep this\nkeep this too\n");
+  });
+
+  it("errors when old_str is empty", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "poncho-edit-tool-empty-"));
+    await writeFile(join(dir, "test.txt"), "content\n", "utf8");
+
+    const tool = createEditTool(dir);
+    await expect(
+      tool.handler({ path: "test.txt", old_str: "", new_str: "x" }, stubContext),
+    ).rejects.toThrow("old_str must not be empty");
+  });
 });

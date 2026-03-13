@@ -89,6 +89,59 @@ export const createWriteTool = (workingDir: string): ToolDefinition =>
     },
   });
 
+export const createEditTool = (workingDir: string): ToolDefinition =>
+  defineTool({
+    name: "edit_file",
+    description:
+      "Edit a file by replacing an exact string match with new content. " +
+      "The old_str must match exactly one location in the file (including whitespace and indentation). " +
+      "Use an empty new_str to delete matched content.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "File path relative to working directory",
+        },
+        old_str: {
+          type: "string",
+          description:
+            "The exact text to find and replace (must be unique in the file). " +
+            "Include surrounding context lines if needed to ensure uniqueness.",
+        },
+        new_str: {
+          type: "string",
+          description: "The replacement text (use empty string to delete the matched content)",
+        },
+      },
+      required: ["path", "old_str", "new_str"],
+      additionalProperties: false,
+    },
+    handler: async (input) => {
+      const path = typeof input.path === "string" ? input.path : "";
+      const oldStr = typeof input.old_str === "string" ? input.old_str : "";
+      const newStr = typeof input.new_str === "string" ? input.new_str : "";
+      if (!oldStr) throw new Error("old_str must not be empty.");
+      const resolved = resolveSafePath(workingDir, path);
+      const content = await readFile(resolved, "utf8");
+      const first = content.indexOf(oldStr);
+      if (first === -1) {
+        throw new Error(
+          "old_str not found in file. Make sure it matches exactly, including whitespace and line breaks.",
+        );
+      }
+      const last = content.lastIndexOf(oldStr);
+      if (first !== last) {
+        throw new Error(
+          "old_str appears multiple times in the file. Please provide more context to ensure a unique match.",
+        );
+      }
+      const newContent = content.slice(0, first) + newStr + content.slice(first + oldStr.length);
+      await writeFile(resolved, newContent, "utf8");
+      return { path, edited: true };
+    },
+  });
+
 export const createDeleteTool = (workingDir: string): ToolDefinition =>
   defineTool({
     name: "delete_file",

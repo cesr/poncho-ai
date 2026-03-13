@@ -550,12 +550,14 @@ export default {
     list_directory: true,
     read_file: true,
     write_file: true,           // gated by environment for writes
+    edit_file: true,            // gated by environment for writes
     delete_file: 'approval',    // requires human approval
     delete_directory: 'approval', // requires human approval
     send_email: 'approval',     // requires human approval
     byEnvironment: {
       production: {
         write_file: false,
+        edit_file: false,
         delete_file: false,
         delete_directory: false,
       },
@@ -2892,7 +2894,7 @@ export const createRequestHandler = async (options?: {
 
     if (webUiEnabled) {
       if (request.method === "GET" && (pathname === "/" || pathname.startsWith("/c/"))) {
-        writeHtml(response, 200, renderWebUiHtml({ agentName }));
+        writeHtml(response, 200, renderWebUiHtml({ agentName, isDev: !isProduction }));
         return;
       }
 
@@ -3112,9 +3114,34 @@ export const createRequestHandler = async (options?: {
       response.flushHeaders();
 
       let frameCount = 0;
+      let droppedFrames = 0;
+      let draining = false;
+      let pendingFrame: { data: string; width: number; height: number; timestamp: number } | null = null;
+
       const sendSse = (event: string, data: unknown) => {
         if (response.destroyed) return;
         response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      };
+
+      const sendFrame = (frame: { data: string; width: number; height: number; timestamp: number }) => {
+        if (response.destroyed) return;
+        if (draining) {
+          pendingFrame = frame;
+          droppedFrames++;
+          return;
+        }
+        const ok = response.write(`event: browser:frame\ndata: ${JSON.stringify(frame)}\n\n`);
+        if (!ok) {
+          draining = true;
+          response.once("drain", () => {
+            draining = false;
+            if (pendingFrame && !response.destroyed) {
+              const f = pendingFrame;
+              pendingFrame = null;
+              sendFrame(f);
+            }
+          });
+        }
       };
 
       sendSse("browser:status", {
@@ -3126,20 +3153,18 @@ export const createRequestHandler = async (options?: {
       const removeFrame = browserSession.onFrame(cid, (frame) => {
         frameCount++;
         if (frameCount <= 3 || frameCount % 50 === 0) {
-          console.log(`[poncho][browser-sse] Frame ${frameCount}: ${frame.width}x${frame.height}, data bytes: ${frame.data?.length ?? 0}`);
+          console.log(`[poncho][browser-sse] Frame ${frameCount}: ${frame.width}x${frame.height}, data bytes: ${frame.data?.length ?? 0}${droppedFrames > 0 ? `, dropped: ${droppedFrames}` : ""}`);
         }
-        sendSse("browser:frame", frame);
+        sendFrame(frame);
       });
       const removeStatus = browserSession.onStatus(cid, (status) => {
         sendSse("browser:status", status);
       });
 
       if (browserSession.isActiveFor(cid)) {
-        // Send a screenshot as the first frame for immediate visual feedback,
-        // then start the live screencast for subsequent frames.
         browserSession.screenshot(cid).then((data) => {
           if (!response.destroyed) {
-            sendSse("browser:frame", { data, width: 1280, height: 720, timestamp: Date.now() });
+            sendFrame({ data, width: 1280, height: 720, timestamp: Date.now() });
           }
           return browserSession.startScreencast(cid);
         }).catch((err: unknown) => {
@@ -3150,6 +3175,7 @@ export const createRequestHandler = async (options?: {
       request.on("close", () => {
         removeFrame();
         removeStatus();
+        pendingFrame = null;
       });
       return;
     }
