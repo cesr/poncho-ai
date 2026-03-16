@@ -1,5 +1,16 @@
 # @poncho-ai/cli
 
+## 0.28.0
+
+### Minor Changes
+
+- [#40](https://github.com/cesr/poncho-ai/pull/40) [`95ae86b`](https://github.com/cesr/poncho-ai/commit/95ae86b4ea0d913357ccca9a43a227c83e46b9c4) Thanks [@cesr](https://github.com/cesr)! - Add built-in todo tools (todo_list, todo_add, todo_update, todo_remove) with per-conversation storage and a live todo panel in the web UI
+
+### Patch Changes
+
+- Updated dependencies [[`95ae86b`](https://github.com/cesr/poncho-ai/commit/95ae86b4ea0d913357ccca9a43a227c83e46b9c4)]:
+  - @poncho-ai/harness@0.26.0
+
 ## 0.27.1
 
 ### Patch Changes
