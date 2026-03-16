@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type {
   AgentEvent,
   ContentPart,
@@ -13,7 +15,7 @@ import type {
 import { getTextContent } from "@poncho-ai/sdk";
 import type { UploadStore } from "./upload-store.js";
 import { PONCHO_UPLOAD_SCHEME, deriveUploadKey } from "./upload-store.js";
-import { parseAgentFile, renderAgentPrompt, type ParsedAgent, type AgentFrontmatter } from "./agent-parser.js";
+import { parseAgentFile, parseAgentMarkdown, renderAgentPrompt, type ParsedAgent, type AgentFrontmatter } from "./agent-parser.js";
 import { loadPonchoConfig, resolveMemoryConfig, type PonchoConfig, type ToolAccess, type BuiltInToolToggles } from "./config.js";
 import { createDefaultTools, createDeleteDirectoryTool, createDeleteTool, createEditTool, createWriteTool, ponchoDocsTool } from "./default-tools.js";
 import {
@@ -563,6 +565,7 @@ export class AgentHarness {
   };
 
   private parsedAgent?: ParsedAgent;
+  private agentFileFingerprint = "";
   private mcpBridge?: LocalMcpBridge;
   private subagentManager?: SubagentManager;
 
@@ -696,20 +699,17 @@ export class AgentHarness {
   }
 
   private getRequestedMcpPatterns(): string[] {
-    const skillPatterns = new Set<string>();
+    const patterns = new Set<string>(this.getAgentMcpIntent());
     for (const skillName of this.activeSkillNames) {
       const skill = this.loadedSkills.find((entry) => entry.name === skillName);
       if (!skill) {
         continue;
       }
       for (const pattern of skill.allowedTools.mcp) {
-        skillPatterns.add(pattern);
+        patterns.add(pattern);
       }
     }
-    if (skillPatterns.size > 0) {
-      return [...skillPatterns];
-    }
-    return this.getAgentMcpIntent();
+    return [...patterns];
   }
 
   private getRequestedScriptPatterns(): string[] {
@@ -727,20 +727,17 @@ export class AgentHarness {
   }
 
   private getRequestedMcpApprovalPatterns(): string[] {
-    const skillPatterns = new Set<string>();
+    const patterns = new Set<string>(this.getAgentMcpApprovalPatterns());
     for (const skillName of this.activeSkillNames) {
       const skill = this.loadedSkills.find((entry) => entry.name === skillName);
       if (!skill) {
         continue;
       }
       for (const pattern of skill.approvalRequired.mcp) {
-        skillPatterns.add(pattern);
+        patterns.add(pattern);
       }
     }
-    if (skillPatterns.size > 0) {
-      return [...skillPatterns];
-    }
-    return this.getAgentMcpApprovalPatterns();
+    return [...patterns];
   }
 
   private getRequestedScriptApprovalPatterns(): string[] {
@@ -891,13 +888,59 @@ export class AgentHarness {
 
   private static readonly SKILL_REFRESH_DEBOUNCE_MS = 3000;
 
-  private async refreshSkillsIfChanged(): Promise<void> {
+  /**
+   * Re-read AGENT.md and update the parsed agent when the file has changed
+   * on disk.  Returns `true` when the agent was actually re-parsed.
+   *
+   * Preserves the agent identity (id) across reloads so conversation
+   * continuity isn't broken.
+   */
+  private async refreshAgentIfChanged(): Promise<boolean> {
     if (this.environment !== "development") {
-      return;
+      return false;
     }
-    const elapsed = Date.now() - this.lastSkillRefreshAt;
-    if (this.lastSkillRefreshAt > 0 && elapsed < AgentHarness.SKILL_REFRESH_DEBOUNCE_MS) {
-      return;
+    try {
+      const agentFilePath = resolve(this.workingDir, "AGENT.md");
+      const rawContent = await readFile(agentFilePath, "utf8");
+      if (rawContent === this.agentFileFingerprint) {
+        return false;
+      }
+      const parsed = parseAgentMarkdown(rawContent);
+      // Preserve the resolved agent identity so existing conversations
+      // keep working after an AGENT.md edit.
+      if (!parsed.frontmatter.id && this.parsedAgent?.frontmatter.id) {
+        parsed.frontmatter.id = this.parsedAgent.frontmatter.id;
+      }
+      this.parsedAgent = parsed;
+      this.agentFileFingerprint = rawContent;
+      return true;
+    } catch (error) {
+      console.warn(
+        `[poncho][agent] Failed to refresh AGENT.md in development mode: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Re-scan skill directories and update metadata, tools, and context window
+   * when skills have changed on disk. Returns `true` when the skill set was
+   * actually updated.
+   *
+   * @param force - bypass the time-based debounce (used for mid-run refreshes
+   *   after the agent may have written new skill files).
+   */
+  private async refreshSkillsIfChanged(force = false): Promise<boolean> {
+    if (this.environment !== "development") {
+      return false;
+    }
+    if (!force) {
+      const elapsed = Date.now() - this.lastSkillRefreshAt;
+      if (this.lastSkillRefreshAt > 0 && elapsed < AgentHarness.SKILL_REFRESH_DEBOUNCE_MS) {
+        return false;
+      }
     }
     this.lastSkillRefreshAt = Date.now();
     try {
@@ -907,27 +950,44 @@ export class AgentHarness {
       );
       const nextFingerprint = this.buildSkillFingerprint(latestSkills);
       if (nextFingerprint === this.skillFingerprint) {
-        return;
+        return false;
       }
       this.loadedSkills = latestSkills;
       this.skillContextWindow = buildSkillContextWindow(latestSkills);
       this.skillFingerprint = nextFingerprint;
       this.registerSkillTools(latestSkills);
-      // Skill metadata or layout changed; force re-activation to avoid stale
-      // instructions/tooling when files are renamed or moved during development.
-      this.activeSkillNames.clear();
+      // Prune active skills that no longer exist in the updated metadata,
+      // but preserve ones that were merely updated (same name).  This keeps
+      // MCP tools from active skills registered when their allowed-tools
+      // list changes, instead of forcing the agent to re-activate.
+      const latestSkillNames = new Set(latestSkills.map(s => s.name));
+      for (const name of this.activeSkillNames) {
+        if (!latestSkillNames.has(name)) {
+          this.activeSkillNames.delete(name);
+        }
+      }
+      // Re-discover MCP server catalogs so newly advertised tools are visible,
+      // then refresh the registered tool set with updated skill patterns.
+      if (this.mcpBridge) {
+        await this.mcpBridge.discoverTools();
+      }
       await this.refreshMcpTools("skills:changed");
+      return true;
     } catch (error) {
       console.warn(
         `[poncho][skills] Failed to refresh skills in development mode: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
+      return false;
     }
   }
 
   async initialize(): Promise<void> {
-    this.parsedAgent = await parseAgentFile(this.workingDir);
+    const agentFilePath = resolve(this.workingDir, "AGENT.md");
+    const agentRawContent = await readFile(agentFilePath, "utf8");
+    this.parsedAgent = parseAgentMarkdown(agentRawContent);
+    this.agentFileFingerprint = agentRawContent;
     const identity = await ensureAgentIdentity(this.workingDir);
     if (!this.parsedAgent.frontmatter.id) {
       this.parsedAgent.frontmatter.id = identity.id;
@@ -1286,10 +1346,11 @@ export class AgentHarness {
     if (!this.parsedAgent) {
       await this.initialize();
     }
-    // Start memory fetch early so it overlaps with skill refresh I/O
+    // Start memory fetch early so it overlaps with refresh I/O
     const memoryPromise = this.memoryStore
       ? this.memoryStore.getMainMemory()
       : undefined;
+    await this.refreshAgentIfChanged();
     await this.refreshSkillsIfChanged();
 
     // Track which conversation/owner this run belongs to so browser & subagent tools resolve correctly
@@ -1299,7 +1360,7 @@ export class AgentHarness {
       this._currentRunOwnerId = ownerParam;
     }
 
-    const agent = this.parsedAgent as ParsedAgent;
+    let agent = this.parsedAgent as ParsedAgent;
     const runId = `run_${randomUUID()}`;
     const start = now();
     const maxSteps = agent.frontmatter.limits?.maxSteps ?? 50;
@@ -1315,15 +1376,16 @@ export class AgentHarness {
     const inputMessageCount = messages.length;
     const events: AgentEvent[] = [];
 
-    const systemPrompt = renderAgentPrompt(agent, {
-      parameters: input.parameters,
-      runtime: {
-        runId,
-        agentId: agent.frontmatter.id ?? agent.frontmatter.name,
-        environment: this.environment,
-        workingDir: this.workingDir,
-      },
-    });
+    const renderCurrentAgentPrompt = (): string =>
+      renderAgentPrompt(this.parsedAgent!, {
+        parameters: input.parameters,
+        runtime: {
+          runId,
+          agentId: this.parsedAgent!.frontmatter.id ?? this.parsedAgent!.frontmatter.name,
+          environment: this.environment,
+          workingDir: this.workingDir,
+        },
+      });
     const developmentContext =
       this.environment === "development" ? `\n\n${DEVELOPMENT_MODE_CONTEXT}` : "";
     const browserContext = this._browserSession
@@ -1346,9 +1408,6 @@ Browser sessions (cookies, localStorage, login state) are automatically saved an
 ### Tabs and resources
 Each conversation gets its own browser tab sharing a single browser instance. Call \`browser_close\` when done to free the tab. If you don't close it, the tab stays open and the user can continue interacting with it.`
       : "";
-    const promptWithSkills = this.skillContextWindow
-      ? `${systemPrompt}${developmentContext}\n\n${this.skillContextWindow}${browserContext}`
-      : `${systemPrompt}${developmentContext}${browserContext}`;
     const mainMemory = await memoryPromise;
     const boundedMainMemory =
       mainMemory && mainMemory.content.length > 4000
@@ -1361,7 +1420,13 @@ Each conversation gets its own browser tab sharing a single browser instance. Ca
 
 ${boundedMainMemory.trim()}`
         : "";
-    const integrityPrompt = `${promptWithSkills}${memoryContext}
+
+    const buildSystemPrompt = (): string => {
+      const agentPrompt = renderCurrentAgentPrompt();
+      const promptWithSkills = this.skillContextWindow
+        ? `${agentPrompt}${developmentContext}\n\n${this.skillContextWindow}${browserContext}`
+        : `${agentPrompt}${developmentContext}${browserContext}`;
+      return `${promptWithSkills}${memoryContext}
 
 ## Execution Integrity
 
@@ -1369,6 +1434,9 @@ ${boundedMainMemory.trim()}`
 - Do not fabricate "Tool Used" or "Tool Result" logs as plain text.
 - Never output faux execution transcripts, markdown tool logs, or "Tool Used/Result" sections.
 - If no suitable tool is available, explicitly say that and ask for guidance.`;
+    };
+    let integrityPrompt = buildSystemPrompt();
+    let lastPromptFingerprint = `${this.agentFileFingerprint}\n${this.skillFingerprint}`;
 
     const pushEvent = (event: AgentEvent): AgentEvent => {
       events.push(event);
@@ -2259,6 +2327,22 @@ ${boundedMainMemory.trim()}`
         content: JSON.stringify(toolResultsForModel),
         metadata: toolMsgMeta as Message["metadata"],
       });
+
+        // In development, re-read AGENT.md and re-scan skills after tool
+        // execution so changes are available on the next step without
+        // requiring a server restart.
+        if (this.environment === "development") {
+          const agentChanged = await this.refreshAgentIfChanged();
+          const skillsChanged = await this.refreshSkillsIfChanged(true);
+          if (agentChanged || skillsChanged) {
+            agent = this.parsedAgent as ParsedAgent;
+            const currentFingerprint = `${this.agentFileFingerprint}\n${this.skillFingerprint}`;
+            if (currentFingerprint !== lastPromptFingerprint) {
+              integrityPrompt = buildSystemPrompt();
+              lastPromptFingerprint = currentFingerprint;
+            }
+          }
+        }
 
         yield pushEvent({
           type: "step:completed",

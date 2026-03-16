@@ -1681,8 +1681,8 @@ export const createRequestHandler = async (options?: {
 
     // Wire up subagent manager on the child so it can spawn sub-subagents
     childHarness.setSubagentManager(subagentManager);
-    // Subagents get read-only memory -- strip the write tool
-    childHarness.unregisterTools(["memory_main_update"]);
+    // Subagents get read-only memory -- strip the write tools
+    childHarness.unregisterTools(["memory_main_write", "memory_main_edit"]);
 
     let assistantResponse = "";
     let latestRunId = "";
@@ -2098,6 +2098,41 @@ export const createRequestHandler = async (options?: {
       : [];
     const fullCheckpointMessages = [...baseMessages, ...checkpoint.checkpointMessages!];
 
+    // Build the tool result message that continueFromToolResult will also
+    // construct internally.  We need it here so that if the resumed run hits
+    // another approval checkpoint, the nested checkpoint includes complete
+    // tool-call/result pairs — otherwise the Vercel AI SDK throws
+    // MissingToolResultsError when converting the history on the next resume.
+    let resumeToolResultMsg: Message | undefined;
+    const lastCpMsg = fullCheckpointMessages[fullCheckpointMessages.length - 1];
+    if (lastCpMsg?.role === "assistant") {
+      try {
+        const parsed = JSON.parse(typeof lastCpMsg.content === "string" ? lastCpMsg.content : "");
+        const cpToolCalls: Array<{ id: string; name: string }> = parsed.tool_calls ?? [];
+        if (cpToolCalls.length > 0) {
+          const providedMap = new Map(toolResults.map(r => [r.callId, r]));
+          resumeToolResultMsg = {
+            role: "tool",
+            content: JSON.stringify(cpToolCalls.map(tc => {
+              const provided = providedMap.get(tc.id);
+              return {
+                type: "tool_result",
+                tool_use_id: tc.id,
+                tool_name: provided?.toolName ?? tc.name,
+                content: provided
+                  ? (provided.error ? `Tool error: ${provided.error}` : JSON.stringify(provided.result ?? null))
+                  : "Tool error: Tool execution deferred (pending approval checkpoint)",
+              };
+            })),
+            metadata: { timestamp: Date.now() },
+          };
+        }
+      } catch { /* last message is not a parseable assistant-with-tools — skip */ }
+    }
+    const fullCheckpointWithResults = resumeToolResultMsg
+      ? [...fullCheckpointMessages, resumeToolResultMsg]
+      : fullCheckpointMessages;
+
     try {
       for await (const event of harness.continueFromToolResult({
         messages: fullCheckpointMessages,
@@ -2163,7 +2198,7 @@ export const createRequestHandler = async (options?: {
               tool: a.tool,
               toolCallId: a.toolCallId,
               input: a.input,
-              checkpointMessages: [...fullCheckpointMessages, ...event.checkpointMessages],
+              checkpointMessages: [...fullCheckpointWithResults, ...event.checkpointMessages],
               baseMessageCount: 0,
               pendingToolCalls: event.pendingToolCalls,
             }));

@@ -27,7 +27,7 @@ export interface MemoryConfig {
 
 export interface MemoryStore {
   getMainMemory(): Promise<MainMemory>;
-  updateMainMemory(input: { content: string; mode?: "replace" | "append" }): Promise<MainMemory>;
+  updateMainMemory(input: { content: string }): Promise<MainMemory>;
 }
 
 type MainMemoryPayload = {
@@ -89,19 +89,10 @@ class InMemoryMemoryStore implements MemoryStore {
     return this.mainMemory;
   }
 
-  async updateMainMemory(input: {
-    content: string;
-    mode?: "replace" | "append";
-  }): Promise<MainMemory> {
-    const now = Date.now();
-    const existing = await this.getMainMemory();
-    const nextContent =
-      input.mode === "append" && existing.content
-        ? `${existing.content}\n\n${input.content}`.trim()
-        : input.content;
+  async updateMainMemory(input: { content: string }): Promise<MainMemory> {
     this.mainMemory = {
-      content: nextContent.trim(),
-      updatedAt: now,
+      content: input.content.trim(),
+      updatedAt: Date.now(),
     };
     return this.mainMemory;
   }
@@ -166,18 +157,10 @@ class FileMainMemoryStore implements MemoryStore {
     return this.mainMemory;
   }
 
-  async updateMainMemory(input: {
-    content: string;
-    mode?: "replace" | "append";
-  }): Promise<MainMemory> {
+  async updateMainMemory(input: { content: string }): Promise<MainMemory> {
     await this.ensureLoaded();
-    const existing = await this.getMainMemory();
-    const nextContent =
-      input.mode === "append" && existing.content
-        ? `${existing.content}\n\n${input.content}`.trim()
-        : input.content;
     this.mainMemory = {
-      content: nextContent.trim(),
+      content: input.content.trim(),
       updatedAt: Date.now(),
     };
     await this.persist();
@@ -225,7 +208,6 @@ abstract class KeyValueMainMemoryStoreBase implements MemoryStore {
     } catch {
       await this.memoryFallback.updateMainMemory({
         content: payload.main.content,
-        mode: "replace",
       });
     }
   }
@@ -235,18 +217,11 @@ abstract class KeyValueMainMemoryStoreBase implements MemoryStore {
     return payload.main;
   }
 
-  async updateMainMemory(input: {
-    content: string;
-    mode?: "replace" | "append";
-  }): Promise<MainMemory> {
+  async updateMainMemory(input: { content: string }): Promise<MainMemory> {
     const key = this.key();
     const payload = await this.readPayload(key);
-    const nextContent =
-      input.mode === "append" && payload.main.content
-        ? `${payload.main.content}\n\n${input.content}`.trim()
-        : input.content;
     payload.main = {
-      content: nextContent.trim(),
+      content: input.content.trim(),
       updatedAt: Date.now(),
     };
     await this.writePayload(key, payload);
@@ -590,20 +565,17 @@ export const createMemoryTools = (
       },
     }),
     defineTool({
-      name: "memory_main_update",
+      name: "memory_main_write",
       description:
-        "Update persistent main memory when new stable preferences, long-term goals, or durable facts appear. Proactively evaluate every turn whether memory should be updated, and avoid storing ephemeral details.",
+        "Overwrite the entire persistent main memory document. " +
+        "Use for initial writes or full rewrites. " +
+        "Prefer memory_main_edit for targeted changes to existing memory.",
       inputSchema: {
         type: "object",
         properties: {
-          mode: {
-            type: "string",
-            enum: ["replace", "append"],
-            description: "replace overwrites memory; append adds content to the end",
-          },
           content: {
             type: "string",
-            description: "The memory content to write",
+            description: "The full memory content to write",
           },
         },
         required: ["content"],
@@ -614,11 +586,56 @@ export const createMemoryTools = (
         if (!content) {
           throw new Error("content is required");
         }
-        const mode =
-          input.mode === "append" || input.mode === "replace"
-            ? input.mode
-            : "replace";
-        const memory = await store.updateMainMemory({ content, mode });
+        const memory = await store.updateMainMemory({ content });
+        return { ok: true, memory };
+      },
+    }),
+    defineTool({
+      name: "memory_main_edit",
+      description:
+        "Edit persistent main memory by replacing an exact string match with new content. " +
+        "The old_str must match exactly one location in memory. " +
+        "Use an empty new_str to delete matched content. " +
+        "Proactively evaluate every turn whether memory should be updated.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          old_str: {
+            type: "string",
+            description:
+              "The exact text to find and replace (must be unique in memory). " +
+              "Include surrounding context if needed to ensure uniqueness.",
+          },
+          new_str: {
+            type: "string",
+            description: "The replacement text (use empty string to delete the matched content)",
+          },
+        },
+        required: ["old_str", "new_str"],
+        additionalProperties: false,
+      },
+      handler: async (input) => {
+        const oldStr = typeof input.old_str === "string" ? input.old_str : "";
+        const newStr = typeof input.new_str === "string" ? input.new_str : "";
+        if (!oldStr) {
+          throw new Error("old_str must not be empty.");
+        }
+        const current = await store.getMainMemory();
+        const content = current.content;
+        const first = content.indexOf(oldStr);
+        if (first === -1) {
+          throw new Error(
+            "old_str not found in memory. Make sure it matches exactly, including whitespace and line breaks.",
+          );
+        }
+        const last = content.lastIndexOf(oldStr);
+        if (first !== last) {
+          throw new Error(
+            "old_str appears multiple times in memory. Please provide more context to ensure a unique match.",
+          );
+        }
+        const newContent = content.slice(0, first) + newStr + content.slice(first + oldStr.length);
+        const memory = await store.updateMainMemory({ content: newContent });
         return { ok: true, memory };
       },
     }),

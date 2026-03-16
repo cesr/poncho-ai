@@ -367,7 +367,7 @@ description: Beta skill
     });
   });
 
-  it("clears active skills when skill metadata changes in development mode", async () => {
+  it("preserves active skills when skill metadata changes in development mode", async () => {
     const dir = await mkdtemp(join(tmpdir(), "poncho-harness-skill-refresh-clear-active-"));
     await writeFile(
       join(dir, "AGENT.md"),
@@ -405,6 +405,7 @@ description: Alpha skill
     await activate!.handler({ name: "alpha" }, {} as any);
     expect(await listActive!.handler({}, {} as any)).toEqual({ activeSkills: ["alpha"] });
 
+    // Update the skill metadata — the skill keeps the same name so it stays active
     await writeFile(
       join(dir, "skills", "alpha", "SKILL.md"),
       `---
@@ -417,7 +418,7 @@ description: Alpha skill updated
       "utf8",
     );
     await (harness as any).refreshSkillsIfChanged();
-    expect(await listActive!.handler({}, {} as any)).toEqual({ activeSkills: [] });
+    expect(await listActive!.handler({}, {} as any)).toEqual({ activeSkills: ["alpha"] });
   });
 
   it("lists skill scripts through list_skill_scripts", async () => {
@@ -906,6 +907,132 @@ allowed-tools:
     const afterDeactivate = harness.listTools().map((tool) => tool.name);
     expect(afterDeactivate).not.toContain("remote/a");
     expect(afterDeactivate).toContain("remote/b");
+    await harness.shutdown();
+    await new Promise<void>((resolveClose) => mcpServer.close(() => resolveClose()));
+  });
+
+  it("agent-level MCP tools persist when a skill is activated (additive)", async () => {
+    process.env.LINEAR_TOKEN = "token-123";
+    const mcpServer = createServer(async (req, res) => {
+      if (req.method === "DELETE") {
+        res.statusCode = 200;
+        res.end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = Buffer.concat(chunks).toString("utf8");
+      const payload = body.trim().length > 0 ? (JSON.parse(body) as any) : {};
+      if (payload.method === "initialize") {
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Mcp-Session-Id", "sess");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              protocolVersion: "2025-03-26",
+              capabilities: { tools: { listChanged: true } },
+              serverInfo: { name: "remote", version: "1.0.0" },
+            },
+          }),
+        );
+        return;
+      }
+      if (payload.method === "notifications/initialized") {
+        res.statusCode = 202;
+        res.end();
+        return;
+      }
+      if (payload.method === "tools/list") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [
+                { name: "a", inputSchema: { type: "object", properties: {} } },
+                { name: "b", inputSchema: { type: "object", properties: {} } },
+              ],
+            },
+          }),
+        );
+        return;
+      }
+      if (payload.method === "tools/call") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: { result: { ok: true } },
+          }),
+        );
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+    await new Promise<void>((resolveOpen) => mcpServer.listen(0, () => resolveOpen()));
+    const address = mcpServer.address();
+    if (!address || typeof address === "string") throw new Error("Unexpected address");
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-additive-mcp-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: additive-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+allowed-tools:
+  - mcp:remote/a
+---
+
+# Additive Agent
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "poncho.config.js"),
+      `export default {
+  mcp: [
+    {
+      name: "remote",
+      url: "http://127.0.0.1:${address.port}/mcp",
+      auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" }
+    }
+  ]
+};
+`,
+      "utf8",
+    );
+    await mkdir(join(dir, "skills", "skill-b"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "skill-b", "SKILL.md"),
+      `---
+name: skill-b
+description: B
+allowed-tools:
+  - mcp:remote/b
+---
+# B
+`,
+      "utf8",
+    );
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    const toolNames = () => harness.listTools().map((t) => t.name);
+    expect(toolNames()).toContain("remote/a");
+    expect(toolNames()).not.toContain("remote/b");
+    const activate = harness.listTools().find((t) => t.name === "activate_skill")!;
+    const deactivate = harness.listTools().find((t) => t.name === "deactivate_skill")!;
+    await activate.handler({ name: "skill-b" }, {} as any);
+    expect(toolNames()).toContain("remote/a");
+    expect(toolNames()).toContain("remote/b");
+    await deactivate.handler({ name: "skill-b" }, {} as any);
+    expect(toolNames()).toContain("remote/a");
+    expect(toolNames()).not.toContain("remote/b");
     await harness.shutdown();
     await new Promise<void>((resolveClose) => mcpServer.close(() => resolveClose()));
   });
