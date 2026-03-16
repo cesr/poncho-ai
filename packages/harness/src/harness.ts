@@ -16,13 +16,14 @@ import { getTextContent } from "@poncho-ai/sdk";
 import type { UploadStore } from "./upload-store.js";
 import { PONCHO_UPLOAD_SCHEME, deriveUploadKey } from "./upload-store.js";
 import { parseAgentFile, parseAgentMarkdown, renderAgentPrompt, type ParsedAgent, type AgentFrontmatter } from "./agent-parser.js";
-import { loadPonchoConfig, resolveMemoryConfig, type PonchoConfig, type ToolAccess, type BuiltInToolToggles } from "./config.js";
+import { loadPonchoConfig, resolveMemoryConfig, resolveStateConfig, type PonchoConfig, type ToolAccess, type BuiltInToolToggles } from "./config.js";
 import { createDefaultTools, createDeleteDirectoryTool, createDeleteTool, createEditTool, createWriteTool, ponchoDocsTool } from "./default-tools.js";
 import {
   createMemoryStore,
   createMemoryTools,
   type MemoryStore,
 } from "./memory.js";
+import { createTodoStore, createTodoTools, type TodoItem, type TodoStore } from "./todo-tools.js";
 import { LocalMcpBridge } from "./mcp.js";
 import { createModelProvider, getModelContextWindow, type ModelProviderFactory, type ProviderConfig } from "./model-factory.js";
 import { buildSkillContextWindow, loadSkillMetadata } from "./skill-context.js";
@@ -550,6 +551,7 @@ export class AgentHarness {
   readonly uploadStore?: UploadStore;
   private skillContextWindow = "";
   private memoryStore?: MemoryStore;
+  private todoStore?: TodoStore;
   private loadedConfig?: PonchoConfig;
   private loadedSkills: SkillMetadata[] = [];
   private skillFingerprint = "";
@@ -676,6 +678,11 @@ export class AgentHarness {
 
   get frontmatter(): AgentFrontmatter | undefined {
     return this.parsedAgent?.frontmatter;
+  }
+
+  async getTodos(conversationId: string): Promise<TodoItem[]> {
+    if (!this.todoStore) return [];
+    return this.todoStore.get(conversationId);
   }
 
   private listActiveSkills(): string[] {
@@ -1008,8 +1015,9 @@ export class AgentHarness {
     this.skillContextWindow = buildSkillContextWindow(skillMetadata);
     this.skillFingerprint = this.buildSkillFingerprint(skillMetadata);
     this.registerSkillTools(skillMetadata);
+    const agentId = this.parsedAgent.frontmatter.id ?? this.parsedAgent.frontmatter.name;
+
     if (memoryConfig?.enabled) {
-      const agentId = this.parsedAgent.frontmatter.id ?? this.parsedAgent.frontmatter.name;
       this.memoryStore = createMemoryStore(
         agentId,
         memoryConfig,
@@ -1020,6 +1028,14 @@ export class AgentHarness {
           maxRecallConversations: memoryConfig.maxRecallConversations,
         }),
       );
+    }
+
+    const stateConfig = resolveStateConfig(config);
+    this.todoStore = createTodoStore(agentId, stateConfig, { workingDir: this.workingDir });
+    for (const tool of createTodoTools(this.todoStore)) {
+      if (this.isToolEnabled(tool.name)) {
+        this.registerIfMissing(tool);
+      }
     }
 
     if (config?.browser) {

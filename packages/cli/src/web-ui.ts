@@ -162,6 +162,7 @@ ${WEB_UI_STYLES}
           </div>
           <form id="composer" class="composer">
             <div class="composer-inner">
+              <div id="todo-panel" class="hidden"></div>
               <div id="attachment-preview" class="attachment-preview" style="display:none"></div>
               <div class="composer-shell">
                 <button id="attach-btn" class="attach-btn" type="button" title="Attach files">

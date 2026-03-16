@@ -3594,6 +3594,14 @@ export const createRequestHandler = async (options?: {
       return;
     }
 
+    const todosMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/todos$/);
+    if (todosMatch && request.method === "GET") {
+      const conversationId = decodeURIComponent(todosMatch[1] ?? "");
+      const todos = await harness.getTodos(conversationId);
+      writeJson(response, 200, { todos });
+      return;
+    }
+
     const conversationPathMatch = pathname.match(/^\/api\/conversations\/([^/]+)$/);
     if (conversationPathMatch) {
       const conversationId = decodeURIComponent(conversationPathMatch[1] ?? "");
