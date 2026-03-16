@@ -1,5 +1,14 @@
 # @poncho-ai/cli
 
+## 0.27.1
+
+### Patch Changes
+
+- [`5a103ca`](https://github.com/cesr/poncho-ai/commit/5a103ca62238cceaa4f4b31769a96637330d6b84) Thanks [@cesr](https://github.com/cesr)! - Split `memory_main_update` into `memory_main_write` (full overwrite) and `memory_main_edit` (targeted string replacement). Hot-reload AGENT.md and skills in dev mode without restarting the server. Merge agent + skill MCP tool patterns additively. Fix MissingToolResultsError when resuming from nested approval checkpoints.
+
+- Updated dependencies [[`5a103ca`](https://github.com/cesr/poncho-ai/commit/5a103ca62238cceaa4f4b31769a96637330d6b84)]:
+  - @poncho-ai/harness@0.25.0
+
 ## 0.27.0
 
 ### Minor Changes
