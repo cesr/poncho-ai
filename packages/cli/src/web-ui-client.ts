@@ -27,6 +27,8 @@ export const getWebUiClientScript = (markedSource: string): string => `
         subagentsParentId: null,
         viewingSubagentId: null,
         parentConversationId: null,
+        todos: [],
+        todoPanelCollapsed: false,
       };
 
       const agentInitial = document.body.dataset.agentInitial || "A";
@@ -578,7 +580,9 @@ export const getWebUiClientScript = (markedSource: string): string => `
             state.activeMessages = [];
             state.contextTokens = 0;
             state.contextWindow = 0;
+            state.todos = [];
             updateContextRing();
+            renderTodoPanel();
             pushConversationUrl(null);
             elements.chatTitle.textContent = "";
             renderMessages([]);
@@ -610,6 +614,136 @@ export const getWebUiClientScript = (markedSource: string): string => `
         return item;
       };
 
+      const _todoPriorityOrder = { high: 0, medium: 1, low: 2 };
+      const _todoStatusOrder = { in_progress: 0, pending: 1, completed: 2 };
+      const _todoCompletedTimers = new Map();
+
+      const _scheduleCompletedHide = () => {
+        state.todos.forEach(function(todo) {
+          if (todo.status === "completed" && !_todoCompletedTimers.has(todo.id)) {
+            _todoCompletedTimers.set(todo.id, todo.updatedAt || Date.now());
+          }
+        });
+        const activeIds = new Set(state.todos.map(function(t) { return t.id; }));
+        for (const id of _todoCompletedTimers.keys()) {
+          if (!activeIds.has(id)) _todoCompletedTimers.delete(id);
+        }
+      };
+
+      const _getVisibleTodos = () => {
+        const now = Date.now();
+        const sorted = state.todos.slice().sort(function(a, b) {
+          const sp = (_todoStatusOrder[a.status] || 1) - (_todoStatusOrder[b.status] || 1);
+          if (sp !== 0) return sp;
+          const pp = (_todoPriorityOrder[a.priority] || 1) - (_todoPriorityOrder[b.priority] || 1);
+          if (pp !== 0) return pp;
+          return (a.createdAt || 0) - (b.createdAt || 0);
+        });
+        if (!state.todoPanelCollapsed) return sorted;
+        return sorted.filter(function(todo) {
+          if (todo.status !== "completed") return true;
+          const completedAt = _todoCompletedTimers.get(todo.id);
+          return !completedAt || (now - completedAt) < 30000;
+        });
+      };
+
+      let _todoHideTimer = null;
+      const _ensureHideTimer = () => {
+        if (_todoHideTimer) return;
+        _todoHideTimer = setInterval(function() {
+          const hasExpiring = state.todos.some(function(t) {
+            if (t.status !== "completed") return false;
+            const at = _todoCompletedTimers.get(t.id);
+            return at && (Date.now() - at) >= 30000;
+          });
+          if (hasExpiring && state.todoPanelCollapsed) renderTodoPanel();
+          if (!state.todos.length) {
+            clearInterval(_todoHideTimer);
+            _todoHideTimer = null;
+          }
+        }, 5000);
+      };
+
+      const _autoCollapseTodos = (live) => {
+        if (!live) {
+          state.todoPanelCollapsed = true;
+          return;
+        }
+        const hasActive = state.todos.some(function(t) {
+          return t.status === "pending" || t.status === "in_progress";
+        });
+        state.todoPanelCollapsed = !hasActive;
+      };
+
+      const renderTodoPanel = () => {
+        let panel = document.getElementById("todo-panel");
+        if (!panel) return;
+
+        _scheduleCompletedHide();
+        const visible = _getVisibleTodos();
+
+        if (!visible.length) {
+          panel.classList.add("hidden");
+          panel.innerHTML = "";
+          return;
+        }
+
+        panel.classList.remove("hidden");
+        if (state.todoPanelCollapsed) {
+          panel.classList.add("collapsed");
+        } else {
+          panel.classList.remove("collapsed");
+        }
+        _ensureHideTimer();
+
+        const completed = state.todos.filter(t => t.status === "completed").length;
+        const total = state.todos.length;
+
+        const statusIcon = (status) => {
+          if (status === "completed") return '<span class="todo-status todo-status-completed">\\u2713</span>';
+          if (status === "in_progress") return '<span class="todo-status todo-status-in-progress">\\u25CF</span>';
+          return '<span class="todo-status todo-status-pending">\\u25CB</span>';
+        };
+
+        const priorityBadge = (priority) => {
+          if (!priority || priority === "medium") return "";
+          return '<span class="todo-priority todo-priority-' + priority + '">' + priority + '</span>';
+        };
+
+        const isCollapsed = state.todoPanelCollapsed;
+
+        let html = '<div class="todo-panel-header" id="todo-panel-header">';
+        html += '<div class="todo-panel-title">';
+        html += '<span class="todo-panel-label">Todos</span>';
+        html += '<span class="todo-panel-progress">' + completed + '/' + total + ' done</span>';
+        html += '</div>';
+        html += '<span class="todo-panel-toggle' + (isCollapsed ? '' : ' open') + '"><svg viewBox="0 0 12 12" fill="none" width="12" height="12"><path d="M4.5 2.75L8 6L4.5 9.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg></span>';
+        html += '</div>';
+
+        if (!isCollapsed) {
+          html += '<ul class="todo-panel-list">';
+          visible.forEach(function(todo) {
+            const isDone = todo.status === "completed";
+            html += '<li class="todo-item' + (isDone ? ' todo-item-done' : '') + '">';
+            html += statusIcon(todo.status);
+            html += '<span class="todo-item-content">' + escapeHtml(todo.content) + '</span>';
+            html += priorityBadge(todo.priority);
+            html += '</li>';
+          });
+          html += '</ul>';
+        }
+
+        panel.innerHTML = html;
+
+        const header = document.getElementById("todo-panel-header");
+        if (header) {
+          header.onclick = function() {
+            state.todoPanelCollapsed = !state.todoPanelCollapsed;
+            renderTodoPanel();
+          };
+        }
+      };
+
       const renderConversationList = () => {
         elements.list.innerHTML = "";
         const pending = state.conversations.filter(c => c.hasPendingApprovals);
@@ -624,21 +758,48 @@ export const getWebUiClientScript = (markedSource: string): string => `
             elements.list.appendChild(buildConversationItem(c));
             appendSubagentsIfActive(c.conversationId);
           }
-          if (rest.length > 0) {
-            const divider = document.createElement("div");
-            divider.className = "sidebar-section-divider";
-            elements.list.appendChild(divider);
-            const recentLabel = document.createElement("div");
-            recentLabel.className = "sidebar-section-label";
-            recentLabel.textContent = "Recent";
-            elements.list.appendChild(recentLabel);
+        }
+
+        const now = new Date();
+        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        const sevenDaysAgo = startOfToday - 7 * 86400000;
+
+        const latest = [];
+        const previous7 = [];
+        const older = [];
+        for (const c of rest) {
+          const ts = c.updatedAt || c.createdAt || 0;
+          if (ts >= startOfToday) {
+            latest.push(c);
+          } else if (ts >= sevenDaysAgo) {
+            previous7.push(c);
+          } else {
+            older.push(c);
           }
         }
 
-        for (const c of rest) {
-          elements.list.appendChild(buildConversationItem(c));
-          appendSubagentsIfActive(c.conversationId);
-        }
+        let sectionRendered = pending.length > 0;
+        const appendSection = (items, labelText) => {
+          if (items.length === 0) return;
+          if (sectionRendered) {
+            const divider = document.createElement("div");
+            divider.className = "sidebar-section-divider";
+            elements.list.appendChild(divider);
+          }
+          const sectionLabel = document.createElement("div");
+          sectionLabel.className = "sidebar-section-label";
+          sectionLabel.textContent = labelText;
+          elements.list.appendChild(sectionLabel);
+          for (const c of items) {
+            elements.list.appendChild(buildConversationItem(c));
+            appendSubagentsIfActive(c.conversationId);
+          }
+          sectionRendered = true;
+        };
+
+        appendSection(latest, "Latest");
+        appendSection(previous7, "Previous 7 days");
+        appendSection(older, "Older");
       };
 
       const appendSubagentsIfActive = (conversationId) => {
@@ -1018,6 +1179,15 @@ export const getWebUiClientScript = (markedSource: string): string => `
           loadSubagents(subagentParentId);
         }
 
+        try {
+          const todosPayload = await api("/api/conversations/" + encodeURIComponent(conversationId) + "/todos");
+          state.todos = todosPayload.todos || [];
+        } catch (_e) {
+          state.todos = [];
+        }
+        _autoCollapseTodos();
+        renderTodoPanel();
+
         updateContextRing();
         renderMessages(state.activeMessages, false, { forceScrollBottom: true });
         if (!state.viewingSubagentId) {
@@ -1120,6 +1290,13 @@ export const getWebUiClientScript = (markedSource: string): string => `
                 payload.conversation.messages || [],
                 allPending,
               );
+              if (typeof payload.conversation.contextTokens === "number") {
+                state.contextTokens = payload.conversation.contextTokens;
+              }
+              if (typeof payload.conversation.contextWindow === "number" && payload.conversation.contextWindow > 0) {
+                state.contextWindow = payload.conversation.contextWindow;
+              }
+              updateContextRing();
               renderMessages(state.activeMessages, payload.hasActiveRun);
             }
             if (payload.hasActiveRun) {
@@ -1335,6 +1512,11 @@ export const getWebUiClientScript = (markedSource: string): string => `
                         state.contextTokens += payload.outputTokenEstimate;
                         updateContextRing();
                       }
+                      if (toolName !== "todo_list" && toolName.startsWith("todo_") && payload.output && typeof payload.output === "object" && Array.isArray(payload.output.todos)) {
+                        state.todos = payload.output.todos;
+                        _autoCollapseTodos(true);
+                        renderTodoPanel();
+                      }
                       renderIfActiveConversation(true);
                     }
                     if (eventName === "tool:error") {
@@ -1370,6 +1552,10 @@ export const getWebUiClientScript = (markedSource: string): string => `
                     if (eventName === "compaction:completed") {
                       didCompact = true;
                       removeActiveActivityForTool(assistantMessage, "__compaction__");
+                      if (typeof payload.tokensAfter === "number") {
+                        state.contextTokens = payload.tokensAfter;
+                        updateContextRing();
+                      }
                       renderIfActiveConversation(true);
                     }
                     if (eventName === "browser:status" && payload.active) {
@@ -2157,6 +2343,11 @@ export const getWebUiClientScript = (markedSource: string): string => `
                     state.contextTokens += payload.outputTokenEstimate;
                     updateContextRing();
                   }
+                  if (toolName !== "todo_list" && toolName.startsWith("todo_") && payload.output && typeof payload.output === "object" && Array.isArray(payload.output.todos)) {
+                    state.todos = payload.output.todos;
+                    _autoCollapseTodos(true);
+                    renderTodoPanel();
+                  }
                   renderIfActiveConversation(true);
                 }
                 if (eventName === "tool:error") {
@@ -2194,6 +2385,10 @@ export const getWebUiClientScript = (markedSource: string): string => `
                 if (eventName === "compaction:completed") {
                   didCompact = true;
                   removeActiveActivityForTool(assistantMessage, "__compaction__");
+                  if (typeof payload.tokensAfter === "number") {
+                    state.contextTokens = payload.tokensAfter;
+                    updateContextRing();
+                  }
                   renderIfActiveConversation(true);
                 }
                 if (eventName === "browser:status" && payload.active) {
@@ -2440,8 +2635,10 @@ export const getWebUiClientScript = (markedSource: string): string => `
         state.parentConversationId = null;
         state.subagents = [];
         state.subagentsParentId = null;
+        state.todos = [];
         updateSubagentUi();
         updateContextRing();
+        renderTodoPanel();
         pushConversationUrl(null);
         elements.chatTitle.textContent = "";
         renderMessages([]);

@@ -8,6 +8,7 @@ import {
   slugifyStorageComponent,
   STORAGE_SCHEMA_VERSION,
 } from "./agent-identity.js";
+import { createRawKVStore, type RawKVStore } from "./kv-store.js";
 
 export interface MainMemory {
   content: string;
@@ -168,25 +169,23 @@ class FileMainMemoryStore implements MemoryStore {
   }
 }
 
-abstract class KeyValueMainMemoryStoreBase implements MemoryStore {
-  protected readonly ttl?: number;
-  protected readonly memoryFallback: InMemoryMemoryStore;
+class KVBackedMemoryStore implements MemoryStore {
+  private readonly kv: RawKVStore;
+  private readonly storageKey: string;
+  private readonly ttl?: number;
+  private readonly memoryFallback: InMemoryMemoryStore;
 
-  constructor(ttl?: number) {
+  constructor(kv: RawKVStore, storageKey: string, ttl?: number) {
+    this.kv = kv;
+    this.storageKey = storageKey;
     this.ttl = ttl;
     this.memoryFallback = new InMemoryMemoryStore(ttl);
   }
 
-  protected abstract getRaw(key: string): Promise<string | undefined>;
-  protected abstract setRaw(key: string, value: string): Promise<void>;
-  protected abstract setRawWithTtl(key: string, value: string, ttl: number): Promise<void>;
-
-  protected async readPayload(key: string): Promise<MainMemoryPayload> {
+  private async readPayload(): Promise<MainMemoryPayload> {
     try {
-      const raw = await this.getRaw(key);
-      if (!raw) {
-        return { main: { ...DEFAULT_MAIN_MEMORY } };
-      }
+      const raw = await this.kv.get(this.storageKey);
+      if (!raw) return { main: { ...DEFAULT_MAIN_MEMORY } };
       const parsed = JSON.parse(raw) as MainMemoryPayload;
       const content = typeof parsed.main?.content === "string" ? parsed.main.content : "";
       const updatedAt = typeof parsed.main?.updatedAt === "number" ? parsed.main.updatedAt : 0;
@@ -197,258 +196,29 @@ abstract class KeyValueMainMemoryStoreBase implements MemoryStore {
     }
   }
 
-  protected async writePayload(key: string, payload: MainMemoryPayload): Promise<void> {
+  private async writePayload(payload: MainMemoryPayload): Promise<void> {
     try {
       const serialized = JSON.stringify(payload);
       if (typeof this.ttl === "number") {
-        await this.setRawWithTtl(key, serialized, Math.max(1, this.ttl));
+        await this.kv.setWithTtl(this.storageKey, serialized, Math.max(1, this.ttl));
       } else {
-        await this.setRaw(key, serialized);
+        await this.kv.set(this.storageKey, serialized);
       }
     } catch {
-      await this.memoryFallback.updateMainMemory({
-        content: payload.main.content,
-      });
+      await this.memoryFallback.updateMainMemory({ content: payload.main.content });
     }
   }
 
   async getMainMemory(): Promise<MainMemory> {
-    const payload = await this.readPayload(this.key());
+    const payload = await this.readPayload();
     return payload.main;
   }
 
   async updateMainMemory(input: { content: string }): Promise<MainMemory> {
-    const key = this.key();
-    const payload = await this.readPayload(key);
-    payload.main = {
-      content: input.content.trim(),
-      updatedAt: Date.now(),
-    };
-    await this.writePayload(key, payload);
+    const payload = await this.readPayload();
+    payload.main = { content: input.content.trim(), updatedAt: Date.now() };
+    await this.writePayload(payload);
     return payload.main;
-  }
-
-  protected abstract key(): string;
-}
-
-class UpstashMemoryStore extends KeyValueMainMemoryStoreBase {
-  private readonly baseUrl: string;
-  private readonly token: string;
-  private readonly storageKey: string;
-
-  constructor(options: {
-    baseUrl: string;
-    token: string;
-    storageKey: string;
-    ttl?: number;
-  }) {
-    super(options.ttl);
-    this.baseUrl = options.baseUrl.replace(/\/+$/, "");
-    this.token = options.token;
-    this.storageKey = options.storageKey;
-  }
-
-  protected key(): string {
-    return this.storageKey;
-  }
-
-  private headers(): HeadersInit {
-    return {
-      Authorization: `Bearer ${this.token}`,
-      "Content-Type": "application/json",
-    };
-  }
-
-  protected async getRaw(key: string): Promise<string | undefined> {
-    const response = await fetch(`${this.baseUrl}/get/${encodeURIComponent(key)}`, {
-      method: "POST",
-      headers: this.headers(),
-    });
-    if (!response.ok) {
-      return undefined;
-    }
-    const payload = (await response.json()) as { result?: string | null };
-    return payload.result ?? undefined;
-  }
-
-  protected async setRaw(key: string, value: string): Promise<void> {
-    await fetch(
-      `${this.baseUrl}/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}`,
-      { method: "POST", headers: this.headers() },
-    );
-  }
-
-  protected async setRawWithTtl(key: string, value: string, ttl: number): Promise<void> {
-    await fetch(
-      `${this.baseUrl}/setex/${encodeURIComponent(key)}/${Math.max(1, ttl)}/${encodeURIComponent(
-        value,
-      )}`,
-      { method: "POST", headers: this.headers() },
-    );
-  }
-}
-
-class RedisMemoryStore extends KeyValueMainMemoryStoreBase {
-  private readonly storageKey: string;
-  private readonly clientPromise: Promise<
-    | {
-        get: (key: string) => Promise<string | null>;
-        set: (key: string, value: string, options?: { EX?: number }) => Promise<unknown>;
-      }
-    | undefined
-  >;
-
-  constructor(options: {
-    url: string;
-    storageKey: string;
-    ttl?: number;
-  }) {
-    super(options.ttl);
-    this.storageKey = options.storageKey;
-    this.clientPromise = (async () => {
-      try {
-        const redisModule = (await import("redis")) as unknown as {
-          createClient: (args: { url: string }) => {
-            connect: () => Promise<unknown>;
-            get: (key: string) => Promise<string | null>;
-            set: (key: string, value: string, options?: { EX?: number }) => Promise<unknown>;
-          };
-        };
-        const client = redisModule.createClient({ url: options.url });
-        await client.connect();
-        return client;
-      } catch {
-        return undefined;
-      }
-    })();
-  }
-
-  protected key(): string {
-    return this.storageKey;
-  }
-
-  protected async getRaw(key: string): Promise<string | undefined> {
-    const client = await this.clientPromise;
-    if (!client) {
-      throw new Error("Redis unavailable");
-    }
-    const value = await client.get(key);
-    return value ?? undefined;
-  }
-
-  protected async setRaw(key: string, value: string): Promise<void> {
-    const client = await this.clientPromise;
-    if (!client) {
-      throw new Error("Redis unavailable");
-    }
-    await client.set(key, value);
-  }
-
-  protected async setRawWithTtl(key: string, value: string, ttl: number): Promise<void> {
-    const client = await this.clientPromise;
-    if (!client) {
-      throw new Error("Redis unavailable");
-    }
-    await client.set(key, value, { EX: Math.max(1, ttl) });
-  }
-}
-
-class DynamoDbMemoryStore extends KeyValueMainMemoryStoreBase {
-  private readonly storageKey: string;
-  private readonly table: string;
-  private readonly clientPromise: Promise<
-    | {
-        send: (command: unknown) => Promise<unknown>;
-        GetItemCommand: new (input: unknown) => unknown;
-        PutItemCommand: new (input: unknown) => unknown;
-      }
-    | undefined
-  >;
-
-  constructor(options: {
-    table: string;
-    storageKey: string;
-    region?: string;
-    ttl?: number;
-  }) {
-    super(options.ttl);
-    this.storageKey = options.storageKey;
-    this.table = options.table;
-    this.clientPromise = (async () => {
-      try {
-        const module = (await import("@aws-sdk/client-dynamodb")) as {
-          DynamoDBClient: new (input: { region?: string }) => {
-            send: (command: unknown) => Promise<unknown>;
-          };
-          GetItemCommand: new (input: unknown) => unknown;
-          PutItemCommand: new (input: unknown) => unknown;
-        };
-        const client = new module.DynamoDBClient({ region: options.region });
-        return {
-          send: client.send.bind(client),
-          GetItemCommand: module.GetItemCommand,
-          PutItemCommand: module.PutItemCommand,
-        };
-      } catch {
-        return undefined;
-      }
-    })();
-  }
-
-  protected key(): string {
-    return this.storageKey;
-  }
-
-  protected async getRaw(key: string): Promise<string | undefined> {
-    const client = await this.clientPromise;
-    if (!client) {
-      throw new Error("DynamoDB unavailable");
-    }
-    const result = (await client.send(
-      new client.GetItemCommand({
-        TableName: this.table,
-        Key: { runId: { S: key } },
-      }),
-    )) as {
-      Item?: {
-        value?: { S?: string };
-      };
-    };
-    return result.Item?.value?.S;
-  }
-
-  protected async setRaw(key: string, value: string): Promise<void> {
-    const client = await this.clientPromise;
-    if (!client) {
-      throw new Error("DynamoDB unavailable");
-    }
-    await client.send(
-      new client.PutItemCommand({
-        TableName: this.table,
-        Item: {
-          runId: { S: key },
-          value: { S: value },
-        },
-      }),
-    );
-  }
-
-  protected async setRawWithTtl(key: string, value: string, ttl: number): Promise<void> {
-    const client = await this.clientPromise;
-    if (!client) {
-      throw new Error("DynamoDB unavailable");
-    }
-    const ttlEpoch = Math.floor(Date.now() / 1000) + Math.max(1, ttl);
-    await client.send(
-      new client.PutItemCommand({
-        TableName: this.table,
-        Item: {
-          runId: { S: key },
-          value: { S: value },
-          ttl: { N: String(ttlEpoch) },
-        },
-      }),
-    );
   }
 }
 
@@ -459,54 +229,19 @@ export const createMemoryStore = (
 ): MemoryStore => {
   const provider = config?.provider ?? "local";
   const ttl = config?.ttl;
-  const storageKey = `poncho:${STORAGE_SCHEMA_VERSION}:${slugifyStorageComponent(
-    agentId,
-  )}:memory:main`;
   const workingDir = options?.workingDir ?? process.cwd();
+
   if (provider === "local") {
     return new FileMainMemoryStore(workingDir, ttl);
   }
   if (provider === "memory") {
     return new InMemoryMemoryStore(ttl);
   }
-  if (provider === "upstash") {
-    const urlEnv = config?.urlEnv ?? (process.env.UPSTASH_REDIS_REST_URL ? "UPSTASH_REDIS_REST_URL" : "KV_REST_API_URL");
-    const tokenEnv = config?.tokenEnv ?? (process.env.UPSTASH_REDIS_REST_TOKEN ? "UPSTASH_REDIS_REST_TOKEN" : "KV_REST_API_TOKEN");
-    const url = process.env[urlEnv] ?? "";
-    const token = process.env[tokenEnv] ?? "";
-    if (url && token) {
-      return new UpstashMemoryStore({
-        baseUrl: url,
-        token,
-        storageKey,
-        ttl,
-      });
-    }
-    return new InMemoryMemoryStore(ttl);
-  }
-  if (provider === "redis") {
-    const urlEnv = config?.urlEnv ?? "REDIS_URL";
-    const url = process.env[urlEnv] ?? "";
-    if (url) {
-      return new RedisMemoryStore({
-        url,
-        storageKey,
-        ttl,
-      });
-    }
-    return new InMemoryMemoryStore(ttl);
-  }
-  if (provider === "dynamodb") {
-    const table = config?.table ?? process.env.PONCHO_DYNAMODB_TABLE ?? "";
-    if (table) {
-      return new DynamoDbMemoryStore({
-        table,
-        storageKey,
-        region: config?.region,
-        ttl,
-      });
-    }
-    return new InMemoryMemoryStore(ttl);
+
+  const kv = createRawKVStore(config);
+  if (kv) {
+    const storageKey = `poncho:${STORAGE_SCHEMA_VERSION}:${slugifyStorageComponent(agentId)}:memory:main`;
+    return new KVBackedMemoryStore(kv, storageKey, ttl);
   }
   return new InMemoryMemoryStore(ttl);
 };

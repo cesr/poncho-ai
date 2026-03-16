@@ -42,6 +42,10 @@ export type BuiltInToolToggles = {
   edit_file?: boolean;
   delete_file?: boolean;
   delete_directory?: boolean;
+  todo_list?: boolean;
+  todo_add?: boolean;
+  todo_update?: boolean;
+  todo_remove?: boolean;
 };
 
 export interface MessagingChannelConfig {
