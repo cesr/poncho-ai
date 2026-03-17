@@ -1,5 +1,11 @@
 # @poncho-ai/browser
 
+## 0.6.4
+
+### Patch Changes
+
+- [`b5af10a`](https://github.com/cesr/poncho-ai/commit/b5af10a2f7b0023c683f14cd465105f8ddfff0ee) Thanks [@cesr](https://github.com/cesr)! - Fix browser cookie restore failing with "Invalid parameters" by sanitizing Playwright-format cookies to CDP-compatible format before calling Network.setCookies. Falls back to per-cookie restore when batch call fails.
+
 ## 0.6.3
 
 ### Patch Changes
