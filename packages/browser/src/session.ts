@@ -62,6 +62,37 @@ async function getBrowserManagerCtor(): Promise<new () => BrowserManagerInstance
 
 const MAX_TABS = 8;
 
+const VALID_SAME_SITE = ["Strict", "Lax", "None"];
+
+/**
+ * Map a Playwright-format cookie to a CDP-compatible CookieParam, stripping
+ * unknown fields and fixing values that newer Chrome versions reject.
+ */
+function sanitizeCookieForCDP(c: Record<string, unknown>): Record<string, unknown> | null {
+  const name = typeof c.name === "string" ? c.name : "";
+  const value = typeof c.value === "string" ? c.value : "";
+  if (!name) return null;
+
+  const out: Record<string, unknown> = { name, value };
+
+  if (typeof c.domain === "string" && c.domain) out.domain = c.domain;
+  if (typeof c.path === "string") out.path = c.path;
+  if (typeof c.secure === "boolean") out.secure = c.secure;
+  if (typeof c.httpOnly === "boolean") out.httpOnly = c.httpOnly;
+
+  // Playwright uses -1 for session cookies; CDP expects the field to be
+  // absent for session cookies.
+  if (typeof c.expires === "number" && c.expires > 0) {
+    out.expires = c.expires;
+  }
+
+  if (typeof c.sameSite === "string" && VALID_SAME_SITE.includes(c.sameSite)) {
+    out.sameSite = c.sameSite;
+  }
+
+  return out;
+}
+
 /**
  * Init script that forces new-tab navigations (window.open, target="_blank")
  * to open in the current tab. Runs before page scripts on every navigation.
@@ -901,8 +932,29 @@ export class BrowserSession {
         origins?: Array<{ origin: string; localStorage: Array<{ name: string; value: string }> }>;
       };
       if (state.cookies?.length) {
-        await cdp.send("Network.setCookies", { cookies: state.cookies });
-        console.log(`[poncho][browser] Restored ${state.cookies.length} cookies`);
+        const sanitized = state.cookies
+          .map(sanitizeCookieForCDP)
+          .filter((c): c is Record<string, unknown> => c !== null);
+        if (sanitized.length) {
+          try {
+            await cdp.send("Network.setCookies", { cookies: sanitized });
+          } catch {
+            let restored = 0;
+            for (const cookie of sanitized) {
+              try {
+                await cdp.send("Network.setCookies", { cookies: [cookie] });
+                restored++;
+              } catch { /* skip this cookie */ }
+            }
+            if (restored > 0) {
+              console.log(`[poncho][browser] Restored ${restored}/${sanitized.length} cookies (batch failed, fell back to individual)`);
+            } else {
+              console.warn("[poncho][browser] Could not restore any cookies");
+            }
+            return;
+          }
+          console.log(`[poncho][browser] Restored ${sanitized.length} cookies`);
+        }
       }
       if (state.origins?.length) {
         const entries: Record<string, Array<{ name: string; value: string }>> = {};
