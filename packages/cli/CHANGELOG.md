@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.28.1
+
+### Patch Changes
+
+- [`d841e0c`](https://github.com/cesr/poncho-ai/commit/d841e0c24a31293104ca3bdf050d5a2d3206c611) Thanks [@cesr](https://github.com/cesr)! - Fix web UI not connecting to subagent event stream when viewing an active subagent thread. The streaming guard now allows connecting to a different conversation's stream.
+
 ## 0.28.0
 
 ### Minor Changes
