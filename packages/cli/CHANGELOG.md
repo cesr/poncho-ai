@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.28.2
+
+### Patch Changes
+
+- [`2ba67e8`](https://github.com/cesr/poncho-ai/commit/2ba67e89095024e4f8199a520408541803f38a60) Thanks [@cesr](https://github.com/cesr)! - Fix subagent browser panel visibility, event stream navigation between parent/subagent threads, and keep last browser frame visible when session ends.
+
 ## 0.28.1
 
 ### Patch Changes
