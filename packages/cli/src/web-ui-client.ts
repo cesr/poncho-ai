@@ -17,6 +17,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
         activeStreamAbortController: null,
         activeStreamConversationId: null,
         activeStreamRunId: null,
+        _activeStreamMessages: null,
         isMessagesPinnedToBottom: true,
         confirmDeleteId: null,
         approvalRequestsInFlight: {},
@@ -1190,17 +1191,25 @@ export const getWebUiClientScript = (markedSource: string): string => `
 
         updateContextRing();
         var willStream = !!payload.hasActiveRun;
-        renderMessages(state.activeMessages, willStream, { forceScrollBottom: true });
+        var hasSendMessageStream = state.activeStreamConversationId === conversationId && state._activeStreamMessages;
+        if (hasSendMessageStream) {
+          state.activeMessages = state._activeStreamMessages;
+          renderMessages(state.activeMessages, true, { forceScrollBottom: true });
+        } else {
+          renderMessages(state.activeMessages, willStream, { forceScrollBottom: true });
+        }
         if (!state.viewingSubagentId) {
           elements.prompt.focus();
         }
-        if (willStream) {
+        if (willStream && !hasSendMessageStream) {
           setStreaming(true);
-          streamConversationEvents(conversationId, { liveOnly: true }).finally(() => {
+          streamConversationEvents(conversationId, { liveOnly: false }).finally(() => {
             if (state.activeConversationId === conversationId) {
               pollUntilRunIdle(conversationId);
             }
           });
+        } else if (willStream) {
+          setStreaming(true);
         }
       };
 
@@ -2149,6 +2158,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
         };
         localMessages.push(assistantMessage);
         state.activeMessages = localMessages;
+        state._activeStreamMessages = localMessages;
         renderMessages(localMessages, true, { forceScrollBottom: true });
         let conversationId = state.activeConversationId;
         let didCompact = false;
@@ -2564,6 +2574,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
           }
           if (state.activeStreamConversationId === conversationId) {
             state.activeStreamConversationId = null;
+            state._activeStreamMessages = null;
           }
           state.activeStreamRunId = null;
           setStreaming(false);
@@ -3248,6 +3259,8 @@ export const getWebUiClientScript = (markedSource: string): string => `
             panelHiddenByUser = false;
             showPanel(false);
             frameImg.style.display = "none";
+            frameImg.style.pointerEvents = "";
+            frameImg.style.opacity = "";
             if (placeholder) {
               placeholder.textContent = "No active browser session";
               placeholder.style.display = "flex";
@@ -3369,6 +3382,8 @@ export const getWebUiClientScript = (markedSource: string): string => `
             if (abortController) abortController.abort();
             streamConversationId = cid;
             abortController = new AbortController();
+            frameImg.style.pointerEvents = "";
+            frameImg.style.opacity = "";
             var headers = {};
             if (state.csrfToken) headers["x-csrf-token"] = state.csrfToken;
             if (state.authToken) headers["authorization"] = "Bearer " + state.authToken;
@@ -3416,12 +3431,8 @@ export const getWebUiClientScript = (markedSource: string): string => `
                             } else {
                               if (abortController) { abortController.abort(); abortController = null; }
                               streamConversationId = null;
-                              frameImg.style.display = "none";
-                              if (placeholder) {
-                                placeholder.textContent = "Browser closed";
-                                placeholder.style.display = "flex";
-                              }
-                              showPanel(false);
+                              frameImg.style.pointerEvents = "none";
+                              frameImg.style.opacity = "0.6";
                             }
                           }
                         } catch(e) {}

@@ -3123,11 +3123,22 @@ export const createRequestHandler = async (options?: {
 
     const browserSession = harness.browserSession as BrowserSessionTyped | undefined;
 
+    const resolveBrowserSession = (cid: string): BrowserSessionTyped | undefined => {
+      if (browserSession?.isActiveFor(cid)) return browserSession;
+      const subRun = activeSubagentRuns.get(cid);
+      if (subRun) {
+        const childSession = subRun.harness.browserSession as BrowserSessionTyped | undefined;
+        if (childSession?.isActiveFor(cid)) return childSession;
+      }
+      return undefined;
+    };
+
     if (pathname === "/api/browser/status" && request.method === "GET") {
       const cid = requestUrl.searchParams.get("conversationId") ?? "";
+      const session = cid ? resolveBrowserSession(cid) : undefined;
       writeJson(response, 200, {
-        active: cid && browserSession ? browserSession.isActiveFor(cid) : false,
-        url: cid && browserSession ? browserSession.getUrl(cid) ?? null : null,
+        active: !!session,
+        url: session ? session.getUrl(cid) ?? null : null,
         conversationId: cid || null,
       });
       return;
@@ -3135,7 +3146,8 @@ export const createRequestHandler = async (options?: {
 
     if (pathname === "/api/browser/stream" && request.method === "GET") {
       const cid = requestUrl.searchParams.get("conversationId");
-      if (!cid || !browserSession) {
+      const streamSession = cid ? resolveBrowserSession(cid) : undefined;
+      if (!cid || !streamSession) {
         writeJson(response, 404, { error: "No browser session available" });
         return;
       }
@@ -3180,28 +3192,28 @@ export const createRequestHandler = async (options?: {
       };
 
       sendSse("browser:status", {
-        active: browserSession.isActiveFor(cid),
-        url: browserSession.getUrl(cid),
-        interactionAllowed: browserSession.isActiveFor(cid),
+        active: streamSession.isActiveFor(cid),
+        url: streamSession.getUrl(cid),
+        interactionAllowed: streamSession.isActiveFor(cid),
       });
 
-      const removeFrame = browserSession.onFrame(cid, (frame) => {
+      const removeFrame = streamSession.onFrame(cid, (frame) => {
         frameCount++;
         if (frameCount <= 3 || frameCount % 50 === 0) {
           console.log(`[poncho][browser-sse] Frame ${frameCount}: ${frame.width}x${frame.height}, data bytes: ${frame.data?.length ?? 0}${droppedFrames > 0 ? `, dropped: ${droppedFrames}` : ""}`);
         }
         sendFrame(frame);
       });
-      const removeStatus = browserSession.onStatus(cid, (status) => {
+      const removeStatus = streamSession.onStatus(cid, (status) => {
         sendSse("browser:status", status);
       });
 
-      if (browserSession.isActiveFor(cid)) {
-        browserSession.screenshot(cid).then((data) => {
+      if (streamSession.isActiveFor(cid)) {
+        streamSession.screenshot(cid).then((data) => {
           if (!response.destroyed) {
             sendFrame({ data, width: 1280, height: 720, timestamp: Date.now() });
           }
-          return browserSession.startScreencast(cid);
+          return streamSession.startScreencast(cid);
         }).catch((err: unknown) => {
           console.error("[poncho][browser-sse] initial frame/screencast failed:", (err as Error)?.message ?? err);
         });
@@ -3220,19 +3232,20 @@ export const createRequestHandler = async (options?: {
       for await (const chunk of request) chunks.push(chunk as Buffer);
       const body = JSON.parse(Buffer.concat(chunks).toString());
       const cid = body.conversationId as string;
-      if (!cid || !browserSession || !browserSession.isActiveFor(cid)) {
+      const inputSession = cid ? resolveBrowserSession(cid) : undefined;
+      if (!cid || !inputSession) {
         writeJson(response, 404, { error: "No active browser session" });
         return;
       }
       try {
         if (body.kind === "mouse") {
-          await browserSession.injectMouse(cid, body.event);
+          await inputSession.injectMouse(cid, body.event);
         } else if (body.kind === "keyboard") {
-          await browserSession.injectKeyboard(cid, body.event);
+          await inputSession.injectKeyboard(cid, body.event);
         } else if (body.kind === "scroll") {
-          await browserSession.injectScroll(cid, body.event);
+          await inputSession.injectScroll(cid, body.event);
         } else if (body.kind === "paste") {
-          await browserSession.injectPaste(cid, body.text ?? body.event?.text ?? "");
+          await inputSession.injectPaste(cid, body.text ?? body.event?.text ?? "");
         } else {
           writeJson(response, 400, { error: "Unknown input kind" });
           return;
@@ -3249,12 +3262,13 @@ export const createRequestHandler = async (options?: {
       for await (const chunk of request) chunks.push(chunk as Buffer);
       const body = JSON.parse(Buffer.concat(chunks).toString());
       const cid = body.conversationId as string;
-      if (!cid || !browserSession || !browserSession.isActiveFor(cid)) {
+      const navSession = cid ? resolveBrowserSession(cid) : undefined;
+      if (!cid || !navSession) {
         writeJson(response, 400, { error: "No active browser session" });
         return;
       }
       try {
-        await browserSession.navigate(cid, body.action);
+        await navSession.navigate(cid, body.action);
         writeJson(response, 200, { ok: true });
       } catch (err) {
         writeJson(response, 500, { error: (err as Error)?.message ?? "Navigation failed" });
