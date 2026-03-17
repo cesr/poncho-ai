@@ -1189,11 +1189,12 @@ export const getWebUiClientScript = (markedSource: string): string => `
         renderTodoPanel();
 
         updateContextRing();
-        renderMessages(state.activeMessages, false, { forceScrollBottom: true });
+        var willStream = !!payload.hasActiveRun;
+        renderMessages(state.activeMessages, willStream, { forceScrollBottom: true });
         if (!state.viewingSubagentId) {
           elements.prompt.focus();
         }
-        if (payload.hasActiveRun && !state.isStreaming) {
+        if (willStream) {
           setStreaming(true);
           streamConversationEvents(conversationId, { liveOnly: true }).finally(() => {
             if (state.activeConversationId === conversationId) {
