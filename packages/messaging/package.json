@@ -1,6 +1,6 @@
 {
   "name": "@poncho-ai/messaging",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Messaging platform adapters for Poncho agents (Slack, Telegram, etc.)",
   "repository": {
     "type": "git",

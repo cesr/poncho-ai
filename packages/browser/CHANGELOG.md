@@ -1,5 +1,12 @@
 # @poncho-ai/browser
 
+## 0.6.6
+
+### Patch Changes
+
+- Updated dependencies [[`4d50ad9`](https://github.com/cesr/poncho-ai/commit/4d50ad970886c9d3635ec36a407514c91ce6a71a)]:
+  - @poncho-ai/sdk@1.6.1
+
 ## 0.6.5
 
 ### Patch Changes
