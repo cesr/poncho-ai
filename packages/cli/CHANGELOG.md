@@ -1,5 +1,16 @@
 # @poncho-ai/cli
 
+## 0.30.0
+
+### Minor Changes
+
+- [`c0ca56b`](https://github.com/cesr/poncho-ai/commit/c0ca56b54bb877d96ba8088537d6f1c7461d2a55) Thanks [@cesr](https://github.com/cesr)! - Add built-in `web_search` and `web_fetch` tools so agents can search the web and fetch page content without a browser or API keys. Remove the scaffolded `fetch-page` skill (superseded by `web_fetch`). Fix `browser_open` crash when agent projects have an older `@poncho-ai/browser` installed.
+
+### Patch Changes
+
+- Updated dependencies [[`c0ca56b`](https://github.com/cesr/poncho-ai/commit/c0ca56b54bb877d96ba8088537d6f1c7461d2a55)]:
+  - @poncho-ai/harness@0.28.0
+
 ## 0.29.0
 
 ### Minor Changes
