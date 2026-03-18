@@ -1551,6 +1551,63 @@ export const WEB_UI_STYLES = `
     .subagent-link:hover {
       text-decoration: underline;
     }
+    .subagent-callback-wrap {
+      padding: 0;
+    }
+    .subagent-result-disclosure {
+      display: block;
+      border: 1px solid var(--border-2);
+      background: var(--surface-2);
+      border-radius: 10px;
+      font-size: 12px;
+      line-height: 1.45;
+      color: var(--fg-tool-code);
+      width: 100%;
+    }
+    .subagent-result-summary {
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      padding: 10px 12px;
+      user-select: none;
+    }
+    .subagent-result-summary::-webkit-details-marker {
+      display: none;
+    }
+    .subagent-result-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--fg-tool);
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .subagent-result-caret {
+      margin-left: auto;
+      color: var(--fg-tool);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 120ms ease;
+      transform: rotate(0deg);
+    }
+    .subagent-result-caret svg {
+      width: 14px;
+      height: 14px;
+      display: block;
+    }
+    .subagent-result-disclosure[open] .subagent-result-caret {
+      transform: rotate(90deg);
+    }
+    .subagent-result-body {
+      display: grid;
+      gap: 6px;
+      padding: 0 12px 10px;
+    }
 
     /* Todo panel — inside composer-inner, above the input shell */
     #todo-panel {

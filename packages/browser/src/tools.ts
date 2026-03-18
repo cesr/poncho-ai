@@ -1,11 +1,10 @@
-import type { ToolDefinition, FileContentPart } from "@poncho-ai/sdk";
+import type { ToolContext, ToolDefinition, FileContentPart } from "@poncho-ai/sdk";
 import type { BrowserSession } from "./session.js";
 
 type BrowserToolInput = Record<string, unknown>;
 
 export function createBrowserTools(
   getSession: () => BrowserSession,
-  getConversationId: () => string,
 ): ToolDefinition[] {
   return [
     {
@@ -22,9 +21,9 @@ export function createBrowserTools(
         },
         required: ["url"],
       },
-      handler: async (input: BrowserToolInput) => {
+      handler: async (input: BrowserToolInput, context: ToolContext) => {
         const session = getSession();
-        const cid = getConversationId();
+        const cid = context.conversationId ?? "__default__";
         const url = String(input.url ?? "");
         if (!url) throw new Error("url is required");
         const result = await session.open(cid, url);
@@ -44,9 +43,9 @@ export function createBrowserTools(
         type: "object",
         properties: {},
       },
-      handler: async () => {
+      handler: async (_input: BrowserToolInput, context: ToolContext) => {
         const session = getSession();
-        const snapshot = await session.snapshot(getConversationId());
+        const snapshot = await session.snapshot(context.conversationId ?? "__default__");
         return { snapshot };
       },
     },
@@ -65,11 +64,11 @@ export function createBrowserTools(
         },
         required: ["ref"],
       },
-      handler: async (input: BrowserToolInput) => {
+      handler: async (input: BrowserToolInput, context: ToolContext) => {
         const session = getSession();
         const ref = String(input.ref ?? "");
         if (!ref) throw new Error("ref is required");
-        await session.click(getConversationId(), ref);
+        await session.click(context.conversationId ?? "__default__", ref);
         return { clicked: ref };
       },
     },
@@ -94,12 +93,12 @@ export function createBrowserTools(
         },
         required: ["text"],
       },
-      handler: async (input: BrowserToolInput) => {
+      handler: async (input: BrowserToolInput, context: ToolContext) => {
         const session = getSession();
         const text = String(input.text ?? "");
         if (!text) throw new Error("text is required");
         const exact = input.exact === true;
-        await session.clickText(getConversationId(), text, exact);
+        await session.clickText(context.conversationId ?? "__default__", text, exact);
         return { clicked: text, exact };
       },
     },
@@ -121,11 +120,11 @@ export function createBrowserTools(
         },
         required: ["script"],
       },
-      handler: async (input: BrowserToolInput) => {
+      handler: async (input: BrowserToolInput, context: ToolContext) => {
         const session = getSession();
         const script = String(input.script ?? "");
         if (!script) throw new Error("script is required");
-        const result = await session.executeJs(getConversationId(), script);
+        const result = await session.executeJs(context.conversationId ?? "__default__", script);
         return { result: result ?? null };
       },
     },
@@ -148,12 +147,12 @@ export function createBrowserTools(
         },
         required: ["ref", "text"],
       },
-      handler: async (input: BrowserToolInput) => {
+      handler: async (input: BrowserToolInput, context: ToolContext) => {
         const session = getSession();
         const ref = String(input.ref ?? "");
         const text = String(input.text ?? "");
         if (!ref) throw new Error("ref is required");
-        await session.type(getConversationId(), ref, text);
+        await session.type(context.conversationId ?? "__default__", ref, text);
         return { typed: text, into: ref };
       },
     },
@@ -167,9 +166,9 @@ export function createBrowserTools(
         type: "object",
         properties: {},
       },
-      handler: async () => {
+      handler: async (_input: BrowserToolInput, context: ToolContext) => {
         const session = getSession();
-        const result = await session.content(getConversationId());
+        const result = await session.content(context.conversationId ?? "__default__");
         return { url: result.url, title: result.title, text: result.text };
       },
     },
@@ -182,9 +181,9 @@ export function createBrowserTools(
         type: "object",
         properties: {},
       },
-      handler: async () => {
+      handler: async (_input: BrowserToolInput, context: ToolContext) => {
         const session = getSession();
-        const base64 = await session.screenshot(getConversationId());
+        const base64 = await session.screenshot(context.conversationId ?? "__default__");
         const filePart: FileContentPart = {
           type: "file",
           data: base64,
@@ -213,11 +212,11 @@ export function createBrowserTools(
         },
         required: ["direction"],
       },
-      handler: async (input: BrowserToolInput) => {
+      handler: async (input: BrowserToolInput, context: ToolContext) => {
         const session = getSession();
         const direction = String(input.direction ?? "down") as "up" | "down";
         const amount = typeof input.amount === "number" ? input.amount : undefined;
-        await session.scroll(getConversationId(), direction, amount);
+        await session.scroll(context.conversationId ?? "__default__", direction, amount);
         return { scrolled: direction, amount: amount ?? "viewport" };
       },
     },
@@ -238,10 +237,10 @@ export function createBrowserTools(
           },
         },
       },
-      handler: async (input: BrowserToolInput) => {
+      handler: async (input: BrowserToolInput, context: ToolContext) => {
         const session = getSession();
         const url = input.url ? String(input.url) : undefined;
-        const { cleared } = await session.clearCookies(getConversationId(), url);
+        const { cleared } = await session.clearCookies(context.conversationId ?? "__default__", url);
         return { cleared, scope: url ?? "all" };
       },
     },
@@ -253,9 +252,9 @@ export function createBrowserTools(
         type: "object",
         properties: {},
       },
-      handler: async () => {
+      handler: async (_input: BrowserToolInput, context: ToolContext) => {
         const session = getSession();
-        await session.closeTab(getConversationId());
+        await session.closeTab(context.conversationId ?? "__default__");
         return { closed: true };
       },
     },

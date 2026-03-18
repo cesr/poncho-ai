@@ -43,8 +43,10 @@ Response: Server-Sent Events (`run:started`, `model:chunk`, `tool:*`, `run:compl
 
 On serverless deployments with `PONCHO_MAX_DURATION` set, the `run:completed` event may
 include `continuation: true` in `result`, indicating the agent stopped early due to a
-platform timeout and the client should send another message (e.g., `"Continue"`) on the
-same conversation to resume.
+platform timeout. The server preserves the full internal message chain so the agent
+resumes with complete context. The web UI and client SDK handle continuation automatically
+by re-posting to the same conversation with `{ continuation: true }` — no manual
+"Continue" message is needed.
 
 ## Build a custom chat UI
 

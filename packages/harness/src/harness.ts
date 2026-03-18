@@ -562,7 +562,7 @@ export class AgentHarness {
   private insideTelemetryCapture = false;
   private _browserSession?: unknown;
   private _browserMod?: {
-    createBrowserTools: (getSession: () => unknown, getConversationId: () => string) => ToolDefinition[];
+    createBrowserTools: (getSession: () => unknown) => ToolDefinition[];
     BrowserSession: new (sessionId: string, config: Record<string, unknown>) => unknown;
   };
 
@@ -622,11 +622,7 @@ export class AgentHarness {
   setSubagentManager(manager: SubagentManager): void {
     this.subagentManager = manager;
     this.dispatcher.registerMany(
-      createSubagentTools(
-        manager,
-        () => this._currentRunConversationId,
-        () => this._currentRunOwnerId ?? "anonymous",
-      ),
+      createSubagentTools(manager),
     );
   }
 
@@ -1165,7 +1161,7 @@ export class AgentHarness {
   private async initBrowserTools(config: PonchoConfig): Promise<void> {
     const spec = ["@poncho-ai", "browser"].join("/");
     let browserMod: {
-      createBrowserTools: (getSession: () => unknown, getConversationId: () => string) => ToolDefinition[];
+      createBrowserTools: (getSession: () => unknown) => ToolDefinition[];
       BrowserSession: new (sessionId: string, cfg?: Record<string, unknown>) => unknown;
     };
     try {
@@ -1209,7 +1205,6 @@ export class AgentHarness {
 
     const tools = browserMod.createBrowserTools(
       () => session,
-      () => this._currentRunConversationId ?? "__default__",
     );
     for (const tool of tools) {
       if (this.isToolEnabled(tool.name)) {
@@ -1218,10 +1213,6 @@ export class AgentHarness {
     }
   }
 
-  /** Conversation ID of the currently executing run (set during run, cleared after). */
-  private _currentRunConversationId?: string;
-  /** Owner ID of the currently executing run (used by subagent tools). */
-  private _currentRunOwnerId?: string;
 
   get browserSession(): unknown {
     return this._browserSession;
@@ -1369,13 +1360,6 @@ export class AgentHarness {
     await this.refreshAgentIfChanged();
     await this.refreshSkillsIfChanged();
 
-    // Track which conversation/owner this run belongs to so browser & subagent tools resolve correctly
-    this._currentRunConversationId = input.conversationId;
-    const ownerParam = input.parameters?.__ownerId;
-    if (typeof ownerParam === "string") {
-      this._currentRunOwnerId = ownerParam;
-    }
-
     let agent = this.parsedAgent as ParsedAgent;
     const runId = `run_${randomUUID()}`;
     const start = now();
@@ -1385,9 +1369,9 @@ export class AgentHarness {
       ? 0 // no hard timeout in development unless explicitly configured
       : (configuredTimeout ?? 300) * 1000;
     const platformMaxDurationSec = Number(process.env.PONCHO_MAX_DURATION) || 0;
-    const softDeadlineMs = platformMaxDurationSec > 0
-      ? platformMaxDurationSec * 800
-      : 0;
+    const softDeadlineMs = (input.disableSoftDeadline || platformMaxDurationSec <= 0)
+      ? 0
+      : platformMaxDurationSec * 800;
     const messages: Message[] = [...(input.messages ?? [])];
     const inputMessageCount = messages.length;
     const events: AgentEvent[] = [];
@@ -1541,6 +1525,18 @@ ${boundedMainMemory.trim()}`
           metadata: { timestamp: now(), id: randomUUID() },
         });
       }
+    } else {
+      // Continuation run (no explicit task). Some providers (Anthropic) require
+      // the conversation to end with a user message. Inject a transient signal
+      // that is sent to the LLM but never persisted to the conversation store.
+      const lastMsg = messages[messages.length - 1];
+      if (lastMsg && lastMsg.role !== "user") {
+        messages.push({
+          role: "user",
+          content: "[System: Your previous turn was interrupted by a time limit. Continue from where you left off — do NOT repeat what you already said. Proceed directly with the next action or tool call.]",
+          metadata: { timestamp: now(), id: randomUUID() },
+        });
+      }
     }
 
     let responseText = "";
@@ -1577,6 +1573,7 @@ ${boundedMainMemory.trim()}`
             tokens: { input: totalInputTokens, output: totalOutputTokens, cached: totalCachedTokens },
             duration: now() - start,
             continuation: true,
+            continuationMessages: [...messages],
             maxSteps,
           };
           yield pushEvent({ type: "run:completed", runId, result });
@@ -1726,6 +1723,9 @@ ${boundedMainMemory.trim()}`
               }
             } catch {
               // Not JSON, treat as regular assistant text.
+            }
+            if (!assistantText || assistantText.trim().length === 0) {
+              return [];
             }
             return [{ role: "assistant" as const, content: assistantText }];
           }
@@ -2403,6 +2403,7 @@ ${boundedMainMemory.trim()}`
         tokens: { input: totalInputTokens, output: totalOutputTokens, cached: totalCachedTokens },
         duration: now() - start,
         continuation: true,
+        continuationMessages: [...messages],
         maxSteps,
       };
       yield pushEvent({ type: "run:completed", runId, result });

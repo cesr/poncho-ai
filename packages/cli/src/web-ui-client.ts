@@ -384,6 +384,24 @@ export const getWebUiClientScript = (markedSource: string): string => `
         );
       };
 
+      const renderSubagentResult = (content, metadata) => {
+        const contentStr = String(content || "");
+        // Prefer metadata.task (new messages); fall back to parsing content for old messages
+        const taskFromContent = contentStr.match(/\[Subagent Result\] Subagent "([^"]+)"/)?.[1];
+        const task = (metadata && metadata.task) ? String(metadata.task) : (taskFromContent || "subagent result");
+        const shortTask = task.length > 60 ? task.slice(0, 57) + "…" : task;
+        const caretSvg = '<svg viewBox="0 0 12 12" fill="none"><path d="M4.5 2.75L8 6L4.5 9.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
+        return (
+          '<details class="subagent-result-disclosure">' +
+          '<summary class="subagent-result-summary">' +
+          '<span class="subagent-result-label">' + escapeHtml(shortTask) + '</span>' +
+          '<span class="subagent-result-caret" aria-hidden="true">' + caretSvg + '</span>' +
+          '</summary>' +
+          '<div class="subagent-result-body">' + renderAssistantMarkdown(contentStr) + '</div>' +
+          '</details>'
+        );
+      };
+
       const renderInputTable = (input) => {
         if (!input || typeof input !== "object") {
           return '<div class="av-complex">' + escapeHtml(String(input ?? "{}")) + "</div>";
@@ -934,6 +952,19 @@ export const getWebUiClientScript = (markedSource: string): string => `
           const row = document.createElement("div");
           row.className = "message-row " + m.role;
           if (m.role === "assistant") {
+            const isSubagentCallback = m.metadata && m.metadata._subagentCallback;
+            if (isSubagentCallback) {
+              row.className = "message-row assistant";
+              const wrap = document.createElement("div");
+              wrap.className = "assistant-wrap";
+              wrap.innerHTML = '<div class="assistant-avatar">' + agentInitial + '</div>';
+              const content = document.createElement("div");
+              content.className = "assistant-content subagent-callback-wrap";
+              content.innerHTML = renderSubagentResult(m.content, m.metadata);
+              wrap.appendChild(content);
+              row.appendChild(wrap);
+              return;
+            }
             const wrap = document.createElement("div");
             wrap.className = "assistant-wrap";
             wrap.innerHTML = '<div class="assistant-avatar">' + agentInitial + '</div>';
@@ -1044,6 +1075,16 @@ export const getWebUiClientScript = (markedSource: string): string => `
                 content.appendChild(waitIndicator);
               }
             }
+            wrap.appendChild(content);
+            row.appendChild(wrap);
+          } else if (m.metadata && m.metadata._subagentCallback) {
+            row.className = "message-row assistant";
+            const wrap = document.createElement("div");
+            wrap.className = "assistant-wrap";
+            wrap.innerHTML = '<div class="assistant-avatar">' + agentInitial + '</div>';
+            const content = document.createElement("div");
+            content.className = "assistant-content subagent-callback-wrap";
+            content.innerHTML = renderSubagentResult(m.content, m.metadata);
             wrap.appendChild(content);
             row.appendChild(wrap);
           } else if (m.metadata && m.metadata.isCompactionSummary) {
@@ -1322,6 +1363,59 @@ export const getWebUiClientScript = (markedSource: string): string => `
           }
         };
         setTimeout(poll, 1500);
+      };
+
+      const pollForSubagentResults = (conversationId) => {
+        let lastMessageCount = state.activeMessages ? state.activeMessages.length : 0;
+        const poll = async () => {
+          if (state.activeConversationId !== conversationId) return;
+          try {
+            var payload = await api("/api/conversations/" + encodeURIComponent(conversationId));
+            if (state.activeConversationId !== conversationId) return;
+            if (payload.conversation) {
+              var messages = payload.conversation.messages || [];
+              var allPending = [].concat(
+                payload.conversation.pendingApprovals || [],
+              );
+              if (Array.isArray(payload.subagentPendingApprovals)) {
+                payload.subagentPendingApprovals.forEach(function(sa) {
+                  var subIdShort = sa.subagentId && sa.subagentId.length > 12 ? sa.subagentId.slice(0, 12) + "..." : (sa.subagentId || "");
+                  allPending.push({
+                    approvalId: sa.approvalId,
+                    tool: sa.tool,
+                    input: sa.input,
+                    _subagentId: sa.subagentId,
+                    _subagentLabel: "subagent " + subIdShort,
+                  });
+                });
+              }
+              if (messages.length > lastMessageCount) {
+                lastMessageCount = messages.length;
+                state.activeMessages = hydratePendingApprovals(messages, allPending);
+                renderMessages(state.activeMessages, payload.hasActiveRun || payload.hasRunningSubagents);
+              }
+              if (payload.hasActiveRun) {
+                // Parent agent started its continuation run — switch to live stream
+                setStreaming(true);
+                state.activeMessages = hydratePendingApprovals(messages, allPending);
+                streamConversationEvents(conversationId, { liveOnly: true }).finally(() => {
+                  if (state.activeConversationId === conversationId) {
+                    pollUntilRunIdle(conversationId);
+                  }
+                });
+              } else if (payload.hasRunningSubagents) {
+                setTimeout(poll, 3000);
+              } else {
+                renderMessages(state.activeMessages, false);
+                await loadConversations();
+              }
+            }
+          } catch {
+            // Polling error; retry
+            setTimeout(poll, 5000);
+          }
+        };
+        setTimeout(poll, 3000);
       };
 
       const streamConversationEvents = (conversationId, options) => {
@@ -2202,15 +2296,23 @@ export const getWebUiClientScript = (markedSource: string): string => `
               assistantMessage._currentText = "";
             }
           };
-          let _continuationMessage = messageText;
           let _totalSteps = 0;
           let _maxSteps = 0;
-          while (_continuationMessage) {
+          let _isContinuation = false;
+          while (true) {
           let _shouldContinue = false;
           let fetchOpts;
-          if (filesToSend.length > 0 && _continuationMessage === messageText) {
+          if (_isContinuation) {
+            fetchOpts = {
+              method: "POST",
+              credentials: "include",
+              headers: { "Content-Type": "application/json", "x-csrf-token": state.csrfToken },
+              body: JSON.stringify({ continuation: true }),
+              signal: streamAbortController.signal,
+            };
+          } else if (filesToSend.length > 0) {
             const formData = new FormData();
-            formData.append("message", _continuationMessage);
+            formData.append("message", messageText);
             for (const f of filesToSend) {
               formData.append("files", f, f.name);
             }
@@ -2226,7 +2328,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
               method: "POST",
               credentials: "include",
               headers: { "Content-Type": "application/json", "x-csrf-token": state.csrfToken },
-              body: JSON.stringify({ message: _continuationMessage }),
+              body: JSON.stringify({ message: messageText }),
               signal: streamAbortController.signal,
             };
           }
@@ -2522,6 +2624,9 @@ export const getWebUiClientScript = (markedSource: string): string => `
                     if (!assistantMessage.content || assistantMessage.content.length === 0) {
                       assistantMessage.content = String(payload.result?.response || "");
                     }
+                    if (payload.pendingSubagents) {
+                      pollForSubagentResults(conversationId);
+                    }
                     renderIfActiveConversation(false);
                   }
                 }
@@ -2541,7 +2646,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
             });
           }
           if (!_shouldContinue) break;
-          _continuationMessage = "Continue";
+          _isContinuation = true;
           }
           // Update active state only if user is still on this conversation.
           if (state.activeConversationId === streamConversationId) {
