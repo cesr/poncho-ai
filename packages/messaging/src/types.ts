@@ -117,7 +117,7 @@ export interface AgentRunner {
   run(
     conversationId: string,
     input: {
-      task: string;
+      task?: string;
       messages: Message[];
       files?: FileAttachment[];
       metadata?: {

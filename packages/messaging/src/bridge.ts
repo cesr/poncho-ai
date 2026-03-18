@@ -79,7 +79,7 @@ export class AgentBridge {
       const subjectLine = message.subject ? `Subject: ${message.subject}` : "";
       const header = [senderLine, subjectLine].filter(Boolean).join("\n");
 
-      let currentTask = `${header}\n\n${message.text}`;
+      let currentTask: string | undefined = `${header}\n\n${message.text}`;
       let currentFiles = message.files;
       let accumulatedResponse = "";
       let accumulatedFiles: FileAttachment[] = [];
@@ -122,7 +122,7 @@ export class AgentBridge {
         ) {
           continuationCount++;
           console.log(`[agent-bridge] continuation ${continuationCount}/${MAX_CONTINUATIONS} for ${conversationId}`);
-          currentTask = "Continue";
+          currentTask = undefined;
           currentFiles = undefined;
           continue;
         }

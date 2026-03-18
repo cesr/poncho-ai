@@ -38,17 +38,27 @@ class UpstashKVStore implements RawKVStore {
   }
 
   async set(key: string, value: string): Promise<void> {
-    await fetch(
-      `${this.baseUrl}/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}`,
-      { method: "POST", headers: this.headers() },
-    );
+    const response = await fetch(this.baseUrl, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify(["SET", key, value]),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      console.error(`[kv][upstash] SET failed (${response.status}): ${text.slice(0, 200)}`);
+    }
   }
 
   async setWithTtl(key: string, value: string, ttl: number): Promise<void> {
-    await fetch(
-      `${this.baseUrl}/setex/${encodeURIComponent(key)}/${Math.max(1, ttl)}/${encodeURIComponent(value)}`,
-      { method: "POST", headers: this.headers() },
-    );
+    const response = await fetch(this.baseUrl, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify(["SETEX", key, Math.max(1, ttl), value]),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      console.error(`[kv][upstash] SETEX failed (${response.status}): ${text.slice(0, 200)}`);
+    }
   }
 }
 

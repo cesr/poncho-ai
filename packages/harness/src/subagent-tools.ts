@@ -1,48 +1,18 @@
-import { defineTool, type Message, type ToolDefinition, getTextContent } from "@poncho-ai/sdk";
-import type { SubagentManager, SubagentResult } from "./subagent-manager.js";
-
-const LAST_MESSAGES_TO_RETURN = 10;
-
-const summarizeResult = (r: SubagentResult): Record<string, unknown> => {
-  const summary: Record<string, unknown> = {
-    subagentId: r.subagentId,
-    status: r.status,
-  };
-  if (r.result) {
-    summary.result = {
-      status: r.result.status,
-      response: r.result.response,
-      steps: r.result.steps,
-      duration: r.result.duration,
-    };
-  }
-  if (r.error) {
-    summary.error = r.error;
-  }
-  if (r.latestMessages && r.latestMessages.length > 0) {
-    summary.latestMessages = r.latestMessages
-      .slice(-LAST_MESSAGES_TO_RETURN)
-      .map((m: Message) => ({
-        role: m.role,
-        content: getTextContent(m).slice(0, 2000),
-      }));
-  }
-  return summary;
-};
+import { defineTool, type ToolContext, type ToolDefinition } from "@poncho-ai/sdk";
+import type { SubagentManager } from "./subagent-manager.js";
 
 export const createSubagentTools = (
   manager: SubagentManager,
-  getConversationId: () => string | undefined,
-  getOwnerId: () => string,
 ): ToolDefinition[] => [
   defineTool({
     name: "spawn_subagent",
     description:
-      "Spawn a subagent to work on a task and wait for it to finish. The subagent is a full copy of " +
-      "yourself running in its own conversation context with access to the same tools (except memory writes). " +
-      "This call blocks until the subagent completes and returns its result.\n\n" +
+      "Spawn a subagent to work on a task in the background. Returns immediately with a subagent ID. " +
+      "The subagent runs independently and its result will be delivered to you as a message in the " +
+      "conversation when it completes.\n\n" +
       "Guidelines:\n" +
-      "- Use subagents to parallelize work: call spawn_subagent multiple times in one response for independent sub-tasks -- they run concurrently.\n" +
+      "- Spawn all needed subagents in a SINGLE response (they run concurrently), then end your turn with a brief message to the user.\n" +
+      "- Do NOT spawn more subagents in follow-up steps. Wait for results to be delivered before deciding if more work is needed.\n" +
       "- Prefer doing work yourself for simple or quick tasks. Spawn subagents for substantial, self-contained work.\n" +
       "- The subagent has no memory of your conversation -- write thorough, self-contained instructions in the task.",
     inputSchema: {
@@ -58,29 +28,32 @@ export const createSubagentTools = (
       required: ["task"],
       additionalProperties: false,
     },
-    handler: async (input) => {
+    handler: async (input: Record<string, unknown>, context: ToolContext) => {
       const task = typeof input.task === "string" ? input.task : "";
       if (!task.trim()) {
         return { error: "task is required" };
       }
-      const conversationId = getConversationId();
+      const conversationId = context.conversationId;
       if (!conversationId) {
         return { error: "no active conversation to spawn subagent from" };
       }
-      const result = await manager.spawn({
+      const ownerId = typeof context.parameters.__ownerId === "string"
+        ? context.parameters.__ownerId
+        : "anonymous";
+      const { subagentId } = await manager.spawn({
         task: task.trim(),
         parentConversationId: conversationId,
-        ownerId: getOwnerId(),
+        ownerId,
       });
-      return summarizeResult(result);
+      return { subagentId, status: "running" };
     },
   }),
 
   defineTool({
     name: "message_subagent",
     description:
-      "Send a follow-up message to a completed or stopped subagent and wait for it to finish. " +
-      "This restarts the subagent with the new message and blocks until it completes. " +
+      "Send a follow-up message to a completed or stopped subagent. The subagent restarts in the " +
+      "background and its result will be delivered to you as a message when it completes. " +
       "Only works when the subagent is not currently running.",
     inputSchema: {
       type: "object",
@@ -103,8 +76,8 @@ export const createSubagentTools = (
       if (!subagentId || !message.trim()) {
         return { error: "subagent_id and message are required" };
       }
-      const result = await manager.sendMessage(subagentId, message.trim());
-      return summarizeResult(result);
+      const { subagentId: id } = await manager.sendMessage(subagentId, message.trim());
+      return { subagentId: id, status: "running" };
     },
   }),
 
@@ -145,8 +118,8 @@ export const createSubagentTools = (
       properties: {},
       additionalProperties: false,
     },
-    handler: async () => {
-      const conversationId = getConversationId();
+    handler: async (_input: Record<string, unknown>, context: ToolContext) => {
+      const conversationId = context.conversationId;
       if (!conversationId) {
         return { error: "no active conversation" };
       }

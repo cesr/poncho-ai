@@ -10,6 +10,7 @@ export interface SyncRunResponse {
   runId: string;
   status: RunResult["status"];
   result: RunResult;
+  pendingSubagents?: boolean;
 }
 
 export interface ContinueInput {
@@ -135,6 +136,28 @@ export class AgentClient {
     return payload.conversation;
   }
 
+  async getConversationStatus(conversationId: string): Promise<{
+    conversation: ConversationRecord;
+    hasActiveRun: boolean;
+    hasRunningSubagents: boolean;
+  }> {
+    const response = await this.fetchImpl(
+      `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}`,
+      {
+        method: "GET",
+        headers: this.headers(),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`Get conversation status failed: HTTP ${response.status}`);
+    }
+    return (await response.json()) as {
+      conversation: ConversationRecord;
+      hasActiveRun: boolean;
+      hasRunningSubagents: boolean;
+    };
+  }
+
   async deleteConversation(conversationId: string): Promise<void> {
     const response = await this.fetchImpl(
       `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}`,
@@ -154,16 +177,18 @@ export class AgentClient {
     optionsOrParameters?: {
       parameters?: Record<string, unknown>;
       files?: FileAttachment[];
+      waitForSubagents?: boolean;
     } | Record<string, unknown>,
   ): Promise<SyncRunResponse> {
-    let currentMessage = message;
     // Backward compat: third arg can be plain parameters Record or new options object
     let parameters: Record<string, unknown> | undefined;
     let files: FileAttachment[] | undefined;
-    if (optionsOrParameters && ("parameters" in optionsOrParameters || "files" in optionsOrParameters)) {
-      const opts = optionsOrParameters as { parameters?: Record<string, unknown>; files?: FileAttachment[] };
+    let waitForSubagents = false;
+    if (optionsOrParameters && ("parameters" in optionsOrParameters || "files" in optionsOrParameters || "waitForSubagents" in optionsOrParameters)) {
+      const opts = optionsOrParameters as { parameters?: Record<string, unknown>; files?: FileAttachment[]; waitForSubagents?: boolean };
       parameters = opts.parameters;
       files = opts.files;
+      waitForSubagents = opts.waitForSubagents === true;
     } else if (optionsOrParameters) {
       parameters = optionsOrParameters as Record<string, unknown>;
     }
@@ -174,10 +199,13 @@ export class AgentClient {
     let totalDuration = 0;
     let latestRunId = "";
     let isFirstRequest = true;
+    let isContinuation = false;
 
     while (true) {
-      const bodyPayload: Record<string, unknown> = { message: currentMessage };
-      if (parameters) bodyPayload.parameters = parameters;
+      const bodyPayload: Record<string, unknown> = isContinuation
+        ? { continuation: true }
+        : { message };
+      if (parameters && !isContinuation) bodyPayload.parameters = parameters;
       if (files && files.length > 0 && isFirstRequest) bodyPayload.files = files;
       isFirstRequest = false;
 
@@ -212,10 +240,10 @@ export class AgentClient {
         if (typeof completed.result.maxSteps === "number") stepBudget = completed.result.maxSteps;
 
         if (completed.result.continuation && (stepBudget <= 0 || totalSteps < stepBudget)) {
-          currentMessage = "Continue";
+          isContinuation = true;
           continue;
         }
-        return {
+        const syncResult: SyncRunResponse = {
           runId: latestRunId || completed.runId,
           status: completed.result.status,
           result: {
@@ -224,7 +252,33 @@ export class AgentClient {
             tokens: { input: totalInputTokens, output: totalOutputTokens, cached: 0 },
             duration: totalDuration,
           },
+          ...(completed.pendingSubagents ? { pendingSubagents: true } : {}),
         };
+
+        if (waitForSubagents && syncResult.pendingSubagents) {
+          const POLL_INTERVAL = 3000;
+          const MAX_POLL_TIME = 3600_000;
+          const pollStart = Date.now();
+          while (Date.now() - pollStart < MAX_POLL_TIME) {
+            await new Promise(r => setTimeout(r, POLL_INTERVAL));
+            const status = await this.getConversationStatus(conversationId);
+            if (!status.hasRunningSubagents && !status.hasActiveRun) {
+              syncResult.pendingSubagents = false;
+              const msgs = status.conversation.messages;
+              const lastAssistant = [...msgs].reverse().find(m => m.role === "assistant");
+              if (lastAssistant) {
+                syncResult.result = {
+                  ...syncResult.result,
+                  response: typeof lastAssistant.content === "string"
+                    ? lastAssistant.content
+                    : lastAssistant.content.map(p => "text" in p ? p.text : "").join(""),
+                };
+              }
+              break;
+            }
+          }
+        }
+        return syncResult;
       }
       const cancelled = events.find(
         (event): event is Extract<AgentEvent, { type: "run:cancelled" }> =>
@@ -303,16 +357,15 @@ export class AgentClient {
       );
     }
     const conversation = await this.createConversation({ title: input.task });
-    let currentMessage = input.task;
     let totalSteps = 0;
     let stepBudget = 0;
     let isFirstRequest = true;
+    let isContinuation = false;
 
     while (true) {
-      const bodyPayload: Record<string, unknown> = {
-        message: currentMessage,
-        parameters: input.parameters,
-      };
+      const bodyPayload: Record<string, unknown> = isContinuation
+        ? { continuation: true }
+        : { message: input.task, parameters: input.parameters };
       if (input.files && input.files.length > 0 && isFirstRequest) {
         bodyPayload.files = input.files;
       }
@@ -367,11 +420,14 @@ export class AgentClient {
             }
           }
           yield payload;
+          if (payload.type === "run:completed" && payload.pendingSubagents) {
+            yield { type: "subagents:pending" } as AgentEvent;
+          }
         }
       }
 
       if (!shouldContinue) break;
-      currentMessage = "Continue";
+      isContinuation = true;
     }
   }
 }

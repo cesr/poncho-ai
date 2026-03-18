@@ -440,28 +440,28 @@ When `@sparticuz/chromium` is installed and a serverless environment is detected
 
 ## Subagents
 
-Poncho agents can spawn recursive copies of themselves as **subagents**. Each subagent runs in its own independent conversation with full access to the agent's tools and skills. The parent agent controls the subagent lifecycle and receives results directly.
+Poncho agents can spawn **subagents** — independent background tasks that run in their own conversations. Each subagent has full access to the agent's tools and skills. Subagents run asynchronously and their results are delivered back to the parent automatically.
 
 Subagents are useful when an agent needs to parallelize work, delegate a subtask, or isolate a line of investigation without polluting the main conversation context.
 
 ### How it works
 
-When the agent decides to use a subagent, it calls `spawn_subagent` with a task description. The subagent runs to completion and the result is returned to the parent — the call is **blocking**, so the parent waits for the subagent to finish before continuing.
+When the agent decides to use a subagent, it calls `spawn_subagent` with a task description. The tool returns immediately with a subagent ID and `status: "running"`. The subagent runs in the background and, when it completes, its result is delivered to the parent conversation as a message — triggering a callback that lets the parent process or summarize the result.
 
-The parent can also send follow-up messages to existing subagents with `message_subagent`, stop a running subagent with `stop_subagent`, or list all its subagents with `list_subagents`.
+The agent can spawn multiple subagents in a single response and they run concurrently. The parent can also send follow-up messages to existing subagents with `message_subagent`, stop a running subagent with `stop_subagent`, or list all its subagents with `list_subagents`.
 
 ### Available tools
 
 | Tool | Description |
 |------|-------------|
-| `spawn_subagent` | Create a new subagent with a task. Blocks until the subagent completes and returns the result. |
-| `message_subagent` | Send a follow-up message to an existing subagent. Blocks until it responds. |
+| `spawn_subagent` | Create a new subagent with a task. Returns immediately; results are delivered asynchronously. |
+| `message_subagent` | Send a follow-up message to an existing subagent. Returns immediately. |
 | `stop_subagent` | Stop a running subagent. |
 | `list_subagents` | List all subagents for the current conversation with their IDs, tasks, and statuses. |
 
 ### Limits
 
-- **Max depth**: 3 levels of nesting (an agent can spawn a subagent, which can spawn another, but no deeper).
+- **No nesting**: subagents cannot spawn their own subagents.
 - **Max concurrent**: 5 subagents per parent conversation.
 
 ### Memory isolation

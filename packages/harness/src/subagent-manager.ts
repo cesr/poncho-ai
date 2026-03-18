@@ -15,14 +15,18 @@ export interface SubagentSummary {
   messageCount: number;
 }
 
+export interface SubagentSpawnResult {
+  subagentId: string;
+}
+
 export interface SubagentManager {
   spawn(opts: {
     task: string;
     parentConversationId: string;
     ownerId: string;
-  }): Promise<SubagentResult>;
+  }): Promise<SubagentSpawnResult>;
 
-  sendMessage(subagentId: string, message: string): Promise<SubagentResult>;
+  sendMessage(subagentId: string, message: string): Promise<SubagentSpawnResult>;
 
   stop(subagentId: string): Promise<void>;
 

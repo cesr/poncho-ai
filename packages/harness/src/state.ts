@@ -21,6 +21,15 @@ export interface StateStore {
   delete(runId: string): Promise<void>;
 }
 
+export interface PendingSubagentResult {
+  subagentId: string;
+  task: string;
+  status: "completed" | "error" | "stopped";
+  result?: import("@poncho-ai/sdk").RunResult;
+  error?: import("@poncho-ai/sdk").AgentFailure;
+  timestamp: number;
+}
+
 export interface Conversation {
   conversationId: string;
   title: string;
@@ -55,6 +64,13 @@ export interface Conversation {
     channelId: string;
     platformThreadId: string;
   };
+  pendingSubagentResults?: PendingSubagentResult[];
+  subagentCallbackCount?: number;
+  runningCallbackSince?: number;
+  lastActivityAt?: number;
+  /** Harness-internal message chain preserved across continuation runs.
+   *  Cleared when a run completes without continuation. */
+  _continuationMessages?: Message[];
   createdAt: number;
   updatedAt: number;
 }
@@ -67,6 +83,7 @@ export interface ConversationStore {
   update(conversation: Conversation): Promise<void>;
   rename(conversationId: string, title: string): Promise<Conversation | undefined>;
   delete(conversationId: string): Promise<boolean>;
+  appendSubagentResult(conversationId: string, result: PendingSubagentResult): Promise<void>;
 }
 
 export type StateProviderName =
@@ -299,6 +316,14 @@ export class InMemoryConversationStore implements ConversationStore {
 
   async delete(conversationId: string): Promise<boolean> {
     return this.conversations.delete(conversationId);
+  }
+
+  async appendSubagentResult(conversationId: string, result: PendingSubagentResult): Promise<void> {
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation) return;
+    if (!conversation.pendingSubagentResults) conversation.pendingSubagentResults = [];
+    conversation.pendingSubagentResults.push(result);
+    conversation.updatedAt = Date.now();
   }
 }
 
@@ -572,6 +597,16 @@ class FileConversationStore implements ConversationStore {
     }
     return removed;
   }
+
+  async appendSubagentResult(conversationId: string, result: PendingSubagentResult): Promise<void> {
+    await this.ensureLoaded();
+    const conversation = await this.get(conversationId);
+    if (!conversation) return;
+    if (!conversation.pendingSubagentResults) conversation.pendingSubagentResults = [];
+    conversation.pendingSubagentResults.push(result);
+    conversation.updatedAt = Date.now();
+    await this.update(conversation);
+  }
 }
 
 type LocalStateFile = {
@@ -689,6 +724,7 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
   protected readonly ttl?: number;
   private readonly agentIdPromise: Promise<string>;
   private readonly ownerLocks = new Map<string, Promise<void>>();
+  private readonly appendLocks = new Map<string, Promise<void>>();
   protected readonly memoryFallback: InMemoryConversationStore;
 
   constructor(ttl: number | undefined, workingDir: string, agentId?: string) {
@@ -708,6 +744,19 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
     } finally {
       if (this.ownerLocks.get(ownerId) === next) {
         this.ownerLocks.delete(ownerId);
+      }
+    }
+  }
+
+  private async withAppendLock(conversationId: string, task: () => Promise<void>): Promise<void> {
+    const prev = this.appendLocks.get(conversationId) ?? Promise.resolve();
+    const next = prev.then(task, task);
+    this.appendLocks.set(conversationId, next);
+    try {
+      await next;
+    } finally {
+      if (this.appendLocks.get(conversationId) === next) {
+        this.appendLocks.delete(conversationId);
       }
     }
   }
@@ -945,6 +994,17 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
     });
     return true;
   }
+
+  async appendSubagentResult(conversationId: string, result: PendingSubagentResult): Promise<void> {
+    await this.withAppendLock(conversationId, async () => {
+      const conversation = await this.get(conversationId);
+      if (!conversation) return;
+      if (!conversation.pendingSubagentResults) conversation.pendingSubagentResults = [];
+      conversation.pendingSubagentResults.push(result);
+      conversation.updatedAt = Date.now();
+      await this.update(conversation);
+    });
+  }
 }
 
 class UpstashConversationStore extends KeyValueConversationStoreBase {
@@ -991,23 +1051,28 @@ class UpstashConversationStore extends KeyValueConversationStoreBase {
         return (payload.result ?? []).map((v) => v ?? undefined);
       },
       set: async (key: string, value: string, ttl?: number) => {
-        const endpoint =
-          typeof ttl === "number"
-            ? `${this.baseUrl}/setex/${encodeURIComponent(key)}/${Math.max(
-                1,
-                ttl,
-              )}/${encodeURIComponent(value)}`
-            : `${this.baseUrl}/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}`;
-        await fetch(endpoint, {
+        const command = typeof ttl === "number"
+          ? ["SETEX", key, Math.max(1, ttl), value]
+          : ["SET", key, value];
+        const response = await fetch(this.baseUrl, {
           method: "POST",
           headers: this.headers(),
+          body: JSON.stringify(command),
         });
+        if (!response.ok) {
+          const text = await response.text().catch(() => "");
+          console.error(`[store][upstash] SET failed (${response.status}): ${text.slice(0, 200)}`);
+        }
       },
       del: async (key: string) => {
-        await fetch(`${this.baseUrl}/del/${encodeURIComponent(key)}`, {
+        const response = await fetch(`${this.baseUrl}/del/${encodeURIComponent(key)}`, {
           method: "POST",
           headers: this.headers(),
         });
+        if (!response.ok) {
+          const text = await response.text().catch(() => "");
+          console.error(`[store][upstash] DEL failed (${response.status}): ${text.slice(0, 200)}`);
+        }
       },
     };
   }

@@ -102,6 +102,8 @@ export interface RunInput {
   abortSignal?: AbortSignal;
   /** When set, Latitude telemetry groups all turns in this conversation under a single trace. */
   conversationId?: string;
+  /** When true, ignores PONCHO_MAX_DURATION soft deadline (used for background subagent runs). */
+  disableSoftDeadline?: boolean;
 }
 
 export interface TokenUsage {
@@ -117,6 +119,8 @@ export interface RunResult {
   tokens: TokenUsage;
   duration: number;
   continuation?: boolean;
+  /** Full message chain from the harness run (populated when continuation=true). */
+  continuationMessages?: Message[];
   maxSteps?: number;
 }
 
@@ -128,7 +132,7 @@ export interface AgentFailure {
 
 export type AgentEvent =
   | { type: "run:started"; runId: string; agentId: string; contextWindow?: number }
-  | { type: "run:completed"; runId: string; result: RunResult }
+  | { type: "run:completed"; runId: string; result: RunResult; pendingSubagents?: boolean }
   | { type: "run:cancelled"; runId: string }
   | { type: "run:error"; runId: string; error: AgentFailure }
   | { type: "step:started"; step: number }
@@ -187,4 +191,5 @@ export type AgentEvent =
       messagesAfter: number;
       compactedMessages?: Message[];
     }
+  | { type: "subagents:pending" }
   | { type: "compaction:warning"; reason: string };

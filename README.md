@@ -47,7 +47,7 @@ Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` 
 - **Conversation-first API + streaming**: stored conversations with SSE streaming responses and tool events.
 - **Multimodal inputs**: attach images, PDFs, and other files via the Web UI, API, or client SDK.
 - **Browser automation**: headless Chromium with live viewport streaming, snapshot/ref interaction, and session persistence.
-- **Subagents**: agents can spawn recursive copies of themselves for parallel work, with independent conversations, read-only memory, and approval tunneling.
+- **Subagents**: agents can spawn asynchronous background tasks for parallel work, with independent conversations, read-only memory, and approval tunneling.
 - **Context compaction**: automatic summarization of older messages when the context window fills up, keeping conversations going indefinitely.
 - **Pluggable storage + memory**: local files for dev or hosted stores (e.g. Upstash), with optional persistent memory + recall.
 - **Testing + observability**: `poncho test` workflows and OpenTelemetry traces/events.
