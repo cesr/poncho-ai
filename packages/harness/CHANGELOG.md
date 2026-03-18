@@ -1,5 +1,16 @@
 # @poncho-ai/harness
 
+## 0.28.1
+
+### Patch Changes
+
+- [`4d50ad9`](https://github.com/cesr/poncho-ai/commit/4d50ad970886c9d3635ec36a407514c91ce6a71a) Thanks [@cesr](https://github.com/cesr)! - Improve callback-run reliability and streaming across subagent workflows, including safer concurrent approval handling and parent callback retriggers.
+
+  Add context window/token reporting through run completion events, improve cron/web UI rendering and approval streaming behavior, and harden built-in web search retry/throttle behavior.
+
+- Updated dependencies [[`4d50ad9`](https://github.com/cesr/poncho-ai/commit/4d50ad970886c9d3635ec36a407514c91ce6a71a)]:
+  - @poncho-ai/sdk@1.6.1
+
 ## 0.28.0
 
 ### Minor Changes
