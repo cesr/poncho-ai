@@ -1554,6 +1554,8 @@ ${boundedMainMemory.trim()}`
     let totalOutputTokens = 0;
     let totalCachedTokens = 0;
     let transientStepRetryCount = 0;
+    let latestContextTokens = 0;
+    let toolOutputEstimateSinceModel = 0;
     let cachedCoreMessages: ModelMessage[] = [];
     let convertedUpTo = 0;
 
@@ -1585,6 +1587,8 @@ ${boundedMainMemory.trim()}`
             continuation: true,
             continuationMessages: [...messages],
             maxSteps,
+            contextTokens: latestContextTokens + toolOutputEstimateSinceModel,
+            contextWindow,
           };
           yield pushEvent({ type: "run:completed", runId, result });
           return;
@@ -1885,10 +1889,13 @@ ${boundedMainMemory.trim()}`
               if (emittedMessages.length > 0 && emittedMessages[emittedMessages.length - 1].role === "user") {
                 emittedMessages.pop();
               }
+              const tokensAfterCompaction = estimateTotalTokens(integrityPrompt, messages, toolDefsJson);
+              latestContextTokens = tokensAfterCompaction;
+              toolOutputEstimateSinceModel = 0;
               yield pushEvent({
                 type: "compaction:completed",
                 tokensBefore: effectiveTokens,
-                tokensAfter: estimateTotalTokens(integrityPrompt, messages, toolDefsJson),
+                tokensAfter: tokensAfterCompaction,
                 messagesBefore: compactResult.messagesBefore!,
                 compactedMessages: emittedMessages,
                 messagesAfter: compactResult.messagesAfter!,
@@ -2060,14 +2067,17 @@ ${boundedMainMemory.trim()}`
 
       // Update token usage
       const stepCachedTokens = usage.inputTokenDetails?.cacheReadTokens ?? 0;
-      totalInputTokens += usage.inputTokens ?? 0;
+      const stepInputTokens = usage.inputTokens ?? 0;
+      totalInputTokens += stepInputTokens;
       totalOutputTokens += usage.outputTokens ?? 0;
       totalCachedTokens += stepCachedTokens;
+      latestContextTokens = stepInputTokens;
+      toolOutputEstimateSinceModel = 0;
 
       yield pushEvent({
         type: "model:response",
         usage: {
-          input: usage.inputTokens ?? 0,
+          input: stepInputTokens,
           output: usage.outputTokens ?? 0,
           cached: stepCachedTokens,
         },
@@ -2120,6 +2130,8 @@ ${boundedMainMemory.trim()}`
             cached: totalCachedTokens,
           },
           duration: now() - start,
+          contextTokens: latestContextTokens + toolOutputEstimateSinceModel,
+          contextWindow,
         };
         yield pushEvent({ type: "run:completed", runId, result });
         return;
@@ -2290,6 +2302,7 @@ ${boundedMainMemory.trim()}`
           span?.end({ result: { value: result.output ?? null, isError: false } });
           const serialized = JSON.stringify(result.output ?? null);
           const outputTokenEstimate = Math.ceil(serialized.length / 4);
+          toolOutputEstimateSinceModel += outputTokenEstimate;
           yield pushEvent({
             type: "tool:completed",
             tool: result.tool,
@@ -2415,6 +2428,8 @@ ${boundedMainMemory.trim()}`
         continuation: true,
         continuationMessages: [...messages],
         maxSteps,
+        contextTokens: latestContextTokens + toolOutputEstimateSinceModel,
+        contextWindow,
       };
       yield pushEvent({ type: "run:completed", runId, result });
     } else {

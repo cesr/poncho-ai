@@ -122,6 +122,10 @@ export interface RunResult {
   /** Full message chain from the harness run (populated when continuation=true). */
   continuationMessages?: Message[];
   maxSteps?: number;
+  /** Estimated current context usage in tokens at end of run (last model input + tool output estimates, reset on compaction). */
+  contextTokens?: number;
+  /** Model context window size in tokens. */
+  contextWindow?: number;
 }
 
 export interface AgentFailure {

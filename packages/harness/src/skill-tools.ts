@@ -412,17 +412,19 @@ const loadRunnableScriptFunction = async (
 
 const loadScriptModule = async (scriptPath: string): Promise<unknown> => {
   const extension = extname(scriptPath).toLowerCase();
-  // Node emits noisy warnings when attempting native ESM import on TypeScript
-  // files in serverless environments. Use jiti first for TS entrypoints.
+  // Both Node's native import() and jiti cache modules by URL/path.
+  // Append a cache-busting query string so edits made by the agent are
+  // picked up on the next run_skill_script call.
+  const cacheBust = `?t=${Date.now()}`;
   if (extension === ".ts" || extension === ".mts" || extension === ".cts") {
-    const jiti = createJiti(import.meta.url, { interopDefault: true });
-    return await jiti.import(scriptPath);
+    const jiti = createJiti(import.meta.url, { interopDefault: true, moduleCache: false });
+    return await jiti.import(scriptPath + cacheBust);
   }
   try {
-    return await import(pathToFileURL(scriptPath).href);
+    return await import(pathToFileURL(scriptPath).href + cacheBust);
   } catch {
-    const jiti = createJiti(import.meta.url, { interopDefault: true });
-    return await jiti.import(scriptPath);
+    const jiti = createJiti(import.meta.url, { interopDefault: true, moduleCache: false });
+    return await jiti.import(scriptPath + cacheBust);
   }
 };
 

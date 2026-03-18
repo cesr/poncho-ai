@@ -84,6 +84,12 @@ export interface ConversationStore {
   rename(conversationId: string, title: string): Promise<Conversation | undefined>;
   delete(conversationId: string): Promise<boolean>;
   appendSubagentResult(conversationId: string, result: PendingSubagentResult): Promise<void>;
+  /**
+   * Atomically clear `runningCallbackSince` without clobbering other fields.
+   * Returns the conversation as it exists after the clear (with current
+   * `pendingSubagentResults`).
+   */
+  clearCallbackLock(conversationId: string): Promise<Conversation | undefined>;
 }
 
 export type StateProviderName =
@@ -324,6 +330,14 @@ export class InMemoryConversationStore implements ConversationStore {
     if (!conversation.pendingSubagentResults) conversation.pendingSubagentResults = [];
     conversation.pendingSubagentResults.push(result);
     conversation.updatedAt = Date.now();
+  }
+
+  async clearCallbackLock(conversationId: string): Promise<Conversation | undefined> {
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation) return undefined;
+    conversation.runningCallbackSince = undefined;
+    conversation.updatedAt = Date.now();
+    return conversation;
   }
 }
 
@@ -606,6 +620,31 @@ class FileConversationStore implements ConversationStore {
     conversation.pendingSubagentResults.push(result);
     conversation.updatedAt = Date.now();
     await this.update(conversation);
+  }
+
+  async clearCallbackLock(conversationId: string): Promise<Conversation | undefined> {
+    await this.ensureLoaded();
+    const summary = this.conversations.get(conversationId);
+    if (!summary) return undefined;
+    const { conversationsDir } = await this.resolvePaths();
+    const filePath = resolve(conversationsDir, summary.fileName);
+    let result: Conversation | undefined;
+    // Read inside the writing chain so we see the latest state after any
+    // pending appendSubagentResult writes have flushed.
+    this.writing = this.writing.then(async () => {
+      const conv = await this.readConversationFile(summary.fileName);
+      if (!conv) return;
+      conv.runningCallbackSince = undefined;
+      conv.updatedAt = Date.now();
+      await writeJsonAtomic(filePath, conv);
+      this.conversations.set(conversationId, {
+        ...summary,
+        updatedAt: conv.updatedAt,
+      });
+      result = conv;
+    });
+    await this.writing;
+    return result;
   }
 }
 
@@ -1004,6 +1043,19 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
       conversation.updatedAt = Date.now();
       await this.update(conversation);
     });
+  }
+
+  async clearCallbackLock(conversationId: string): Promise<Conversation | undefined> {
+    let result: Conversation | undefined;
+    await this.withAppendLock(conversationId, async () => {
+      const conversation = await this.get(conversationId);
+      if (!conversation) return;
+      conversation.runningCallbackSince = undefined;
+      conversation.updatedAt = Date.now();
+      await this.update(conversation);
+      result = conversation;
+    });
+    return result;
   }
 }
 

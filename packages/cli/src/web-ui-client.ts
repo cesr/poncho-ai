@@ -30,6 +30,8 @@ export const getWebUiClientScript = (markedSource: string): string => `
         parentConversationId: null,
         todos: [],
         todoPanelCollapsed: false,
+        cronSectionCollapsed: true,
+        cronShowAll: false,
       };
 
       const agentInitial = document.body.dataset.agentInitial || "A";
@@ -773,10 +775,85 @@ export const getWebUiClientScript = (markedSource: string): string => `
         }
       };
 
+      const cronCaretSvg = '<svg viewBox="0 0 12 12" fill="none" width="10" height="10"><path d="M4.5 2.75L8 6L4.5 9.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
+
+      const parseCronTitle = (title) => {
+        const rest = title.replace(/^\[cron\]\s*/, "");
+        const isoMatch = rest.match(/\s(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)$/);
+        if (isoMatch) {
+          return { jobName: rest.slice(0, isoMatch.index).trim(), timestamp: isoMatch[1] };
+        }
+        return { jobName: rest, timestamp: "" };
+      };
+
+      const formatCronTimestamp = (isoStr) => {
+        if (!isoStr) return "";
+        try {
+          const d = new Date(isoStr);
+          if (isNaN(d.getTime())) return isoStr;
+          return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+        } catch { return isoStr; }
+      };
+
+      const CRON_PAGE_SIZE = 20;
+
+      const appendCronSection = (cronConvs, needsDivider) => {
+        if (needsDivider) {
+          const divider = document.createElement("div");
+          divider.className = "sidebar-section-divider";
+          elements.list.appendChild(divider);
+        }
+
+        cronConvs.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+
+        const isOpen = !state.cronSectionCollapsed;
+        const header = document.createElement("div");
+        header.className = "cron-section-header";
+        header.innerHTML =
+          '<span class="cron-section-caret' + (isOpen ? ' open' : '') + '">' + cronCaretSvg + '</span>' +
+          '<span>Cron jobs</span>' +
+          '<span class="cron-section-count">' + cronConvs.length + '</span>';
+        header.onclick = () => {
+          state.cronSectionCollapsed = !state.cronSectionCollapsed;
+          state.cronShowAll = false;
+          renderConversationList();
+        };
+        elements.list.appendChild(header);
+
+        if (state.cronSectionCollapsed) return;
+
+        const limit = state.cronShowAll ? cronConvs.length : CRON_PAGE_SIZE;
+        const visible = cronConvs.slice(0, limit);
+
+        for (const c of visible) {
+          const { jobName, timestamp } = parseCronTitle(c.title);
+          const fmtTime = formatCronTimestamp(timestamp);
+          const displayTitle = fmtTime ? jobName + " \\u00b7 " + fmtTime : c.title;
+          elements.list.appendChild(buildConversationItem(Object.assign({}, c, { title: displayTitle })));
+          appendSubagentsIfActive(c.conversationId);
+        }
+
+        if (!state.cronShowAll && cronConvs.length > CRON_PAGE_SIZE) {
+          const remaining = cronConvs.length - CRON_PAGE_SIZE;
+          const viewMore = document.createElement("div");
+          viewMore.className = "cron-view-more";
+          viewMore.textContent = "View " + remaining + " more\\u2026";
+          viewMore.onclick = () => {
+            state.cronShowAll = true;
+            renderConversationList();
+          };
+          elements.list.appendChild(viewMore);
+        }
+      };
+
       const renderConversationList = () => {
         elements.list.innerHTML = "";
         const pending = state.conversations.filter(c => c.hasPendingApprovals);
         const rest = state.conversations.filter(c => !c.hasPendingApprovals);
+
+        const isCron = (c) => c.title && c.title.startsWith("[cron]");
+        const cronConvs = rest.filter(isCron);
+        const nonCron = rest.filter(c => !isCron(c));
 
         if (pending.length > 0) {
           const label = document.createElement("div");
@@ -796,7 +873,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
         const latest = [];
         const previous7 = [];
         const older = [];
-        for (const c of rest) {
+        for (const c of nonCron) {
           const ts = c.updatedAt || c.createdAt || 0;
           if (ts >= startOfToday) {
             latest.push(c);
@@ -808,6 +885,12 @@ export const getWebUiClientScript = (markedSource: string): string => `
         }
 
         let sectionRendered = pending.length > 0;
+
+        if (cronConvs.length > 0) {
+          appendCronSection(cronConvs, sectionRendered);
+          sectionRendered = true;
+        }
+
         const appendSection = (items, labelText) => {
           if (items.length === 0) return;
           if (sectionRendered) {
@@ -2977,7 +3060,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
           state: "resolved",
           resolvedDecision: decision,
         }));
-        api("/api/approvals/" + encodeURIComponent(approvalId), {
+        return api("/api/approvals/" + encodeURIComponent(approvalId), {
           method: "POST",
           body: JSON.stringify({ approved: decision === "approve" }),
         }).catch((error) => {
@@ -3025,16 +3108,54 @@ export const getWebUiClientScript = (markedSource: string): string => `
           if (pending.length === 0) return;
           const wasStreaming = state.isStreaming;
           if (!wasStreaming) setStreaming(true);
-          pending.forEach((aid) => submitApproval(aid, decision));
+          // Mark all items as resolved in the UI immediately
+          for (const aid of pending) {
+            state.approvalRequestsInFlight[aid] = true;
+            updatePendingApproval(aid, (request) => ({
+              ...request,
+              state: "resolved",
+              resolvedDecision: decision,
+            }));
+          }
           renderMessages(state.activeMessages, state.isStreaming);
           loadConversations();
-          if (!wasStreaming && state.activeConversationId) {
-            const cid = state.activeConversationId;
-            await streamConversationEvents(cid, { liveOnly: true });
-            if (state.activeConversationId === cid) {
-              pollUntilRunIdle(cid);
-            }
+          const streamCid = !wasStreaming && state.activeConversationId
+            ? state.activeConversationId
+            : null;
+          if (streamCid) {
+            streamConversationEvents(streamCid, { liveOnly: true }).finally(() => {
+              if (state.activeConversationId === streamCid) {
+                pollUntilRunIdle(streamCid);
+              }
+            });
           }
+          // Send API calls sequentially so each store write completes
+          // before the next read (avoids last-writer-wins in serverless).
+          void (async () => {
+            for (const aid of pending) {
+              await api("/api/approvals/" + encodeURIComponent(aid), {
+                method: "POST",
+                body: JSON.stringify({ approved: decision === "approve" }),
+              }).catch((error) => {
+                const isStale = error && error.payload && error.payload.code === "APPROVAL_NOT_FOUND";
+                if (isStale) {
+                  updatePendingApproval(aid, () => null);
+                } else {
+                  const errMsg = error instanceof Error ? error.message : String(error);
+                  updatePendingApproval(aid, (request) => ({
+                    ...request,
+                    state: "pending",
+                    pendingDecision: null,
+                    resolvedDecision: null,
+                    _error: errMsg,
+                  }));
+                }
+                renderMessages(state.activeMessages, state.isStreaming);
+              }).finally(() => {
+                delete state.approvalRequestsInFlight[aid];
+              });
+            }
+          })();
           return;
         }
 

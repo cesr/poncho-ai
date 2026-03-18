@@ -1391,6 +1391,11 @@ export type RequestHandler = ((
   _cronJobs?: Record<string, CronJobConfig>;
   _conversationStore?: ConversationStore;
   _messagingAdapters?: Map<string, MessagingAdapter>;
+  _activeConversationRuns?: Map<string, { ownerId: string; abortController: AbortController; runId: string | null }>;
+  _pendingCallbackNeeded?: Set<string>;
+  _processSubagentCallback?: (conversationId: string, skipLockCheck?: boolean) => Promise<void>;
+  _broadcastEvent?: (conversationId: string, event: AgentEvent) => void;
+  _finishConversationStream?: (conversationId: string) => void;
 };
 
 export const createRequestHandler = async (options?: {
@@ -1572,6 +1577,11 @@ export const createRequestHandler = async (options?: {
     parentConversationId: string;
   };
   const pendingSubagentApprovals = new Map<string, PendingSubagentApproval>();
+
+  // Tracks approval decisions in memory so parallel batch requests don't
+  // race against the conversation store (each file-store read returns a
+  // separate copy, causing last-writer-wins when decisions overlap).
+  const approvalDecisionTracker = new Map<string, Map<string, boolean>>();
 
   const getSubagentDepth = async (conversationId: string): Promise<number> => {
     let depth = 0;
@@ -2042,8 +2052,15 @@ export const createRequestHandler = async (options?: {
   // ---------------------------------------------------------------------------
   const MAX_SUBAGENT_CALLBACK_COUNT = 20;
 
+  // Track conversations that received subagent results while a run was active.
+  // processSubagentCallback's finally block checks this to reliably re-trigger
+  // even if the store-level pendingSubagentResults was clobbered by a concurrent
+  // read-modify-write.
+  const pendingCallbackNeeded = new Set<string>();
+
   const triggerParentCallback = async (parentConversationId: string): Promise<void> => {
     if (activeConversationRuns.has(parentConversationId)) {
+      pendingCallbackNeeded.add(parentConversationId);
       return;
     }
     if (isServerless) {
@@ -2057,15 +2074,17 @@ export const createRequestHandler = async (options?: {
 
   const CALLBACK_LOCK_STALE_MS = 5 * 60 * 1000;
 
-  const processSubagentCallback = async (conversationId: string): Promise<void> => {
+  const processSubagentCallback = async (conversationId: string, skipLockCheck = false): Promise<void> => {
     const conversation = await conversationStore.get(conversationId);
     if (!conversation) return;
 
     const pendingResults = conversation.pendingSubagentResults ?? [];
     if (pendingResults.length === 0) return;
 
-    // Store-based lock for serverless: skip if another invocation is processing
-    if (conversation.runningCallbackSince) {
+    // Store-based lock for serverless: skip if another invocation is processing.
+    // When re-triggered from a previous callback's finally block, skipLockCheck
+    // is true because we know the previous callback has finished.
+    if (!skipLockCheck && conversation.runningCallbackSince) {
       const elapsed = Date.now() - conversation.runningCallbackSince;
       if (elapsed < CALLBACK_LOCK_STALE_MS) {
         return;
@@ -2109,12 +2128,27 @@ export const createRequestHandler = async (options?: {
       abortController,
       runId: null,
     });
+    // Reopen/reset the parent stream for this callback run so clients that stay
+    // on the main conversation can subscribe to live callback events.
+    const prevStream = conversationEventStreams.get(conversationId);
+    if (prevStream) {
+      prevStream.finished = false;
+      prevStream.buffer = [];
+    } else {
+      conversationEventStreams.set(conversationId, {
+        buffer: [],
+        subscribers: new Set(),
+        finished: false,
+      });
+    }
 
     const historyMessages = [...conversation.messages];
     let assistantResponse = "";
     let latestRunId = "";
     let runContinuation = false;
     let runContinuationMessages: Message[] | undefined;
+    let runContextTokens = conversation.contextTokens ?? 0;
+    let runContextWindow = conversation.contextWindow ?? 0;
     const toolTimeline: string[] = [];
     const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
     let currentTools: string[] = [];
@@ -2170,6 +2204,8 @@ export const createRequestHandler = async (options?: {
           if (assistantResponse.length === 0 && event.result.response) {
             assistantResponse = event.result.response;
           }
+          runContextTokens = event.result.contextTokens ?? runContextTokens;
+          runContextWindow = event.result.contextWindow ?? runContextWindow;
           if (event.result.continuation) {
             runContinuation = true;
             if (event.result.continuationMessages) {
@@ -2200,6 +2236,8 @@ export const createRequestHandler = async (options?: {
           }
           freshConv.runtimeRunId = latestRunId || freshConv.runtimeRunId;
           freshConv.runningCallbackSince = undefined;
+          if (runContextTokens > 0) freshConv.contextTokens = runContextTokens;
+          if (runContextWindow > 0) freshConv.contextWindow = runContextWindow;
           freshConv.updatedAt = Date.now();
           await conversationStore.update(freshConv);
 
@@ -2242,23 +2280,42 @@ export const createRequestHandler = async (options?: {
       activeConversationRuns.delete(conversationId);
       finishConversationStream(conversationId);
 
+      // Check both the in-memory flag (always reliable) and the store.
+      // We drain the flag first so a concurrent triggerParentCallback that
+      // sets it right after our delete above is still caught on the next
+      // iteration.
+      const hadDeferredTrigger = pendingCallbackNeeded.delete(conversationId);
       const freshConv = await conversationStore.get(conversationId);
-      if (freshConv) {
-        if (freshConv.runningCallbackSince) {
-          freshConv.runningCallbackSince = undefined;
-          await conversationStore.update(freshConv);
-        }
-      }
+      const hasPendingInStore = !!freshConv?.pendingSubagentResults?.length;
 
-      if (freshConv?.pendingSubagentResults?.length) {
+      if (hadDeferredTrigger || hasPendingInStore) {
+        // Re-trigger immediately. Skip the runningCallbackSince lock check
+        // because we know this callback just finished. The re-triggered
+        // callback will overwrite runningCallbackSince with its own timestamp.
         if (isServerless) {
           selfFetchWithRetry(`/api/internal/conversations/${encodeURIComponent(conversationId)}/subagent-callback`).catch(err =>
             console.error(`[poncho][subagent-callback] Recursive callback self-fetch failed:`, err instanceof Error ? err.message : err),
           );
         } else {
-          processSubagentCallback(conversationId).catch(err =>
+          processSubagentCallback(conversationId, true).catch(err =>
             console.error(`[poncho][subagent-callback] Recursive callback failed:`, err instanceof Error ? err.message : err),
           );
+        }
+      } else if (freshConv?.runningCallbackSince) {
+        // No re-trigger needed. Use the atomic clearCallbackLock to avoid
+        // clobbering concurrent appendSubagentResult writes.
+        const afterClear = await conversationStore.clearCallbackLock(conversationId);
+        // Double-check: an append may have raced even the atomic clear
+        if (afterClear?.pendingSubagentResults?.length) {
+          if (isServerless) {
+            selfFetchWithRetry(`/api/internal/conversations/${encodeURIComponent(conversationId)}/subagent-callback`).catch(err =>
+              console.error(`[poncho][subagent-callback] Post-clear callback self-fetch failed:`, err instanceof Error ? err.message : err),
+            );
+          } else {
+            processSubagentCallback(conversationId, true).catch(err =>
+              console.error(`[poncho][subagent-callback] Post-clear callback failed:`, err instanceof Error ? err.message : err),
+            );
+          }
         }
       }
     }
@@ -2461,14 +2518,6 @@ export const createRequestHandler = async (options?: {
           if (active && active.abortController === abortController) {
             active.runId = event.runId;
           }
-          if (typeof event.contextWindow === "number" && event.contextWindow > 0) {
-            runContextWindow = event.contextWindow;
-          }
-        }
-        if (event.type === "model:response") {
-          if (typeof event.usage?.input === "number") {
-            runContextTokens = event.usage.input;
-          }
         }
         if (event.type === "model:chunk") {
           if (currentTools.length > 0) {
@@ -2533,12 +2582,12 @@ export const createRequestHandler = async (options?: {
           }
           checkpointedRun = true;
         }
-        if (
-          event.type === "run:completed" &&
-          assistantResponse.length === 0 &&
-          event.result.response
-        ) {
-          assistantResponse = event.result.response;
+        if (event.type === "run:completed") {
+          if (assistantResponse.length === 0 && event.result.response) {
+            assistantResponse = event.result.response;
+          }
+          runContextTokens = event.result.contextTokens ?? runContextTokens;
+          runContextWindow = event.result.contextWindow ?? runContextWindow;
         }
         if (event.type === "run:error") {
           assistantResponse = assistantResponse || `[Error: ${event.error.message}]`;
@@ -2627,6 +2676,15 @@ export const createRequestHandler = async (options?: {
       runConversations.delete(latestRunId);
     }
     console.log("[resume-run] complete for", conversationId);
+
+    // Check for pending subagent results that arrived during the run
+    const hadDeferred = pendingCallbackNeeded.delete(conversationId);
+    const postConv = await conversationStore.get(conversationId);
+    if (hadDeferred || postConv?.pendingSubagentResults?.length) {
+      processSubagentCallback(conversationId, true).catch(err =>
+        console.error(`[poncho][subagent-callback] Post-resume callback failed:`, err instanceof Error ? err.message : err),
+      );
+    }
   };
 
   // ---------------------------------------------------------------------------
@@ -2783,14 +2841,6 @@ export const createRequestHandler = async (options?: {
             latestRunId = event.runId;
             runOwners.set(event.runId, "local-owner");
             runConversations.set(event.runId, conversationId);
-            if (typeof event.contextWindow === "number" && event.contextWindow > 0) {
-              runContextWindow = event.contextWindow;
-            }
-          }
-          if (event.type === "model:response") {
-            if (typeof event.usage?.input === "number") {
-              runContextTokens = event.usage.input;
-            }
           }
           if (event.type === "model:chunk") {
             if (currentTools.length > 0) {
@@ -2892,6 +2942,8 @@ export const createRequestHandler = async (options?: {
             }
             runSteps = event.result.steps;
             if (typeof event.result.maxSteps === "number") runMaxSteps = event.result.maxSteps;
+            runContextTokens = event.result.contextTokens ?? runContextTokens;
+            runContextWindow = event.result.contextWindow ?? runContextWindow;
           }
           if (event.type === "run:error") {
             assistantResponse = assistantResponse || `[Error: ${event.error.message}]`;
@@ -3813,7 +3865,15 @@ export const createRequestHandler = async (options?: {
         return;
       }
 
-      // Record the decision on this approval entry
+      // Track decision in memory so parallel batch requests see a consistent
+      // view (file-store reads return independent copies, causing lost updates).
+      let batchDecisions = approvalDecisionTracker.get(conversationId);
+      if (!batchDecisions) {
+        batchDecisions = new Map();
+        approvalDecisionTracker.set(conversationId, batchDecisions);
+      }
+      batchDecisions.set(approvalId, approved);
+
       foundApproval.decision = approved ? "approved" : "denied";
 
       broadcastEvent(conversationId,
@@ -3823,16 +3883,26 @@ export const createRequestHandler = async (options?: {
       );
 
       const allApprovals = foundConversation.pendingApprovals ?? [];
-      const allDecided = allApprovals.length > 0 && allApprovals.every(a => a.decision != null);
+      const allDecided = allApprovals.length > 0 &&
+        allApprovals.every(a => batchDecisions!.has(a.approvalId));
 
       if (!allDecided) {
-        // Still waiting for more decisions — persist and respond
+        // Still waiting for more decisions — persist best-effort and respond.
+        // The write may be overwritten by a concurrent request, but that's
+        // fine: the in-memory tracker is the source of truth for completion.
         await conversationStore.update(foundConversation);
         writeJson(response, 200, { ok: true, approvalId, approved, batchComplete: false });
         return;
       }
 
-      // All approvals in the batch are decided — execute and resume
+      // All approvals in the batch are decided — apply tracked decisions,
+      // execute approved tools, and resume the run.
+      for (const a of allApprovals) {
+        const d = batchDecisions.get(a.approvalId);
+        if (d != null) a.decision = d ? "approved" : "denied";
+      }
+      approvalDecisionTracker.delete(conversationId);
+
       foundConversation.pendingApprovals = [];
       foundConversation.runStatus = "running";
       await conversationStore.update(foundConversation);
@@ -4517,14 +4587,6 @@ export const createRequestHandler = async (options?: {
             if (active && active.abortController === abortController) {
               active.runId = event.runId;
             }
-            if (typeof event.contextWindow === "number" && event.contextWindow > 0) {
-              runContextWindow = event.contextWindow;
-            }
-          }
-          if (event.type === "model:response") {
-            if (typeof event.usage?.input === "number") {
-              runContextTokens = event.usage.input;
-            }
           }
           if (event.type === "run:cancelled") {
             runCancelled = true;
@@ -4623,6 +4685,8 @@ export const createRequestHandler = async (options?: {
             if (assistantResponse.length === 0 && event.result.response) {
               assistantResponse = event.result.response;
             }
+            runContextTokens = event.result.contextTokens ?? runContextTokens;
+            runContextWindow = event.result.contextWindow ?? runContextWindow;
             if (event.result.continuation && event.result.continuationMessages) {
               runContinuationMessages = event.result.continuationMessages;
               conversation._continuationMessages = runContinuationMessages;
@@ -4783,9 +4847,10 @@ export const createRequestHandler = async (options?: {
           // Already closed.
         }
         // Check for pending subagent results that arrived during the run
+        const hadDeferred = pendingCallbackNeeded.delete(conversationId);
         const freshConv = await conversationStore.get(conversationId);
-        if (freshConv?.pendingSubagentResults?.length) {
-          processSubagentCallback(conversationId).catch(err =>
+        if (hadDeferred || freshConv?.pendingSubagentResults?.length) {
+          processSubagentCallback(conversationId, true).catch(err =>
             console.error(`[poncho][subagent-callback] Post-run callback failed:`, err instanceof Error ? err.message : err),
           );
         }
@@ -4948,6 +5013,14 @@ export const createRequestHandler = async (options?: {
           );
         }
 
+        const convId = conversation.conversationId;
+        activeConversationRuns.set(convId, {
+          ownerId: conversation.ownerId,
+          abortController: new AbortController(),
+          runId: null,
+        });
+
+        try {
         const abortController = new AbortController();
         let assistantResponse = "";
         let latestRunId = "";
@@ -4955,7 +5028,7 @@ export const createRequestHandler = async (options?: {
         const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
         let currentTools: string[] = [];
         let currentText = "";
-        let runResult: { status: string; steps: number; continuation?: boolean } = {
+        let runResult: { status: string; steps: number; continuation?: boolean; contextTokens?: number; contextWindow?: number } = {
           status: "completed",
           steps: 0,
         };
@@ -4967,8 +5040,8 @@ export const createRequestHandler = async (options?: {
 
         for await (const event of harness.runWithTelemetry({
           task: cronJob.task,
-          conversationId: conversation.conversationId,
-          parameters: { __activeConversationId: conversation.conversationId },
+          conversationId: convId,
+          parameters: { __activeConversationId: convId },
           messages: historyMessages,
           abortSignal: abortController.signal,
         })) {
@@ -5010,13 +5083,18 @@ export const createRequestHandler = async (options?: {
               status: event.result.status,
               steps: event.result.steps,
               continuation: event.result.continuation,
+              contextTokens: event.result.contextTokens,
+              contextWindow: event.result.contextWindow,
             };
             if (!assistantResponse && event.result.response) {
               assistantResponse = event.result.response;
             }
           }
+          broadcastEvent(convId, event);
           await telemetry.emit(event);
         }
+
+        finishConversationStream(convId);
 
         if (currentTools.length > 0) {
           sections.push({ type: "tools", content: currentTools });
@@ -5026,7 +5104,8 @@ export const createRequestHandler = async (options?: {
           currentText = "";
         }
 
-        // Persist the conversation
+        // Persist the conversation — read fresh state to avoid clobbering
+        // pendingSubagentResults appended during the run.
         const hasContent = assistantResponse.length > 0 || toolTimeline.length > 0;
         const assistantMetadata =
           toolTimeline.length > 0 || sections.length > 0
@@ -5044,14 +5123,19 @@ export const createRequestHandler = async (options?: {
             ? [{ role: "assistant" as const, content: assistantResponse, metadata: assistantMetadata }]
             : []),
         ];
-        conversation.messages = messages;
-        conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
-        conversation.updatedAt = Date.now();
-        await conversationStore.update(conversation);
+        const freshConv = await conversationStore.get(convId);
+        if (freshConv) {
+          freshConv.messages = messages;
+          freshConv.runtimeRunId = latestRunId || freshConv.runtimeRunId;
+          if (runResult.contextTokens) freshConv.contextTokens = runResult.contextTokens;
+          if (runResult.contextWindow) freshConv.contextWindow = runResult.contextWindow;
+          freshConv.updatedAt = Date.now();
+          await conversationStore.update(freshConv);
+        }
 
         // Self-continuation for serverless timeouts
         if (runResult.continuation && softDeadlineMs > 0) {
-          const selfUrl = `http://${request.headers.host ?? "localhost"}${pathname}?continue=${encodeURIComponent(conversation.conversationId)}&continuation=${continuationCount + 1}`;
+          const selfUrl = `http://${request.headers.host ?? "localhost"}${pathname}?continue=${encodeURIComponent(convId)}&continuation=${continuationCount + 1}`;
           try {
             const selfRes = await fetch(selfUrl, {
               method: "GET",
@@ -5061,7 +5145,7 @@ export const createRequestHandler = async (options?: {
             });
             const selfBody = await selfRes.json() as Record<string, unknown>;
             writeJson(response, 200, {
-              conversationId: conversation.conversationId,
+              conversationId: convId,
               status: "continued",
               continuations: continuationCount + 1,
               finalResult: selfBody,
@@ -5069,7 +5153,7 @@ export const createRequestHandler = async (options?: {
             });
           } catch (continueError) {
             writeJson(response, 200, {
-              conversationId: conversation.conversationId,
+              conversationId: convId,
               status: "continuation_failed",
               error: continueError instanceof Error ? continueError.message : "Unknown error",
               duration: Date.now() - start,
@@ -5080,12 +5164,28 @@ export const createRequestHandler = async (options?: {
         }
 
         writeJson(response, 200, {
-          conversationId: conversation.conversationId,
+          conversationId: convId,
           status: runResult.status,
           response: assistantResponse.slice(0, 500),
           duration: Date.now() - start,
           steps: runResult.steps,
         });
+        } finally {
+          activeConversationRuns.delete(convId);
+          const hadDeferred = pendingCallbackNeeded.delete(convId);
+          const checkConv = await conversationStore.get(convId);
+          if (hadDeferred || checkConv?.pendingSubagentResults?.length) {
+            if (isServerless) {
+              selfFetchWithRetry(`/api/internal/conversations/${encodeURIComponent(convId)}/subagent-callback`).catch(err =>
+                console.error(`[cron] subagent callback self-fetch failed:`, err instanceof Error ? err.message : err),
+              );
+            } else {
+              processSubagentCallback(convId, true).catch(err =>
+                console.error(`[cron] subagent callback failed:`, err instanceof Error ? err.message : err),
+              );
+            }
+          }
+        }
       } catch (error) {
         writeJson(response, 500, {
           code: "CRON_RUN_ERROR",
@@ -5101,6 +5201,11 @@ export const createRequestHandler = async (options?: {
   handler._cronJobs = cronJobs;
   handler._conversationStore = conversationStore;
   handler._messagingAdapters = messagingAdapters;
+  handler._activeConversationRuns = activeConversationRuns;
+  handler._pendingCallbackNeeded = pendingCallbackNeeded;
+  handler._processSubagentCallback = processSubagentCallback;
+  handler._broadcastEvent = broadcastEvent;
+  handler._finishConversationStream = finishConversationStream;
 
   // Recover stale subagent runs that were "running" when the server last stopped
   // or that have been inactive longer than the staleness threshold.
@@ -5169,6 +5274,8 @@ export const startDevServer = async (
     steps: number;
     assistantMetadata?: Message["metadata"];
     hasContent: boolean;
+    contextTokens: number;
+    contextWindow: number;
   };
 
   const runCronAgent = async (
@@ -5176,9 +5283,12 @@ export const startDevServer = async (
     task: string,
     conversationId: string,
     historyMessages: Message[],
+    onEvent?: (event: AgentEvent) => void,
   ): Promise<CronRunResult> => {
     let assistantResponse = "";
     let steps = 0;
+    let contextTokens = 0;
+    let contextWindow = 0;
     const toolTimeline: string[] = [];
     const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
     let currentTools: string[] = [];
@@ -5189,6 +5299,7 @@ export const startDevServer = async (
       parameters: { __activeConversationId: conversationId },
       messages: historyMessages,
     })) {
+      onEvent?.(event);
       if (event.type === "model:chunk") {
         if (currentTools.length > 0) {
           sections.push({ type: "tools", content: currentTools });
@@ -5221,6 +5332,8 @@ export const startDevServer = async (
       }
       if (event.type === "run:completed") {
         steps = event.result.steps;
+        contextTokens = event.result.contextTokens ?? 0;
+        contextWindow = event.result.contextWindow ?? 0;
         if (!assistantResponse && event.result.response) {
           assistantResponse = event.result.response;
         }
@@ -5240,7 +5353,7 @@ export const startDevServer = async (
             sections: sections.length > 0 ? sections : undefined,
           } as Message["metadata"])
         : undefined;
-    return { response: assistantResponse, steps, assistantMetadata, hasContent };
+    return { response: assistantResponse, steps, assistantMetadata, hasContent, contextTokens, contextWindow };
   };
 
   const buildCronMessages = (
@@ -5267,6 +5380,9 @@ export const startDevServer = async (
     const harnessRef = handler._harness;
     const store = handler._conversationStore;
     const adapters = handler._messagingAdapters;
+    const activeRuns = handler._activeConversationRuns;
+    const deferredCallbacks = handler._pendingCallbackNeeded;
+    const runCallback = handler._processSubagentCallback;
     if (!harnessRef || !store) return;
 
     for (const [jobName, config] of entries) {
@@ -5308,32 +5424,56 @@ export const startDevServer = async (
 
                 const task = `[Scheduled: ${jobName}]\n${config.task}`;
                 const historyMessages = [...conversation.messages];
+                const convId = conversation.conversationId;
 
+                activeRuns?.set(convId, {
+                  ownerId: "local-owner",
+                  abortController: new AbortController(),
+                  runId: null,
+                });
                 try {
-                  const result = await runCronAgent(harnessRef, task, conversation.conversationId, historyMessages);
+                  const broadcastCh = handler._broadcastEvent;
+                  const result = await runCronAgent(harnessRef, task, convId, historyMessages,
+                    broadcastCh ? (ev) => broadcastCh(convId, ev) : undefined,
+                  );
+                  handler._finishConversationStream?.(convId);
 
-                  conversation.messages = buildCronMessages(task, historyMessages, result);
-                  conversation.updatedAt = Date.now();
-                  await store.update(conversation);
+                  const freshConv = await store.get(convId);
+                  if (freshConv) {
+                    freshConv.messages = buildCronMessages(task, historyMessages, result);
+                    if (result.contextTokens > 0) freshConv.contextTokens = result.contextTokens;
+                    if (result.contextWindow > 0) freshConv.contextWindow = result.contextWindow;
+                    freshConv.updatedAt = Date.now();
+                    await store.update(freshConv);
 
-                  if (result.response) {
-                    try {
-                      await adapter.sendReply(
-                        {
-                          channelId: chatId,
-                          platformThreadId: conversation.channelMeta?.platformThreadId ?? chatId,
-                        },
-                        result.response,
-                      );
-                    } catch (sendError) {
-                      const sendMsg = sendError instanceof Error ? sendError.message : String(sendError);
-                      process.stderr.write(`[cron] ${jobName}: send to ${chatId} failed: ${sendMsg}\n`);
+                    if (result.response) {
+                      try {
+                        await adapter.sendReply(
+                          {
+                            channelId: chatId,
+                            platformThreadId: freshConv.channelMeta?.platformThreadId ?? chatId,
+                          },
+                          result.response,
+                        );
+                      } catch (sendError) {
+                        const sendMsg = sendError instanceof Error ? sendError.message : String(sendError);
+                        process.stderr.write(`[cron] ${jobName}: send to ${chatId} failed: ${sendMsg}\n`);
+                      }
                     }
                   }
                   totalChats++;
                 } catch (runError) {
                   const runMsg = runError instanceof Error ? runError.message : String(runError);
                   process.stderr.write(`[cron] ${jobName}: run for chat ${chatId} failed: ${runMsg}\n`);
+                } finally {
+                  activeRuns?.delete(convId);
+                  const hadDeferred = deferredCallbacks?.delete(convId) ?? false;
+                  const checkConv = await store.get(convId);
+                  if (hadDeferred || checkConv?.pendingSubagentResults?.length) {
+                    runCallback?.(convId, true).catch((err: unknown) =>
+                      console.error(`[cron] ${jobName}: subagent callback for ${chatId} failed:`, err instanceof Error ? err.message : err),
+                    );
+                  }
                 }
               }
 
@@ -5347,15 +5487,31 @@ export const startDevServer = async (
             return;
           }
 
+          let cronConvId: string | undefined;
           try {
             const conversation = await store.create(
               "local-owner",
               `[cron] ${jobName} ${timestamp}`,
             );
-            const result = await runCronAgent(harnessRef, config.task, conversation.conversationId, []);
-            conversation.messages = buildCronMessages(config.task, [], result);
-            conversation.updatedAt = Date.now();
-            await store.update(conversation);
+            cronConvId = conversation.conversationId;
+            activeRuns?.set(cronConvId, {
+              ownerId: "local-owner",
+              abortController: new AbortController(),
+              runId: null,
+            });
+            const broadcast = handler._broadcastEvent;
+            const result = await runCronAgent(harnessRef, config.task, cronConvId, [],
+              broadcast ? (ev) => broadcast(cronConvId!, ev) : undefined,
+            );
+            handler._finishConversationStream?.(cronConvId);
+            const freshConv = await store.get(cronConvId);
+            if (freshConv) {
+              freshConv.messages = buildCronMessages(config.task, [], result);
+              if (result.contextTokens > 0) freshConv.contextTokens = result.contextTokens;
+              if (result.contextWindow > 0) freshConv.contextWindow = result.contextWindow;
+              freshConv.updatedAt = Date.now();
+              await store.update(freshConv);
+            }
             const elapsed = ((Date.now() - start) / 1000).toFixed(1);
             process.stdout.write(
               `[cron] ${jobName} completed in ${elapsed}s (${result.steps} steps)\n`,
@@ -5366,6 +5522,17 @@ export const startDevServer = async (
             process.stderr.write(
               `[cron] ${jobName} failed after ${elapsed}s: ${msg}\n`,
             );
+          } finally {
+            if (cronConvId) {
+              activeRuns?.delete(cronConvId);
+              const hadDeferred = deferredCallbacks?.delete(cronConvId) ?? false;
+              const checkConv = await store.get(cronConvId);
+              if (hadDeferred || checkConv?.pendingSubagentResults?.length) {
+                runCallback?.(cronConvId, true).catch((err: unknown) =>
+                  console.error(`[cron] ${jobName}: subagent callback failed:`, err instanceof Error ? err.message : err),
+                );
+              }
+            }
           }
         },
       );

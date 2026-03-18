@@ -401,6 +401,41 @@ export const WEB_UI_STYLES = `
     .conversation-item .delete-btn.confirming:hover {
       color: var(--error-alt);
     }
+    .cron-section-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 10px 4px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--fg-7);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      user-select: none;
+      transition: color 0.15s;
+    }
+    .cron-section-header:hover { color: var(--fg-5); }
+    .cron-section-caret {
+      display: inline-flex;
+      transition: transform 0.15s;
+    }
+    .cron-section-caret.open { transform: rotate(90deg); }
+    .cron-section-count {
+      font-weight: 400;
+      color: var(--fg-8);
+      font-size: 11px;
+    }
+    .cron-view-more {
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--fg-7);
+      cursor: pointer;
+      text-align: center;
+      transition: color 0.15s;
+      user-select: none;
+    }
+    .cron-view-more:hover { color: var(--fg-3); }
     .sidebar-footer {
       margin-top: auto;
       padding-top: 8px;
@@ -1572,6 +1607,8 @@ export const WEB_UI_STYLES = `
       line-height: 1.45;
       color: var(--fg-tool-code);
       width: 100%;
+      min-width: 0;
+      overflow: hidden;
     }
     .subagent-result-summary {
       list-style: none;
@@ -1616,6 +1653,19 @@ export const WEB_UI_STYLES = `
       display: grid;
       gap: 6px;
       padding: 0 12px 10px;
+      min-width: 0;
+      overflow-x: auto;
+      overflow-wrap: break-word;
+      word-break: break-word;
+    }
+    .subagent-result-body pre {
+      max-width: 100%;
+      overflow-x: auto;
+    }
+    .subagent-result-body table {
+      max-width: 100%;
+      overflow-x: auto;
+      display: block;
     }
 
     /* Todo panel — inside composer-inner, above the input shell */

@@ -6,6 +6,13 @@ const SEARCH_UA =
 
 const FETCH_TIMEOUT_MS = 15_000;
 
+const SEARCH_MAX_RETRIES = 4;
+const SEARCH_INITIAL_DELAY_MS = 2_000;
+const SEARCH_MIN_INTERVAL_MS = 4_000;
+const SEARCH_FALLBACK_COOLDOWN_MS = 12_000;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 // ---------------------------------------------------------------------------
 // web_search — Brave Search HTML scraping (no API key)
 // ---------------------------------------------------------------------------
@@ -16,21 +23,100 @@ interface SearchResult {
   snippet: string;
 }
 
+let searchQueue: Promise<void> = Promise.resolve();
+let nextSearchAllowedAt = 0;
+
+function parseRetryAfterMs(retryAfterHeader: string | null): number {
+  if (!retryAfterHeader) return SEARCH_FALLBACK_COOLDOWN_MS;
+  const asSeconds = Number(retryAfterHeader);
+  if (Number.isFinite(asSeconds) && asSeconds >= 0) {
+    return Math.max(Math.floor(asSeconds * 1000), SEARCH_MIN_INTERVAL_MS);
+  }
+  const asDate = new Date(retryAfterHeader).getTime();
+  if (Number.isFinite(asDate)) {
+    return Math.max(asDate - Date.now(), SEARCH_MIN_INTERVAL_MS);
+  }
+  return SEARCH_FALLBACK_COOLDOWN_MS;
+}
+
+function applyRateLimitCooldown(retryAfterHeader: string | null): void {
+  const cooldownMs = parseRetryAfterMs(retryAfterHeader);
+  nextSearchAllowedAt = Math.max(nextSearchAllowedAt, Date.now() + cooldownMs);
+}
+
+async function runWithSearchThrottle<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = searchQueue;
+  let release: (() => void) | undefined;
+  searchQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  await previous.catch(() => {});
+  try {
+    const waitMs = nextSearchAllowedAt - Date.now();
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+    const result = await fn();
+    nextSearchAllowedAt = Math.max(nextSearchAllowedAt, Date.now() + SEARCH_MIN_INTERVAL_MS);
+    return result;
+  } finally {
+    release?.();
+  }
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status === 503 || status >= 500;
+}
+
 async function braveSearch(query: string, maxResults: number): Promise<SearchResult[]> {
   const url = `https://search.brave.com/search?q=${encodeURIComponent(query)}`;
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": SEARCH_UA,
-      Accept: "text/html,application/xhtml+xml",
-      "Accept-Language": "en-US,en;q=0.9",
-    },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    throw new Error(`Search request failed (${res.status} ${res.statusText})`);
+
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt < SEARCH_MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      const delay = SEARCH_INITIAL_DELAY_MS * 2 ** (attempt - 1) + Math.floor(Math.random() * 500);
+      await sleep(delay);
+    }
+
+    try {
+      const html = await runWithSearchThrottle(async () => {
+        const res = await fetch(url, {
+          headers: {
+            "User-Agent": SEARCH_UA,
+            Accept: "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9",
+          },
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        });
+
+        if (!res.ok) {
+          if (res.status === 429) {
+            applyRateLimitCooldown(res.headers.get("retry-after"));
+          }
+          const error = new Error(`Search request failed (${res.status} ${res.statusText})`);
+          if (isRetryableStatus(res.status)) {
+            throw error;
+          }
+          // Non-retryable status: surface immediately.
+          (error as Error & { retryable?: boolean }).retryable = false;
+          throw error;
+        }
+
+        return await res.text();
+      });
+
+      return parseBraveResults(html, maxResults);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if ((lastError as Error & { retryable?: boolean }).retryable === false) {
+        throw lastError;
+      }
+      if (attempt < SEARCH_MAX_RETRIES - 1) continue;
+    }
   }
-  const html = await res.text();
-  return parseBraveResults(html, maxResults);
+
+  throw lastError ?? new Error("Search failed after retries");
 }
 
 function parseBraveResults(html: string, max: number): SearchResult[] {
