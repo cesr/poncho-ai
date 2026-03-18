@@ -1551,6 +1551,15 @@ export const WEB_UI_STYLES = `
     .subagent-link:hover {
       text-decoration: underline;
     }
+    .tool-link {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 11px;
+      margin-left: 4px;
+    }
+    .tool-link:hover {
+      text-decoration: underline;
+    }
     .subagent-callback-wrap {
       padding: 0;
     }

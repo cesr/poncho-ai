@@ -342,13 +342,23 @@ export const getWebUiClientScript = (markedSource: string): string => `
           return "";
         }
         const subagentLinkRe = /\\s*\\[subagent:([^\\]]+)\\]$/;
+        const toolLinkRe = /\\s*\\[link:(https?:\\/\\/[^\\]]+)\\]$/;
         const renderActivityItem = (item) => {
-          const match = item.match(subagentLinkRe);
-          if (match) {
+          const subMatch = item.match(subagentLinkRe);
+          if (subMatch) {
             const cleaned = escapeHtml(item.replace(subagentLinkRe, ""));
-            const subId = escapeHtml(match[1]);
+            const subId = escapeHtml(subMatch[1]);
             return '<div class="tool-activity-item">' + cleaned +
               ' <a class="subagent-link" href="javascript:void(0)" data-subagent-id="' + subId + '">View subagent</a></div>';
+          }
+          const linkMatch = item.match(toolLinkRe);
+          if (linkMatch) {
+            const cleaned = escapeHtml(item.replace(toolLinkRe, ""));
+            const href = escapeHtml(linkMatch[1]);
+            var displayUrl = linkMatch[1].replace(/^https?:\\/\\//, "");
+            if (displayUrl.length > 55) displayUrl = displayUrl.slice(0, 52) + "...";
+            return '<div class="tool-activity-item">' + cleaned +
+              ' <a class="tool-link" href="' + href + '" target="_blank" rel="noopener">' + escapeHtml(displayUrl) + '</a></div>';
           }
           return '<div class="tool-activity-item">' + escapeHtml(item) + "</div>";
         };
@@ -1595,10 +1605,17 @@ export const getWebUiClientScript = (markedSource: string): string => `
                       );
                       const duration =
                         typeof payload.duration === "number" ? payload.duration : null;
-                      const detail =
+                      var detail =
                         activeActivity && typeof activeActivity.detail === "string"
                           ? activeActivity.detail.trim()
                           : "";
+                      const out = payload.output && typeof payload.output === "object" ? payload.output : {};
+                      if (!detail && toolName === "web_search" && typeof out.query === "string") {
+                        detail = "\\x22" + (out.query.length > 60 ? out.query.slice(0, 57) + "..." : out.query) + "\\x22";
+                      }
+                      if (!detail && toolName === "web_fetch" && typeof out.url === "string") {
+                        detail = out.url;
+                      }
                       const meta = [];
                       if (duration !== null) meta.push(duration + "ms");
                       if (detail) meta.push(detail);
@@ -1609,6 +1626,12 @@ export const getWebUiClientScript = (markedSource: string): string => `
                         (meta.length > 0 ? " (" + meta.join(", ") + ")" : "");
                       if (toolName === "spawn_subagent" && payload.output && typeof payload.output === "object" && payload.output.subagentId) {
                         toolText += " [subagent:" + payload.output.subagentId + "]";
+                      }
+                      if (toolName === "web_fetch" && typeof out.url === "string") {
+                        toolText += " [link:" + out.url + "]";
+                      }
+                      if (toolName === "web_search" && Array.isArray(out.results)) {
+                        toolText += " \\u2014 " + out.results.length + " result" + (out.results.length !== 1 ? "s" : "");
                       }
                       assistantMessage._currentTools.push(toolText);
                       assistantMessage.metadata.toolActivity.push(toolText);
@@ -2049,6 +2072,28 @@ export const getWebUiClientScript = (markedSource: string): string => `
           };
         }
 
+        if (toolName === "web_search") {
+          const query = getStringInputField(input, "query");
+          const short = query && query.length > 60 ? query.slice(0, 57) + "..." : query;
+          return {
+            kind: "tool",
+            tool: toolName,
+            label: "Searching" + (short ? " \\x22" + short + "\\x22" : ""),
+            detail: short ? "\\x22" + short + "\\x22" : "",
+          };
+        }
+
+        if (toolName === "web_fetch") {
+          const url = getStringInputField(input, "url");
+          const short = url && url.length > 60 ? url.slice(0, 57) + "..." : url;
+          return {
+            kind: "tool",
+            tool: toolName,
+            label: "Fetching " + (short || "page"),
+            detail: url || "",
+          };
+        }
+
         return {
           kind: "tool",
           tool: toolName,
@@ -2436,10 +2481,17 @@ export const getWebUiClientScript = (markedSource: string): string => `
                     toolName,
                   );
                   const duration = typeof payload.duration === "number" ? payload.duration : null;
-                  const detail =
+                  var detail =
                     activeActivity && typeof activeActivity.detail === "string"
                       ? activeActivity.detail.trim()
                       : "";
+                  const out = payload.output && typeof payload.output === "object" ? payload.output : {};
+                  if (!detail && toolName === "web_search" && typeof out.query === "string") {
+                    detail = "\\x22" + (out.query.length > 60 ? out.query.slice(0, 57) + "..." : out.query) + "\\x22";
+                  }
+                  if (!detail && toolName === "web_fetch" && typeof out.url === "string") {
+                    detail = out.url;
+                  }
                   const meta = [];
                   if (duration !== null) meta.push(duration + "ms");
                   if (detail) meta.push(detail);
@@ -2447,6 +2499,12 @@ export const getWebUiClientScript = (markedSource: string): string => `
                     "- done \\x60" + toolName + "\\x60" + (meta.length > 0 ? " (" + meta.join(", ") + ")" : "");
                   if (toolName === "spawn_subagent" && payload.output && typeof payload.output === "object" && payload.output.subagentId) {
                     toolText += " [subagent:" + payload.output.subagentId + "]";
+                  }
+                  if (toolName === "web_fetch" && typeof out.url === "string") {
+                    toolText += " [link:" + out.url + "]";
+                  }
+                  if (toolName === "web_search" && Array.isArray(out.results)) {
+                    toolText += " \\u2014 " + out.results.length + " result" + (out.results.length !== 1 ? "s" : "");
                   }
                   assistantMessage._currentTools.push(toolText);
                   if (!assistantMessage.metadata) assistantMessage.metadata = {};

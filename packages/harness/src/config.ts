@@ -46,6 +46,8 @@ export type BuiltInToolToggles = {
   todo_add?: boolean;
   todo_update?: boolean;
   todo_remove?: boolean;
+  web_search?: boolean;
+  web_fetch?: boolean;
 };
 
 export interface MessagingChannelConfig {

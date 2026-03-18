@@ -32,6 +32,7 @@ import { addPromptCacheBreakpoints } from "./prompt-cache.js";
 import { jsonSchemaToZod } from "./schema-converter.js";
 import type { SkillMetadata } from "./skill-context.js";
 import { createSkillTools, normalizeScriptPolicyPath } from "./skill-tools.js";
+import { createSearchTools } from "./search-tools.js";
 import { createSubagentTools } from "./subagent-tools.js";
 import type { SubagentManager } from "./subagent-manager.js";
 import { LatitudeTelemetry } from "@latitude-data/telemetry";
@@ -562,7 +563,7 @@ export class AgentHarness {
   private insideTelemetryCapture = false;
   private _browserSession?: unknown;
   private _browserMod?: {
-    createBrowserTools: (getSession: () => unknown) => ToolDefinition[];
+    createBrowserTools: (getSession: () => unknown, getConversationId?: () => string) => ToolDefinition[];
     BrowserSession: new (sessionId: string, config: Record<string, unknown>) => unknown;
   };
 
@@ -643,6 +644,11 @@ export class AgentHarness {
     }
     if (this.isToolEnabled("delete_directory")) {
       this.registerIfMissing(createDeleteDirectoryTool(this.workingDir));
+    }
+    for (const tool of createSearchTools()) {
+      if (this.isToolEnabled(tool.name)) {
+        this.registerIfMissing(tool);
+      }
     }
     if (this.environment === "development" && this.isToolEnabled("poncho_docs")) {
       this.registerIfMissing(ponchoDocsTool);
@@ -1161,7 +1167,7 @@ export class AgentHarness {
   private async initBrowserTools(config: PonchoConfig): Promise<void> {
     const spec = ["@poncho-ai", "browser"].join("/");
     let browserMod: {
-      createBrowserTools: (getSession: () => unknown) => ToolDefinition[];
+      createBrowserTools: (getSession: () => unknown, getConversationId?: () => string) => ToolDefinition[];
       BrowserSession: new (sessionId: string, cfg?: Record<string, unknown>) => unknown;
     };
     try {
@@ -1205,6 +1211,10 @@ export class AgentHarness {
 
     const tools = browserMod.createBrowserTools(
       () => session,
+      // Backward compat: older @poncho-ai/browser versions expect a second
+      // getConversationId callback.  Current versions read from ToolContext
+      // and ignore extra args.
+      () => "__default__",
     );
     for (const tool of tools) {
       if (this.isToolEnabled(tool.name)) {

@@ -134,6 +134,9 @@ importers:
       ai:
         specifier: ^6.0.86
         version: 6.0.86(zod@3.25.76)
+      cheerio:
+        specifier: ^1.2.0
+        version: 1.2.0
       jiti:
         specifier: ^2.6.1
         version: 2.6.1

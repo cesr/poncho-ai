@@ -9,6 +9,7 @@ export * from "./memory.js";
 export * from "./mcp.js";
 export * from "./model-factory.js";
 export * from "./schema-converter.js";
+export * from "./search-tools.js";
 export * from "./skill-context.js";
 export * from "./skill-tools.js";
 export * from "./state.js";

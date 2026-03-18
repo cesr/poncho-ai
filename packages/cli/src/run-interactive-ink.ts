@@ -567,6 +567,9 @@ export const runInteractiveInk = async ({
             if (currentTools.length > 0) {
               sections.push({ type: "tools", content: currentTools });
               currentTools = [];
+              if (responseText.length > 0 && !/\s$/.test(responseText)) {
+                responseText += " ";
+              }
             }
             responseText += event.content;
             streamedText += event.content;
