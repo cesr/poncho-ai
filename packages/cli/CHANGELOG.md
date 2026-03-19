@@ -1,5 +1,15 @@
 # @poncho-ai/cli
 
+## 0.30.5
+
+### Patch Changes
+
+- [`031abc7`](https://github.com/cesr/poncho-ai/commit/031abc770b85141da5fdd209c6bf8f594f5552e4) Thanks [@cesr](https://github.com/cesr)! - Fix cron job continuation on serverless
+  - Persist \_continuationMessages so cron continuations resume from correct harness state
+  - Use selfFetchWithRetry with doWaitUntil instead of raw fetch for cron continuation trigger
+  - Extend internal auth bypass to /api/cron/ paths for continuation self-fetch
+  - Add startup warning when VERCEL_AUTOMATION_BYPASS_SECRET is missing
+
 ## 0.30.4
 
 ### Patch Changes
