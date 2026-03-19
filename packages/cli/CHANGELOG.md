@@ -1,5 +1,14 @@
 # @poncho-ai/cli
 
+## 0.30.4
+
+### Patch Changes
+
+- [`ea8b5da`](https://github.com/cesr/poncho-ai/commit/ea8b5da1bca5d45c05a68a43c4850aacee612ffb) Thanks [@cesr](https://github.com/cesr)! - Fix internal self-fetch blocked by Vercel Deployment Protection and PONCHO_AUTH_TOKEN
+  - Include x-vercel-protection-bypass header when VERCEL_AUTOMATION_BYPASS_SECRET is set
+  - Internal requests with valid x-poncho-internal header bypass the PONCHO_AUTH_TOKEN auth gate
+  - Better error messages distinguishing Vercel Deployment Protection from internal auth failures
+
 ## 0.30.3
 
 ### Patch Changes
