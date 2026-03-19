@@ -36,6 +36,10 @@ import { createSearchTools } from "./search-tools.js";
 import { createSubagentTools } from "./subagent-tools.js";
 import type { SubagentManager } from "./subagent-manager.js";
 import { LatitudeTelemetry } from "@latitude-data/telemetry";
+import { trace, context as otelContext, SpanStatusCode } from "@opentelemetry/api";
+import { NodeTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-node";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { normalizeOtlp } from "./telemetry.js";
 import {
   isSiblingScriptsPattern,
   matchesRelativeScriptPattern,
@@ -560,6 +564,9 @@ export class AgentHarness {
   private readonly activeSkillNames = new Set<string>();
   private readonly registeredMcpToolNames = new Set<string>();
   private latitudeTelemetry?: LatitudeTelemetry;
+  private otlpSpanProcessor?: BatchSpanProcessor;
+  private otlpTracerProvider?: NodeTracerProvider;
+  private hasOtlpExporter = false;
   private insideTelemetryCapture = false;
   private _browserSession?: unknown;
   private _browserMod?: {
@@ -1079,6 +1086,37 @@ export class AgentHarness {
         `[poncho][telemetry] Latitude telemetry is configured but missing: ${missing.join(", ")}. Traces will NOT be sent.`,
       );
     }
+
+    // Generic OTLP trace exporter — works alongside or instead of Latitude.
+    const otlpConfig = telemetryEnabled ? normalizeOtlp(config?.telemetry?.otlp) : undefined;
+    if (otlpConfig) {
+      const exporter = new OTLPTraceExporter({
+        url: otlpConfig.url,
+        headers: otlpConfig.headers,
+      });
+      const processor = new BatchSpanProcessor(exporter);
+      this.otlpSpanProcessor = processor;
+
+      if (this.latitudeTelemetry) {
+        // Latitude already registered a global TracerProvider (v1.x) — add our
+        // processor to it so every span flows to both destinations.
+        const globalProvider = trace.getTracerProvider();
+        const delegate = (globalProvider as unknown as { getDelegate?: () => unknown })
+          .getDelegate?.() ?? globalProvider;
+        if (typeof (delegate as Record<string, unknown>).addSpanProcessor === "function") {
+          (delegate as unknown as { addSpanProcessor(p: BatchSpanProcessor): void }).addSpanProcessor(processor);
+        }
+        console.info(`[poncho][telemetry] OTLP exporter added (piggybacking on Latitude provider) → ${otlpConfig.url}`);
+      } else {
+        const provider = new NodeTracerProvider({
+          spanProcessors: [processor],
+        });
+        provider.register();
+        this.otlpTracerProvider = provider;
+        console.info(`[poncho][telemetry] OTLP exporter active (standalone provider) → ${otlpConfig.url}`);
+      }
+      this.hasOtlpExporter = true;
+    }
   }
 
   private async buildBrowserStoragePersistence(
@@ -1250,6 +1288,27 @@ export class AgentHarness {
       });
       this.latitudeTelemetry = undefined;
     }
+    if (this.otlpSpanProcessor) {
+      await this.otlpSpanProcessor.shutdown().catch((err) => {
+        console.warn(
+          `[poncho][telemetry] OTLP span processor shutdown error: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+      this.otlpSpanProcessor = undefined;
+    }
+    if (this.otlpTracerProvider) {
+      await this.otlpTracerProvider.shutdown().catch((err) => {
+        console.warn(
+          `[poncho][telemetry] OTLP tracer provider shutdown error: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+      this.otlpTracerProvider = undefined;
+    }
+    this.hasOtlpExporter = false;
   }
 
   listTools(): ToolDefinition[] {
@@ -1257,18 +1316,20 @@ export class AgentHarness {
   }
 
   /**
-   * Wraps the run() generator with Latitude telemetry capture for complete trace coverage
-   * Streams events in real-time using an event queue pattern
+   * Wraps the run() generator with telemetry capture for complete trace coverage.
+   * Supports Latitude, generic OTLP, or both simultaneously.
+   * Streams events in real-time using an event queue pattern.
    */
   async *runWithTelemetry(input: RunInput): AsyncGenerator<AgentEvent> {
     const config = this.loadedConfig;
     const telemetry = this.latitudeTelemetry;
 
     if (telemetry) {
+      // Latitude capture path — wraps run() inside telemetry.capture().
+      // If OTLP is also configured, spans flow to both via the shared provider.
       const latProjectIdEnv2 = config?.telemetry?.latitude?.projectIdEnv ?? "LATITUDE_PROJECT_ID";
       const projectId = parseInt(process.env[latProjectIdEnv2] ?? "", 10) as number;
       const rawPath = config?.telemetry?.latitude?.path ?? this.parsedAgent?.frontmatter.name ?? 'agent';
-      // Sanitize path for Latitude's DOCUMENT_PATH_REGEXP: /^([\w-]+\/)*([\w-.])+$/
       const path = rawPath.replace(/[^\w\-./]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '') || 'agent';
 
       const rawConversationId = input.conversationId ?? (
@@ -1276,7 +1337,6 @@ export class AgentHarness {
           ? input.parameters.__activeConversationId
           : undefined
       );
-      // Latitude expects a UUID v4 for documentLogUuid; only pass it if valid
       const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const conversationUuid = rawConversationId && UUID_RE.test(rawConversationId)
         ? rawConversationId
@@ -1286,13 +1346,11 @@ export class AgentHarness {
         `[poncho][telemetry] Latitude telemetry active – projectId=${projectId}, path="${path}"${conversationUuid ? `, conversation="${conversationUuid}"` : ""}`,
       );
 
-      // Event queue for streaming events in real-time
       const eventQueue: AgentEvent[] = [];
       let queueResolve: ((value: void) => void) | null = null;
       let generatorDone = false;
       let generatorError: Error | null = null;
 
-      // Start the generator inside telemetry.capture() (runs in background)
       const capturePromise = telemetry.capture({ projectId, path, conversationUuid }, async () => {
         this.insideTelemetryCapture = true;
         try {
@@ -1316,13 +1374,11 @@ export class AgentHarness {
         }
       });
 
-      // Yield events from the queue as they arrive
       try {
         while (!generatorDone || eventQueue.length > 0) {
           if (eventQueue.length > 0) {
             yield eventQueue.shift()!;
           } else if (!generatorDone) {
-            // Wait for next event
             await new Promise<void>((resolve) => {
               queueResolve = resolve;
             });
@@ -1344,8 +1400,47 @@ export class AgentHarness {
           }
         }
       }
+    } else if (this.hasOtlpExporter) {
+      // Standalone OTLP path — create a root span for the agent run so all
+      // child spans (LLM calls via Vercel AI SDK, tool spans) are grouped
+      // under a single trace.
+      const tracer = trace.getTracer("poncho");
+      const agentName = this.parsedAgent?.frontmatter.name ?? "agent";
+
+      const rootSpan = tracer.startSpan(`agent.run ${agentName}`);
+      rootSpan.setAttribute("poncho.agent.name", agentName);
+      if (input.conversationId) {
+        rootSpan.setAttribute("poncho.conversation.id", input.conversationId);
+      }
+
+      // Bind the root span's context so every async step (including
+      // streamText and tool calls) sees it as the parent span.
+      const spanContext = trace.setSpan(otelContext.active(), rootSpan);
+      this.insideTelemetryCapture = true;
+
+      try {
+        const gen = this.run(input);
+        let next: IteratorResult<AgentEvent>;
+        do {
+          next = await otelContext.with(spanContext, () => gen.next());
+          if (!next.done) yield next.value;
+        } while (!next.done);
+        rootSpan.setStatus({ code: SpanStatusCode.OK });
+      } catch (error) {
+        rootSpan.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        rootSpan.recordException(error instanceof Error ? error : new Error(String(error)));
+        throw error;
+      } finally {
+        this.insideTelemetryCapture = false;
+        rootSpan.end();
+        try {
+          await this.otlpSpanProcessor?.forceFlush();
+        } catch { /* best-effort */ }
+      }
     } else {
-      // No telemetry configured, just pass through
       yield* this.run(input);
     }
   }
@@ -1941,7 +2036,7 @@ ${boundedMainMemory.trim()}`
           abortSignal: input.abortSignal,
           ...(typeof maxTokens === "number" ? { maxTokens } : {}),
           experimental_telemetry: {
-            isEnabled: telemetryEnabled && !!this.latitudeTelemetry,
+            isEnabled: telemetryEnabled && !!(this.latitudeTelemetry || this.hasOtlpExporter),
             recordInputs: true,
             recordOutputs: true,
           },
@@ -2283,7 +2378,7 @@ ${boundedMainMemory.trim()}`
         return;
       }
 
-      // Create telemetry tool spans so tool calls appear in Latitude traces
+      // Create telemetry tool spans so tool calls appear in traces
       type ToolSpanHandle = { end: (opts: { result: { value: unknown; isError: boolean } }) => void };
       const toolSpans = new Map<string, ToolSpanHandle>();
       if (this.insideTelemetryCapture && this.latitudeTelemetry) {
@@ -2295,6 +2390,27 @@ ${boundedMainMemory.trim()}`
               call: { id: call.id, arguments: call.input },
             }),
           );
+        }
+      } else if (this.insideTelemetryCapture && this.hasOtlpExporter) {
+        const tracer = trace.getTracer("poncho");
+        for (const call of approvedCalls) {
+          const span = tracer.startSpan(`tool ${call.name}`, {
+            attributes: {
+              "poncho.tool.name": call.name,
+              "poncho.tool.call_id": call.id,
+              "poncho.tool.arguments": JSON.stringify(call.input),
+            },
+          });
+          toolSpans.set(call.id, {
+            end(opts: { result: { value: unknown; isError: boolean } }) {
+              if (opts.result.isError) {
+                span.setStatus({ code: SpanStatusCode.ERROR, message: String(opts.result.value) });
+              } else {
+                span.setStatus({ code: SpanStatusCode.OK });
+              }
+              span.end();
+            },
+          });
         }
       }
 

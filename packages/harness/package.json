@@ -31,6 +31,8 @@
     "@aws-sdk/client-dynamodb": "^3.988.0",
     "@latitude-data/telemetry": "^2.0.4",
     "@opentelemetry/api": "1.9.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.213.0",
+    "@opentelemetry/sdk-trace-node": "^2.6.0",
     "@poncho-ai/sdk": "workspace:*",
     "ai": "^6.0.86",
     "cheerio": "^1.2.0",

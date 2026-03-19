@@ -99,11 +99,17 @@ export default {
     },
   },
 
-  // Telemetry destination
+  // Telemetry destination — generic OTLP and/or Latitude
   telemetry: {
     enabled: true,
+    // Generic OTLP: string shorthand or { url, headers? } object
     otlp: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
-    // Or use Latitude (reads from LATITUDE_API_KEY and LATITUDE_PROJECT_ID env vars by default)
+    // With auth headers (Honeycomb, Grafana Cloud, etc.):
+    // otlp: {
+    //   url: 'https://api.honeycomb.io/v1/traces',
+    //   headers: { 'x-honeycomb-team': process.env.HONEYCOMB_API_KEY },
+    // },
+    // Latitude (reads from LATITUDE_API_KEY and LATITUDE_PROJECT_ID env vars by default)
     latitude: {
       // apiKeyEnv: 'LATITUDE_API_KEY',       // default
       // projectIdEnv: 'LATITUDE_PROJECT_ID', // default
@@ -176,7 +182,7 @@ Remote storage keys are namespaced and versioned, for example `poncho:v1:<agentI
 | `PONCHO_AUTH_TOKEN` | No | Unified auth token (Web UI passphrase + API Bearer token) |
 | `PONCHO_INTERNAL_SECRET` | No | Shared secret used by internal serverless callbacks (recommended for Vercel/Lambda) |
 | `PONCHO_SELF_BASE_URL` | No | Explicit base URL for internal self-callbacks when auto-detection is unavailable |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | No | Telemetry destination |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | No | OTLP trace endpoint (Jaeger, Tempo, Honeycomb, etc.) |
 | `LATITUDE_API_KEY` | No | Latitude dashboard integration |
 | `LATITUDE_PROJECT_ID` | No | Latitude project identifier for capture traces |
 | `LATITUDE_PATH` | No | Latitude prompt path for grouping traces |
@@ -211,23 +217,45 @@ Logs print to console:
 [event] run:completed {"type":"run:completed","runId":"run_abc123","result":{"status":"completed","response":"...","steps":3,"tokens":{"input":1500,"output":840}}}
 ```
 
-### Production telemetry
+### Production telemetry (generic OTLP)
 
-Send events to your observability stack:
+Send full OpenTelemetry traces (agent runs, LLM calls, tool executions) to any
+OTLP-compatible collector — Jaeger, Grafana Tempo, Honeycomb, Datadog, etc.
 
 ```bash
-# Environment variable
-OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.com
+# Simple: just a URL
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.com/v1/traces
 ```
 
-Or configure in code:
+```javascript
+// poncho.config.js — string shorthand
+export default {
+  telemetry: {
+    otlp: 'https://otel.example.com/v1/traces',
+  }
+}
+```
+
+```javascript
+// poncho.config.js — with auth headers (Honeycomb, Grafana Cloud, etc.)
+export default {
+  telemetry: {
+    otlp: {
+      url: 'https://api.honeycomb.io/v1/traces',
+      headers: {
+        'x-honeycomb-team': process.env.HONEYCOMB_API_KEY,
+      },
+    },
+  }
+}
+```
+
+You can also use a custom event handler for non-OTLP destinations:
 
 ```javascript
 // poncho.config.js
 export default {
   telemetry: {
-    otlp: 'https://otel.example.com',
-    // Or custom handler
     handler: async (event) => {
       await sendToMyLoggingService(event)
     }
@@ -256,6 +284,8 @@ telemetry: {
   },
 }
 ```
+
+Both `otlp` and `latitude` can be configured simultaneously — all spans flow to both destinations.
 
 ## Security
 
