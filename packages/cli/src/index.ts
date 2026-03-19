@@ -3075,6 +3075,14 @@ export const createRequestHandler = async (options?: {
   };
 
   const vercelBypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim();
+  if (process.env.VERCEL && !vercelBypassSecret) {
+    console.warn(
+      "\n[poncho] Vercel Deployment Protection will block subagents and auto-continuation." +
+      "\n  Enable 'Protection Bypass for Automation' in your Vercel project settings:" +
+      "\n  -> Project Settings > Deployment Protection > Protection Bypass for Automation" +
+      "\n  The secret is auto-provisioned as VERCEL_AUTOMATION_BYPASS_SECRET.\n",
+    );
+  }
 
   const selfFetchWithRetry = async (path: string, body?: Record<string, unknown>, retries = 3): Promise<Response | void> => {
     if (!selfBaseUrl) {
