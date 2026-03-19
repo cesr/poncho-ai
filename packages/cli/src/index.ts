@@ -5132,6 +5132,10 @@ export const createRequestHandler = async (options?: {
           historyMessages = conversation._continuationMessages?.length
             ? [...conversation._continuationMessages]
             : [...conversation.messages];
+          if (conversation._continuationMessages?.length) {
+            conversation._continuationMessages = undefined;
+            await conversationStore.update(conversation);
+          }
         } else {
           const timestamp = new Date().toISOString();
           conversation = await conversationStore.create(
