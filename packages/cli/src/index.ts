@@ -3083,6 +3083,16 @@ export const createRequestHandler = async (options?: {
       "\n  The secret is auto-provisioned as VERCEL_AUTOMATION_BYPASS_SECRET.\n",
     );
   }
+  const hasCronJobs = Object.keys(cronJobs).length > 0;
+  const authTokenConfigured = !!(process.env[config?.auth?.tokenEnv ?? "PONCHO_AUTH_TOKEN"]) && (config?.auth?.required ?? false);
+  if (process.env.VERCEL && hasCronJobs && authTokenConfigured && !process.env.CRON_SECRET) {
+    console.warn(
+      "\n[poncho] Cron jobs are configured but CRON_SECRET is not set." +
+      "\n  Vercel sends CRON_SECRET as a Bearer token when invoking cron endpoints." +
+      "\n  Set CRON_SECRET to the same value as PONCHO_AUTH_TOKEN in your Vercel env vars," +
+      "\n  otherwise cron invocations will be rejected with 401.\n",
+    );
+  }
 
   const selfFetchWithRetry = async (path: string, body?: Record<string, unknown>, retries = 3): Promise<Response | void> => {
     if (!selfBaseUrl) {
