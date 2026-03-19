@@ -140,6 +140,7 @@ export class AgentClient {
     conversation: ConversationRecord;
     hasActiveRun: boolean;
     hasRunningSubagents: boolean;
+    needsContinuation?: boolean;
   }> {
     const response = await this.fetchImpl(
       `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}`,
@@ -198,36 +199,15 @@ export class AgentClient {
     let totalOutputTokens = 0;
     let totalDuration = 0;
     let latestRunId = "";
-    let isFirstRequest = true;
-    let isContinuation = false;
+    let needsContinuation = false;
 
-    while (true) {
-      const bodyPayload: Record<string, unknown> = isContinuation
-        ? { continuation: true }
-        : { message };
-      if (parameters && !isContinuation) bodyPayload.parameters = parameters;
-      if (files && files.length > 0 && isFirstRequest) bodyPayload.files = files;
-      isFirstRequest = false;
-
-      const response = await this.fetchImpl(
-        `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}/messages`,
-        {
-          method: "POST",
-          headers: this.headers(),
-          body: JSON.stringify(bodyPayload),
-        },
-      );
-      if (!response.ok) {
-        throw new Error(`Send message failed: HTTP ${response.status}`);
-      }
-      const events = await this.parseSse(response);
+    const processEvents = (events: AgentEvent[]): SyncRunResponse | "continue" | "cancelled" | undefined => {
       const runStarted = events.find(
         (event): event is Extract<AgentEvent, { type: "run:started" }> =>
           event.type === "run:started",
       );
-      if (runStarted) {
-        latestRunId = runStarted.runId;
-      }
+      if (runStarted) latestRunId = runStarted.runId;
+
       const completed = events.find(
         (event): event is Extract<AgentEvent, { type: "run:completed" }> =>
           event.type === "run:completed",
@@ -240,10 +220,9 @@ export class AgentClient {
         if (typeof completed.result.maxSteps === "number") stepBudget = completed.result.maxSteps;
 
         if (completed.result.continuation && (stepBudget <= 0 || totalSteps < stepBudget)) {
-          isContinuation = true;
-          continue;
+          return "continue";
         }
-        const syncResult: SyncRunResponse = {
+        return {
           runId: latestRunId || completed.runId,
           status: completed.result.status,
           result: {
@@ -254,50 +233,120 @@ export class AgentClient {
           },
           ...(completed.pendingSubagents ? { pendingSubagents: true } : {}),
         };
-
-        if (waitForSubagents && syncResult.pendingSubagents) {
-          const POLL_INTERVAL = 3000;
-          const MAX_POLL_TIME = 3600_000;
-          const pollStart = Date.now();
-          while (Date.now() - pollStart < MAX_POLL_TIME) {
-            await new Promise(r => setTimeout(r, POLL_INTERVAL));
-            const status = await this.getConversationStatus(conversationId);
-            if (!status.hasRunningSubagents && !status.hasActiveRun) {
-              syncResult.pendingSubagents = false;
-              const msgs = status.conversation.messages;
-              const lastAssistant = [...msgs].reverse().find(m => m.role === "assistant");
-              if (lastAssistant) {
-                syncResult.result = {
-                  ...syncResult.result,
-                  response: typeof lastAssistant.content === "string"
-                    ? lastAssistant.content
-                    : lastAssistant.content.map(p => "text" in p ? p.text : "").join(""),
-                };
-              }
-              break;
-            }
-          }
-        }
-        return syncResult;
       }
       const cancelled = events.find(
         (event): event is Extract<AgentEvent, { type: "run:cancelled" }> =>
           event.type === "run:cancelled",
       );
-      if (cancelled) {
-        return {
-          runId: latestRunId || cancelled.runId,
-          status: "cancelled",
-          result: {
-            status: "cancelled",
-            steps: totalSteps,
-            tokens: { input: totalInputTokens, output: totalOutputTokens, cached: 0 },
-            duration: totalDuration,
-          },
-        };
-      }
-      throw new Error("Send message failed: missing run:completed or run:cancelled event");
+      if (cancelled) return "cancelled";
+      return undefined;
+    };
+
+    // Initial message
+    const bodyPayload: Record<string, unknown> = { message };
+    if (parameters) bodyPayload.parameters = parameters;
+    if (files && files.length > 0) bodyPayload.files = files;
+
+    const response = await this.fetchImpl(
+      `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+      {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify(bodyPayload),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`Send message failed: HTTP ${response.status}`);
     }
+    const events = await this.parseSse(response);
+    let outcome = processEvents(events);
+    needsContinuation = outcome === "continue";
+
+    // Continuation loop via /continue endpoint
+    while (needsContinuation) {
+      needsContinuation = false;
+      const contResponse = await this.fetchImpl(
+        `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}/continue`,
+        {
+          method: "POST",
+          headers: this.headers(),
+        },
+      );
+      if (!contResponse.ok) {
+        // Safety net may have claimed continuation; poll for completion
+        const POLL_INTERVAL = 2000;
+        const MAX_POLL_TIME = 600_000;
+        const pollStart = Date.now();
+        while (Date.now() - pollStart < MAX_POLL_TIME) {
+          await new Promise(r => setTimeout(r, POLL_INTERVAL));
+          const status = await this.getConversationStatus(conversationId);
+          if (!status.hasActiveRun && !status.needsContinuation) {
+            const msgs = status.conversation.messages;
+            const lastAssistant = [...msgs].reverse().find(m => m.role === "assistant");
+            return {
+              runId: latestRunId,
+              status: "completed",
+              result: {
+                status: "completed",
+                steps: totalSteps,
+                tokens: { input: totalInputTokens, output: totalOutputTokens, cached: 0 },
+                duration: totalDuration,
+                response: lastAssistant
+                  ? typeof lastAssistant.content === "string"
+                    ? lastAssistant.content
+                    : lastAssistant.content.map(p => "text" in p ? p.text : "").join("")
+                  : undefined,
+              },
+            };
+          }
+        }
+        throw new Error("Continuation polling timed out");
+      }
+      const contEvents = await this.parseSse(contResponse);
+      outcome = processEvents(contEvents);
+      needsContinuation = outcome === "continue";
+    }
+
+    if (outcome === "cancelled" || outcome === undefined) {
+      return {
+        runId: latestRunId,
+        status: "cancelled",
+        result: {
+          status: "cancelled",
+          steps: totalSteps,
+          tokens: { input: totalInputTokens, output: totalOutputTokens, cached: 0 },
+          duration: totalDuration,
+        },
+      };
+    }
+    if (typeof outcome === "object") {
+      const syncResult = outcome;
+      if (waitForSubagents && syncResult.pendingSubagents) {
+        const POLL_INTERVAL = 3000;
+        const MAX_POLL_TIME = 3600_000;
+        const pollStart = Date.now();
+        while (Date.now() - pollStart < MAX_POLL_TIME) {
+          await new Promise(r => setTimeout(r, POLL_INTERVAL));
+          const status = await this.getConversationStatus(conversationId);
+          if (!status.hasRunningSubagents && !status.hasActiveRun) {
+            syncResult.pendingSubagents = false;
+            const msgs = status.conversation.messages;
+            const lastAssistant = [...msgs].reverse().find(m => m.role === "assistant");
+            if (lastAssistant) {
+              syncResult.result = {
+                ...syncResult.result,
+                response: typeof lastAssistant.content === "string"
+                  ? lastAssistant.content
+                  : lastAssistant.content.map(p => "text" in p ? p.text : "").join(""),
+              };
+            }
+            break;
+          }
+        }
+      }
+      return syncResult;
+    }
+    throw new Error("Send message failed: missing run:completed or run:cancelled event");
   }
 
   async run(input: RunInput & { files?: FileAttachment[] }): Promise<SyncRunResponse> {
@@ -359,41 +408,18 @@ export class AgentClient {
     const conversation = await this.createConversation({ title: input.task });
     let totalSteps = 0;
     let stepBudget = 0;
-    let isFirstRequest = true;
-    let isContinuation = false;
+    let shouldContinue = false;
 
-    while (true) {
-      const bodyPayload: Record<string, unknown> = isContinuation
-        ? { continuation: true }
-        : { message: input.task, parameters: input.parameters };
-      if (input.files && input.files.length > 0 && isFirstRequest) {
-        bodyPayload.files = input.files;
-      }
-      isFirstRequest = false;
-
-      const response = await this.fetchImpl(
-        `${this.baseUrl}/api/conversations/${encodeURIComponent(conversation.conversationId)}/messages`,
-        {
-          method: "POST",
-          headers: this.headers(),
-          body: JSON.stringify(bodyPayload),
-        },
-      );
-
-      if (!response.ok || !response.body) {
-        throw new Error(`Streaming request failed: HTTP ${response.status}`);
-      }
-
+    const readSseStream = async function* (response: Response): AsyncGenerator<AgentEvent> {
+      if (!response.body) return;
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let shouldContinue = false;
+      shouldContinue = false;
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
+        if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
         const frames = buffer.split("\n\n");
@@ -407,9 +433,7 @@ export class AgentClient {
 
           const eventType = lines.find((line) => line.startsWith("event:"));
           const dataLine = lines.find((line) => line.startsWith("data:"));
-          if (!eventType || !dataLine) {
-            continue;
-          }
+          if (!eventType || !dataLine) continue;
 
           const payload = JSON.parse(dataLine.slice("data:".length).trim()) as AgentEvent;
           if (payload.type === "run:completed") {
@@ -425,9 +449,36 @@ export class AgentClient {
           }
         }
       }
+    };
 
-      if (!shouldContinue) break;
-      isContinuation = true;
+    // Initial message
+    const bodyPayload: Record<string, unknown> = { message: input.task, parameters: input.parameters };
+    if (input.files && input.files.length > 0) bodyPayload.files = input.files;
+
+    const response = await this.fetchImpl(
+      `${this.baseUrl}/api/conversations/${encodeURIComponent(conversation.conversationId)}/messages`,
+      {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify(bodyPayload),
+      },
+    );
+    if (!response.ok || !response.body) {
+      throw new Error(`Streaming request failed: HTTP ${response.status}`);
+    }
+    yield* readSseStream(response);
+
+    // Continuation loop via /continue endpoint
+    while (shouldContinue) {
+      const contResponse = await this.fetchImpl(
+        `${this.baseUrl}/api/conversations/${encodeURIComponent(conversation.conversationId)}/continue`,
+        {
+          method: "POST",
+          headers: this.headers(),
+        },
+      );
+      if (!contResponse.ok || !contResponse.body) break;
+      yield* readSseStream(contResponse);
     }
   }
 }

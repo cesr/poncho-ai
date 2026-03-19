@@ -1696,7 +1696,7 @@ export const createRequestHandler = async (options?: {
     parentConversationId: string,
     task: string,
     ownerId: string,
-    isContinuation = false,
+    _isContinuation = false,
   ): Promise<void> => {
     const childHarness = new AgentHarness({
       workingDir,
@@ -1732,14 +1732,12 @@ export const createRequestHandler = async (options?: {
       conversation.lastActivityAt = Date.now();
       await conversationStore.update(conversation);
 
-      const harnessMessages = isContinuation && conversation._continuationMessages?.length
-        ? [...conversation._continuationMessages]
-        : conversation._harnessMessages?.length
-          ? [...conversation._harnessMessages]
-          : [...conversation.messages];
+      const harnessMessages = conversation._harnessMessages?.length
+        ? [...conversation._harnessMessages]
+        : [...conversation.messages];
 
       for await (const event of childHarness.runWithTelemetry({
-        task: isContinuation ? undefined : task,
+        task,
         conversationId: childConversationId,
         parameters: {
           __activeConversationId: childConversationId,
@@ -1939,19 +1937,22 @@ export const createRequestHandler = async (options?: {
 
       const conv = await conversationStore.get(childConversationId);
       if (conv) {
+        const hasContent = assistantResponse.length > 0 || toolTimeline.length > 0;
+        // Always persist intermediate messages so progress is visible
+        if (hasContent) {
+          conv.messages.push({
+            role: "assistant",
+            content: assistantResponse,
+            metadata: toolTimeline.length > 0 || sections.length > 0
+              ? { toolActivity: toolTimeline, sections: sections.length > 0 ? sections : undefined } as Message["metadata"]
+              : undefined,
+          });
+        }
         if (runResult?.continuation && runResult.continuationMessages) {
           conv._continuationMessages = runResult.continuationMessages;
         } else {
           conv._continuationMessages = undefined;
-          if (assistantResponse.length > 0 || toolTimeline.length > 0) {
-            conv.messages.push({
-              role: "assistant",
-              content: assistantResponse,
-              metadata: toolTimeline.length > 0 || sections.length > 0
-                ? { toolActivity: toolTimeline, sections: sections.length > 0 ? sections : undefined } as Message["metadata"]
-                : undefined,
-            });
-          }
+          conv._continuationCount = undefined;
         }
         if (runResult?.continuationMessages) {
           conv._harnessMessages = runResult.continuationMessages;
@@ -1966,16 +1967,11 @@ export const createRequestHandler = async (options?: {
           activeConversationRuns.delete(childConversationId);
           try { await childHarness.shutdown(); } catch {}
 
-          if (isServerless) {
-            const work = selfFetchWithRetry(`/api/internal/subagent/${encodeURIComponent(childConversationId)}/run`, { continuation: true }).catch(err =>
-              console.error(`[poncho][subagent] Continuation self-fetch failed:`, err instanceof Error ? err.message : err),
-            );
-            doWaitUntil(work);
-          } else {
-            runSubagent(childConversationId, parentConversationId, task, ownerId, true).catch(err =>
-              console.error(`[poncho][subagent] Continuation failed:`, err instanceof Error ? err.message : err),
-            );
-          }
+          const work = selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(childConversationId)}`).catch(err =>
+            console.error(`[poncho][subagent] Continuation self-fetch failed:`, err instanceof Error ? err.message : err),
+          );
+          doWaitUntil(work);
+          if (!waitUntilHook) await work;
           return;
         }
 
@@ -3187,6 +3183,413 @@ export const createRequestHandler = async (options?: {
     return typeof headerValue === "string" && headerValue === internalSecret;
   };
 
+  // ── Unified continuation ──────────────────────────────────────────────
+  const MAX_CONTINUATION_COUNT = 20;
+
+  async function* runContinuation(
+    conversationId: string,
+  ): AsyncGenerator<AgentEvent> {
+    const conversation = await conversationStore.get(conversationId);
+    if (!conversation) return;
+    if (!conversation._continuationMessages?.length) return;
+    if (conversation.runStatus === "running") return;
+
+    const count = (conversation._continuationCount ?? 0) + 1;
+    if (count > MAX_CONTINUATION_COUNT) {
+      console.warn(`[poncho][continuation] Max continuation count (${MAX_CONTINUATION_COUNT}) reached for ${conversationId}`);
+      conversation._continuationMessages = undefined;
+      conversation._continuationCount = undefined;
+      await conversationStore.update(conversation);
+      return;
+    }
+
+    const continuationMessages = [...conversation._continuationMessages];
+    conversation._continuationMessages = undefined;
+    conversation._continuationCount = count;
+    conversation.runStatus = "running";
+    await conversationStore.update(conversation);
+
+    const abortController = new AbortController();
+    activeConversationRuns.set(conversationId, {
+      ownerId: conversation.ownerId,
+      abortController,
+      runId: null,
+    });
+
+    const prevStream = conversationEventStreams.get(conversationId);
+    if (prevStream) {
+      prevStream.finished = false;
+      prevStream.buffer = [];
+    } else {
+      conversationEventStreams.set(conversationId, {
+        buffer: [],
+        subscribers: new Set(),
+        finished: false,
+      });
+    }
+
+    try {
+      if (conversation.parentConversationId) {
+        yield* runSubagentContinuation(conversationId, conversation, continuationMessages);
+      } else {
+        yield* runChatContinuation(conversationId, conversation, continuationMessages);
+      }
+    } finally {
+      activeConversationRuns.delete(conversationId);
+      finishConversationStream(conversationId);
+    }
+  }
+
+  async function* runChatContinuation(
+    conversationId: string,
+    conversation: Conversation,
+    continuationMessages: Message[],
+  ): AsyncGenerator<AgentEvent> {
+    let assistantResponse = "";
+    let latestRunId = conversation.runtimeRunId ?? "";
+    const toolTimeline: string[] = [];
+    const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
+    let currentTools: string[] = [];
+    let currentText = "";
+    let runContextTokens = conversation.contextTokens ?? 0;
+    let runContextWindow = conversation.contextWindow ?? 0;
+    let nextContinuationMessages: Message[] | undefined;
+    let nextHarnessMessages: Message[] | undefined;
+
+    for await (const event of harness.runWithTelemetry({
+      conversationId,
+      parameters: {
+        __activeConversationId: conversationId,
+        __ownerId: conversation.ownerId,
+      },
+      messages: continuationMessages,
+      abortSignal: activeConversationRuns.get(conversationId)?.abortController.signal,
+    })) {
+      if (event.type === "run:started") {
+        latestRunId = event.runId;
+        runOwners.set(event.runId, conversation.ownerId);
+        runConversations.set(event.runId, conversationId);
+        const active = activeConversationRuns.get(conversationId);
+        if (active) active.runId = event.runId;
+      }
+      if (event.type === "model:chunk") {
+        if (currentTools.length > 0) {
+          sections.push({ type: "tools", content: currentTools });
+          currentTools = [];
+          if (assistantResponse.length > 0 && !/\s$/.test(assistantResponse)) {
+            assistantResponse += " ";
+          }
+        }
+        assistantResponse += event.content;
+        currentText += event.content;
+      }
+      if (event.type === "tool:started") {
+        if (currentText.length > 0) {
+          sections.push({ type: "text", content: currentText });
+          currentText = "";
+        }
+        const toolText = `- start \`${event.tool}\``;
+        toolTimeline.push(toolText);
+        currentTools.push(toolText);
+      }
+      if (event.type === "tool:completed") {
+        const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
+        toolTimeline.push(toolText);
+        currentTools.push(toolText);
+      }
+      if (event.type === "tool:error") {
+        const toolText = `- error \`${event.tool}\`: ${event.error}`;
+        toolTimeline.push(toolText);
+        currentTools.push(toolText);
+      }
+      if (event.type === "run:completed") {
+        runContextTokens = event.result.contextTokens ?? runContextTokens;
+        runContextWindow = event.result.contextWindow ?? runContextWindow;
+        if (event.result.continuation && event.result.continuationMessages) {
+          nextContinuationMessages = event.result.continuationMessages;
+        }
+        if (event.result.continuationMessages) {
+          nextHarnessMessages = event.result.continuationMessages;
+        }
+        if (!assistantResponse && event.result.response) {
+          assistantResponse = event.result.response;
+        }
+      }
+      if (event.type === "run:error") {
+        assistantResponse = assistantResponse || `[Error: ${event.error.message}]`;
+      }
+      await telemetry.emit(event);
+      broadcastEvent(conversationId, event);
+      yield event;
+    }
+
+    if (currentTools.length > 0) sections.push({ type: "tools", content: currentTools });
+    if (currentText.length > 0) sections.push({ type: "text", content: currentText });
+
+    const freshConv = await conversationStore.get(conversationId);
+    if (!freshConv) return;
+
+    const hasContent = assistantResponse.length > 0 || toolTimeline.length > 0;
+    const assistantMetadata =
+      toolTimeline.length > 0 || sections.length > 0
+        ? ({
+            toolActivity: [...toolTimeline],
+            sections: sections.length > 0 ? sections : undefined,
+          } as Message["metadata"])
+        : undefined;
+
+    if (nextContinuationMessages) {
+      if (hasContent) {
+        freshConv.messages = [
+          ...freshConv.messages,
+          { role: "assistant", content: assistantResponse, metadata: assistantMetadata },
+        ];
+      }
+      freshConv._continuationMessages = nextContinuationMessages;
+      freshConv._continuationCount = conversation._continuationCount;
+    } else {
+      if (hasContent) {
+        freshConv.messages = [
+          ...freshConv.messages,
+          { role: "assistant", content: assistantResponse, metadata: assistantMetadata },
+        ];
+      }
+      freshConv._continuationMessages = undefined;
+      freshConv._continuationCount = undefined;
+    }
+
+    if (nextHarnessMessages) freshConv._harnessMessages = nextHarnessMessages;
+    freshConv.runtimeRunId = latestRunId || freshConv.runtimeRunId;
+    freshConv.pendingApprovals = [];
+    if (runContextTokens > 0) freshConv.contextTokens = runContextTokens;
+    if (runContextWindow > 0) freshConv.contextWindow = runContextWindow;
+    freshConv.runStatus = "idle";
+    freshConv.updatedAt = Date.now();
+    await conversationStore.update(freshConv);
+  }
+
+  async function* runSubagentContinuation(
+    conversationId: string,
+    conversation: Conversation,
+    continuationMessages: Message[],
+  ): AsyncGenerator<AgentEvent> {
+    const parentConversationId = conversation.parentConversationId!;
+    const task = conversation.subagentMeta?.task ?? "";
+    const ownerId = conversation.ownerId;
+
+    const childHarness = new AgentHarness({
+      workingDir,
+      environment: resolveHarnessEnvironment(),
+      uploadStore,
+    });
+    await childHarness.initialize();
+    childHarness.unregisterTools(["memory_main_write", "memory_main_edit"]);
+
+    const childAbortController = activeConversationRuns.get(conversationId)?.abortController ?? new AbortController();
+    activeSubagentRuns.set(conversationId, { abortController: childAbortController, harness: childHarness, parentConversationId });
+
+    let assistantResponse = "";
+    let latestRunId = "";
+    let runResult: { status: string; response?: string; steps: number; duration: number; continuation?: boolean; continuationMessages?: Message[] } | undefined;
+    const toolTimeline: string[] = [];
+    const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
+    let currentTools: string[] = [];
+    let currentText = "";
+
+    try {
+      for await (const event of childHarness.runWithTelemetry({
+        conversationId,
+        parameters: {
+          __activeConversationId: conversationId,
+          __ownerId: ownerId,
+        },
+        messages: continuationMessages,
+        abortSignal: childAbortController.signal,
+      })) {
+        if (event.type === "run:started") {
+          latestRunId = event.runId;
+          const active = activeConversationRuns.get(conversationId);
+          if (active) active.runId = event.runId;
+        }
+        if (event.type === "model:chunk") {
+          if (currentTools.length > 0) {
+            sections.push({ type: "tools", content: currentTools });
+            currentTools = [];
+            if (assistantResponse.length > 0 && !/\s$/.test(assistantResponse)) {
+              assistantResponse += " ";
+            }
+          }
+          assistantResponse += event.content;
+          currentText += event.content;
+        }
+        if (event.type === "tool:started") {
+          if (currentText.length > 0) {
+            sections.push({ type: "text", content: currentText });
+            currentText = "";
+          }
+          const toolText = `- start \`${event.tool}\``;
+          toolTimeline.push(toolText);
+          currentTools.push(toolText);
+        }
+        if (event.type === "tool:completed") {
+          const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
+          toolTimeline.push(toolText);
+          currentTools.push(toolText);
+        }
+        if (event.type === "tool:error") {
+          const toolText = `- error \`${event.tool}\`: ${event.error}`;
+          toolTimeline.push(toolText);
+          currentTools.push(toolText);
+        }
+        if (event.type === "run:completed") {
+          runResult = {
+            status: event.result.status,
+            response: event.result.response,
+            steps: event.result.steps,
+            duration: event.result.duration,
+            continuation: event.result.continuation,
+            continuationMessages: event.result.continuationMessages,
+          };
+          if (!assistantResponse && event.result.response) {
+            assistantResponse = event.result.response;
+          }
+        }
+        if (event.type === "run:error") {
+          assistantResponse = assistantResponse || `[Error: ${event.error.message}]`;
+        }
+        broadcastEvent(conversationId, event);
+        yield event;
+      }
+
+      if (currentTools.length > 0) sections.push({ type: "tools", content: currentTools });
+      if (currentText.length > 0) sections.push({ type: "text", content: currentText });
+
+      const conv = await conversationStore.get(conversationId);
+      if (conv) {
+        const hasContent = assistantResponse.length > 0 || toolTimeline.length > 0;
+        if (runResult?.continuation && runResult.continuationMessages) {
+          if (hasContent) {
+            conv.messages.push({
+              role: "assistant",
+              content: assistantResponse,
+              metadata: toolTimeline.length > 0 || sections.length > 0
+                ? { toolActivity: toolTimeline, sections: sections.length > 0 ? sections : undefined } as Message["metadata"]
+                : undefined,
+            });
+          }
+          conv._continuationMessages = runResult.continuationMessages;
+          conv._continuationCount = conversation._continuationCount;
+        } else {
+          conv._continuationMessages = undefined;
+          conv._continuationCount = undefined;
+          if (hasContent) {
+            conv.messages.push({
+              role: "assistant",
+              content: assistantResponse,
+              metadata: toolTimeline.length > 0 || sections.length > 0
+                ? { toolActivity: toolTimeline, sections: sections.length > 0 ? sections : undefined } as Message["metadata"]
+                : undefined,
+            });
+          }
+        }
+        if (runResult?.continuationMessages) {
+          conv._harnessMessages = runResult.continuationMessages;
+        }
+        conv.lastActivityAt = Date.now();
+        conv.runStatus = "idle";
+        conv.updatedAt = Date.now();
+
+        if (runResult?.continuation) {
+          await conversationStore.update(conv);
+          activeSubagentRuns.delete(conversationId);
+          try { await childHarness.shutdown(); } catch {}
+          return;
+        }
+
+        conv.subagentMeta = { ...conv.subagentMeta!, status: "completed" };
+        await conversationStore.update(conv);
+      }
+
+      activeSubagentRuns.delete(conversationId);
+      broadcastEvent(parentConversationId, {
+        type: "subagent:completed",
+        subagentId: conversationId,
+        conversationId,
+      });
+
+      let subagentResponse = runResult?.response ?? assistantResponse;
+      if (!subagentResponse) {
+        const freshSubConv = await conversationStore.get(conversationId);
+        if (freshSubConv) {
+          const lastAssistant = [...freshSubConv.messages].reverse().find(m => m.role === "assistant");
+          if (lastAssistant) {
+            subagentResponse = typeof lastAssistant.content === "string" ? lastAssistant.content : "";
+          }
+        }
+      }
+
+      const parentConv = await conversationStore.get(parentConversationId);
+      if (parentConv) {
+        const result: PendingSubagentResult = {
+          subagentId: conversationId,
+          task,
+          status: "completed",
+          result: { status: "completed", response: subagentResponse, steps: runResult?.steps ?? 0, tokens: { input: 0, output: 0, cached: 0 }, duration: runResult?.duration ?? 0 },
+          timestamp: Date.now(),
+        };
+        await conversationStore.appendSubagentResult(parentConversationId, result);
+
+        if (isServerless) {
+          selfFetchWithRetry(`/api/internal/conversations/${encodeURIComponent(parentConversationId)}/subagent-callback`).catch(err =>
+            console.error(`[poncho][subagent] Callback self-fetch failed:`, err instanceof Error ? err.message : err),
+          );
+        } else {
+          processSubagentCallback(parentConversationId).catch(err =>
+            console.error(`[poncho][subagent] Callback failed:`, err instanceof Error ? err.message : err),
+          );
+        }
+      }
+
+      try { await childHarness.shutdown(); } catch {}
+    } catch (err) {
+      activeSubagentRuns.delete(conversationId);
+      try { await childHarness.shutdown(); } catch {}
+
+      const conv = await conversationStore.get(conversationId);
+      if (conv) {
+        conv.subagentMeta = { ...conv.subagentMeta!, status: "error", error: { code: "CONTINUATION_ERROR", message: err instanceof Error ? err.message : String(err) } };
+        conv.runStatus = "idle";
+        conv._continuationMessages = undefined;
+        conv._continuationCount = undefined;
+        conv.updatedAt = Date.now();
+        await conversationStore.update(conv);
+      }
+
+      broadcastEvent(conversation.parentConversationId!, {
+        type: "subagent:completed",
+        subagentId: conversationId,
+        conversationId,
+      });
+
+      const parentConv = await conversationStore.get(conversation.parentConversationId!);
+      if (parentConv) {
+        const result: PendingSubagentResult = {
+          subagentId: conversationId,
+          task,
+          status: "error",
+          error: { code: "CONTINUATION_ERROR", message: err instanceof Error ? err.message : String(err) },
+          timestamp: Date.now(),
+        };
+        await conversationStore.appendSubagentResult(conversation.parentConversationId!, result);
+        if (isServerless) {
+          selfFetchWithRetry(`/api/internal/conversations/${encodeURIComponent(conversation.parentConversationId!)}/subagent-callback`).catch(() => {});
+        } else {
+          processSubagentCallback(conversation.parentConversationId!).catch(() => {});
+        }
+      }
+    }
+  }
+
   const messagingAdapters = new Map<string, MessagingAdapter>();
   const messagingBridges: AgentBridge[] = [];
   if (config?.messaging && config.messaging.length > 0) {
@@ -3563,7 +3966,7 @@ export const createRequestHandler = async (options?: {
       const subagentRunMatch = pathname.match(/^\/api\/internal\/subagent\/([^/]+)\/run$/);
       if (subagentRunMatch) {
         const subagentId = decodeURIComponent(subagentRunMatch[1]!);
-        const body = (await readRequestBody(request)) as { continuation?: boolean; resume?: boolean } | undefined;
+        const body = (await readRequestBody(request)) as { resume?: boolean } | undefined;
         writeJson(response, 202, { ok: true });
         const work = (async () => {
           try {
@@ -3576,9 +3979,8 @@ export const createRequestHandler = async (options?: {
               return;
             }
 
-            const isContinuation = body?.continuation === true;
-            const task = isContinuation ? conv.subagentMeta?.task ?? "" : (conv.messages.find(m => m.role === "user")?.content as string) ?? conv.subagentMeta?.task ?? "";
-            await runSubagent(subagentId, conv.parentConversationId, task, conv.ownerId, isContinuation);
+            const task = (conv.messages.find(m => m.role === "user")?.content as string) ?? conv.subagentMeta?.task ?? "";
+            await runSubagent(subagentId, conv.parentConversationId, task, conv.ownerId, false);
           } catch (err) {
             console.error(`[poncho][internal] subagent run error for ${subagentId}:`, err instanceof Error ? err.message : err);
           }
@@ -3593,6 +3995,29 @@ export const createRequestHandler = async (options?: {
         const conversationId = decodeURIComponent(callbackMatch[1]!);
         writeJson(response, 202, { ok: true });
         const work = processSubagentCallback(conversationId);
+        doWaitUntil(work);
+        if (!waitUntilHook) await work;
+        return;
+      }
+
+      const continueMatch = pathname.match(/^\/api\/internal\/continue\/([^/]+)$/);
+      if (continueMatch) {
+        const conversationId = decodeURIComponent(continueMatch[1]!);
+        writeJson(response, 202, { ok: true });
+        const work = (async () => {
+          try {
+            for await (const _event of runContinuation(conversationId)) {
+              // Events are already broadcast inside runContinuation
+            }
+            // Chain: if another continuation is needed, fire next self-fetch
+            const conv = await conversationStore.get(conversationId);
+            if (conv?._continuationMessages?.length) {
+              await selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(conversationId)}`);
+            }
+          } catch (err) {
+            console.error(`[poncho][internal-continue] Error for ${conversationId}:`, err instanceof Error ? err.message : err);
+          }
+        })();
         doWaitUntil(work);
         if (!waitUntilHook) await work;
         return;
@@ -4489,6 +4914,88 @@ export const createRequestHandler = async (options?: {
       return;
     }
 
+    // ── Public continuation endpoint (SSE) ──
+    const conversationContinueMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/continue$/);
+    if (conversationContinueMatch && request.method === "POST") {
+      const conversationId = decodeURIComponent(conversationContinueMatch[1] ?? "");
+      const conversation = await conversationStore.get(conversationId);
+      if (!conversation || conversation.ownerId !== ownerId) {
+        writeJson(response, 404, {
+          code: "CONVERSATION_NOT_FOUND",
+          message: "Conversation not found",
+        });
+        return;
+      }
+      if (conversation.parentConversationId) {
+        writeJson(response, 403, {
+          code: "SUBAGENT_READ_ONLY",
+          message: "Subagent conversations are read-only.",
+        });
+        return;
+      }
+
+      response.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+
+      const unsubSubagentEvents = onConversationEvent(conversationId, (evt) => {
+        if (evt.type.startsWith("subagent:")) {
+          try { response.write(formatSseEvent(evt)); } catch {}
+        }
+      });
+
+      let eventCount = 0;
+      try {
+        for await (const event of runContinuation(conversationId)) {
+          eventCount++;
+          let sseEvent: AgentEvent = event;
+          if (sseEvent.type === "run:completed") {
+            const hasRunningSubagents = Array.from(activeSubagentRuns.values()).some(
+              r => r.parentConversationId === conversationId,
+            );
+            const stripped = { ...sseEvent, result: { ...sseEvent.result, continuationMessages: undefined } };
+            sseEvent = hasRunningSubagents ? { ...stripped, pendingSubagents: true } : stripped;
+          }
+          try {
+            response.write(formatSseEvent(sseEvent));
+          } catch {
+            // Client disconnected — continue processing so the run completes
+          }
+          emitBrowserStatusIfActive(conversationId, event, response);
+        }
+      } catch (err) {
+        const errorEvent: AgentEvent = {
+          type: "run:error",
+          runId: "",
+          error: { code: "CONTINUATION_ERROR", message: err instanceof Error ? err.message : String(err) },
+        };
+        try { response.write(formatSseEvent(errorEvent)); } catch {}
+      } finally {
+        unsubSubagentEvents();
+      }
+
+      if (eventCount === 0) {
+        try { response.write("event: stream:end\ndata: {}\n\n"); } catch {}
+      } else {
+        // If the run produced events and another continuation is needed,
+        // fire a delayed safety net in case the client disconnects before
+        // POSTing the next /continue.
+        const freshConv = await conversationStore.get(conversationId);
+        if (freshConv?._continuationMessages?.length) {
+          doWaitUntil(
+            new Promise(r => setTimeout(r, 3000)).then(() =>
+              selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(conversationId)}`),
+            ),
+          );
+        }
+      }
+      response.end();
+      return;
+    }
+
     const conversationMessageMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
     if (conversationMessageMatch && request.method === "POST") {
       const conversationId = decodeURIComponent(conversationMessageMatch[1] ?? "");
@@ -4510,7 +5017,6 @@ export const createRequestHandler = async (options?: {
       let messageText = "";
       let bodyParameters: Record<string, unknown> | undefined;
       let files: FileInput[] = [];
-      let isContinuation = false;
 
       const contentType = request.headers["content-type"] ?? "";
       if (contentType.includes("multipart/form-data")) {
@@ -4521,15 +5027,10 @@ export const createRequestHandler = async (options?: {
       } else {
         const body = (await readRequestBody(request)) as {
           message?: string;
-          continuation?: boolean;
           parameters?: Record<string, unknown>;
           files?: Array<{ data?: string; mediaType?: string; filename?: string }>;
         };
-        if (body.continuation === true) {
-          isContinuation = true;
-        } else {
-          messageText = body.message?.trim() ?? "";
-        }
+        messageText = body.message?.trim() ?? "";
         bodyParameters = body.parameters;
         if (Array.isArray(body.files)) {
           files = body.files
@@ -4538,7 +5039,7 @@ export const createRequestHandler = async (options?: {
             );
         }
       }
-      if (!isContinuation && !messageText) {
+      if (!messageText) {
         writeJson(response, 400, {
           code: "VALIDATION_ERROR",
           message: "message is required",
@@ -4564,7 +5065,6 @@ export const createRequestHandler = async (options?: {
         runId: null,
       });
       if (
-        !isContinuation &&
         conversation.messages.length === 0 &&
         (conversation.title === "New conversation" || conversation.title.trim().length === 0)
       ) {
@@ -4576,11 +5076,9 @@ export const createRequestHandler = async (options?: {
         Connection: "keep-alive",
         "X-Accel-Buffering": "no",
       });
-      const harnessMessages = isContinuation && conversation._continuationMessages?.length
-        ? [...conversation._continuationMessages]
-        : conversation._harnessMessages?.length
-          ? [...conversation._harnessMessages]
-          : [...conversation.messages];
+      const harnessMessages = conversation._harnessMessages?.length
+        ? [...conversation._harnessMessages]
+        : [...conversation.messages];
       const historyMessages = [...conversation.messages];
       const preRunMessages = [...conversation.messages];
       let latestRunId = conversation.runtimeRunId ?? "";
@@ -4596,8 +5094,8 @@ export const createRequestHandler = async (options?: {
       let runContextWindow = conversation.contextWindow ?? 0;
       let runContinuationMessages: Message[] | undefined;
       let runHarnessMessages: Message[] | undefined;
-      let userContent: Message["content"] | undefined = isContinuation ? undefined : messageText;
-      if (!isContinuation && files.length > 0) {
+      let userContent: Message["content"] | undefined = messageText;
+      if (files.length > 0) {
         try {
           const uploadedParts = await Promise.all(
             files.map(async (f) => {
@@ -4640,9 +5138,10 @@ export const createRequestHandler = async (options?: {
       });
 
       try {
-        if (!isContinuation) {
+        {
           conversation.messages = [...historyMessages, { role: "user", content: userContent! }];
           conversation.subagentCallbackCount = 0;
+          conversation._continuationCount = undefined;
           conversation.updatedAt = Date.now();
           conversationStore.update(conversation).catch((err) => {
             console.error("[poncho] Failed to persist user turn:", err);
@@ -4720,7 +5219,7 @@ export const createRequestHandler = async (options?: {
         };
 
         for await (const event of harness.runWithTelemetry({
-          task: isContinuation ? undefined : messageText,
+          task: messageText,
           conversationId,
           parameters: {
             ...(bodyParameters ?? {}),
@@ -4729,7 +5228,7 @@ export const createRequestHandler = async (options?: {
             __ownerId: ownerId,
           },
           messages: harnessMessages,
-          files: !isContinuation && files.length > 0 ? files : undefined,
+          files: files.length > 0 ? files : undefined,
           abortSignal: abortController.signal,
         })) {
           if (event.type === "run:started") {
@@ -4845,6 +5344,21 @@ export const createRequestHandler = async (options?: {
             }
             if (event.result.continuation && event.result.continuationMessages) {
               runContinuationMessages = event.result.continuationMessages;
+
+              // Persist intermediate messages so clients connecting later
+              // see progress, plus _continuationMessages for the next step.
+              const intSections = [...sections];
+              if (currentTools.length > 0) intSections.push({ type: "tools", content: [...currentTools] });
+              if (currentText.length > 0) intSections.push({ type: "text", content: currentText });
+              const hasContent = assistantResponse.length > 0 || toolTimeline.length > 0 || intSections.length > 0;
+              const intMetadata = toolTimeline.length > 0 || intSections.length > 0
+                ? ({ toolActivity: [...toolTimeline], sections: intSections.length > 0 ? intSections : undefined } as Message["metadata"])
+                : undefined;
+              conversation.messages = [
+                ...historyMessages,
+                ...(userContent != null ? [{ role: "user" as const, content: userContent }] : []),
+                ...(hasContent ? [{ role: "assistant" as const, content: assistantResponse, metadata: intMetadata }] : []),
+              ];
               conversation._continuationMessages = runContinuationMessages;
               conversation._harnessMessages = runContinuationMessages;
               conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
@@ -4853,6 +5367,14 @@ export const createRequestHandler = async (options?: {
               if (runContextWindow > 0) conversation.contextWindow = runContextWindow;
               conversation.updatedAt = Date.now();
               await conversationStore.update(conversation);
+
+              // Delayed safety net: if the client doesn't POST to /continue
+              // within 3 seconds (e.g. browser closed), the server picks it up.
+              doWaitUntil(
+                new Promise(r => setTimeout(r, 3000)).then(() =>
+                  selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(conversationId)}`),
+                ),
+              );
             }
           }
           await telemetry.emit(event);
@@ -5032,23 +5554,11 @@ export const createRequestHandler = async (options?: {
       }
 
       const urlObj = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
-      const continueConversationId = urlObj.searchParams.get("continue");
-      const continuationCount = Number(urlObj.searchParams.get("continuation") ?? "0");
-      const maxContinuations = 5;
-
-      if (continuationCount >= maxContinuations) {
-        writeJson(response, 200, {
-          conversationId: continueConversationId,
-          status: "max_continuations_reached",
-          continuations: continuationCount,
-        });
-        return;
-      }
 
       const cronOwnerId = ownerId;
       const start = Date.now();
 
-      if (cronJob.channel && !continueConversationId) {
+      if (cronJob.channel) {
         const adapter = messagingAdapters.get(cronJob.channel);
         if (!adapter) {
           writeJson(response, 200, {
@@ -5161,34 +5671,12 @@ export const createRequestHandler = async (options?: {
       }
 
       try {
-        let conversation;
-        let historyMessages: Message[] = [];
-
-        if (continueConversationId) {
-          conversation = await conversationStore.get(continueConversationId);
-          if (!conversation) {
-            writeJson(response, 404, {
-              code: "CONVERSATION_NOT_FOUND",
-              message: "Continuation conversation not found",
-            });
-            return;
-          }
-          historyMessages = conversation._continuationMessages?.length
-            ? [...conversation._continuationMessages]
-            : conversation._harnessMessages?.length
-              ? [...conversation._harnessMessages]
-              : [...conversation.messages];
-          if (conversation._continuationMessages?.length) {
-            conversation._continuationMessages = undefined;
-            await conversationStore.update(conversation);
-          }
-        } else {
-          const timestamp = new Date().toISOString();
-          conversation = await conversationStore.create(
-            cronOwnerId,
-            `[cron] ${jobName} ${timestamp}`,
-          );
-        }
+        const timestamp = new Date().toISOString();
+        const conversation = await conversationStore.create(
+          cronOwnerId,
+          `[cron] ${jobName} ${timestamp}`,
+        );
+        const historyMessages: Message[] = [];
 
         const convId = conversation.conversationId;
         activeConversationRuns.set(convId, {
@@ -5298,20 +5786,20 @@ export const createRequestHandler = async (options?: {
             : undefined;
         const messages: Message[] = [
           ...historyMessages,
-          ...(continueConversationId
-            ? []
-            : [{ role: "user" as const, content: cronJob.task }]),
+          { role: "user" as const, content: cronJob.task },
           ...(hasContent
             ? [{ role: "assistant" as const, content: assistantResponse, metadata: assistantMetadata }]
             : []),
         ];
         const freshConv = await conversationStore.get(convId);
         if (freshConv) {
+          // Always persist intermediate messages so clients see progress
+          freshConv.messages = messages;
           if (runContinuationMessages) {
             freshConv._continuationMessages = runContinuationMessages;
           } else {
             freshConv._continuationMessages = undefined;
-            freshConv.messages = messages;
+            freshConv._continuationCount = undefined;
           }
           if (runResult.harnessMessages) {
             freshConv._harnessMessages = runResult.harnessMessages;
@@ -5324,15 +5812,13 @@ export const createRequestHandler = async (options?: {
         }
 
         if (runResult.continuation) {
-          const continuationPath = `/api/cron/${encodeURIComponent(jobName)}?continue=${encodeURIComponent(convId)}&continuation=${continuationCount + 1}`;
-          const work = selfFetchWithRetry(continuationPath).catch(err =>
+          const work = selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(convId)}`).catch(err =>
             console.error(`[poncho][cron] Continuation self-fetch failed:`, err instanceof Error ? err.message : err),
           );
           doWaitUntil(work);
           writeJson(response, 200, {
             conversationId: convId,
             status: "continued",
-            continuations: continuationCount + 1,
             duration: Date.now() - start,
           });
           return;

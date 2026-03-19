@@ -1643,7 +1643,7 @@ ${boundedMainMemory.trim()}`
       if (lastMsg && lastMsg.role !== "user") {
         messages.push({
           role: "user",
-          content: "[System: Your previous turn was interrupted by a time limit. Continue from where you left off — do NOT repeat what you already said. Proceed directly with the next action or tool call.]",
+          content: "[System: Your previous turn was interrupted by a time limit. Your partial response above is already visible to the user. Continue EXACTLY from where you left off — do NOT restart, re-summarize, or repeat any content you already produced. If you were mid-sentence or mid-table, continue that sentence or table. Proceed directly with the next action or output.]",
           metadata: { timestamp: now(), id: randomUUID() },
         });
       }
@@ -2048,7 +2048,10 @@ ${boundedMainMemory.trim()}`
         let chunkCount = 0;
         const hasRunTimeout = timeoutMs > 0;
         const streamDeadline = hasRunTimeout ? start + timeoutMs : 0;
+        const hasSoftDeadline = softDeadlineMs > 0;
+        const INTER_CHUNK_TIMEOUT_MS = 60_000;
         const fullStreamIterator = result.fullStream[Symbol.asyncIterator]();
+        let softDeadlineFiredDuringStream = false;
         try {
           while (true) {
             if (isCancelled()) {
@@ -2072,25 +2075,36 @@ ${boundedMainMemory.trim()}`
                 return;
               }
             }
-            const remaining = hasRunTimeout ? streamDeadline - now() : Infinity;
+            if (hasSoftDeadline && chunkCount > 0 && now() - start >= softDeadlineMs) {
+              softDeadlineFiredDuringStream = true;
+              break;
+            }
+            const hardRemaining = hasRunTimeout ? streamDeadline - now() : Infinity;
+            const softRemaining = hasSoftDeadline ? Math.max(0, (start + softDeadlineMs) - now()) : Infinity;
+            const deadlineRemaining = Math.min(hardRemaining, softRemaining);
             const timeout = chunkCount === 0
-              ? Math.min(remaining, FIRST_CHUNK_TIMEOUT_MS)
-              : hasRunTimeout ? remaining : 0;
+              ? Math.min(deadlineRemaining, FIRST_CHUNK_TIMEOUT_MS)
+              : Math.min(deadlineRemaining, INTER_CHUNK_TIMEOUT_MS);
             let nextPart: IteratorResult<(typeof result.fullStream) extends AsyncIterable<infer T> ? T : never> | null;
-            if (timeout <= 0 && chunkCount > 0) {
+            if (timeout <= 0 && chunkCount > 0 && !hasSoftDeadline) {
               nextPart = await fullStreamIterator.next();
             } else {
+              const effectiveTimeout = Math.max(timeout, 1);
               let timer: ReturnType<typeof setTimeout> | undefined;
               nextPart = await Promise.race([
                 fullStreamIterator.next(),
                 new Promise<null>((resolve) => {
-                  timer = setTimeout(() => resolve(null), timeout);
+                  timer = setTimeout(() => resolve(null), effectiveTimeout);
                 }),
               ]);
               clearTimeout(timer);
             }
 
             if (nextPart === null) {
+              if (hasSoftDeadline && deadlineRemaining <= INTER_CHUNK_TIMEOUT_MS) {
+                softDeadlineFiredDuringStream = true;
+                break;
+              }
               const isFirstChunk = chunkCount === 0;
               console.error(
                 `[poncho][harness] Stream timeout waiting for ${isFirstChunk ? "first" : "next"} chunk: model="${modelName}", step=${step}, chunks=${chunkCount}, elapsed=${now() - start}ms`,
@@ -2125,6 +2139,31 @@ ${boundedMainMemory.trim()}`
           fullStreamIterator.return?.(undefined)?.catch?.(() => {});
         }
 
+        if (softDeadlineFiredDuringStream) {
+          if (fullText.length > 0) {
+            messages.push({
+              role: "assistant",
+              content: fullText,
+              metadata: { timestamp: now(), id: randomUUID(), step },
+            });
+          }
+          const result_: RunResult = {
+            status: "completed",
+            response: responseText + fullText,
+            steps: step,
+            tokens: { input: totalInputTokens, output: totalOutputTokens, cached: totalCachedTokens },
+            duration: now() - start,
+            continuation: true,
+            continuationMessages: [...messages],
+            maxSteps,
+            contextTokens: latestContextTokens + toolOutputEstimateSinceModel,
+            contextWindow,
+          };
+          console.info(`[poncho][harness] Soft deadline fired mid-stream at step ${step} (${(now() - start).toFixed(0)}ms). Checkpointing with ${fullText.length} chars of partial text.`);
+          yield pushEvent({ type: "run:completed", runId, result: result_ });
+          return;
+        }
+
         if (isCancelled()) {
           yield emitCancellation();
           return;
@@ -2133,6 +2172,13 @@ ${boundedMainMemory.trim()}`
       // Post-streaming soft deadline: if the model stream took long enough to
       // push past the soft deadline, checkpoint now before tool execution.
       if (softDeadlineMs > 0 && now() - start > softDeadlineMs) {
+        if (fullText.length > 0) {
+          messages.push({
+            role: "assistant",
+            content: fullText,
+            metadata: { timestamp: now(), id: randomUUID(), step },
+          });
+        }
         const result_: RunResult = {
           status: "completed",
           response: responseText + fullText,
@@ -2446,6 +2492,13 @@ ${boundedMainMemory.trim()}`
       }
 
       if ((batchResults as unknown) === TOOL_DEADLINE_SENTINEL) {
+        if (fullText.length > 0) {
+          messages.push({
+            role: "assistant",
+            content: fullText,
+            metadata: { timestamp: now(), id: randomUUID(), step },
+          });
+        }
         const result_: RunResult = {
           status: "completed",
           response: responseText + fullText,

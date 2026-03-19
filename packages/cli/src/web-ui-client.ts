@@ -1345,10 +1345,11 @@ export const getWebUiClientScript = (markedSource: string): string => `
         } else if (willStream) {
           setStreaming(true);
         } else if (payload.needsContinuation && !payload.conversation.parentConversationId) {
-          console.log("[poncho] Detected orphaned continuation for", conversationId, "— auto-resuming");
+          console.log("[poncho] Detected orphaned continuation for", conversationId, "— auto-resuming via /continue");
           (async () => {
             try {
               setStreaming(true);
+              state.activeStreamConversationId = conversationId;
               var localMsgs = state.activeMessages || [];
               var contAssistant = {
                 role: "assistant",
@@ -1365,30 +1366,36 @@ export const getWebUiClientScript = (markedSource: string): string => `
               state.activeMessages = localMsgs;
               state._activeStreamMessages = localMsgs;
               renderMessages(localMsgs, true);
+
               var contResp = await fetch(
-                "/api/conversations/" + encodeURIComponent(conversationId) + "/messages",
+                "/api/conversations/" + encodeURIComponent(conversationId) + "/continue",
                 {
                   method: "POST",
                   credentials: "include",
                   headers: { "Content-Type": "application/json", "x-csrf-token": state.csrfToken },
-                  body: JSON.stringify({ continuation: true }),
                 },
               );
               if (!contResp.ok || !contResp.body) {
-                contAssistant._error = "Failed to resume — reload to retry";
+                // Server already claimed the continuation (safety net). Poll for completion.
+                await pollUntilRunIdle(conversationId);
                 setStreaming(false);
                 renderMessages(localMsgs, false);
                 return;
               }
-              state.activeStreamConversationId = conversationId;
+
               var contReader = contResp.body.getReader();
               var contDecoder = new TextDecoder();
               var contBuffer = "";
+              var gotStreamEnd = false;
               while (true) {
                 var chunk = await contReader.read();
                 if (chunk.done) break;
                 contBuffer += contDecoder.decode(chunk.value, { stream: true });
                 contBuffer = parseSseChunk(contBuffer, function(evtName, evtPayload) {
+                  if (evtName === "stream:end") {
+                    gotStreamEnd = true;
+                    return;
+                  }
                   if (evtName === "model:chunk" && evtPayload.content) {
                     contAssistant.content = (contAssistant.content || "") + evtPayload.content;
                     contAssistant._currentText += evtPayload.content;
@@ -1419,13 +1426,13 @@ export const getWebUiClientScript = (markedSource: string): string => `
                     if (evtName === "run:error") {
                       contAssistant._error = evtPayload.error?.message || "Something went wrong";
                     }
-                    if (evtName === "run:completed" && evtPayload.result?.continuation === true) {
-                      // Another continuation needed — reload to pick it up
-                      loadConversation(conversationId).catch(function() {});
-                    }
                   }
                   renderMessages(localMsgs, true);
                 });
+              }
+              if (gotStreamEnd) {
+                // Safety net already claimed it. Poll for completion.
+                await pollUntilRunIdle(conversationId);
               }
               setStreaming(false);
               renderMessages(localMsgs, false);
@@ -2521,59 +2528,30 @@ export const getWebUiClientScript = (markedSource: string): string => `
           };
           let _totalSteps = 0;
           let _maxSteps = 0;
-          let _isContinuation = false;
           let _receivedTerminalEvent = false;
-          while (true) {
           let _shouldContinue = false;
-          let fetchOpts;
-          if (_isContinuation) {
-            fetchOpts = {
-              method: "POST",
-              credentials: "include",
-              headers: { "Content-Type": "application/json", "x-csrf-token": state.csrfToken },
-              body: JSON.stringify({ continuation: true }),
-              signal: streamAbortController.signal,
-            };
-          } else if (filesToSend.length > 0) {
-            const formData = new FormData();
-            formData.append("message", messageText);
-            for (const f of filesToSend) {
-              formData.append("files", f, f.name);
+
+          // Helper to read an SSE stream from a fetch response
+          const readSseStream = async (response) => {
+            _shouldContinue = false;
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              buffer = parseSseChunk(buffer, (eventName, payload) => {
+                try {
+                  handleSseEvent(eventName, payload);
+                } catch (error) {
+                  console.error("SSE event handling error:", eventName, error);
+                }
+              });
             }
-            fetchOpts = {
-              method: "POST",
-              credentials: "include",
-              headers: { "x-csrf-token": state.csrfToken },
-              body: formData,
-              signal: streamAbortController.signal,
-            };
-          } else {
-            fetchOpts = {
-              method: "POST",
-              credentials: "include",
-              headers: { "Content-Type": "application/json", "x-csrf-token": state.csrfToken },
-              body: JSON.stringify({ message: messageText }),
-              signal: streamAbortController.signal,
-            };
-          }
-          const response = await fetch(
-            "/api/conversations/" + encodeURIComponent(conversationId) + "/messages",
-            fetchOpts,
-          );
-          if (!response.ok || !response.body) {
-            throw new Error("Failed to stream response");
-          }
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) {
-              break;
-            }
-            buffer += decoder.decode(value, { stream: true });
-            buffer = parseSseChunk(buffer, (eventName, payload) => {
-              try {
+          };
+
+          const handleSseEvent = (eventName, payload) => {
                 if (eventName === "model:chunk") {
                   const chunk = String(payload.content || "");
                   if (chunk.length > 0) clearResolvedApprovals(assistantMessage);
@@ -2857,6 +2835,12 @@ export const getWebUiClientScript = (markedSource: string): string => `
                   if (typeof payload.result?.maxSteps === "number") _maxSteps = payload.result.maxSteps;
                   if (payload.result?.continuation === true && (_maxSteps <= 0 || _totalSteps < _maxSteps)) {
                     _shouldContinue = true;
+                    if (assistantMessage._currentTools.length > 0) {
+                      assistantMessage._sections.push({ type: "tools", content: assistantMessage._currentTools });
+                      assistantMessage._currentTools = [];
+                    }
+                    assistantMessage._activeActivities = [];
+                    renderIfActiveConversation(true);
                   } else {
                     finalizeAssistantMessage();
                     if (!assistantMessage.content || assistantMessage.content.length === 0) {
@@ -2880,25 +2864,76 @@ export const getWebUiClientScript = (markedSource: string): string => `
                   assistantMessage._error = errMsg;
                   renderIfActiveConversation(false);
                 }
-              } catch (error) {
-                console.error("SSE event handling error:", eventName, error);
-              }
-            });
+                if (eventName === "stream:end") {
+                  // no-op: server signals empty continuation
+                }
+          };
+
+          // Initial message POST
+          let fetchOpts;
+          if (filesToSend.length > 0) {
+            const formData = new FormData();
+            formData.append("message", messageText);
+            for (const f of filesToSend) {
+              formData.append("files", f, f.name);
+            }
+            fetchOpts = {
+              method: "POST",
+              credentials: "include",
+              headers: { "x-csrf-token": state.csrfToken },
+              body: formData,
+              signal: streamAbortController.signal,
+            };
+          } else {
+            fetchOpts = {
+              method: "POST",
+              credentials: "include",
+              headers: { "Content-Type": "application/json", "x-csrf-token": state.csrfToken },
+              body: JSON.stringify({ message: messageText }),
+              signal: streamAbortController.signal,
+            };
           }
-          if (!_shouldContinue && !_receivedTerminalEvent) {
+          const response = await fetch(
+            "/api/conversations/" + encodeURIComponent(conversationId) + "/messages",
+            fetchOpts,
+          );
+          if (!response.ok || !response.body) {
+            throw new Error("Failed to stream response");
+          }
+          await readSseStream(response);
+
+          // Continuation loop: POST to /continue while the server signals more work
+          while (_shouldContinue) {
+            _shouldContinue = false;
+            _receivedTerminalEvent = false;
+            const contResponse = await fetch(
+              "/api/conversations/" + encodeURIComponent(conversationId) + "/continue",
+              {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json", "x-csrf-token": state.csrfToken },
+                signal: streamAbortController.signal,
+              },
+            );
+            if (!contResponse.ok || !contResponse.body) {
+              // Server may have already handled continuation (safety net claimed it).
+              // Fall back to polling for idle state.
+              await pollUntilRunIdle(conversationId);
+              break;
+            }
+            await readSseStream(contResponse);
+          }
+
+          // If stream ended without terminal event and no continuation, check server
+          if (!_receivedTerminalEvent && !_shouldContinue) {
             try {
               const recoveryPayload = await api("/api/conversations/" + encodeURIComponent(conversationId));
-              if (recoveryPayload.needsContinuation) {
-                _shouldContinue = true;
-                console.log("[poncho] Stream ended without terminal event, server has continuation — resuming");
+              if (recoveryPayload.hasActiveRun || recoveryPayload.needsContinuation) {
+                await pollUntilRunIdle(conversationId);
               }
             } catch (_recoverErr) {
               console.warn("[poncho] Recovery check failed after abrupt stream end");
             }
-          }
-          if (!_shouldContinue) break;
-          _receivedTerminalEvent = false;
-          _isContinuation = true;
           }
           // Update active state only if user is still on this conversation.
           if (state.activeConversationId === streamConversationId) {

@@ -71,6 +71,10 @@ export interface Conversation {
   /** Harness-internal message chain preserved across continuation runs.
    *  Cleared when a run completes without continuation. */
   _continuationMessages?: Message[];
+  /** Number of continuation pickups for the current multi-step run.
+   *  Reset when a run completes without continuation. Used to enforce
+   *  a maximum continuation count across all entry points. */
+  _continuationCount?: number;
   /** Full structured message chain from the last harness run, including
    *  tool-call and tool-result messages the model needs for context.
    *  Unlike `_continuationMessages`, this is always set after a run
