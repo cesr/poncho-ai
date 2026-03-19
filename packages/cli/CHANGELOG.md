@@ -1,5 +1,18 @@
 # @poncho-ai/cli
 
+## 0.31.0
+
+### Minor Changes
+
+- [`193c367`](https://github.com/cesr/poncho-ai/commit/193c367568dce22a470dff6acd022c221be3b722) Thanks [@cesr](https://github.com/cesr)! - Unified continuation logic across all entry points (chat, cron, subagents, SDK) with mid-stream soft deadline checkpointing and proper context preservation across continuation boundaries.
+
+### Patch Changes
+
+- Updated dependencies [[`193c367`](https://github.com/cesr/poncho-ai/commit/193c367568dce22a470dff6acd022c221be3b722)]:
+  - @poncho-ai/harness@0.30.0
+  - @poncho-ai/sdk@1.6.3
+  - @poncho-ai/messaging@0.7.4
+
 ## 0.30.8
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @poncho-ai/sdk
 
+## 1.6.3
+
+### Patch Changes
+
+- [`193c367`](https://github.com/cesr/poncho-ai/commit/193c367568dce22a470dff6acd022c221be3b722) Thanks [@cesr](https://github.com/cesr)! - Unified continuation logic across all entry points (chat, cron, subagents, SDK) with mid-stream soft deadline checkpointing and proper context preservation across continuation boundaries.
+
 ## 1.6.2
 
 ### Patch Changes
