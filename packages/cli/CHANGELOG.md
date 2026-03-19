@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.30.7
+
+### Patch Changes
+
+- [`af4e884`](https://github.com/cesr/poncho-ai/commit/af4e8842def6b6999836d9e0fc83edc7e3bdc801) Thanks [@cesr](https://github.com/cesr)! - Clear \_continuationMessages on cron continuation pickup to prevent 409 conflict with web UI auto-continuation
+
 ## 0.30.6
 
 ### Patch Changes
