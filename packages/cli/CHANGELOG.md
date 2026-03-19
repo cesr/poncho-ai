@@ -1,5 +1,20 @@
 # @poncho-ai/cli
 
+## 0.30.2
+
+### Patch Changes
+
+- [`98df42f`](https://github.com/cesr/poncho-ai/commit/98df42f79e0a376d0a864598557758bfa644039d) Thanks [@cesr](https://github.com/cesr)! - Fix serverless subagent and continuation reliability
+  - Use stable internal secret across serverless instances for callback auth
+  - Wrap continuation self-fetches in waitUntil to survive function shutdown
+  - Set runStatus during callback re-runs so clients detect active processing
+  - Add post-streaming soft deadline check to catch long model responses
+  - Client auto-recovers from abrupt stream termination and orphaned continuations
+  - Fix callback continuation losing \_continuationMessages when no pending results
+
+- Updated dependencies [[`98df42f`](https://github.com/cesr/poncho-ai/commit/98df42f79e0a376d0a864598557758bfa644039d)]:
+  - @poncho-ai/harness@0.28.2
+
 ## 0.30.1
 
 ### Patch Changes
