@@ -1734,7 +1734,9 @@ export const createRequestHandler = async (options?: {
 
       const harnessMessages = isContinuation && conversation._continuationMessages?.length
         ? [...conversation._continuationMessages]
-        : [...conversation.messages];
+        : conversation._harnessMessages?.length
+          ? [...conversation._harnessMessages]
+          : [...conversation.messages];
 
       for await (const event of childHarness.runWithTelemetry({
         task: isContinuation ? undefined : task,
@@ -1951,6 +1953,9 @@ export const createRequestHandler = async (options?: {
             });
           }
         }
+        if (runResult?.continuationMessages) {
+          conv._harnessMessages = runResult.continuationMessages;
+        }
         conv.lastActivityAt = Date.now();
         conv.updatedAt = Date.now();
 
@@ -2158,11 +2163,14 @@ export const createRequestHandler = async (options?: {
 
     const historyMessages = isContinuationResume && conversation._continuationMessages?.length
       ? [...conversation._continuationMessages]
-      : [...conversation.messages];
+      : conversation._harnessMessages?.length
+        ? [...conversation._harnessMessages]
+        : [...conversation.messages];
     let assistantResponse = "";
     let latestRunId = "";
     let runContinuation = false;
     let runContinuationMessages: Message[] | undefined;
+    let runHarnessMessages: Message[] | undefined;
     let runContextTokens = conversation.contextTokens ?? 0;
     let runContextWindow = conversation.contextWindow ?? 0;
     const toolTimeline: string[] = [];
@@ -2222,6 +2230,9 @@ export const createRequestHandler = async (options?: {
           }
           runContextTokens = event.result.contextTokens ?? runContextTokens;
           runContextWindow = event.result.contextWindow ?? runContextWindow;
+          if (event.result.continuationMessages) {
+            runHarnessMessages = event.result.continuationMessages;
+          }
           if (event.result.continuation) {
             runContinuation = true;
             if (event.result.continuationMessages) {
@@ -2249,6 +2260,9 @@ export const createRequestHandler = async (options?: {
                 ? { toolActivity: toolTimeline, sections: sections.length > 0 ? sections : undefined } as Message["metadata"]
                 : undefined,
             });
+          }
+          if (runHarnessMessages) {
+            freshConv._harnessMessages = runHarnessMessages;
           }
           freshConv.runtimeRunId = latestRunId || freshConv.runtimeRunId;
           freshConv.runningCallbackSince = undefined;
@@ -2485,6 +2499,7 @@ export const createRequestHandler = async (options?: {
     let checkpointedRun = false;
     let runContextTokens = conversation.contextTokens ?? 0;
     let runContextWindow = conversation.contextWindow ?? 0;
+    let resumeHarnessMessages: Message[] | undefined;
 
     const baseMessages = checkpoint.baseMessageCount != null
       ? conversation.messages.slice(0, checkpoint.baseMessageCount)
@@ -2611,6 +2626,9 @@ export const createRequestHandler = async (options?: {
           }
           runContextTokens = event.result.contextTokens ?? runContextTokens;
           runContextWindow = event.result.contextWindow ?? runContextWindow;
+          if (event.result.continuationMessages) {
+            resumeHarnessMessages = event.result.continuationMessages;
+          }
         }
         if (event.type === "run:error") {
           assistantResponse = assistantResponse || `[Error: ${event.error.message}]`;
@@ -2675,6 +2693,9 @@ export const createRequestHandler = async (options?: {
             ];
           }
         }
+        if (resumeHarnessMessages) {
+          conv._harnessMessages = resumeHarnessMessages;
+        }
         conv.runtimeRunId = latestRunId || conv.runtimeRunId;
         conv.pendingApprovals = [];
         conv.runStatus = "idle";
@@ -2736,7 +2757,7 @@ export const createRequestHandler = async (options?: {
           };
           await conversationStore.update(existing);
         }
-        return { messages: existing.messages };
+        return { messages: existing._harnessMessages?.length ? existing._harnessMessages : existing.messages };
       }
       const now = Date.now();
       const channelMeta = meta.channelId
@@ -2990,11 +3011,14 @@ export const createRequestHandler = async (options?: {
 
       if (!checkpointedRun) {
         await updateConversation((c) => {
-          if (runContinuationMessages) {
+          if (runContinuation && runContinuationMessages) {
             c._continuationMessages = runContinuationMessages;
           } else {
             c._continuationMessages = undefined;
             c.messages = buildMessages();
+          }
+          if (runContinuationMessages) {
+            c._harnessMessages = runContinuationMessages;
           }
           c.runtimeRunId = latestRunId || c.runtimeRunId;
           c.pendingApprovals = [];
@@ -4299,6 +4323,7 @@ export const createRequestHandler = async (options?: {
             ...conversation,
             pendingApprovals: storedPending,
             _continuationMessages: undefined,
+            _harnessMessages: undefined,
           },
           subagentPendingApprovals: subagentPending,
           hasActiveRun: hasActiveRun || hasPendingCallbackResults,
@@ -4553,7 +4578,9 @@ export const createRequestHandler = async (options?: {
       });
       const harnessMessages = isContinuation && conversation._continuationMessages?.length
         ? [...conversation._continuationMessages]
-        : [...conversation.messages];
+        : conversation._harnessMessages?.length
+          ? [...conversation._harnessMessages]
+          : [...conversation.messages];
       const historyMessages = [...conversation.messages];
       const preRunMessages = [...conversation.messages];
       let latestRunId = conversation.runtimeRunId ?? "";
@@ -4568,6 +4595,7 @@ export const createRequestHandler = async (options?: {
       let runContextTokens = conversation.contextTokens ?? 0;
       let runContextWindow = conversation.contextWindow ?? 0;
       let runContinuationMessages: Message[] | undefined;
+      let runHarnessMessages: Message[] | undefined;
       let userContent: Message["content"] | undefined = isContinuation ? undefined : messageText;
       if (!isContinuation && files.length > 0) {
         try {
@@ -4812,9 +4840,13 @@ export const createRequestHandler = async (options?: {
             }
             runContextTokens = event.result.contextTokens ?? runContextTokens;
             runContextWindow = event.result.contextWindow ?? runContextWindow;
+            if (event.result.continuationMessages) {
+              runHarnessMessages = event.result.continuationMessages;
+            }
             if (event.result.continuation && event.result.continuationMessages) {
               runContinuationMessages = event.result.continuationMessages;
               conversation._continuationMessages = runContinuationMessages;
+              conversation._harnessMessages = runContinuationMessages;
               conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
               conversation.pendingApprovals = [];
               if (runContextTokens > 0) conversation.contextTokens = runContextTokens;
@@ -4878,6 +4910,9 @@ export const createRequestHandler = async (options?: {
               ]
             : [...historyMessages, ...userTurn];
           conversation._continuationMessages = undefined;
+          if (runHarnessMessages) {
+            conversation._harnessMessages = runHarnessMessages;
+          }
           conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
           conversation.pendingApprovals = [];
           if (runContextTokens > 0) conversation.contextTokens = runContextTokens;
@@ -5051,10 +5086,13 @@ export const createRequestHandler = async (options?: {
             if (!conv) continue;
 
             const task = `[Scheduled: ${jobName}]\n${cronJob.task}`;
-            const historyMessages = [...conv.messages];
+            const historyMessages = conv._harnessMessages?.length
+              ? [...conv._harnessMessages]
+              : [...conv.messages];
             try {
               let assistantResponse = "";
               let steps = 0;
+              let cronHarnessMessages: Message[] | undefined;
               for await (const event of harness.runWithTelemetry({
                 task,
                 conversationId: conv.conversationId,
@@ -5069,6 +5107,9 @@ export const createRequestHandler = async (options?: {
                   if (!assistantResponse && event.result.response) {
                     assistantResponse = event.result.response;
                   }
+                  if (event.result.continuationMessages) {
+                    cronHarnessMessages = event.result.continuationMessages;
+                  }
                 }
                 await telemetry.emit(event);
               }
@@ -5078,6 +5119,9 @@ export const createRequestHandler = async (options?: {
                 { role: "user" as const, content: task },
                 ...(assistantResponse ? [{ role: "assistant" as const, content: assistantResponse }] : []),
               ];
+              if (cronHarnessMessages) {
+                conv._harnessMessages = cronHarnessMessages;
+              }
               conv.updatedAt = Date.now();
               await conversationStore.update(conv);
 
@@ -5131,7 +5175,9 @@ export const createRequestHandler = async (options?: {
           }
           historyMessages = conversation._continuationMessages?.length
             ? [...conversation._continuationMessages]
-            : [...conversation.messages];
+            : conversation._harnessMessages?.length
+              ? [...conversation._harnessMessages]
+              : [...conversation.messages];
           if (conversation._continuationMessages?.length) {
             conversation._continuationMessages = undefined;
             await conversationStore.update(conversation);
@@ -5160,7 +5206,7 @@ export const createRequestHandler = async (options?: {
         const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
         let currentTools: string[] = [];
         let currentText = "";
-        let runResult: { status: string; steps: number; continuation?: boolean; contextTokens?: number; contextWindow?: number } = {
+        let runResult: { status: string; steps: number; continuation?: boolean; contextTokens?: number; contextWindow?: number; harnessMessages?: Message[] } = {
           status: "completed",
           steps: 0,
         };
@@ -5217,6 +5263,7 @@ export const createRequestHandler = async (options?: {
               continuation: event.result.continuation,
               contextTokens: event.result.contextTokens,
               contextWindow: event.result.contextWindow,
+              harnessMessages: event.result.continuationMessages,
             };
             if (event.result.continuation && event.result.continuationMessages) {
               runContinuationMessages = event.result.continuationMessages;
@@ -5265,6 +5312,9 @@ export const createRequestHandler = async (options?: {
           } else {
             freshConv._continuationMessages = undefined;
             freshConv.messages = messages;
+          }
+          if (runResult.harnessMessages) {
+            freshConv._harnessMessages = runResult.harnessMessages;
           }
           freshConv.runtimeRunId = latestRunId || freshConv.runtimeRunId;
           if (runResult.contextTokens) freshConv.contextTokens = runResult.contextTokens;
@@ -5401,6 +5451,7 @@ export const startDevServer = async (
     hasContent: boolean;
     contextTokens: number;
     contextWindow: number;
+    harnessMessages?: Message[];
   };
 
   const runCronAgent = async (
@@ -5414,6 +5465,7 @@ export const startDevServer = async (
     let steps = 0;
     let contextTokens = 0;
     let contextWindow = 0;
+    let harnessMessages: Message[] | undefined;
     const toolTimeline: string[] = [];
     const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
     let currentTools: string[] = [];
@@ -5459,6 +5511,9 @@ export const startDevServer = async (
         steps = event.result.steps;
         contextTokens = event.result.contextTokens ?? 0;
         contextWindow = event.result.contextWindow ?? 0;
+        if (event.result.continuationMessages) {
+          harnessMessages = event.result.continuationMessages;
+        }
         if (!assistantResponse && event.result.response) {
           assistantResponse = event.result.response;
         }
@@ -5478,7 +5533,7 @@ export const startDevServer = async (
             sections: sections.length > 0 ? sections : undefined,
           } as Message["metadata"])
         : undefined;
-    return { response: assistantResponse, steps, assistantMetadata, hasContent, contextTokens, contextWindow };
+    return { response: assistantResponse, steps, assistantMetadata, hasContent, contextTokens, contextWindow, harnessMessages };
   };
 
   const buildCronMessages = (
@@ -5548,7 +5603,9 @@ export const startDevServer = async (
                 if (!conversation) continue;
 
                 const task = `[Scheduled: ${jobName}]\n${config.task}`;
-                const historyMessages = [...conversation.messages];
+                const historyMessages = conversation._harnessMessages?.length
+                  ? [...conversation._harnessMessages]
+                  : [...conversation.messages];
                 const convId = conversation.conversationId;
 
                 activeRuns?.set(convId, {
@@ -5566,6 +5623,9 @@ export const startDevServer = async (
                   const freshConv = await store.get(convId);
                   if (freshConv) {
                     freshConv.messages = buildCronMessages(task, historyMessages, result);
+                    if (result.harnessMessages) {
+                      freshConv._harnessMessages = result.harnessMessages;
+                    }
                     if (result.contextTokens > 0) freshConv.contextTokens = result.contextTokens;
                     if (result.contextWindow > 0) freshConv.contextWindow = result.contextWindow;
                     freshConv.updatedAt = Date.now();
@@ -5632,6 +5692,9 @@ export const startDevServer = async (
             const freshConv = await store.get(cronConvId);
             if (freshConv) {
               freshConv.messages = buildCronMessages(config.task, [], result);
+              if (result.harnessMessages) {
+                freshConv._harnessMessages = result.harnessMessages;
+              }
               if (result.contextTokens > 0) freshConv.contextTokens = result.contextTokens;
               if (result.contextWindow > 0) freshConv.contextWindow = result.contextWindow;
               freshConv.updatedAt = Date.now();

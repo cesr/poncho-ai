@@ -104,7 +104,10 @@ export interface PonchoConfig extends McpConfig {
   };
   telemetry?: {
     enabled?: boolean;
-    otlp?: string;
+    otlp?: string | {
+      url: string;
+      headers?: Record<string, string>;
+    };
     latitude?: {
       apiKeyEnv?: string;
       projectIdEnv?: string;

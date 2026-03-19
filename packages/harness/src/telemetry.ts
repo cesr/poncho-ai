@@ -11,9 +11,22 @@ function sanitizeEventForLog(event: AgentEvent): string {
   });
 }
 
+export interface OtlpConfig {
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export type OtlpOption = string | OtlpConfig;
+
+export function normalizeOtlp(opt: OtlpOption | undefined): OtlpConfig | undefined {
+  if (!opt) return undefined;
+  if (typeof opt === "string") return opt ? { url: opt } : undefined;
+  return opt.url ? opt : undefined;
+}
+
 export interface TelemetryConfig {
   enabled?: boolean;
-  otlp?: string;
+  otlp?: OtlpOption;
   latitude?: {
     apiKeyEnv?: string;
     projectIdEnv?: string;
@@ -38,8 +51,9 @@ export class TelemetryEmitter {
       await this.config.handler(event);
       return;
     }
-    if (this.config?.otlp) {
-      await this.sendOtlp(event);
+    const otlp = normalizeOtlp(this.config?.otlp);
+    if (otlp) {
+      await this.sendOtlp(event, otlp);
     }
     // Latitude telemetry is handled by LatitudeTelemetry (from
     // @latitude-data/telemetry) via harness.runWithTelemetry().
@@ -48,15 +62,11 @@ export class TelemetryEmitter {
     process.stdout.write(`[event] ${event.type} ${sanitizeEventForLog(event)}\n`);
   }
 
-  private async sendOtlp(event: AgentEvent): Promise<void> {
-    const endpoint = this.config?.otlp;
-    if (!endpoint) {
-      return;
-    }
+  private async sendOtlp(event: AgentEvent, otlp: OtlpConfig): Promise<void> {
     try {
-      await fetch(endpoint, {
+      await fetch(otlp.url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...otlp.headers },
         body: JSON.stringify({
           resourceLogs: [
             {

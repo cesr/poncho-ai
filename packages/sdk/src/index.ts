@@ -119,7 +119,9 @@ export interface RunResult {
   tokens: TokenUsage;
   duration: number;
   continuation?: boolean;
-  /** Full message chain from the harness run (populated when continuation=true). */
+  /** Full structured message chain from the harness run, including tool-call
+   *  and tool-result messages. Always populated on completion so callers can
+   *  persist the chain for accurate multi-turn context. */
   continuationMessages?: Message[];
   maxSteps?: number;
   /** Estimated current context usage in tokens at end of run (last model input + tool output estimates, reset on compaction). */
