@@ -3074,6 +3074,8 @@ export const createRequestHandler = async (options?: {
     if (waitUntilHook) waitUntilHook(promise);
   };
 
+  const vercelBypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim();
+
   const selfFetchWithRetry = async (path: string, body?: Record<string, unknown>, retries = 3): Promise<Response | void> => {
     if (!selfBaseUrl) {
       console.error(`[poncho][self-fetch] Missing self base URL for ${path}`);
@@ -3082,12 +3084,16 @@ export const createRequestHandler = async (options?: {
     let lastError: unknown;
     for (let attempt = 0; attempt < retries; attempt++) {
       try {
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          "x-poncho-internal": internalSecret,
+        };
+        if (vercelBypassSecret) {
+          headers["x-vercel-protection-bypass"] = vercelBypassSecret;
+        }
         const result = await fetch(`${selfBaseUrl}${path}`, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-poncho-internal": internalSecret,
-          },
+          headers,
           body: body ? JSON.stringify(body) : undefined,
         });
         if (result.ok) {
@@ -3114,9 +3120,15 @@ export const createRequestHandler = async (options?: {
         lastError instanceof Error
         && (lastError.message.includes("HTTP 403") || lastError.message.includes("HTTP 401"))
       ) {
-        console.error(
-          "[poncho][self-fetch] Internal auth failed. Ensure all serverless instances share PONCHO_INTERNAL_SECRET.",
-        );
+        if (lastError.message.includes("HTTP 401") && lastError.message.includes("<!doctype")) {
+          console.error(
+            "[poncho][self-fetch] Blocked by Vercel Deployment Protection. Set VERCEL_AUTOMATION_BYPASS_SECRET in your Vercel project settings and env vars.",
+          );
+        } else {
+          console.error(
+            "[poncho][self-fetch] Internal auth failed. Ensure all serverless instances share PONCHO_INTERNAL_SECRET.",
+          );
+        }
       }
     } else {
       console.error(`[poncho][self-fetch] Failed ${path} after ${retries} attempt(s).`);
@@ -3634,9 +3646,12 @@ export const createRequestHandler = async (options?: {
     }
 
     if (pathname.startsWith("/api/")) {
-      // Check authentication: either valid session (Web UI) or valid Bearer token (API)
+      // Internal self-fetch requests bypass user-facing auth
+      const isInternal = pathname.startsWith("/api/internal/") && request.method === "POST" && isValidInternalRequest(request.headers);
+
+      // Check authentication: either valid session (Web UI), valid Bearer token (API), or valid internal request
       const hasBearerToken = request.headers.authorization?.startsWith("Bearer ");
-      const isAuthenticated = !requireAuth || session || validateBearerToken(request.headers.authorization);
+      const isAuthenticated = isInternal || !requireAuth || session || validateBearerToken(request.headers.authorization);
 
       if (!isAuthenticated) {
         writeJson(response, 401, {
