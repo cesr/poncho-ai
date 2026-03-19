@@ -71,6 +71,11 @@ export interface Conversation {
   /** Harness-internal message chain preserved across continuation runs.
    *  Cleared when a run completes without continuation. */
   _continuationMessages?: Message[];
+  /** Full structured message chain from the last harness run, including
+   *  tool-call and tool-result messages the model needs for context.
+   *  Unlike `_continuationMessages`, this is always set after a run
+   *  and does NOT signal that a continuation is pending. */
+  _harnessMessages?: Message[];
   createdAt: number;
   updatedAt: number;
 }

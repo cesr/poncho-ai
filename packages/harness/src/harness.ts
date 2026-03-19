@@ -2138,6 +2138,13 @@ ${boundedMainMemory.trim()}`
             `[poncho][harness] Model "${modelName}" returned an empty response with finishReason="stop" on step ${step}.`,
           );
         }
+        if (fullText.length > 0) {
+          messages.push({
+            role: "assistant",
+            content: fullText,
+            metadata: { timestamp: now(), id: randomUUID(), step },
+          });
+        }
         responseText = fullText;
         yield pushEvent({
           type: "step:completed",
@@ -2156,6 +2163,7 @@ ${boundedMainMemory.trim()}`
           duration: now() - start,
           contextTokens: latestContextTokens + toolOutputEstimateSinceModel,
           contextWindow,
+          continuationMessages: [...messages],
         };
         yield pushEvent({ type: "run:completed", runId, result });
         return;
