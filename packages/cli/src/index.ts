@@ -3655,7 +3655,8 @@ export const createRequestHandler = async (options?: {
 
     if (pathname.startsWith("/api/")) {
       // Internal self-fetch requests bypass user-facing auth
-      const isInternal = pathname.startsWith("/api/internal/") && request.method === "POST" && isValidInternalRequest(request.headers);
+      const isInternalPath = pathname.startsWith("/api/internal/") || pathname.startsWith("/api/cron/");
+      const isInternal = isInternalPath && request.method === "POST" && isValidInternalRequest(request.headers);
 
       // Check authentication: either valid session (Web UI), valid Bearer token (API), or valid internal request
       const hasBearerToken = request.headers.authorization?.startsWith("Bearer ");
@@ -5118,7 +5119,9 @@ export const createRequestHandler = async (options?: {
             });
             return;
           }
-          historyMessages = [...conversation.messages];
+          historyMessages = conversation._continuationMessages?.length
+            ? [...conversation._continuationMessages]
+            : [...conversation.messages];
         } else {
           const timestamp = new Date().toISOString();
           conversation = await conversationStore.create(
@@ -5138,6 +5141,7 @@ export const createRequestHandler = async (options?: {
         const abortController = new AbortController();
         let assistantResponse = "";
         let latestRunId = "";
+        let runContinuationMessages: Message[] | undefined;
         const toolTimeline: string[] = [];
         const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
         let currentTools: string[] = [];
@@ -5200,6 +5204,9 @@ export const createRequestHandler = async (options?: {
               contextTokens: event.result.contextTokens,
               contextWindow: event.result.contextWindow,
             };
+            if (event.result.continuation && event.result.continuationMessages) {
+              runContinuationMessages = event.result.continuationMessages;
+            }
             if (!assistantResponse && event.result.response) {
               assistantResponse = event.result.response;
             }
@@ -5239,7 +5246,12 @@ export const createRequestHandler = async (options?: {
         ];
         const freshConv = await conversationStore.get(convId);
         if (freshConv) {
-          freshConv.messages = messages;
+          if (runContinuationMessages) {
+            freshConv._continuationMessages = runContinuationMessages;
+          } else {
+            freshConv._continuationMessages = undefined;
+            freshConv.messages = messages;
+          }
           freshConv.runtimeRunId = latestRunId || freshConv.runtimeRunId;
           if (runResult.contextTokens) freshConv.contextTokens = runResult.contextTokens;
           if (runResult.contextWindow) freshConv.contextWindow = runResult.contextWindow;
@@ -5247,33 +5259,18 @@ export const createRequestHandler = async (options?: {
           await conversationStore.update(freshConv);
         }
 
-        // Self-continuation for serverless timeouts
-        if (runResult.continuation && softDeadlineMs > 0) {
-          const selfUrl = `http://${request.headers.host ?? "localhost"}${pathname}?continue=${encodeURIComponent(convId)}&continuation=${continuationCount + 1}`;
-          try {
-            const selfRes = await fetch(selfUrl, {
-              method: "GET",
-              headers: request.headers.authorization
-                ? { authorization: request.headers.authorization }
-                : {},
-            });
-            const selfBody = await selfRes.json() as Record<string, unknown>;
-            writeJson(response, 200, {
-              conversationId: convId,
-              status: "continued",
-              continuations: continuationCount + 1,
-              finalResult: selfBody,
-              duration: Date.now() - start,
-            });
-          } catch (continueError) {
-            writeJson(response, 200, {
-              conversationId: convId,
-              status: "continuation_failed",
-              error: continueError instanceof Error ? continueError.message : "Unknown error",
-              duration: Date.now() - start,
-              steps: runResult.steps,
-            });
-          }
+        if (runResult.continuation) {
+          const continuationPath = `/api/cron/${encodeURIComponent(jobName)}?continue=${encodeURIComponent(convId)}&continuation=${continuationCount + 1}`;
+          const work = selfFetchWithRetry(continuationPath).catch(err =>
+            console.error(`[poncho][cron] Continuation self-fetch failed:`, err instanceof Error ? err.message : err),
+          );
+          doWaitUntil(work);
+          writeJson(response, 200, {
+            conversationId: convId,
+            status: "continued",
+            continuations: continuationCount + 1,
+            duration: Date.now() - start,
+          });
           return;
         }
 
