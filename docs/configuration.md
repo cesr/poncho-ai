@@ -174,6 +174,8 @@ Remote storage keys are namespaced and versioned, for example `poncho:v1:<agentI
 | `ANTHROPIC_API_KEY` | Yes* | Claude API key |
 | `OPENAI_API_KEY` | No | OpenAI API key (if using OpenAI) |
 | `PONCHO_AUTH_TOKEN` | No | Unified auth token (Web UI passphrase + API Bearer token) |
+| `PONCHO_INTERNAL_SECRET` | No | Shared secret used by internal serverless callbacks (recommended for Vercel/Lambda) |
+| `PONCHO_SELF_BASE_URL` | No | Explicit base URL for internal self-callbacks when auto-detection is unavailable |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | Telemetry destination |
 | `LATITUDE_API_KEY` | No | Latitude dashboard integration |
 | `LATITUDE_PROJECT_ID` | No | Latitude project identifier for capture traces |

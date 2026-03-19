@@ -721,11 +721,15 @@ Set environment variables on your deployment platform:
 ANTHROPIC_API_KEY=sk-ant-...   # Required
 PONCHO_AUTH_TOKEN=your-secret  # Optional: protect your endpoint
 PONCHO_MAX_DURATION=55         # Optional: serverless timeout in seconds (enables auto-continuation)
+PONCHO_INTERNAL_SECRET=...     # Recommended on serverless: shared secret for internal callback auth
 \`\`\`
 
 When \`PONCHO_MAX_DURATION\` is set, the agent automatically checkpoints and resumes across
 request cycles when it approaches the platform timeout. The web UI and client SDK handle
 this transparently.
+
+For serverless deployments with subagents or background callbacks, use a shared state backend
+(\`upstash\`, \`redis\`, or \`dynamodb\`) instead of \`state.provider: 'local'\` / \`'memory'\`.
 
 ## Troubleshooting
 
@@ -734,6 +738,7 @@ this transparently.
 - After upgrading \`@poncho-ai/cli\`, re-run \`poncho build vercel --force\` to refresh generated deploy files.
 - If Vercel fails during \`pnpm install\` due to a lockfile mismatch, run \`pnpm install --no-frozen-lockfile\` locally and commit \`pnpm-lock.yaml\`.
 - Deploy from the project root: \`vercel deploy --prod\`.
+- For subagents/background callbacks, set \`PONCHO_INTERNAL_SECRET\` and use non-local state storage.
 
 For full reference:
 https://github.com/cesr/poncho-ai
@@ -1554,7 +1559,8 @@ export const createRequestHandler = async (options?: {
   await harness.initialize();
   const telemetry = new TelemetryEmitter(config?.telemetry);
   const identity = await ensureAgentIdentity(workingDir);
-  const conversationStore = createConversationStore(resolveStateConfig(config), {
+  const stateConfig = resolveStateConfig(config);
+  const conversationStore = createConversationStore(stateConfig, {
     workingDir,
     agentId: identity.id,
   });
@@ -1956,9 +1962,10 @@ export const createRequestHandler = async (options?: {
           try { await childHarness.shutdown(); } catch {}
 
           if (isServerless) {
-            selfFetchWithRetry(`/api/internal/subagent/${encodeURIComponent(childConversationId)}/run`, { continuation: true }).catch(err =>
+            const work = selfFetchWithRetry(`/api/internal/subagent/${encodeURIComponent(childConversationId)}/run`, { continuation: true }).catch(err =>
               console.error(`[poncho][subagent] Continuation self-fetch failed:`, err instanceof Error ? err.message : err),
             );
+            doWaitUntil(work);
           } else {
             runSubagent(childConversationId, parentConversationId, task, ownerId, true).catch(err =>
               console.error(`[poncho][subagent] Continuation failed:`, err instanceof Error ? err.message : err),
@@ -2079,7 +2086,11 @@ export const createRequestHandler = async (options?: {
     if (!conversation) return;
 
     const pendingResults = conversation.pendingSubagentResults ?? [];
-    if (pendingResults.length === 0) return;
+    const hasOrphanedContinuation = pendingResults.length === 0
+      && Array.isArray(conversation._continuationMessages)
+      && conversation._continuationMessages.length > 0
+      && !activeConversationRuns.has(conversationId);
+    if (pendingResults.length === 0 && !hasOrphanedContinuation) return;
 
     // Store-based lock for serverless: skip if another invocation is processing.
     // When re-triggered from a previous callback's finally block, skipLockCheck
@@ -2095,6 +2106,7 @@ export const createRequestHandler = async (options?: {
     // Acquire lock and clear pending
     conversation.pendingSubagentResults = [];
     conversation.runningCallbackSince = Date.now();
+    conversation.runStatus = "running";
     const callbackCount = (conversation.subagentCallbackCount ?? 0) + 1;
     conversation.subagentCallbackCount = callbackCount;
 
@@ -2116,11 +2128,13 @@ export const createRequestHandler = async (options?: {
     if (callbackCount > MAX_SUBAGENT_CALLBACK_COUNT) {
       console.warn(`[poncho][subagent-callback] Circuit breaker: ${callbackCount} callbacks for ${conversationId}, skipping re-run`);
       conversation.runningCallbackSince = undefined;
+      conversation.runStatus = "idle";
       await conversationStore.update(conversation);
       return;
     }
 
-    console.log(`[poncho][subagent-callback] Processing ${pendingResults.length} result(s) for ${conversationId} (callback #${callbackCount})`);
+    const isContinuationResume = hasOrphanedContinuation && pendingResults.length === 0;
+    console.log(`[poncho][subagent-callback] Processing ${pendingResults.length} result(s) for ${conversationId} (callback #${callbackCount})${isContinuationResume ? " (continuation resume)" : ""}`);
 
     const abortController = new AbortController();
     activeConversationRuns.set(conversationId, {
@@ -2142,7 +2156,9 @@ export const createRequestHandler = async (options?: {
       });
     }
 
-    const historyMessages = [...conversation.messages];
+    const historyMessages = isContinuationResume && conversation._continuationMessages?.length
+      ? [...conversation._continuationMessages]
+      : [...conversation.messages];
     let assistantResponse = "";
     let latestRunId = "";
     let runContinuation = false;
@@ -2236,6 +2252,7 @@ export const createRequestHandler = async (options?: {
           }
           freshConv.runtimeRunId = latestRunId || freshConv.runtimeRunId;
           freshConv.runningCallbackSince = undefined;
+          freshConv.runStatus = "idle";
           if (runContextTokens > 0) freshConv.contextTokens = runContextTokens;
           if (runContextWindow > 0) freshConv.contextWindow = runContextWindow;
           freshConv.updatedAt = Date.now();
@@ -2264,8 +2281,13 @@ export const createRequestHandler = async (options?: {
       // Handle continuation for the callback run itself
       if (runContinuation) {
         if (isServerless) {
-          selfFetchWithRetry(`/api/internal/conversations/${encodeURIComponent(conversationId)}/subagent-callback`).catch(err =>
+          const work = selfFetchWithRetry(`/api/internal/conversations/${encodeURIComponent(conversationId)}/subagent-callback`).catch(err =>
             console.error(`[poncho][subagent-callback] Continuation self-fetch failed:`, err instanceof Error ? err.message : err),
+          );
+          doWaitUntil(work);
+        } else {
+          processSubagentCallback(conversationId, true).catch(err =>
+            console.error(`[poncho][subagent-callback] Continuation failed:`, err instanceof Error ? err.message : err),
           );
         }
       }
@@ -2274,6 +2296,7 @@ export const createRequestHandler = async (options?: {
       const errConv = await conversationStore.get(conversationId);
       if (errConv) {
         errConv.runningCallbackSince = undefined;
+        errConv.runStatus = "idle";
         await conversationStore.update(errConv);
       }
     } finally {
@@ -3014,39 +3037,100 @@ export const createRequestHandler = async (options?: {
   }
 
   const isServerless = !!waitUntilHook;
-  const internalSecret = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  const configuredInternalSecret = process.env.PONCHO_INTERNAL_SECRET?.trim();
+  const vercelDeploymentSecret = process.env.VERCEL_DEPLOYMENT_ID?.trim();
+  const fallbackInternalSecret = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  const internalSecret = configuredInternalSecret || vercelDeploymentSecret || fallbackInternalSecret;
+  const isUsingEphemeralInternalSecret = !configuredInternalSecret && !vercelDeploymentSecret;
   let selfBaseUrl: string | null = process.env.VERCEL_URL
     ? `https://${process.env.VERCEL_URL}`
     : null;
+
+  if (!selfBaseUrl && process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    selfBaseUrl = `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  }
+  if (!selfBaseUrl && process.env.PONCHO_SELF_BASE_URL) {
+    selfBaseUrl = process.env.PONCHO_SELF_BASE_URL.replace(/\/+$/, "");
+  }
+
+  if (isServerless && isUsingEphemeralInternalSecret) {
+    console.warn(
+      "[poncho][serverless] No stable internal secret found. Set PONCHO_INTERNAL_SECRET to avoid intermittent internal callback failures across instances.",
+    );
+  }
+  if (isServerless && !selfBaseUrl) {
+    console.warn(
+      "[poncho][serverless] No self base URL available. Set PONCHO_SELF_BASE_URL if internal background callbacks fail.",
+    );
+  }
+  const stateProvider = stateConfig?.provider ?? "local";
+  if (isServerless && (stateProvider === "local" || stateProvider === "memory")) {
+    console.warn(
+      `[poncho][serverless] state.provider="${stateProvider}" may lose cross-invocation state. Prefer "upstash", "redis", or "dynamodb" for subagents/reliability.`,
+    );
+  }
 
   const doWaitUntil = (promise: Promise<unknown>): void => {
     if (waitUntilHook) waitUntilHook(promise);
   };
 
-  const selfFetch = (path: string, body?: Record<string, unknown>): Promise<Response | void> => {
-    if (!selfBaseUrl) return Promise.resolve();
-    return fetch(`${selfBaseUrl}${path}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-poncho-internal": internalSecret,
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    }).catch(err => {
-      console.error(`[poncho][self-fetch] Failed ${path}:`, err instanceof Error ? err.message : err);
-    }) as Promise<Response | void>;
-  };
-
   const selfFetchWithRetry = async (path: string, body?: Record<string, unknown>, retries = 3): Promise<Response | void> => {
+    if (!selfBaseUrl) {
+      console.error(`[poncho][self-fetch] Missing self base URL for ${path}`);
+      return;
+    }
+    let lastError: unknown;
     for (let attempt = 0; attempt < retries; attempt++) {
       try {
-        const result = await selfFetch(path, body);
-        return result;
+        const result = await fetch(`${selfBaseUrl}${path}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-poncho-internal": internalSecret,
+          },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        if (result.ok) {
+          return result;
+        }
+        const responseText = await result.text().catch(() => "");
+        lastError = new Error(
+          `HTTP ${result.status}${responseText ? `: ${responseText.slice(0, 200)}` : ""}`,
+        );
       } catch (err) {
-        if (attempt === retries - 1) throw err;
-        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        lastError = err;
       }
+      if (attempt === retries - 1) {
+        break;
+      }
+      await new Promise((resolveSleep) => setTimeout(resolveSleep, 1000 * (attempt + 1)));
     }
+    if (lastError) {
+      console.error(
+        `[poncho][self-fetch] Failed ${path} after ${retries} attempt(s):`,
+        lastError instanceof Error ? lastError.message : String(lastError),
+      );
+      if (
+        lastError instanceof Error
+        && (lastError.message.includes("HTTP 403") || lastError.message.includes("HTTP 401"))
+      ) {
+        console.error(
+          "[poncho][self-fetch] Internal auth failed. Ensure all serverless instances share PONCHO_INTERNAL_SECRET.",
+        );
+      }
+    } else {
+      console.error(`[poncho][self-fetch] Failed ${path} after ${retries} attempt(s).`);
+    }
+  };
+
+  const getInternalRequestHeader = (headers: IncomingMessage["headers"]): string | undefined => {
+    const value = headers["x-poncho-internal"];
+    return Array.isArray(value) ? value[0] : value;
+  };
+
+  const isValidInternalRequest = (headers: IncomingMessage["headers"]): boolean => {
+    const headerValue = getInternalRequestHeader(headers);
+    return typeof headerValue === "string" && headerValue === internalSecret;
   };
 
   const messagingAdapters = new Map<string, MessagingAdapter>();
@@ -3417,7 +3501,7 @@ export const createRequestHandler = async (options?: {
 
     // ── Internal endpoints (self-fetch only, secured by startup secret) ──
     if (pathname?.startsWith("/api/internal/") && request.method === "POST") {
-      if (request.headers["x-poncho-internal"] !== internalSecret) {
+      if (!isValidInternalRequest(request.headers)) {
         writeJson(response, 403, { code: "FORBIDDEN", message: "Internal endpoint" });
         return;
       }
@@ -4171,14 +4255,21 @@ export const createRequestHandler = async (options?: {
             }
           }
         }
+        const hasPendingCallbackResults = Array.isArray(conversation.pendingSubagentResults)
+          && conversation.pendingSubagentResults.length > 0;
+        const needsContinuation = !hasActiveRun
+          && Array.isArray(conversation._continuationMessages)
+          && conversation._continuationMessages.length > 0;
         writeJson(response, 200, {
           conversation: {
             ...conversation,
             pendingApprovals: storedPending,
+            _continuationMessages: undefined,
           },
           subagentPendingApprovals: subagentPending,
-          hasActiveRun,
+          hasActiveRun: hasActiveRun || hasPendingCallbackResults,
           hasRunningSubagents,
+          needsContinuation,
         });
         return;
       }

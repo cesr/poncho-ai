@@ -749,7 +749,10 @@ On your deployment platform, set:
 ANTHROPIC_API_KEY=sk-ant-...   # Required
 PONCHO_AUTH_TOKEN=your-secret  # Optional: protect your endpoint (Web UI passphrase + API Bearer token)
 PONCHO_MAX_DURATION=55         # Optional: serverless timeout in seconds (enables auto-continuation)
+PONCHO_INTERNAL_SECRET=...     # Recommended on serverless: shared secret for internal callback auth
 ```
+
+For serverless deployments with subagents or background callbacks, use a shared state backend (`upstash`, `redis`, or `dynamodb`) instead of `state.provider: 'local'` / `'memory'`.
 
 ### Auto-continuation (serverless timeout handling)
 

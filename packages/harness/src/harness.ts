@@ -2030,6 +2030,25 @@ ${boundedMainMemory.trim()}`
           return;
         }
 
+      // Post-streaming soft deadline: if the model stream took long enough to
+      // push past the soft deadline, checkpoint now before tool execution.
+      if (softDeadlineMs > 0 && now() - start > softDeadlineMs) {
+        const result_: RunResult = {
+          status: "completed",
+          response: responseText + fullText,
+          steps: step,
+          tokens: { input: totalInputTokens, output: totalOutputTokens, cached: totalCachedTokens },
+          duration: now() - start,
+          continuation: true,
+          continuationMessages: [...messages],
+          maxSteps,
+          contextTokens: latestContextTokens + toolOutputEstimateSinceModel,
+          contextWindow,
+        };
+        yield pushEvent({ type: "run:completed", runId, result: result_ });
+        return;
+      }
+
       // Check finish reason for error / abnormal completions.
       const finishReason = await result.finishReason;
 

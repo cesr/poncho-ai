@@ -1344,6 +1344,101 @@ export const getWebUiClientScript = (markedSource: string): string => `
           });
         } else if (willStream) {
           setStreaming(true);
+        } else if (payload.needsContinuation && !payload.conversation.parentConversationId) {
+          console.log("[poncho] Detected orphaned continuation for", conversationId, "— auto-resuming");
+          (async () => {
+            try {
+              setStreaming(true);
+              var localMsgs = state.activeMessages || [];
+              var contAssistant = {
+                role: "assistant",
+                content: "",
+                _sections: [],
+                _currentText: "",
+                _currentTools: [],
+                _toolImages: [],
+                _activeActivities: [],
+                _pendingApprovals: [],
+                metadata: { toolActivity: [] }
+              };
+              localMsgs.push(contAssistant);
+              state.activeMessages = localMsgs;
+              state._activeStreamMessages = localMsgs;
+              renderMessages(localMsgs, true);
+              var contResp = await fetch(
+                "/api/conversations/" + encodeURIComponent(conversationId) + "/messages",
+                {
+                  method: "POST",
+                  credentials: "include",
+                  headers: { "Content-Type": "application/json", "x-csrf-token": state.csrfToken },
+                  body: JSON.stringify({ continuation: true }),
+                },
+              );
+              if (!contResp.ok || !contResp.body) {
+                contAssistant._error = "Failed to resume — reload to retry";
+                setStreaming(false);
+                renderMessages(localMsgs, false);
+                return;
+              }
+              state.activeStreamConversationId = conversationId;
+              var contReader = contResp.body.getReader();
+              var contDecoder = new TextDecoder();
+              var contBuffer = "";
+              while (true) {
+                var chunk = await contReader.read();
+                if (chunk.done) break;
+                contBuffer += contDecoder.decode(chunk.value, { stream: true });
+                contBuffer = parseSseChunk(contBuffer, function(evtName, evtPayload) {
+                  if (evtName === "model:chunk" && evtPayload.content) {
+                    contAssistant.content = (contAssistant.content || "") + evtPayload.content;
+                    contAssistant._currentText += evtPayload.content;
+                  }
+                  if (evtName === "tool:started") {
+                    if (contAssistant._currentText) {
+                      contAssistant._sections.push({ type: "text", content: contAssistant._currentText });
+                      contAssistant._currentText = "";
+                    }
+                    contAssistant._currentTools.push("- start \`" + evtPayload.tool + "\`");
+                  }
+                  if (evtName === "tool:completed") {
+                    contAssistant._currentTools.push("- done \`" + evtPayload.tool + "\` (" + evtPayload.duration + "ms)");
+                  }
+                  if (evtName === "tool:error") {
+                    contAssistant._currentTools.push("- error \`" + evtPayload.tool + "\`: " + evtPayload.error);
+                  }
+                  if (evtName === "run:completed" || evtName === "run:error" || evtName === "run:cancelled") {
+                    if (contAssistant._currentTools.length > 0) {
+                      contAssistant._sections.push({ type: "tools", content: contAssistant._currentTools });
+                      contAssistant._currentTools = [];
+                    }
+                    if (contAssistant._currentText) {
+                      contAssistant._sections.push({ type: "text", content: contAssistant._currentText });
+                      contAssistant._currentText = "";
+                    }
+                    contAssistant._activeActivities = [];
+                    if (evtName === "run:error") {
+                      contAssistant._error = evtPayload.error?.message || "Something went wrong";
+                    }
+                    if (evtName === "run:completed" && evtPayload.result?.continuation === true) {
+                      // Another continuation needed — reload to pick it up
+                      loadConversation(conversationId).catch(function() {});
+                    }
+                  }
+                  renderMessages(localMsgs, true);
+                });
+              }
+              setStreaming(false);
+              renderMessages(localMsgs, false);
+              await loadConversations();
+            } catch (contErr) {
+              console.error("[poncho] Auto-continuation failed:", contErr);
+              setStreaming(false);
+              await loadConversation(conversationId).catch(function() {});
+            } finally {
+              state.activeStreamConversationId = null;
+              state._activeStreamMessages = null;
+            }
+          })();
         }
       };
 
@@ -2427,6 +2522,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
           let _totalSteps = 0;
           let _maxSteps = 0;
           let _isContinuation = false;
+          let _receivedTerminalEvent = false;
           while (true) {
           let _shouldContinue = false;
           let fetchOpts;
@@ -2756,6 +2852,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
                   }
                 }
                 if (eventName === "run:completed") {
+                  _receivedTerminalEvent = true;
                   _totalSteps += typeof payload.result?.steps === "number" ? payload.result.steps : 0;
                   if (typeof payload.result?.maxSteps === "number") _maxSteps = payload.result.maxSteps;
                   if (payload.result?.continuation === true && (_maxSteps <= 0 || _totalSteps < _maxSteps)) {
@@ -2772,10 +2869,12 @@ export const getWebUiClientScript = (markedSource: string): string => `
                   }
                 }
                 if (eventName === "run:cancelled") {
+                  _receivedTerminalEvent = true;
                   finalizeAssistantMessage();
                   renderIfActiveConversation(false);
                 }
                 if (eventName === "run:error") {
+                  _receivedTerminalEvent = true;
                   finalizeAssistantMessage();
                   const errMsg = payload.error?.message || "Something went wrong";
                   assistantMessage._error = errMsg;
@@ -2786,7 +2885,19 @@ export const getWebUiClientScript = (markedSource: string): string => `
               }
             });
           }
+          if (!_shouldContinue && !_receivedTerminalEvent) {
+            try {
+              const recoveryPayload = await api("/api/conversations/" + encodeURIComponent(conversationId));
+              if (recoveryPayload.needsContinuation) {
+                _shouldContinue = true;
+                console.log("[poncho] Stream ended without terminal event, server has continuation — resuming");
+              }
+            } catch (_recoverErr) {
+              console.warn("[poncho] Recovery check failed after abrupt stream end");
+            }
+          }
           if (!_shouldContinue) break;
+          _receivedTerminalEvent = false;
           _isContinuation = true;
           }
           // Update active state only if user is still on this conversation.
