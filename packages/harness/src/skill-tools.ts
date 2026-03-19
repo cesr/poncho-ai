@@ -244,7 +244,8 @@ export const createSkillTools = (
                 error: `Unknown skill: "${name}". Available skills: ${knownNames}`,
               };
             }
-            const resolved = resolveScriptPath(skill.skillDir, script);
+            const projectRoot = options?.workingDir ?? process.cwd();
+            const resolved = resolveScriptPath(skill.skillDir, script, projectRoot);
             if (
               options?.isScriptAllowed &&
               !options.isScriptAllowed(name, resolved.relativePath)
@@ -357,7 +358,7 @@ const collectScriptFiles = async (directory: string): Promise<string[]> => {
 export const normalizeScriptPolicyPath = (relativePath: string): string => {
   const trimmed = relativePath.trim();
   const normalized = normalize(trimmed).split(sep).join("/");
-  if (normalized.startsWith("..") || normalized.startsWith("/")) {
+  if (normalized.startsWith("/")) {
     throw new Error("Script path must be relative and within the allowed directory");
   }
   const withoutDotPrefix = normalized.startsWith("./") ? normalized.slice(2) : normalized;
@@ -370,10 +371,12 @@ export const normalizeScriptPolicyPath = (relativePath: string): string => {
 const resolveScriptPath = (
   baseDir: string,
   relativePath: string,
+  containmentDir?: string,
 ): { fullPath: string; relativePath: string } => {
   const normalized = normalizeScriptPolicyPath(relativePath);
   const fullPath = resolve(baseDir, normalized);
-  if (!fullPath.startsWith(`${resolve(baseDir)}${sep}`) && fullPath !== resolve(baseDir)) {
+  const boundary = resolve(containmentDir ?? baseDir);
+  if (!fullPath.startsWith(`${boundary}${sep}`) && fullPath !== boundary) {
     throw new Error("Script path must stay inside the allowed directory");
   }
   const extension = extname(fullPath).toLowerCase();

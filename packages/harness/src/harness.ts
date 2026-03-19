@@ -812,10 +812,15 @@ export class AgentHarness {
       if (!rawScript) {
         return false;
       }
-      const canonicalPath = normalizeRelativeScriptPattern(
-        `./${normalizeScriptPolicyPath(rawScript)}`,
-        "run_skill_script input.script",
-      );
+      let canonicalPath: string;
+      try {
+        canonicalPath = normalizeRelativeScriptPattern(
+          `./${normalizeScriptPolicyPath(rawScript)}`,
+          "run_skill_script input.script",
+        );
+      } catch {
+        return true;
+      }
       const scriptPatterns = this.getRequestedScriptApprovalPatterns();
       return scriptPatterns.some((pattern) =>
         matchesRelativeScriptPattern(canonicalPath, pattern),
@@ -2285,10 +2290,53 @@ ${boundedMainMemory.trim()}`
         }
       }
 
-      const batchResults =
-        approvedCalls.length > 0
-          ? await this.dispatcher.executeBatch(approvedCalls, toolContext)
-          : [];
+      // Race tool execution against the soft deadline so long-running tool
+      // batches (e.g. 4 parallel web_search calls) can't push us past the
+      // hard platform timeout.  If the deadline fires first, we checkpoint
+      // with the pre-tool messages and the step will be re-done on
+      // continuation (assistant + tool results are not yet in `messages`).
+      const TOOL_DEADLINE_SENTINEL = Symbol("tool_deadline");
+      const toolDeadlineRemainingMs = softDeadlineMs > 0
+        ? softDeadlineMs - (now() - start)
+        : Infinity;
+
+      let batchResults: Awaited<ReturnType<typeof this.dispatcher.executeBatch>>;
+      if (approvedCalls.length === 0) {
+        batchResults = [];
+      } else if (toolDeadlineRemainingMs <= 0) {
+        batchResults = TOOL_DEADLINE_SENTINEL as never;
+      } else if (toolDeadlineRemainingMs < Infinity) {
+        const raced = await Promise.race([
+          this.dispatcher.executeBatch(approvedCalls, toolContext),
+          new Promise<typeof TOOL_DEADLINE_SENTINEL>((resolve) =>
+            setTimeout(() => resolve(TOOL_DEADLINE_SENTINEL), toolDeadlineRemainingMs),
+          ),
+        ]);
+        if (raced === TOOL_DEADLINE_SENTINEL) {
+          batchResults = TOOL_DEADLINE_SENTINEL as never;
+        } else {
+          batchResults = raced;
+        }
+      } else {
+        batchResults = await this.dispatcher.executeBatch(approvedCalls, toolContext);
+      }
+
+      if ((batchResults as unknown) === TOOL_DEADLINE_SENTINEL) {
+        const result_: RunResult = {
+          status: "completed",
+          response: responseText + fullText,
+          steps: step,
+          tokens: { input: totalInputTokens, output: totalOutputTokens, cached: totalCachedTokens },
+          duration: now() - start,
+          continuation: true,
+          continuationMessages: [...messages],
+          maxSteps,
+          contextTokens: latestContextTokens + toolOutputEstimateSinceModel,
+          contextWindow,
+        };
+        yield pushEvent({ type: "run:completed", runId, result: result_ });
+        return;
+      }
 
       if (isCancelled()) {
         yield emitCancellation();
@@ -2385,6 +2433,26 @@ ${boundedMainMemory.trim()}`
         content: JSON.stringify(toolResultsForModel),
         metadata: toolMsgMeta as Message["metadata"],
       });
+
+      // Post-tool-execution soft deadline: long-running tool batches (e.g.
+      // multiple web_search calls) can push past the deadline. Checkpoint
+      // now so the platform doesn't hard-kill us before we can continue.
+      if (softDeadlineMs > 0 && now() - start > softDeadlineMs) {
+        const result_: RunResult = {
+          status: "completed",
+          response: responseText + fullText,
+          steps: step,
+          tokens: { input: totalInputTokens, output: totalOutputTokens, cached: totalCachedTokens },
+          duration: now() - start,
+          continuation: true,
+          continuationMessages: [...messages],
+          maxSteps,
+          contextTokens: latestContextTokens + toolOutputEstimateSinceModel,
+          contextWindow,
+        };
+        yield pushEvent({ type: "run:completed", runId, result: result_ });
+        return;
+      }
 
         // In development, re-read AGENT.md and re-scan skills after tool
         // execution so changes are available on the next step without
