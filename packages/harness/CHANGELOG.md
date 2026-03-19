@@ -1,5 +1,15 @@
 # @poncho-ai/harness
 
+## 0.28.3
+
+### Patch Changes
+
+- [`87f844b`](https://github.com/cesr/poncho-ai/commit/87f844b0a76ece87e4bba78eaf73392f857cdef2) Thanks [@cesr](https://github.com/cesr)! - Fix tool execution blowing past serverless timeout and cross-skill script paths
+  - Race tool batch execution against remaining soft deadline so parallel tools can't push past the hard platform timeout
+  - Add post-tool-execution soft deadline checkpoint for tools that finish just past the deadline
+  - Allow skill scripts to reference sibling directories (e.g. ../scripts/current-date.ts)
+  - Catch script path normalization errors in approval check instead of crashing the run
+
 ## 0.28.2
 
 ### Patch Changes
