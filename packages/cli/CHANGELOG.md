@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.30.6
+
+### Patch Changes
+
+- [`56001f5`](https://github.com/cesr/poncho-ai/commit/56001f52f599f013a08e57e5de4891c02ca358d5) Thanks [@cesr](https://github.com/cesr)! - Warn at startup when CRON_SECRET is missing on Vercel with auth enabled and cron jobs configured
+
 ## 0.30.5
 
 ### Patch Changes
