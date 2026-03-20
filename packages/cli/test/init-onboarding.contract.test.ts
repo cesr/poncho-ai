@@ -44,4 +44,16 @@ describe("init onboarding registry contract", () => {
     expect(memory?.enabled).toBe(true);
     expect(memory?.maxRecallConversations).toBe(10);
   });
+
+  it("accepts openai-codex provider answers when building config", () => {
+    const config = buildConfigFromOnboardingAnswers({
+      "model.provider": "openai-codex",
+      "storage.provider": "local",
+      "storage.memory.enabled": true,
+      "auth.required": false,
+      "telemetry.enabled": true,
+    });
+    expect(config.storage?.provider).toBe("local");
+    expect(config.auth?.required).toBe(false);
+  });
 });

@@ -170,7 +170,7 @@ export const parseAgentMarkdown = (content: string): ParsedAgent => {
     throw new Error("Invalid AGENT.md: frontmatter requires a non-empty `name`.");
   }
 
-  const KNOWN_PROVIDERS = new Set(["anthropic", "openai"]);
+  const KNOWN_PROVIDERS = new Set(["anthropic", "openai", "openai-codex"]);
   const splitProviderPrefix = (raw: string): { provider?: string; name: string } => {
     const slashIdx = raw.indexOf("/");
     if (slashIdx > 0) {

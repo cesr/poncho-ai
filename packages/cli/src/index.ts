@@ -72,6 +72,12 @@ import {
   consumeFirstRunIntro,
   initializeOnboardingMarker,
 } from "./init-feature-context.js";
+import {
+  exportOpenAICodex,
+  loginOpenAICodex,
+  logoutOpenAICodex,
+  statusOpenAICodex,
+} from "./auth-codex.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -280,7 +286,7 @@ const parseParams = (values: string[]): Record<string, string> => {
 const AGENT_TEMPLATE = (
   name: string,
   id: string,
-  options: { modelProvider: "anthropic" | "openai"; modelName: string },
+  options: { modelProvider: "anthropic" | "openai" | "openai-codex"; modelName: string },
 ): string => `---
 name: ${name}
 id: ${id}
@@ -371,16 +377,23 @@ An AI agent built with [Poncho](https://github.com/cesr/poncho-ai).
 
 - Node.js 20+
 - npm (or pnpm/yarn)
-- Anthropic or OpenAI API key
+- Anthropic API key, OpenAI API key, or OpenAI Codex OAuth refresh token
 
 ## Quick Start
 
 \`\`\`bash
 npm install
-# If you didn't enter an API key during init:
+# If you didn't enter credentials during init:
 cp .env.example .env
-# Then edit .env and add your API key
+# Then edit .env and add provider credentials
 poncho dev
+\`\`\`
+
+For OpenAI Codex OAuth bootstrap:
+
+\`\`\`bash
+poncho auth login --provider openai-codex --device
+poncho auth export --provider openai-codex --format env
 \`\`\`
 
 Open \`http://localhost:3000\` for the web UI, or \`http://localhost:3000/api/docs\` for interactive API documentation.
@@ -416,6 +429,11 @@ poncho test
 
 # List available tools
 poncho tools
+
+# OpenAI Codex auth (OAuth subscription)
+poncho auth login --provider openai-codex --device
+poncho auth status --provider openai-codex
+poncho auth export --provider openai-codex --format env
 
 # Remove deprecated guidance from AGENT.md after upgrading
 poncho update-agent
@@ -719,6 +737,11 @@ Set environment variables on your deployment platform:
 
 \`\`\`bash
 ANTHROPIC_API_KEY=sk-ant-...   # Required
+# OR for OpenAI API key provider:
+# OPENAI_API_KEY=sk-...
+# OR for OpenAI Codex OAuth provider:
+# OPENAI_CODEX_REFRESH_TOKEN=rt_...
+# OPENAI_CODEX_ACCOUNT_ID=...   # Optional
 PONCHO_AUTH_TOKEN=your-secret  # Optional: protect your endpoint
 PONCHO_MAX_DURATION=55         # Optional: serverless timeout in seconds (enables auto-continuation)
 PONCHO_INTERNAL_SECRET=...     # Recommended on serverless: shared secret for internal callback auth
@@ -7173,6 +7196,52 @@ export const buildCli = (): Command => {
     .description("List all tools available to the agent")
     .action(async () => {
       await listTools(process.cwd());
+    });
+
+  const authCommand = program.command("auth").description("Manage model provider authentication");
+  authCommand
+    .command("login")
+    .requiredOption("--provider <provider>", "provider id (currently: openai-codex)")
+    .option("--device", "use device auth flow", true)
+    .action(async (options: { provider: string; device: boolean }) => {
+      if (options.provider !== "openai-codex") {
+        throw new Error(`Unsupported provider "${options.provider}". Try --provider openai-codex.`);
+      }
+      await loginOpenAICodex({ device: options.device });
+    });
+
+  authCommand
+    .command("status")
+    .requiredOption("--provider <provider>", "provider id (currently: openai-codex)")
+    .action(async (options: { provider: string }) => {
+      if (options.provider !== "openai-codex") {
+        throw new Error(`Unsupported provider "${options.provider}". Try --provider openai-codex.`);
+      }
+      await statusOpenAICodex();
+    });
+
+  authCommand
+    .command("logout")
+    .requiredOption("--provider <provider>", "provider id (currently: openai-codex)")
+    .action(async (options: { provider: string }) => {
+      if (options.provider !== "openai-codex") {
+        throw new Error(`Unsupported provider "${options.provider}". Try --provider openai-codex.`);
+      }
+      await logoutOpenAICodex();
+    });
+
+  authCommand
+    .command("export")
+    .requiredOption("--provider <provider>", "provider id (currently: openai-codex)")
+    .option("--format <format>", "env|json", "env")
+    .action(async (options: { provider: string; format: string }) => {
+      if (options.provider !== "openai-codex") {
+        throw new Error(`Unsupported provider "${options.provider}". Try --provider openai-codex.`);
+      }
+      if (options.format !== "env" && options.format !== "json") {
+        throw new Error(`Unsupported export format "${options.format}". Use env or json.`);
+      }
+      await exportOpenAICodex(options.format);
     });
 
   const skillsCommand = program.command("skills").description("Manage installed skills");

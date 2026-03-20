@@ -1,5 +1,20 @@
 # @poncho-ai/cli
 
+## 0.32.0
+
+### Minor Changes
+
+- Add OpenAI Codex OAuth provider support with one-time auth bootstrap and runtime token refresh.
+
+  This adds `openai-codex` model provider support, `poncho auth` login/status/logout/export commands, onboarding updates, and Codex request compatibility handling for OAuth-backed Responses API calls.
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @poncho-ai/harness@0.31.0
+  - @poncho-ai/sdk@1.7.0
+  - @poncho-ai/messaging@0.7.5
+
 ## 0.31.0
 
 ### Minor Changes

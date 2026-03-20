@@ -451,6 +451,8 @@ export default {
   providers: {
     anthropic: { apiKeyEnv: "ANTHROPIC_API_KEY" },
     openai: { apiKeyEnv: "OPENAI_API_KEY" },
+    // openai-codex provider reads OAuth tokens from env vars by default:
+    // openaiCodex: { refreshTokenEnv: "OPENAI_CODEX_REFRESH_TOKEN", accountIdEnv: "OPENAI_CODEX_ACCOUNT_ID" },
   },
   auth: {
     required: true,

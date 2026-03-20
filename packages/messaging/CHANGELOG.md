@@ -1,5 +1,12 @@
 # @poncho-ai/messaging
 
+## 0.7.5
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @poncho-ai/sdk@1.7.0
+
 ## 0.7.4
 
 ### Patch Changes
