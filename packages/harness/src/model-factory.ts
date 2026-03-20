@@ -36,6 +36,8 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 const OPENAI_CODEX_DEFAULT_INSTRUCTIONS =
   "You are Codex, based on GPT-5. You are running as a coding agent in Poncho.";
+const OPENAI_CODEX_RESPONSES_URL =
+  process.env.OPENAI_CODEX_RESPONSES_URL ?? "https://chatgpt.com/backend-api/codex/responses";
 
 const extractSystemInstructionFromInput = (input: unknown): string | undefined => {
   if (!Array.isArray(input)) return undefined;
@@ -60,6 +62,22 @@ const extractSystemInstructionFromInput = (input: unknown): string | undefined =
     }
   }
   return undefined;
+};
+
+const normalizeToolParameterSchemas = (tools: unknown): void => {
+  if (!Array.isArray(tools)) return;
+  for (const tool of tools) {
+    if (!tool || typeof tool !== "object") continue;
+    const entry = tool as { parameters?: unknown };
+    if (!entry.parameters || typeof entry.parameters !== "object") continue;
+    const schema = entry.parameters as {
+      type?: unknown;
+      properties?: unknown;
+    };
+    if (schema.type === "object" && (typeof schema.properties !== "object" || schema.properties === null)) {
+      schema.properties = {};
+    }
+  }
 };
 
 /**
@@ -117,7 +135,7 @@ export const createModelProvider = (provider?: string, config?: ProviderConfig):
           parsed.pathname.includes("/v1/responses") ||
           parsed.pathname.includes("/chat/completions");
         const targetUrl = shouldRewrite
-          ? "https://chatgpt.com/backend-api/codex/responses"
+          ? OPENAI_CODEX_RESPONSES_URL
           : originalUrl;
         let body = init?.body;
         if (
@@ -130,12 +148,14 @@ export const createModelProvider = (provider?: string, config?: ProviderConfig):
               instructions?: unknown;
               input?: unknown;
               store?: unknown;
+              tools?: unknown;
             };
             if (typeof payload.instructions !== "string" || payload.instructions.trim() === "") {
               payload.instructions =
                 extractSystemInstructionFromInput(payload.input) ??
                 OPENAI_CODEX_DEFAULT_INSTRUCTIONS;
             }
+            normalizeToolParameterSchemas(payload.tools);
             // Codex endpoint requires store=false explicitly.
             payload.store = false;
             body = JSON.stringify(payload);
@@ -143,7 +163,20 @@ export const createModelProvider = (provider?: string, config?: ProviderConfig):
             // Keep original body if parsing fails.
           }
         }
-        return fetch(targetUrl, { ...init, headers, body });
+        try {
+          return await fetch(targetUrl, { ...init, headers, body });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (
+            shouldRewrite &&
+            targetUrl.includes("chatgpt.com") &&
+            message.includes("ENOTFOUND chatgpt.com")
+          ) {
+            // Some networks block/override chatgpt.com DNS; retry on the SDK's original URL.
+            return fetch(originalUrl, { ...init, headers, body });
+          }
+          throw error;
+        }
       },
     });
     return (modelName: string) => openai(modelName);

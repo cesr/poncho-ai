@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.31.1
+
+### Patch Changes
+
+- Fix OpenAI Codex compatibility for reasoning model runs by normalizing tool schemas, enforcing required payload fields, and adding endpoint fallback behavior.
+
 ## 0.31.0
 
 ### Minor Changes
