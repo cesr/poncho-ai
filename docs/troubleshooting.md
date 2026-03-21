@@ -58,6 +58,36 @@ Make sure you have a `.env` file with your API key:
 echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
 ```
 
+### "OpenAI Codex credentials not found"
+
+Bootstrap credentials with device auth, then export env values:
+
+```bash
+poncho auth login --provider openai-codex --device
+poncho auth export --provider openai-codex --format env
+```
+
+For production, copy exported values into your deployment secret manager (not committed files).
+
+### "OpenAI Codex token refresh failed" / `invalid_grant`
+
+Your refresh token is expired or rotated. Re-run one-time auth and rotate deployment secrets:
+
+```bash
+poncho auth login --provider openai-codex --device
+poncho auth export --provider openai-codex --format env
+```
+
+Then restart your deployment so new secrets are loaded.
+
+### "Missing scopes: model.request / api.model.read / api.responses.write"
+
+Re-authenticate and ensure the OAuth flow requested required scopes. Then verify:
+
+```bash
+poncho auth status --provider openai-codex
+```
+
 ### "MCP server failed to connect"
 
 Check that:

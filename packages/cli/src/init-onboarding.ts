@@ -36,7 +36,7 @@ export type InitOnboardingResult = {
   envNeedsUserInput: boolean;
   deployTarget: DeployTarget;
   agentModel: {
-    provider: "anthropic" | "openai";
+    provider: "anthropic" | "openai" | "openai-codex";
     name: string;
   };
 };
@@ -276,7 +276,9 @@ const askOnboardingQuestions = async (options: InitOnboardingOptions): Promise<O
 };
 
 const getProviderModelName = (provider: string): string =>
-  provider === "openai" ? "gpt-4.1" : "claude-opus-4-5";
+  provider === "openai" || provider === "openai-codex"
+    ? "gpt-5.3-codex"
+    : "claude-opus-4-5";
 
 const normalizeDeployTarget = (value: unknown): DeployTarget => {
   const target = typeof value === "string" ? value.toLowerCase() : "";
@@ -418,6 +420,9 @@ const collectEnvVars = (answers: OnboardingAnswers): string[] => {
   const provider = String(answers["model.provider"] ?? "anthropic");
   if (provider === "openai") {
     envVars.add("OPENAI_API_KEY=sk-...");
+  } else if (provider === "openai-codex") {
+    envVars.add("OPENAI_CODEX_REFRESH_TOKEN=rt_...");
+    envVars.add("OPENAI_CODEX_ACCOUNT_ID=");
   } else {
     envVars.add("ANTHROPIC_API_KEY=sk-ant-...");
   }
@@ -449,20 +454,35 @@ const collectEnvFileLines = (answers: OnboardingAnswers): string[] => {
   ];
 
   const modelProvider = String(answers["model.provider"] ?? "anthropic");
-  const modelEnvKey =
-    modelProvider === "openai" ? "env.OPENAI_API_KEY" : "env.ANTHROPIC_API_KEY";
-  const modelEnvVar =
-    modelProvider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
-  const modelEnvValue = String(answers[modelEnvKey] ?? "");
   lines.push("# Model");
-  if (modelEnvValue.length === 0) {
-    lines.push(
-      modelProvider === "openai"
-        ? "# OpenAI: create an API key at https://platform.openai.com/api-keys"
-        : "# Anthropic: create an API key at https://console.anthropic.com/settings/keys",
-    );
+  if (modelProvider === "openai-codex") {
+    const refreshToken = String(answers["env.OPENAI_CODEX_REFRESH_TOKEN"] ?? "");
+    const accountId = String(answers["env.OPENAI_CODEX_ACCOUNT_ID"] ?? "");
+    if (refreshToken.length === 0) {
+      lines.push(
+        "# OpenAI Codex OAuth: run `poncho auth login --provider openai-codex --device` and then",
+      );
+      lines.push(
+        "# `poncho auth export --provider openai-codex --format env` to populate these values.",
+      );
+    }
+    lines.push(`OPENAI_CODEX_REFRESH_TOKEN=${refreshToken}`);
+    lines.push(`OPENAI_CODEX_ACCOUNT_ID=${accountId}`);
+  } else {
+    const modelEnvKey =
+      modelProvider === "openai" ? "env.OPENAI_API_KEY" : "env.ANTHROPIC_API_KEY";
+    const modelEnvVar =
+      modelProvider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
+    const modelEnvValue = String(answers[modelEnvKey] ?? "");
+    if (modelEnvValue.length === 0) {
+      lines.push(
+        modelProvider === "openai"
+          ? "# OpenAI: create an API key at https://platform.openai.com/api-keys"
+          : "# Anthropic: create an API key at https://console.anthropic.com/settings/keys",
+      );
+    }
+    lines.push(`${modelEnvVar}=${modelEnvValue}`);
   }
-  lines.push(`${modelEnvVar}=${modelEnvValue}`);
   lines.push("");
 
   const authRequired = Boolean(answers["auth.required"] ?? false);
@@ -554,7 +574,10 @@ export const runInitOnboarding = async (
     envNeedsUserInput,
     deployTarget,
     agentModel: {
-      provider: provider === "openai" ? "openai" : "anthropic",
+      provider:
+        provider === "openai" || provider === "openai-codex"
+          ? provider
+          : "anthropic",
       name: getProviderModelName(provider),
     },
   };

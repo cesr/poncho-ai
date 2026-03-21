@@ -72,6 +72,12 @@ import {
   consumeFirstRunIntro,
   initializeOnboardingMarker,
 } from "./init-feature-context.js";
+import {
+  exportOpenAICodex,
+  loginOpenAICodex,
+  logoutOpenAICodex,
+  statusOpenAICodex,
+} from "./auth-codex.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -94,6 +100,15 @@ const EXT_MIME_MAP: Record<string, string> = {
   json: "application/json", csv: "text/csv", html: "text/html",
 };
 const extToMime = (ext: string): string => EXT_MIME_MAP[ext] ?? "application/octet-stream";
+const TOOL_RESULT_ARCHIVE_PARAM = "__toolResultArchive";
+
+const withToolResultArchiveParam = (
+  parameters: Record<string, unknown> | undefined,
+  conversation: Conversation,
+): Record<string, unknown> => ({
+  ...(parameters ?? {}),
+  [TOOL_RESULT_ARCHIVE_PARAM]: conversation._toolResultArchive ?? {},
+});
 
 const readRequestBody = async (request: IncomingMessage): Promise<unknown> => {
   const chunks: Buffer[] = [];
@@ -280,7 +295,7 @@ const parseParams = (values: string[]): Record<string, string> => {
 const AGENT_TEMPLATE = (
   name: string,
   id: string,
-  options: { modelProvider: "anthropic" | "openai"; modelName: string },
+  options: { modelProvider: "anthropic" | "openai" | "openai-codex"; modelName: string },
 ): string => `---
 name: ${name}
 id: ${id}
@@ -290,7 +305,7 @@ model:
   name: ${options.modelName}
   temperature: 0.2
 limits:
-  maxSteps: 50
+  maxSteps: 20
   timeout: 300
 ---
 
@@ -371,16 +386,23 @@ An AI agent built with [Poncho](https://github.com/cesr/poncho-ai).
 
 - Node.js 20+
 - npm (or pnpm/yarn)
-- Anthropic or OpenAI API key
+- Anthropic API key, OpenAI API key, or OpenAI Codex OAuth refresh token
 
 ## Quick Start
 
 \`\`\`bash
 npm install
-# If you didn't enter an API key during init:
+# If you didn't enter credentials during init:
 cp .env.example .env
-# Then edit .env and add your API key
+# Then edit .env and add provider credentials
 poncho dev
+\`\`\`
+
+For OpenAI Codex OAuth bootstrap:
+
+\`\`\`bash
+poncho auth login --provider openai-codex --device
+poncho auth export --provider openai-codex --format env
 \`\`\`
 
 Open \`http://localhost:3000\` for the web UI, or \`http://localhost:3000/api/docs\` for interactive API documentation.
@@ -416,6 +438,11 @@ poncho test
 
 # List available tools
 poncho tools
+
+# OpenAI Codex auth (OAuth subscription)
+poncho auth login --provider openai-codex --device
+poncho auth status --provider openai-codex
+poncho auth export --provider openai-codex --format env
 
 # Remove deprecated guidance from AGENT.md after upgrading
 poncho update-agent
@@ -719,6 +746,11 @@ Set environment variables on your deployment platform:
 
 \`\`\`bash
 ANTHROPIC_API_KEY=sk-ant-...   # Required
+# OR for OpenAI API key provider:
+# OPENAI_API_KEY=sk-...
+# OR for OpenAI Codex OAuth provider:
+# OPENAI_CODEX_REFRESH_TOKEN=rt_...
+# OPENAI_CODEX_ACCOUNT_ID=...   # Optional
 PONCHO_AUTH_TOKEN=your-secret  # Optional: protect your endpoint
 PONCHO_MAX_DURATION=55         # Optional: serverless timeout in seconds (enables auto-continuation)
 PONCHO_INTERNAL_SECRET=...     # Recommended on serverless: shared secret for internal callback auth
@@ -1569,7 +1601,7 @@ export const createRequestHandler = async (options?: {
   // Subagent manager -- allows the agent to spawn child agent conversations.
   // ---------------------------------------------------------------------------
   const MAX_SUBAGENT_NESTING = 3; // root → L1 → L2 = 3 levels; L2 cannot spawn further
-  const MAX_CONCURRENT_SUBAGENTS = 5;
+  const MAX_CONCURRENT_SUBAGENTS = 2;
 
   const activeSubagentRuns = new Map<string, { abortController: AbortController; harness: AgentHarness; parentConversationId: string }>();
 
@@ -1739,10 +1771,10 @@ export const createRequestHandler = async (options?: {
       for await (const event of childHarness.runWithTelemetry({
         task,
         conversationId: childConversationId,
-        parameters: {
+        parameters: withToolResultArchiveParam({
           __activeConversationId: childConversationId,
           __ownerId: ownerId,
-        },
+        }, conversation),
         messages: harnessMessages,
         abortSignal: childAbortController.signal,
       })) {
@@ -1957,6 +1989,7 @@ export const createRequestHandler = async (options?: {
         if (runResult?.continuationMessages) {
           conv._harnessMessages = runResult.continuationMessages;
         }
+        conv._toolResultArchive = childHarness.getToolResultArchive(childConversationId);
         conv.lastActivityAt = Date.now();
         conv.updatedAt = Date.now();
 
@@ -2178,10 +2211,10 @@ export const createRequestHandler = async (options?: {
       for await (const event of harness.runWithTelemetry({
         task: undefined,
         conversationId,
-        parameters: {
+        parameters: withToolResultArchiveParam({
           __activeConversationId: conversationId,
           __ownerId: conversation.ownerId,
-        },
+        }, conversation),
         messages: historyMessages,
         abortSignal: abortController.signal,
       })) {
@@ -2260,6 +2293,7 @@ export const createRequestHandler = async (options?: {
           if (runHarnessMessages) {
             freshConv._harnessMessages = runHarnessMessages;
           }
+          freshConv._toolResultArchive = harness.getToolResultArchive(conversationId);
           freshConv.runtimeRunId = latestRunId || freshConv.runtimeRunId;
           freshConv.runningCallbackSince = undefined;
           freshConv.runStatus = "idle";
@@ -3258,10 +3292,10 @@ export const createRequestHandler = async (options?: {
 
     for await (const event of harness.runWithTelemetry({
       conversationId,
-      parameters: {
+      parameters: withToolResultArchiveParam({
         __activeConversationId: conversationId,
         __ownerId: conversation.ownerId,
-      },
+      }, conversation),
       messages: continuationMessages,
       abortSignal: activeConversationRuns.get(conversationId)?.abortController.signal,
     })) {
@@ -3359,6 +3393,7 @@ export const createRequestHandler = async (options?: {
     }
 
     if (nextHarnessMessages) freshConv._harnessMessages = nextHarnessMessages;
+    freshConv._toolResultArchive = harness.getToolResultArchive(conversationId);
     freshConv.runtimeRunId = latestRunId || freshConv.runtimeRunId;
     freshConv.pendingApprovals = [];
     if (runContextTokens > 0) freshConv.contextTokens = runContextTokens;
@@ -3399,10 +3434,10 @@ export const createRequestHandler = async (options?: {
     try {
       for await (const event of childHarness.runWithTelemetry({
         conversationId,
-        parameters: {
+        parameters: withToolResultArchiveParam({
           __activeConversationId: conversationId,
           __ownerId: ownerId,
-        },
+        }, conversation),
         messages: continuationMessages,
         abortSignal: childAbortController.signal,
       })) {
@@ -3495,6 +3530,7 @@ export const createRequestHandler = async (options?: {
         if (runResult?.continuationMessages) {
           conv._harnessMessages = runResult.continuationMessages;
         }
+        conv._toolResultArchive = childHarness.getToolResultArchive(conversationId);
         conv.lastActivityAt = Date.now();
         conv.runStatus = "idle";
         conv.updatedAt = Date.now();
@@ -5221,12 +5257,12 @@ export const createRequestHandler = async (options?: {
         for await (const event of harness.runWithTelemetry({
           task: messageText,
           conversationId,
-          parameters: {
+          parameters: withToolResultArchiveParam({
             ...(bodyParameters ?? {}),
             __conversationRecallCorpus: lazyRecallCorpus,
             __activeConversationId: conversationId,
             __ownerId: ownerId,
-          },
+          }, conversation),
           messages: harnessMessages,
           files: files.length > 0 ? files : undefined,
           abortSignal: abortController.signal,
@@ -5329,6 +5365,7 @@ export const createRequestHandler = async (options?: {
               baseMessageCount: historyMessages.length,
               pendingToolCalls: event.pendingToolCalls,
             }));
+            conversation._toolResultArchive = harness.getToolResultArchive(conversationId);
             conversation.updatedAt = Date.now();
             await conversationStore.update(conversation);
             checkpointedRun = true;
@@ -5361,6 +5398,7 @@ export const createRequestHandler = async (options?: {
               ];
               conversation._continuationMessages = runContinuationMessages;
               conversation._harnessMessages = runContinuationMessages;
+              conversation._toolResultArchive = harness.getToolResultArchive(conversationId);
               conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
               conversation.pendingApprovals = [];
               if (runContextTokens > 0) conversation.contextTokens = runContextTokens;
@@ -5435,6 +5473,7 @@ export const createRequestHandler = async (options?: {
           if (runHarnessMessages) {
             conversation._harnessMessages = runHarnessMessages;
           }
+          conversation._toolResultArchive = harness.getToolResultArchive(conversationId);
           conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
           conversation.pendingApprovals = [];
           if (runContextTokens > 0) conversation.contextTokens = runContextTokens;
@@ -5606,7 +5645,10 @@ export const createRequestHandler = async (options?: {
               for await (const event of harness.runWithTelemetry({
                 task,
                 conversationId: conv.conversationId,
-                parameters: { __activeConversationId: conv.conversationId },
+                parameters: withToolResultArchiveParam(
+                  { __activeConversationId: conv.conversationId },
+                  conv,
+                ),
                 messages: historyMessages,
               })) {
                 if (event.type === "model:chunk") {
@@ -5632,6 +5674,7 @@ export const createRequestHandler = async (options?: {
               if (cronHarnessMessages) {
                 conv._harnessMessages = cronHarnessMessages;
               }
+              conv._toolResultArchive = harness.getToolResultArchive(conv.conversationId);
               conv.updatedAt = Date.now();
               await conversationStore.update(conv);
 
@@ -5707,7 +5750,7 @@ export const createRequestHandler = async (options?: {
         for await (const event of harness.runWithTelemetry({
           task: cronJob.task,
           conversationId: convId,
-          parameters: { __activeConversationId: convId },
+          parameters: withToolResultArchiveParam({ __activeConversationId: convId }, conversation),
           messages: historyMessages,
           abortSignal: abortController.signal,
         })) {
@@ -5804,6 +5847,7 @@ export const createRequestHandler = async (options?: {
           if (runResult.harnessMessages) {
             freshConv._harnessMessages = runResult.harnessMessages;
           }
+          freshConv._toolResultArchive = harness.getToolResultArchive(convId);
           freshConv.runtimeRunId = latestRunId || freshConv.runtimeRunId;
           if (runResult.contextTokens) freshConv.contextTokens = runResult.contextTokens;
           if (runResult.contextWindow) freshConv.contextWindow = runResult.contextWindow;
@@ -5938,6 +5982,7 @@ export const startDevServer = async (
     contextTokens: number;
     contextWindow: number;
     harnessMessages?: Message[];
+    toolResultArchive?: Conversation["_toolResultArchive"];
   };
 
   const runCronAgent = async (
@@ -5945,6 +5990,7 @@ export const startDevServer = async (
     task: string,
     conversationId: string,
     historyMessages: Message[],
+    toolResultArchive?: Conversation["_toolResultArchive"],
     onEvent?: (event: AgentEvent) => void,
   ): Promise<CronRunResult> => {
     let assistantResponse = "";
@@ -5959,7 +6005,10 @@ export const startDevServer = async (
     for await (const event of harnessRef.runWithTelemetry({
       task,
       conversationId,
-      parameters: { __activeConversationId: conversationId },
+      parameters: {
+        __activeConversationId: conversationId,
+        [TOOL_RESULT_ARCHIVE_PARAM]: toolResultArchive ?? {},
+      },
       messages: historyMessages,
     })) {
       onEvent?.(event);
@@ -6019,7 +6068,16 @@ export const startDevServer = async (
             sections: sections.length > 0 ? sections : undefined,
           } as Message["metadata"])
         : undefined;
-    return { response: assistantResponse, steps, assistantMetadata, hasContent, contextTokens, contextWindow, harnessMessages };
+    return {
+      response: assistantResponse,
+      steps,
+      assistantMetadata,
+      hasContent,
+      contextTokens,
+      contextWindow,
+      harnessMessages,
+      toolResultArchive: harnessRef.getToolResultArchive(conversationId),
+    };
   };
 
   const buildCronMessages = (
@@ -6102,6 +6160,7 @@ export const startDevServer = async (
                 try {
                   const broadcastCh = handler._broadcastEvent;
                   const result = await runCronAgent(harnessRef, task, convId, historyMessages,
+                    conversation._toolResultArchive,
                     broadcastCh ? (ev) => broadcastCh(convId, ev) : undefined,
                   );
                   handler._finishConversationStream?.(convId);
@@ -6111,6 +6170,9 @@ export const startDevServer = async (
                     freshConv.messages = buildCronMessages(task, historyMessages, result);
                     if (result.harnessMessages) {
                       freshConv._harnessMessages = result.harnessMessages;
+                    }
+                    if (result.toolResultArchive) {
+                      freshConv._toolResultArchive = result.toolResultArchive;
                     }
                     if (result.contextTokens > 0) freshConv.contextTokens = result.contextTokens;
                     if (result.contextWindow > 0) freshConv.contextWindow = result.contextWindow;
@@ -6172,6 +6234,7 @@ export const startDevServer = async (
             });
             const broadcast = handler._broadcastEvent;
             const result = await runCronAgent(harnessRef, config.task, cronConvId, [],
+              conversation._toolResultArchive,
               broadcast ? (ev) => broadcast(cronConvId!, ev) : undefined,
             );
             handler._finishConversationStream?.(cronConvId);
@@ -6180,6 +6243,9 @@ export const startDevServer = async (
               freshConv.messages = buildCronMessages(config.task, [], result);
               if (result.harnessMessages) {
                 freshConv._harnessMessages = result.harnessMessages;
+              }
+              if (result.toolResultArchive) {
+                freshConv._toolResultArchive = result.toolResultArchive;
               }
               if (result.contextTokens > 0) freshConv.contextTokens = result.contextTokens;
               if (result.contextWindow > 0) freshConv.contextWindow = result.contextWindow;
@@ -7173,6 +7239,52 @@ export const buildCli = (): Command => {
     .description("List all tools available to the agent")
     .action(async () => {
       await listTools(process.cwd());
+    });
+
+  const authCommand = program.command("auth").description("Manage model provider authentication");
+  authCommand
+    .command("login")
+    .requiredOption("--provider <provider>", "provider id (currently: openai-codex)")
+    .option("--device", "use device auth flow", true)
+    .action(async (options: { provider: string; device: boolean }) => {
+      if (options.provider !== "openai-codex") {
+        throw new Error(`Unsupported provider "${options.provider}". Try --provider openai-codex.`);
+      }
+      await loginOpenAICodex({ device: options.device });
+    });
+
+  authCommand
+    .command("status")
+    .requiredOption("--provider <provider>", "provider id (currently: openai-codex)")
+    .action(async (options: { provider: string }) => {
+      if (options.provider !== "openai-codex") {
+        throw new Error(`Unsupported provider "${options.provider}". Try --provider openai-codex.`);
+      }
+      await statusOpenAICodex();
+    });
+
+  authCommand
+    .command("logout")
+    .requiredOption("--provider <provider>", "provider id (currently: openai-codex)")
+    .action(async (options: { provider: string }) => {
+      if (options.provider !== "openai-codex") {
+        throw new Error(`Unsupported provider "${options.provider}". Try --provider openai-codex.`);
+      }
+      await logoutOpenAICodex();
+    });
+
+  authCommand
+    .command("export")
+    .requiredOption("--provider <provider>", "provider id (currently: openai-codex)")
+    .option("--format <format>", "env|json", "env")
+    .action(async (options: { provider: string; format: string }) => {
+      if (options.provider !== "openai-codex") {
+        throw new Error(`Unsupported provider "${options.provider}". Try --provider openai-codex.`);
+      }
+      if (options.format !== "env" && options.format !== "json") {
+        throw new Error(`Unsupported export format "${options.format}". Use env or json.`);
+      }
+      await exportOpenAICodex(options.format);
     });
 
   const skillsCommand = program.command("skills").description("Manage installed skills");

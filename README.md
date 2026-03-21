@@ -171,16 +171,30 @@ my-agent/
 - `@poncho-ai/sdk` provides shared runtime contracts used by the scaffold.
 - Local skill scaffolds are generated under `skills/starter/` and `skills/fetch-page/`.
 
-### 2. Configure your API key (if you skipped onboarding)
+### 2. Configure model credentials (if you skipped onboarding)
 
 ```bash
 cp .env.example .env
-# Edit .env and add your Anthropic API key
+# Edit .env and add your provider credentials
 ```
 
 ```bash
-# .env
+# .env (API key providers)
 ANTHROPIC_API_KEY=sk-ant-...
+# or OPENAI_API_KEY=sk-...
+```
+
+```bash
+# .env (OpenAI Codex OAuth provider)
+OPENAI_CODEX_REFRESH_TOKEN=rt_...
+OPENAI_CODEX_ACCOUNT_ID=...    # optional
+```
+
+Or bootstrap OpenAI Codex OAuth locally and export values:
+
+```bash
+poncho auth login --provider openai-codex --device
+poncho auth export --provider openai-codex --format env
 ```
 
 ### 3. Run locally
@@ -237,13 +251,13 @@ id: agent_01f4f5d7e9c7432da51f8c6b9e2b1a0c
 description: What this agent does
 
 model:
-  provider: anthropic          # anthropic, openai
+  provider: anthropic          # anthropic, openai, openai-codex
   name: claude-opus-4-5        # Model to use
   temperature: 0.7             # 0.0 - 1.0
   maxTokens: 4096              # Max tokens in model response
 
 limits:
-  maxSteps: 50                 # Max turns before stopping
+  maxSteps: 20                 # Max turns before stopping
   timeout: 300                 # Max runtime in seconds (5 min)
 
 # Context compaction is on by default. Override defaults here:
@@ -747,6 +761,11 @@ On your deployment platform, set:
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...   # Required
+# OR for OpenAI API key provider:
+# OPENAI_API_KEY=sk-...
+# OR for OpenAI Codex OAuth provider:
+# OPENAI_CODEX_REFRESH_TOKEN=rt_...
+# OPENAI_CODEX_ACCOUNT_ID=...   # Optional
 PONCHO_AUTH_TOKEN=your-secret  # Optional: protect your endpoint (Web UI passphrase + API Bearer token)
 PONCHO_MAX_DURATION=55         # Optional: serverless timeout in seconds (enables auto-continuation)
 PONCHO_INTERNAL_SECRET=...     # Recommended on serverless: shared secret for internal callback auth

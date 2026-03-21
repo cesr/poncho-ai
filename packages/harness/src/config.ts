@@ -100,6 +100,13 @@ export interface PonchoConfig extends McpConfig {
   storage?: StorageConfig;
   providers?: {
     openai?: { apiKeyEnv?: string };
+    openaiCodex?: {
+      refreshTokenEnv?: string;
+      accessTokenEnv?: string;
+      accessTokenExpiresAtEnv?: string;
+      accountIdEnv?: string;
+      authFilePathEnv?: string;
+    };
     anthropic?: { apiKeyEnv?: string };
   };
   telemetry?: {

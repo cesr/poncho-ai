@@ -20,6 +20,18 @@ Working dir: {{runtime.workingDir}}
     expect(parsed.body).toContain("# Hello");
   });
 
+  it("parses provider prefix from model name for openai-codex", () => {
+    const parsed = parseAgentMarkdown(`---
+name: codex-agent
+model: openai-codex/gpt-5.3-codex
+---
+
+# Agent
+`);
+    expect(parsed.frontmatter.model?.provider).toBe("openai-codex");
+    expect(parsed.frontmatter.model?.name).toBe("gpt-5.3-codex");
+  });
+
   it("renders mustache runtime and parameter context", () => {
     const parsed = parseAgentMarkdown(`---
 name: test-agent

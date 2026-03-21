@@ -17,7 +17,7 @@ describe("model factory", () => {
 
     const model = provider("claude-3-opus-20240229");
     expect(model).toBeDefined();
-    expect((model as { provider: string }).provider).toMatch(/^anthropic\./);
+    expect((model as { provider: string }).provider).toMatch(/^anthropic(?:\.|$)/);
   });
 
   it("defaults to Anthropic when no provider specified", () => {
@@ -26,7 +26,7 @@ describe("model factory", () => {
 
     const model = provider("claude-3-opus-20240229");
     expect(model).toBeDefined();
-    expect((model as { provider: string }).provider).toMatch(/^anthropic\./);
+    expect((model as { provider: string }).provider).toMatch(/^anthropic(?:\.|$)/);
   });
 
   it("normalizes provider names to lowercase", () => {
@@ -34,6 +34,16 @@ describe("model factory", () => {
     expect(provider).toBeInstanceOf(Function);
 
     const model = provider("gpt-4");
+    expect((model as { provider: string }).provider).toBe("openai.responses");
+  });
+
+  it("creates a function for OpenAI Codex provider", () => {
+    process.env.OPENAI_CODEX_REFRESH_TOKEN = "test-refresh-token";
+    const provider = createModelProvider("openai-codex");
+    expect(provider).toBeInstanceOf(Function);
+
+    const model = provider("gpt-5.3-codex");
+    expect(model).toBeDefined();
     expect((model as { provider: string }).provider).toBe("openai.responses");
   });
 });

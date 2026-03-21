@@ -399,7 +399,7 @@ export const buildOpenApiSpec = (options: { agentName: string }): Record<string,
           "| --- | --- | --- |\n" +
           "| `run:started` | `{ runId, agentId }` | Agent run has begun |\n" +
           "| `model:chunk` | `{ content }` | Incremental text token from the model |\n" +
-          "| `model:response` | `{ usage: { input, output, cached } }` | Model call finished |\n" +
+          "| `model:response` | `{ usage: { input, output, cached, cacheWrite? } }` | Model call finished |\n" +
           "| `step:started` | `{ step }` | Agent step started |\n" +
           "| `step:completed` | `{ step, duration }` | Agent step finished |\n" +
           "| `tool:started` | `{ tool, input }` | Tool invocation started |\n" +

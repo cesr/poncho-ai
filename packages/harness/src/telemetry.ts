@@ -58,6 +58,10 @@ export class TelemetryEmitter {
     // Latitude telemetry is handled by LatitudeTelemetry (from
     // @latitude-data/telemetry) via harness.runWithTelemetry().
     // Default behavior in local dev: print concise structured logs.
+    // Skip per-token stream logs to keep console output readable.
+    if (event.type === "model:chunk") {
+      return;
+    }
     // Strip large binary payloads (e.g. base64 images) to keep logs readable.
     process.stdout.write(`[event] ${event.type} ${sanitizeEventForLog(event)}\n`);
   }

@@ -10,6 +10,11 @@ All credentials in `poncho.config.js` use **env var name** fields (`*Env` suffix
 |---|---|---|
 | `providers.anthropic.apiKeyEnv` | `ANTHROPIC_API_KEY` | Anthropic model API key |
 | `providers.openai.apiKeyEnv` | `OPENAI_API_KEY` | OpenAI model API key |
+| `providers.openaiCodex.refreshTokenEnv` | `OPENAI_CODEX_REFRESH_TOKEN` | OpenAI Codex OAuth refresh token |
+| `providers.openaiCodex.accountIdEnv` | `OPENAI_CODEX_ACCOUNT_ID` | OpenAI Codex account/org routing header (optional) |
+| `providers.openaiCodex.accessTokenEnv` | `OPENAI_CODEX_ACCESS_TOKEN` | OpenAI Codex OAuth access token seed (optional) |
+| `providers.openaiCodex.accessTokenExpiresAtEnv` | `OPENAI_CODEX_ACCESS_TOKEN_EXPIRES_AT` | Access token epoch expiry in ms (optional) |
+| `providers.openaiCodex.authFilePathEnv` | `OPENAI_CODEX_AUTH_FILE` | Overrides local auth file path used by `poncho auth` |
 | `auth.tokenEnv` | `PONCHO_AUTH_TOKEN` | Auth passphrase / bearer token |
 | `storage.urlEnv` | `UPSTASH_REDIS_REST_URL` / `REDIS_URL` | Storage connection URL |
 | `storage.tokenEnv` | `UPSTASH_REDIS_REST_TOKEN` | Upstash REST token |
@@ -81,6 +86,10 @@ export default {
   providers: {
     // anthropic: { apiKeyEnv: 'ANTHROPIC_API_KEY' },  // default
     // openai: { apiKeyEnv: 'OPENAI_API_KEY' },        // default
+    // openaiCodex: {
+    //   refreshTokenEnv: 'OPENAI_CODEX_REFRESH_TOKEN',
+    //   accountIdEnv: 'OPENAI_CODEX_ACCOUNT_ID', // optional
+    // },
   },
 
   // Unified storage (preferred). Replaces separate `state` and `memory` blocks.
@@ -179,6 +188,11 @@ Remote storage keys are namespaced and versioned, for example `poncho:v1:<agentI
 |----------|----------|-------------|
 | `ANTHROPIC_API_KEY` | Yes* | Claude API key |
 | `OPENAI_API_KEY` | No | OpenAI API key (if using OpenAI) |
+| `OPENAI_CODEX_REFRESH_TOKEN` | No | OpenAI Codex OAuth refresh token (if using `model.provider: openai-codex`) |
+| `OPENAI_CODEX_ACCOUNT_ID` | No | OpenAI Codex account/org id for request routing (optional) |
+| `OPENAI_CODEX_ACCESS_TOKEN` | No | Optional pre-seeded short-lived access token |
+| `OPENAI_CODEX_ACCESS_TOKEN_EXPIRES_AT` | No | Epoch millis expiry for `OPENAI_CODEX_ACCESS_TOKEN` |
+| `OPENAI_CODEX_AUTH_FILE` | No | Local auth store override for `poncho auth` commands |
 | `PONCHO_AUTH_TOKEN` | No | Unified auth token (Web UI passphrase + API Bearer token) |
 | `PONCHO_INTERNAL_SECRET` | No | Shared secret used by internal serverless callbacks (recommended for Vercel/Lambda) |
 | `PONCHO_SELF_BASE_URL` | No | Explicit base URL for internal self-callbacks when auto-detection is unavailable |
@@ -214,7 +228,7 @@ Logs print to console:
 [event] run:started {"type":"run:started","runId":"run_abc123","agentId":"my-agent"}
 [event] tool:started {"type":"tool:started","tool":"read_file","input":{"path":"README.md"}}
 [event] tool:completed {"type":"tool:completed","tool":"read_file","duration":45,"output":{"path":"README.md","content":"..."}}
-[event] run:completed {"type":"run:completed","runId":"run_abc123","result":{"status":"completed","response":"...","steps":3,"tokens":{"input":1500,"output":840}}}
+[event] run:completed {"type":"run:completed","runId":"run_abc123","result":{"status":"completed","response":"...","steps":3,"tokens":{"input":1500,"output":840,"cached":1200,"cacheWrite":300}}}
 ```
 
 ### Production telemetry (generic OTLP)
