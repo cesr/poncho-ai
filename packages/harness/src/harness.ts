@@ -846,8 +846,12 @@ export class AgentHarness {
     conversationId: string,
   ): { changed: boolean; truncatedCount: number; archivedCount: number; omittedChars: number } {
     let latestRunId: string | undefined;
+    let latestToolMessageIndex = -1;
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const msg = messages[i]!;
+      if (latestToolMessageIndex === -1 && msg.role === "tool" && typeof msg.content === "string") {
+        latestToolMessageIndex = i;
+      }
       const meta = msg.metadata as Record<string, unknown> | undefined;
       const runId = typeof meta?.runId === "string" ? meta.runId : undefined;
       if (runId) {
@@ -855,7 +859,7 @@ export class AgentHarness {
         break;
       }
     }
-    if (!latestRunId) {
+    if (!latestRunId && latestToolMessageIndex === -1) {
       return { changed: false, truncatedCount: 0, archivedCount: 0, omittedChars: 0 };
     }
     const archive = this.archivedToolResultsByConversation.get(conversationId) ?? {};
@@ -865,11 +869,17 @@ export class AgentHarness {
     let archivedCount = 0;
     let omittedChars = 0;
 
-    for (const msg of messages) {
+    for (let index = 0; index < messages.length; index += 1) {
+      const msg = messages[index]!;
       if (msg.role !== "tool" || typeof msg.content !== "string") continue;
       const meta = msg.metadata as Record<string, unknown> | undefined;
       const runId = typeof meta?.runId === "string" ? meta.runId : undefined;
-      if (runId === latestRunId) continue;
+      if (latestRunId) {
+        if (runId === latestRunId) continue;
+      } else if (index === latestToolMessageIndex) {
+        // Legacy fallback for pre-runId conversations: keep newest tool turn intact.
+        continue;
+      }
       let parsed: unknown;
       try {
         parsed = JSON.parse(msg.content);
@@ -2446,7 +2456,7 @@ ${boundedMainMemory.trim()}`
             messages.push({
               role: "assistant",
               content: fullText,
-              metadata: { timestamp: now(), id: randomUUID(), step },
+              metadata: { timestamp: now(), id: randomUUID(), step, runId },
             });
           }
           const result_: RunResult = {
@@ -2483,7 +2493,7 @@ ${boundedMainMemory.trim()}`
           messages.push({
             role: "assistant",
             content: fullText,
-            metadata: { timestamp: now(), id: randomUUID(), step },
+            metadata: { timestamp: now(), id: randomUUID(), step, runId },
           });
         }
         const result_: RunResult = {
@@ -2612,7 +2622,7 @@ ${boundedMainMemory.trim()}`
           messages.push({
             role: "assistant",
             content: fullText,
-            metadata: { timestamp: now(), id: randomUUID(), step },
+            metadata: { timestamp: now(), id: randomUUID(), step, runId },
           });
         }
         responseText = fullText;
@@ -2726,7 +2736,7 @@ ${boundedMainMemory.trim()}`
         const assistantMsg: Message = {
           role: "assistant",
           content: assistantContent,
-          metadata: { timestamp: now(), id: randomUUID(), step },
+          metadata: { timestamp: now(), id: randomUUID(), step, runId },
         };
         const deltaMessages = [...messages.slice(inputMessageCount), assistantMsg];
         yield pushEvent({
@@ -2826,7 +2836,7 @@ ${boundedMainMemory.trim()}`
           messages.push({
             role: "assistant",
             content: fullText,
-            metadata: { timestamp: now(), id: randomUUID(), step },
+            metadata: { timestamp: now(), id: randomUUID(), step, runId },
           });
         }
         const result_: RunResult = {
