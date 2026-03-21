@@ -1,5 +1,13 @@
 # @poncho-ai/harness
 
+## 0.31.3
+
+### Patch Changes
+
+- [#56](https://github.com/cesr/poncho-ai/pull/56) [`28b2913`](https://github.com/cesr/poncho-ai/commit/28b291379e640dec53a66c41a2795d0a9fbb9ee7) Thanks [@cesr](https://github.com/cesr)! - Fix historical tool result truncation reliability for deployed conversations.
+
+  This stamps `runId` on all harness-authored assistant messages and adds a fallback truncation boundary for legacy histories that lack `runId` metadata.
+
 ## 0.31.2
 
 ### Patch Changes
