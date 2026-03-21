@@ -1,5 +1,18 @@
 # @poncho-ai/cli
 
+## 0.32.2
+
+### Patch Changes
+
+- [#54](https://github.com/cesr/poncho-ai/pull/54) [`2341915`](https://github.com/cesr/poncho-ai/commit/23419152d52c39f3bcaf8cdcd424625d5f897315) Thanks [@cesr](https://github.com/cesr)! - Reduce high-cost outliers with aggressive runtime controls and better cost visibility.
+
+  This adds older-turn tool result archiving/truncation, tighter retry/step/subagent limits, compaction tuning, selective prompt cache behavior, and richer cache-write token attribution in logs/events.
+
+- Updated dependencies [[`2341915`](https://github.com/cesr/poncho-ai/commit/23419152d52c39f3bcaf8cdcd424625d5f897315)]:
+  - @poncho-ai/harness@0.31.2
+  - @poncho-ai/sdk@1.7.1
+  - @poncho-ai/messaging@0.7.6
+
 ## 0.32.1
 
 ### Patch Changes
