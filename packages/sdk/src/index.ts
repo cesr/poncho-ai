@@ -34,6 +34,7 @@ export interface Message {
     timestamp?: number;
     tokenCount?: number;
     step?: number;
+    runId?: string;
     toolActivity?: string[];
     sections?: Array<{ type: "text" | "tools"; content: string | string[] }>;
     isCompactionSummary?: boolean;
@@ -110,6 +111,7 @@ export interface TokenUsage {
   input: number;
   output: number;
   cached: number;
+  cacheWrite?: number;
 }
 
 export interface RunResult {

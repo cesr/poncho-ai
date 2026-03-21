@@ -30,6 +30,16 @@ export interface PendingSubagentResult {
   timestamp: number;
 }
 
+export interface ArchivedToolResult {
+  toolResultId: string;
+  conversationId: string;
+  toolName: string;
+  toolCallId: string;
+  createdAt: number;
+  sizeBytes: number;
+  payload: string;
+}
+
 export interface Conversation {
   conversationId: string;
   title: string;
@@ -80,6 +90,8 @@ export interface Conversation {
    *  Unlike `_continuationMessages`, this is always set after a run
    *  and does NOT signal that a continuation is pending. */
   _harnessMessages?: Message[];
+  /** Archived full-fidelity tool results keyed by toolResultId. */
+  _toolResultArchive?: Record<string, ArchivedToolResult>;
   createdAt: number;
   updatedAt: number;
 }

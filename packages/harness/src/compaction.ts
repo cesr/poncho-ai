@@ -8,9 +8,11 @@ const MIN_COMPACTABLE_MESSAGES = 4;
 
 const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
   enabled: true,
-  trigger: 0.80,
-  keepRecentMessages: 6,
+  trigger: 0.75,
+  keepRecentMessages: 4,
 };
+const SUMMARIZATION_MESSAGE_TRUNCATION_CHARS = 1200;
+const SUMMARIZATION_MAX_OUTPUT_TOKENS = 768;
 
 const SUMMARIZATION_PROMPT = `Summarize the following conversation into a structured working state that allows continuation without re-asking questions. Include:
 
@@ -110,7 +112,9 @@ const buildSummarizationMessages = (
   const conversationLines: string[] = [];
   for (const msg of messagesToCompact) {
     const text = getTextContent(msg);
-    const truncated = text.length > 2000 ? text.slice(0, 2000) + "\n...[truncated]" : text;
+    const truncated = text.length > SUMMARIZATION_MESSAGE_TRUNCATION_CHARS
+      ? text.slice(0, SUMMARIZATION_MESSAGE_TRUNCATION_CHARS) + "\n...[truncated]"
+      : text;
     conversationLines.push(`[${msg.role}]: ${truncated}`);
   }
 
@@ -193,7 +197,7 @@ export const compactMessages = async (
     const result = await generateText({
       model,
       messages: summarizationMessages,
-      maxOutputTokens: 2048,
+      maxOutputTokens: SUMMARIZATION_MAX_OUTPUT_TOKENS,
     });
 
     const summary = result.text.trim();

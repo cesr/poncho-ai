@@ -257,7 +257,7 @@ model:
   maxTokens: 4096              # Max tokens in model response
 
 limits:
-  maxSteps: 50                 # Max turns before stopping
+  maxSteps: 20                 # Max turns before stopping
   timeout: 300                 # Max runtime in seconds (5 min)
 
 # Context compaction is on by default. Override defaults here:

@@ -228,7 +228,7 @@ Logs print to console:
 [event] run:started {"type":"run:started","runId":"run_abc123","agentId":"my-agent"}
 [event] tool:started {"type":"tool:started","tool":"read_file","input":{"path":"README.md"}}
 [event] tool:completed {"type":"tool:completed","tool":"read_file","duration":45,"output":{"path":"README.md","content":"..."}}
-[event] run:completed {"type":"run:completed","runId":"run_abc123","result":{"status":"completed","response":"...","steps":3,"tokens":{"input":1500,"output":840}}}
+[event] run:completed {"type":"run:completed","runId":"run_abc123","result":{"status":"completed","response":"...","steps":3,"tokens":{"input":1500,"output":840,"cached":1200,"cacheWrite":300}}}
 ```
 
 ### Production telemetry (generic OTLP)

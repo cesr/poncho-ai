@@ -12,7 +12,7 @@ import type {
   ToolContext,
   ToolDefinition,
 } from "@poncho-ai/sdk";
-import { getTextContent } from "@poncho-ai/sdk";
+import { defineTool, getTextContent } from "@poncho-ai/sdk";
 import type { UploadStore } from "./upload-store.js";
 import { PONCHO_UPLOAD_SCHEME, deriveUploadKey } from "./upload-store.js";
 import { parseAgentFile, parseAgentMarkdown, renderAgentPrompt, type ParsedAgent, type AgentFrontmatter } from "./agent-parser.js";
@@ -72,8 +72,22 @@ export interface HarnessRunOutput {
 }
 
 const now = (): number => Date.now();
-const FIRST_CHUNK_TIMEOUT_MS = 300_000; // 300s to receive the first chunk from the model
-const MAX_TRANSIENT_STEP_RETRIES = 2;
+const FIRST_CHUNK_TIMEOUT_MS = 90_000; // 90s to receive the first chunk from the model
+const MAX_TRANSIENT_STEP_RETRIES = 1;
+const COMPACTION_CHECK_INTERVAL_STEPS = 3;
+const TOOL_RESULT_ARCHIVE_PARAM = "__toolResultArchive";
+const TOOL_RESULT_TRUNCATED_PREFIX = "[TRUNCATED_TOOL_RESULT]";
+const TOOL_RESULT_PREVIEW_CHARS = 700;
+
+interface ArchivedToolResult {
+  toolResultId: string;
+  conversationId: string;
+  toolName: string;
+  toolCallId: string;
+  createdAt: number;
+  sizeBytes: number;
+  payload: string;
+}
 
 class FirstChunkTimeoutError extends Error {
   constructor(modelName: string, timeoutMs: number) {
@@ -140,23 +154,11 @@ const isRetryableModelError = (error: unknown): boolean => {
   if (error instanceof FirstChunkTimeoutError) {
     return true;
   }
-  if (isNoOutputGeneratedError(error)) {
-    return true;
-  }
   const statusCode = getErrorStatusCode(error);
   if (typeof statusCode === "number") {
     return statusCode === 429 || statusCode >= 500;
   }
-  if (!error || typeof error !== "object") {
-    return false;
-  }
-  const maybeMessage = "message" in error ? String(error.message ?? "").toLowerCase() : "";
-  return (
-    maybeMessage.includes("internal server error") ||
-    maybeMessage.includes("service unavailable") ||
-    maybeMessage.includes("gateway timeout") ||
-    maybeMessage.includes("rate limit")
-  );
+  return false;
 };
 
 const toRunError = (error: unknown): { code: string; message: string; details?: Record<string, unknown> } => {
@@ -223,6 +225,83 @@ const toProviderSafeToolName = (
   }
   used.add(candidate);
   return candidate;
+};
+
+const isToolResultRow = (value: unknown): value is {
+  tool_use_id: string;
+  tool_name: string;
+  content: string;
+} => {
+  if (typeof value !== "object" || value === null) return false;
+  const row = value as Record<string, unknown>;
+  return (
+    typeof row.tool_use_id === "string" &&
+    typeof row.tool_name === "string" &&
+    typeof row.content === "string"
+  );
+};
+
+const readArchiveFromParameters = (
+  parameters: Record<string, unknown> | undefined,
+): Record<string, ArchivedToolResult> => {
+  const raw = parameters?.[TOOL_RESULT_ARCHIVE_PARAM];
+  if (typeof raw !== "object" || raw === null) return {};
+  const out: Record<string, ArchivedToolResult> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value !== "object" || value === null) continue;
+    const row = value as Record<string, unknown>;
+    if (
+      typeof row.toolResultId !== "string" ||
+      typeof row.conversationId !== "string" ||
+      typeof row.toolName !== "string" ||
+      typeof row.toolCallId !== "string" ||
+      typeof row.createdAt !== "number" ||
+      typeof row.sizeBytes !== "number" ||
+      typeof row.payload !== "string"
+    ) {
+      continue;
+    }
+    out[key] = {
+      toolResultId: row.toolResultId,
+      conversationId: row.conversationId,
+      toolName: row.toolName,
+      toolCallId: row.toolCallId,
+      createdAt: row.createdAt,
+      sizeBytes: row.sizeBytes,
+      payload: row.payload,
+    };
+  }
+  return out;
+};
+
+const makeTruncatedToolResultNotice = (
+  toolResultId: string,
+  toolName: string,
+  payload: string,
+): string => {
+  const preview = payload.slice(0, TOOL_RESULT_PREVIEW_CHARS);
+  const omittedChars = Math.max(0, payload.length - preview.length);
+  return `${TOOL_RESULT_TRUNCATED_PREFIX} id="${toolResultId}" tool="${toolName}" omittedChars=${omittedChars}\n${preview}${omittedChars > 0 ? "\n...[truncated]" : ""}`;
+};
+
+const hasUntruncatedToolResults = (messages: Message[]): boolean => {
+  for (const msg of messages) {
+    if (msg.role !== "tool" || typeof msg.content !== "string") continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(msg.content);
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(parsed)) continue;
+    for (const row of parsed) {
+      if (!isToolResultRow(row)) continue;
+      if (!row.content.startsWith(TOOL_RESULT_TRUNCATED_PREFIX)) {
+        return true;
+      }
+    }
+  }
+  return false;
 };
 
 const DEVELOPMENT_MODE_CONTEXT = `## Development Mode Context
@@ -580,6 +659,7 @@ export class AgentHarness {
   private agentFileFingerprint = "";
   private mcpBridge?: LocalMcpBridge;
   private subagentManager?: SubagentManager;
+  private readonly archivedToolResultsByConversation = new Map<string, Record<string, ArchivedToolResult>>();
 
   private resolveToolAccess(toolName: string): ToolAccess {
     const tools = this.loadedConfig?.tools;
@@ -662,6 +742,60 @@ export class AgentHarness {
     if (this.environment === "development" && this.isToolEnabled("poncho_docs")) {
       this.registerIfMissing(ponchoDocsTool);
     }
+    if (this.isToolEnabled("get_tool_result_by_id")) {
+      this.registerIfMissing(this.createGetToolResultByIdTool());
+    }
+  }
+
+  private createGetToolResultByIdTool(): ToolDefinition {
+    return defineTool({
+      name: "get_tool_result_by_id",
+      description:
+        "Retrieve a previously archived full tool result by id for the current conversation. " +
+        "Use this when older tool outputs were truncated in prompt history.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          toolResultId: { type: "string", description: "Archived tool result id to retrieve" },
+          offset: { type: "number", description: "Optional character offset for paging large payloads" },
+          limit: { type: "number", description: "Optional maximum characters to return (default 6000, max 20000)" },
+        },
+        required: ["toolResultId"],
+        additionalProperties: false,
+      },
+      handler: async (input, context) => {
+        const conversationId = context.conversationId ?? "__default__";
+        const archive = this.archivedToolResultsByConversation.get(conversationId) ?? {};
+        const toolResultId = typeof input.toolResultId === "string" ? input.toolResultId : "";
+        const record = archive[toolResultId];
+        if (!record) {
+          console.info(
+            `[poncho][cost] Archived tool result lookup miss: id="${toolResultId}" conversation="${conversationId}"`,
+          );
+          return {
+            error: `No archived tool result found for id "${toolResultId}" in this conversation.`,
+          };
+        }
+        const offset = Math.max(0, Number(input.offset) || 0);
+        const limit = Math.min(Math.max(Number(input.limit) || 6000, 1), 20_000);
+        const end = Math.min(record.payload.length, offset + limit);
+        const chunk = record.payload.slice(offset, end);
+        console.info(
+          `[poncho][cost] Archived tool result lookup hit: id="${toolResultId}" conversation="${conversationId}" ` +
+          `offset=${offset} returned=${chunk.length} total=${record.payload.length}`,
+        );
+        return {
+          toolResultId: record.toolResultId,
+          toolName: record.toolName,
+          toolCallId: record.toolCallId,
+          totalChars: record.payload.length,
+          offset,
+          returnedChars: chunk.length,
+          hasMore: end < record.payload.length,
+          payload: chunk,
+        };
+      },
+    });
   }
 
   private shouldEnableWriteTool(): boolean {
@@ -689,6 +823,140 @@ export class AgentHarness {
 
   get frontmatter(): AgentFrontmatter | undefined {
     return this.parsedAgent?.frontmatter;
+  }
+
+  getToolResultArchive(conversationId: string): Record<string, ArchivedToolResult> {
+    const archive = this.archivedToolResultsByConversation.get(conversationId);
+    return archive ? { ...archive } : {};
+  }
+
+  private seedToolResultArchive(
+    conversationId: string,
+    parameters: Record<string, unknown> | undefined,
+  ): Record<string, ArchivedToolResult> {
+    const seeded = readArchiveFromParameters(parameters);
+    const existing = this.archivedToolResultsByConversation.get(conversationId) ?? {};
+    const merged = { ...existing, ...seeded };
+    this.archivedToolResultsByConversation.set(conversationId, merged);
+    return merged;
+  }
+
+  private truncateHistoricalToolResults(
+    messages: Message[],
+    conversationId: string,
+  ): { changed: boolean; truncatedCount: number; archivedCount: number; omittedChars: number } {
+    let latestRunId: string | undefined;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const msg = messages[i]!;
+      const meta = msg.metadata as Record<string, unknown> | undefined;
+      const runId = typeof meta?.runId === "string" ? meta.runId : undefined;
+      if (runId) {
+        latestRunId = runId;
+        break;
+      }
+    }
+    if (!latestRunId) {
+      return { changed: false, truncatedCount: 0, archivedCount: 0, omittedChars: 0 };
+    }
+    const archive = this.archivedToolResultsByConversation.get(conversationId) ?? {};
+    this.archivedToolResultsByConversation.set(conversationId, archive);
+    let changed = false;
+    let truncatedCount = 0;
+    let archivedCount = 0;
+    let omittedChars = 0;
+
+    for (const msg of messages) {
+      if (msg.role !== "tool" || typeof msg.content !== "string") continue;
+      const meta = msg.metadata as Record<string, unknown> | undefined;
+      const runId = typeof meta?.runId === "string" ? meta.runId : undefined;
+      if (runId === latestRunId) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(msg.content);
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(parsed)) continue;
+      let rowChanged = false;
+      const nextRows = parsed.map((row) => {
+        if (!isToolResultRow(row)) return row;
+        if (row.content.startsWith(TOOL_RESULT_TRUNCATED_PREFIX)) return row;
+        if (this.shouldPreserveSkillToolResult(row)) return row;
+        const toolResultId = row.tool_use_id;
+        if (!archive[toolResultId]) {
+          archive[toolResultId] = {
+            toolResultId,
+            conversationId,
+            toolName: row.tool_name,
+            toolCallId: row.tool_use_id,
+            createdAt: now(),
+            sizeBytes: Buffer.byteLength(row.content, "utf8"),
+            payload: row.content,
+          };
+          archivedCount += 1;
+        }
+        const omitted = Math.max(0, row.content.length - TOOL_RESULT_PREVIEW_CHARS);
+        omittedChars += omitted;
+        truncatedCount += 1;
+        rowChanged = true;
+        return {
+          ...row,
+          content: makeTruncatedToolResultNotice(toolResultId, row.tool_name, row.content),
+        };
+      });
+      if (rowChanged) {
+        msg.content = JSON.stringify(nextRows);
+        // Critical: historical messages may still carry full-fidelity
+        // `_richToolResults`. If we keep it, convertMessage will prefer that
+        // path and bypass truncated `content`, causing token growth to remain.
+        if (msg.metadata && typeof msg.metadata === "object") {
+          const meta = msg.metadata as Record<string, unknown>;
+          if ("_richToolResults" in meta) {
+            delete meta._richToolResults;
+          }
+        }
+        changed = true;
+      }
+    }
+    return { changed, truncatedCount, archivedCount, omittedChars };
+  }
+
+  private shouldPreserveSkillToolResult(row: {
+    tool_use_id: string;
+    tool_name: string;
+    content: string;
+  }): boolean {
+    if (row.tool_name.startsWith("todo_")) {
+      return true;
+    }
+    if (row.tool_name !== "activate_skill" && row.tool_name !== "deactivate_skill") {
+      return false;
+    }
+    const content = row.content.trim();
+    if (content.startsWith("Tool error:")) {
+      return false;
+    }
+    try {
+      const parsed = JSON.parse(content) as Record<string, unknown>;
+      const skill =
+        typeof parsed.skill === "string"
+          ? parsed.skill
+          : undefined;
+      if (skill && this.activeSkillNames.has(skill)) {
+        return true;
+      }
+      const activeSkills = Array.isArray(parsed.activeSkills)
+        ? parsed.activeSkills.filter((v): v is string => typeof v === "string")
+        : [];
+      for (const name of activeSkills) {
+        if (this.activeSkillNames.has(name)) {
+          return true;
+        }
+      }
+    } catch {
+      // Non-JSON tool content should not block truncation.
+    }
+    return false;
   }
 
   async getTodos(conversationId: string): Promise<TodoItem[]> {
@@ -1475,7 +1743,7 @@ export class AgentHarness {
     let agent = this.parsedAgent as ParsedAgent;
     const runId = `run_${randomUUID()}`;
     const start = now();
-    const maxSteps = agent.frontmatter.limits?.maxSteps ?? 50;
+    const maxSteps = agent.frontmatter.limits?.maxSteps ?? 20;
     const configuredTimeout = agent.frontmatter.limits?.timeout;
     const timeoutMs = this.environment === "development" && configuredTimeout == null
       ? 0 // no hard timeout in development unless explicitly configured
@@ -1485,6 +1753,29 @@ export class AgentHarness {
       ? 0
       : platformMaxDurationSec * 800;
     const messages: Message[] = [...(input.messages ?? [])];
+    const conversationId = input.conversationId ?? "__default__";
+    this.seedToolResultArchive(conversationId, input.parameters);
+    const truncationSummary = this.truncateHistoricalToolResults(messages, conversationId);
+    if (truncationSummary.changed) {
+      console.info(
+        `[poncho][cost] Truncated ${truncationSummary.truncatedCount} historical tool result(s) ` +
+        `(archived_new=${truncationSummary.archivedCount}, omitted_chars=${truncationSummary.omittedChars}) ` +
+        `for conversation="${conversationId}"`,
+      );
+    }
+    const hasFullToolResults = hasUntruncatedToolResults(messages);
+    const enablePromptCache = !hasFullToolResults;
+    if (!enablePromptCache) {
+      console.info(
+        `[poncho][cost] Prompt cache write disabled for run "${runId}" ` +
+        `(untruncated tool results present in history).`,
+      );
+    } else {
+      console.info(
+        `[poncho][cost] Prompt cache write enabled for run "${runId}" ` +
+        `(history has no untruncated tool results).`,
+      );
+    }
     const inputMessageCount = messages.length;
     const events: AgentEvent[] = [];
 
@@ -1583,7 +1874,6 @@ ${boundedMainMemory.trim()}`
           profileDir: string;
           isLaunched: boolean }
       | undefined;
-    const conversationId = input.conversationId ?? "__default__";
     if (browserSession) {
       browserCleanups.push(
         browserSession.onFrame(conversationId, (frame) => {
@@ -1655,6 +1945,7 @@ ${boundedMainMemory.trim()}`
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
     let totalCachedTokens = 0;
+    let totalCacheWriteTokens = 0;
     let transientStepRetryCount = 0;
     let latestContextTokens = 0;
     let toolOutputEstimateSinceModel = 0;
@@ -1684,7 +1975,12 @@ ${boundedMainMemory.trim()}`
             status: "completed",
             response: responseText,
             steps: step - 1,
-            tokens: { input: totalInputTokens, output: totalOutputTokens, cached: totalCachedTokens },
+            tokens: {
+              input: totalInputTokens,
+              output: totalOutputTokens,
+              cached: totalCachedTokens,
+              cacheWrite: totalCacheWriteTokens,
+            },
             duration: now() - start,
             continuation: true,
             continuationMessages: [...messages],
@@ -1698,7 +1994,6 @@ ${boundedMainMemory.trim()}`
 
         const stepStart = now();
         yield pushEvent({ type: "step:started", step });
-        yield pushEvent({ type: "model:request", tokens: 0 });
 
         const dispatcherTools = this.dispatcher.list();
       const exposedToolNames = new Map<string, string>();
@@ -1720,6 +2015,15 @@ ${boundedMainMemory.trim()}`
           inputSchema: jsonSchemaToZod(tool.inputSchema),
         };
       }
+      const toolDefsJsonForEstimate = JSON.stringify(
+        dispatcherTools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+        })),
+      );
+      const requestTokenEstimate = estimateTotalTokens(integrityPrompt, messages, toolDefsJsonForEstimate);
+      yield pushEvent({ type: "model:request", tokens: requestTokenEstimate });
 
         // Convert messages to ModelMessage format
         const convertMessage = async (msg: Message): Promise<ModelMessage[]> => {
@@ -1956,20 +2260,11 @@ ${boundedMainMemory.trim()}`
         }
         const modelInstance = this.modelProvider(modelName);
 
-        // --- Auto-compaction (step 1 only) ---
-        // On step 2+ the messages array contains harness-internal formats
-        // (JSON-stringified tool_calls / tool results) that must not leak
-        // into the conversation store via compactedMessages.
+        // --- Auto-compaction ---
+        // Re-check every N steps to curb runaway context growth in longer runs.
         const compactionConfig = resolveCompactionConfig(agent.frontmatter.compaction);
-        if (compactionConfig.enabled && step === 1) {
-          const toolDefsJson = JSON.stringify(
-            dispatcherTools.map((t) => ({
-              name: t.name,
-              description: t.description,
-              inputSchema: t.inputSchema,
-            })),
-          );
-          const estimated = estimateTotalTokens(integrityPrompt, messages, toolDefsJson);
+        if (compactionConfig.enabled && (step === 1 || step % COMPACTION_CHECK_INTERVAL_STEPS === 0)) {
+          const estimated = estimateTotalTokens(integrityPrompt, messages, toolDefsJsonForEstimate);
           const lastReportedInput = totalInputTokens > 0 ? totalInputTokens : 0;
           const effectiveTokens = Math.max(estimated, lastReportedInput);
 
@@ -1984,14 +2279,17 @@ ${boundedMainMemory.trim()}`
             if (compactResult.compacted) {
               messages.length = 0;
               messages.push(...compactResult.messages);
-              // Strip the trailing user task message so runners can use
-              // compactedMessages directly as historyMessages without
-              // duplicating the user turn they append themselves.
-              const emittedMessages = [...compactResult.messages];
-              if (emittedMessages.length > 0 && emittedMessages[emittedMessages.length - 1].role === "user") {
-                emittedMessages.pop();
+              let emittedMessages: Message[] | undefined;
+              if (step === 1) {
+                // Strip the trailing user task message so runners can use
+                // compactedMessages directly as historyMessages without
+                // duplicating the user turn they append themselves.
+                emittedMessages = [...compactResult.messages];
+                if (emittedMessages.length > 0 && emittedMessages[emittedMessages.length - 1].role === "user") {
+                  emittedMessages.pop();
+                }
               }
-              const tokensAfterCompaction = estimateTotalTokens(integrityPrompt, messages, toolDefsJson);
+              const tokensAfterCompaction = estimateTotalTokens(integrityPrompt, messages, toolDefsJsonForEstimate);
               latestContextTokens = tokensAfterCompaction;
               toolOutputEstimateSinceModel = 0;
               yield pushEvent({
@@ -2024,7 +2322,9 @@ ${boundedMainMemory.trim()}`
 
         const temperature = agent.frontmatter.model?.temperature ?? 0.2;
         const maxTokens = agent.frontmatter.model?.maxTokens;
-        const cachedMessages = addPromptCacheBreakpoints(coreMessages, modelInstance);
+        const cachedMessages = enablePromptCache
+          ? addPromptCacheBreakpoints(coreMessages, modelInstance)
+          : coreMessages;
 
         const telemetryEnabled = this.loadedConfig?.telemetry?.enabled !== false;
 
@@ -2153,7 +2453,12 @@ ${boundedMainMemory.trim()}`
             status: "completed",
             response: responseText + fullText,
             steps: step,
-            tokens: { input: totalInputTokens, output: totalOutputTokens, cached: totalCachedTokens },
+            tokens: {
+              input: totalInputTokens,
+              output: totalOutputTokens,
+              cached: totalCachedTokens,
+              cacheWrite: totalCacheWriteTokens,
+            },
             duration: now() - start,
             continuation: true,
             continuationMessages: [...messages],
@@ -2185,7 +2490,12 @@ ${boundedMainMemory.trim()}`
           status: "completed",
           response: responseText + fullText,
           steps: step,
-          tokens: { input: totalInputTokens, output: totalOutputTokens, cached: totalCachedTokens },
+          tokens: {
+            input: totalInputTokens,
+            output: totalOutputTokens,
+            cached: totalCachedTokens,
+            cacheWrite: totalCacheWriteTokens,
+          },
           duration: now() - start,
           continuation: true,
           continuationMessages: [...messages],
@@ -2233,11 +2543,21 @@ ${boundedMainMemory.trim()}`
       const toolCallsResult = await result.toolCalls;
 
       // Update token usage
-      const stepCachedTokens = usage.inputTokenDetails?.cacheReadTokens ?? 0;
+      const details = (usage.inputTokenDetails ?? {}) as Record<string, unknown>;
+      const stepCachedTokens = typeof details.cacheReadTokens === "number" ? details.cacheReadTokens : 0;
+      const stepCacheWriteTokens =
+        typeof details.cacheWriteTokens === "number"
+          ? details.cacheWriteTokens
+          : typeof details.cacheCreationTokens === "number"
+            ? details.cacheCreationTokens
+            : typeof details.cacheCreationInputTokens === "number"
+              ? details.cacheCreationInputTokens
+              : 0;
       const stepInputTokens = usage.inputTokens ?? 0;
       totalInputTokens += stepInputTokens;
       totalOutputTokens += usage.outputTokens ?? 0;
       totalCachedTokens += stepCachedTokens;
+      totalCacheWriteTokens += stepCacheWriteTokens;
       latestContextTokens = stepInputTokens;
       toolOutputEstimateSinceModel = 0;
 
@@ -2247,8 +2567,15 @@ ${boundedMainMemory.trim()}`
           input: stepInputTokens,
           output: usage.outputTokens ?? 0,
           cached: stepCachedTokens,
+          cacheWrite: stepCacheWriteTokens,
         },
       });
+      console.info(
+        `[poncho][cost] model="${modelName}" step=${step} ` +
+        `input=${stepInputTokens} output=${usage.outputTokens ?? 0} ` +
+        `cached=${stepCachedTokens} cacheWrite=${stepCacheWriteTokens} ` +
+        `totals(input=${totalInputTokens}, output=${totalOutputTokens}, cached=${totalCachedTokens}, cacheWrite=${totalCacheWriteTokens})`,
+      );
 
       // Extract tool calls
       const toolCalls = toolCallsResult.map((tc) => ({
@@ -2302,6 +2629,7 @@ ${boundedMainMemory.trim()}`
             input: totalInputTokens,
             output: totalOutputTokens,
             cached: totalCachedTokens,
+            cacheWrite: totalCacheWriteTokens,
           },
           duration: now() - start,
           contextTokens: latestContextTokens + toolOutputEstimateSinceModel,
@@ -2505,7 +2833,12 @@ ${boundedMainMemory.trim()}`
           status: "completed",
           response: responseText + fullText,
           steps: step,
-          tokens: { input: totalInputTokens, output: totalOutputTokens, cached: totalCachedTokens },
+          tokens: {
+            input: totalInputTokens,
+            output: totalOutputTokens,
+            cached: totalCachedTokens,
+            cacheWrite: totalCacheWriteTokens,
+          },
           duration: now() - start,
           continuation: true,
           continuationMessages: [...messages],
@@ -2538,6 +2871,20 @@ ${boundedMainMemory.trim()}`
             tool_name: result.tool,
             content: `Tool error: ${result.error}`,
           });
+          {
+            const archive = this.archivedToolResultsByConversation.get(conversationId);
+            if (archive) {
+              archive[result.callId] = {
+                toolResultId: result.callId,
+                conversationId,
+                toolName: result.tool,
+                toolCallId: result.callId,
+                createdAt: now(),
+                sizeBytes: Buffer.byteLength(`Tool error: ${result.error}`, "utf8"),
+                payload: `Tool error: ${result.error}`,
+              };
+            }
+          }
           richToolResults.push({
             type: "tool-result",
             toolCallId: result.callId,
@@ -2564,6 +2911,21 @@ ${boundedMainMemory.trim()}`
             tool_name: result.tool,
             content: JSON.stringify(strippedOutput ?? null),
           });
+          {
+            const archive = this.archivedToolResultsByConversation.get(conversationId);
+            if (archive) {
+              const payload = JSON.stringify(result.output ?? null);
+              archive[result.callId] = {
+                toolResultId: result.callId,
+                conversationId,
+                toolName: result.tool,
+                toolCallId: result.callId,
+                createdAt: now(),
+                sizeBytes: Buffer.byteLength(payload, "utf8"),
+                payload,
+              };
+            }
+          }
 
           if (mediaItems.length > 0) {
             richToolResults.push({
@@ -2604,9 +2966,15 @@ ${boundedMainMemory.trim()}`
       messages.push({
         role: "assistant",
         content: assistantContent,
-        metadata: { timestamp: now(), id: randomUUID(), step },
+        metadata: { timestamp: now(), id: randomUUID(), step, runId },
       });
-      const toolMsgMeta: Record<string, unknown> = { timestamp: now(), id: randomUUID(), step, _richToolResults: richToolResults };
+      const toolMsgMeta: Record<string, unknown> = {
+        timestamp: now(),
+        id: randomUUID(),
+        step,
+        runId,
+        _richToolResults: richToolResults,
+      };
       messages.push({
         role: "tool",
         content: JSON.stringify(toolResultsForModel),
@@ -2621,7 +2989,12 @@ ${boundedMainMemory.trim()}`
           status: "completed",
           response: responseText + fullText,
           steps: step,
-          tokens: { input: totalInputTokens, output: totalOutputTokens, cached: totalCachedTokens },
+          tokens: {
+            input: totalInputTokens,
+            output: totalOutputTokens,
+            cached: totalCachedTokens,
+            cacheWrite: totalCacheWriteTokens,
+          },
           duration: now() - start,
           continuation: true,
           continuationMessages: [...messages],
@@ -2689,7 +3062,12 @@ ${boundedMainMemory.trim()}`
         status: "completed",
         response: responseText,
         steps: maxSteps,
-        tokens: { input: totalInputTokens, output: totalOutputTokens, cached: totalCachedTokens },
+        tokens: {
+          input: totalInputTokens,
+          output: totalOutputTokens,
+          cached: totalCachedTokens,
+          cacheWrite: totalCacheWriteTokens,
+        },
         duration: now() - start,
         continuation: true,
         continuationMessages: [...messages],
