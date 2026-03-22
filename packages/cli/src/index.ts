@@ -3427,6 +3427,19 @@ export const createRequestHandler = async (options?: {
         maxSteps: runMaxSteps,
       };
     },
+    async resetConversation(conversationId) {
+      const existing = await conversationStore.get(conversationId);
+      if (!existing) return;
+      existing.messages = [];
+      existing._harnessMessages = undefined;
+      existing._continuationMessages = undefined;
+      existing._toolResultArchive = undefined;
+      existing.pendingApprovals = undefined;
+      existing.runStatus = undefined;
+      existing.updatedAt = Date.now();
+      await conversationStore.update(existing);
+      console.log(`[messaging-runner] conversation reset: ${conversationId}`);
+    },
   };
 
   let waitUntilHook: ((promise: Promise<unknown>) => void) | undefined;
