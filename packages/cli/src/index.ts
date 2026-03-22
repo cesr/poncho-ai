@@ -292,6 +292,26 @@ const parseParams = (values: string[]): Record<string, string> => {
   return params;
 };
 
+const normalizeMessageForClient = (message: Message): Message => {
+  if (message.role !== "assistant" || typeof message.content !== "string") {
+    return message;
+  }
+  try {
+    const parsed = JSON.parse(message.content) as Record<string, unknown>;
+    const text = typeof parsed.text === "string" ? parsed.text : undefined;
+    const toolCalls = Array.isArray(parsed.tool_calls) ? parsed.tool_calls : undefined;
+    if (typeof text === "string" && toolCalls) {
+      return {
+        ...message,
+        content: text,
+      };
+    }
+  } catch {
+    // Keep original assistant content when it's plain text or non-JSON.
+  }
+  return message;
+};
+
 const AGENT_TEMPLATE = (
   name: string,
   id: string,
@@ -2766,6 +2786,7 @@ export const createRequestHandler = async (options?: {
   // adapter handles its own request verification (e.g. Slack signing secret).
   // ---------------------------------------------------------------------------
   const messagingRoutes = new Map<string, Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>>();
+  const messagingRunQueues = new Map<string, Promise<void>>();
   const messagingRouteRegistrar: RouteRegistrar = (method, path, routeHandler) => {
     let byMethod = messagingRoutes.get(path);
     if (!byMethod) {
@@ -2811,12 +2832,28 @@ export const createRequestHandler = async (options?: {
       return { messages: [] };
     },
     async run(conversationId, input) {
-      const isContinuation = input.task == null;
-      console.log("[messaging-runner] starting run for", conversationId, isContinuation ? "(continuation)" : `task: ${input.task!.slice(0, 80)}`);
+      const previous = messagingRunQueues.get(conversationId) ?? Promise.resolve();
+      let releaseQueue: (() => void) | undefined;
+      const current = new Promise<void>((resolve) => {
+        releaseQueue = resolve;
+      });
+      const chained = previous.then(() => current);
+      messagingRunQueues.set(conversationId, chained);
+      await previous;
+      try {
+        const latestConversation = await conversationStore.get(conversationId);
+        const latestMessages = latestConversation
+          ? (latestConversation._harnessMessages?.length
+            ? [...latestConversation._harnessMessages]
+            : [...latestConversation.messages])
+          : [...input.messages];
 
-      const historyMessages = [...input.messages];
-      const preRunMessages = [...input.messages];
-      const userContent = input.task;
+        const isContinuation = input.task == null;
+        console.log("[messaging-runner] starting run for", conversationId, isContinuation ? "(continuation)" : `task: ${input.task!.slice(0, 80)}`);
+
+        const historyMessages = [...latestMessages];
+        const preRunMessages = [...latestMessages];
+        const userContent = input.task;
 
       // Read-modify-write helper: always fetches the latest version from
       // the store before writing, so concurrent writers don't get clobbered.
@@ -2899,14 +2936,17 @@ export const createRequestHandler = async (options?: {
       const runInput = {
         task: input.task,
         conversationId,
-        messages: input.messages,
+        messages: historyMessages,
         files: input.files,
-        parameters: input.metadata ? {
-          __messaging_platform: input.metadata.platform,
-          __messaging_sender_id: input.metadata.sender.id,
-          __messaging_sender_name: input.metadata.sender.name ?? "",
-          __messaging_thread_id: input.metadata.threadId,
-        } : undefined,
+        parameters: {
+          ...(input.metadata ? {
+            __messaging_platform: input.metadata.platform,
+            __messaging_sender_id: input.metadata.sender.id,
+            __messaging_sender_name: input.metadata.sender.name ?? "",
+            __messaging_thread_id: input.metadata.threadId,
+          } : {}),
+          __activeConversationId: conversationId,
+        },
       };
 
       try {
@@ -3067,15 +3107,21 @@ export const createRequestHandler = async (options?: {
         runConversations.delete(latestRunId);
       }
 
-      console.log("[messaging-runner] run complete, response length:", assistantResponse.length, runContinuation ? "(continuation)" : "");
-      const response = assistantResponse;
+        console.log("[messaging-runner] run complete, response length:", assistantResponse.length, runContinuation ? "(continuation)" : "");
+        const response = assistantResponse;
 
-      return {
-        response,
-        continuation: runContinuation,
-        steps: runSteps,
-        maxSteps: runMaxSteps,
-      };
+        return {
+          response,
+          continuation: runContinuation,
+          steps: runSteps,
+          maxSteps: runMaxSteps,
+        };
+      } finally {
+        releaseQueue?.();
+        if (messagingRunQueues.get(conversationId) === chained) {
+          messagingRunQueues.delete(conversationId);
+        }
+      }
     },
   };
 
@@ -4782,6 +4828,7 @@ export const createRequestHandler = async (options?: {
         writeJson(response, 200, {
           conversation: {
             ...conversation,
+            messages: conversation.messages.map(normalizeMessageForClient),
             pendingApprovals: storedPending,
             _continuationMessages: undefined,
             _harnessMessages: undefined,
