@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.32.8
+
+### Patch Changes
+
+- [`d623f80`](https://github.com/cesr/poncho-ai/commit/d623f8024c1336dc32301b7210ebc94fd94d4877) Thanks [@cesr](https://github.com/cesr)! - Fix raw JSON tool calls rendering in web UI for Telegram conversations; archive old conversation on /new instead of deleting.
+
 ## 0.32.7
 
 ### Patch Changes
