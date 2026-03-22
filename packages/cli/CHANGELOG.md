@@ -1,5 +1,13 @@
 # @poncho-ai/cli
 
+## 0.32.4
+
+### Patch Changes
+
+- [#58](https://github.com/cesr/poncho-ai/pull/58) [`07aad37`](https://github.com/cesr/poncho-ai/commit/07aad371ae5152199347bab11ed5c6270086db2b) Thanks [@cesr](https://github.com/cesr)! - Fix messaging conversation consistency for Telegram and other adapter-backed channels.
+
+  This serializes per-conversation messaging runs to avoid stale concurrent context, refreshes latest conversation history before each run, and normalizes internal assistant tool-call payloads in API conversation responses for cleaner Web UI rendering.
+
 ## 0.32.3
 
 ### Patch Changes
