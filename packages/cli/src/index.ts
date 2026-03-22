@@ -3430,15 +3430,16 @@ export const createRequestHandler = async (options?: {
     async resetConversation(conversationId) {
       const existing = await conversationStore.get(conversationId);
       if (!existing) return;
-      existing.messages = [];
-      existing._harnessMessages = undefined;
-      existing._continuationMessages = undefined;
-      existing._toolResultArchive = undefined;
-      existing.pendingApprovals = undefined;
-      existing.runStatus = undefined;
-      existing.updatedAt = Date.now();
-      await conversationStore.update(existing);
-      console.log(`[messaging-runner] conversation reset: ${conversationId}`);
+      // Archive the old conversation under a unique ID so it stays
+      // viewable in the web UI. The original ID is freed for a fresh one.
+      const archiveId = `${conversationId}_${Date.now()}`;
+      const archived = { ...existing, conversationId: archiveId };
+      const datePart = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      if (archived.title) archived.title = `${archived.title} (${datePart})`;
+      archived.updatedAt = Date.now();
+      await conversationStore.update(archived);
+      await conversationStore.delete(conversationId);
+      console.log(`[messaging-runner] conversation archived: ${conversationId} → ${archiveId}`);
     },
   };
 
