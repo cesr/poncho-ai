@@ -85,7 +85,6 @@ export class TelegramAdapter implements MessagingAdapter {
   private handler: IncomingMessageHandler | undefined;
   private resetHandler: ResetHandler | undefined;
   private approvalDecisionHandler: TelegramApprovalDecisionHandler | undefined;
-  private readonly sessionCounters = new Map<string, number>();
   private readonly approvalMessageIds = new Map<string, { chatId: string; messageId: number }>();
   private lastUpdateId = 0;
 
@@ -374,25 +373,19 @@ export class TelegramAdapter implements MessagingAdapter {
         return;
       }
 
-      const key = this.sessionKey(message);
-      const current = this.sessionCounters.get(key) ?? 0;
-      this.sessionCounters.set(key, current + 1);
-
       res.writeHead(200);
       res.end();
 
-      // Persist the reset so it survives serverless cold starts.
-      // The in-memory counter handles long-running processes; the bridge
-      // clears messages in the conversation store for serverless.
+      // Clear conversation in the store so the next message starts fresh.
       if (this.resetHandler) {
         const topicId = message.message_thread_id;
-        const prevThreadId = topicId
-          ? `${chatId}:${topicId}:${current}`
-          : `${chatId}:${current}`;
+        const threadId = topicId
+          ? `${chatId}:${topicId}:0`
+          : `${chatId}:0`;
         try {
           await this.resetHandler("telegram", {
             channelId: chatId,
-            platformThreadId: prevThreadId,
+            platformThreadId: threadId,
           });
         } catch (err) {
           console.error("[telegram-adapter] reset handler error:", err instanceof Error ? err.message : err);
@@ -440,12 +433,12 @@ export class TelegramAdapter implements MessagingAdapter {
     const files = await this.extractFiles(message);
 
     // -- Build thread ref -------------------------------------------------
-    const key = this.sessionKey(message);
-    const session = this.sessionCounters.get(key) ?? 0;
+    // Always use a fixed session component so the conversationId is stable
+    // across serverless cold starts. /new resets via the store instead.
     const topicId = message.message_thread_id;
     const platformThreadId = topicId
-      ? `${chatId}:${topicId}:${session}`
-      : `${chatId}:${session}`;
+      ? `${chatId}:${topicId}:0`
+      : `${chatId}:0`;
 
     const userId = String(message.from?.id ?? "unknown");
     const userName =
@@ -519,13 +512,6 @@ export class TelegramAdapter implements MessagingAdapter {
   // -----------------------------------------------------------------------
   // Helpers
   // -----------------------------------------------------------------------
-
-  private sessionKey(message: TelegramMessage): string {
-    const chatId = String(message.chat.id);
-    return message.message_thread_id
-      ? `${chatId}:${message.message_thread_id}`
-      : chatId;
-  }
 
   private async extractFiles(
     message: TelegramMessage,
