@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.32.5
+
+### Patch Changes
+
+- Unify conversation run orchestration: route all message vectors through a shared executor with canonical history resolution, fixing approval loops, stale messaging context, and subagent callback reliability.
+
 ## 0.32.4
 
 ### Patch Changes
