@@ -1,5 +1,11 @@
 # @poncho-ai/messaging
 
+## 0.7.8
+
+### Patch Changes
+
+- [`30026c5`](https://github.com/cesr/poncho-ai/commit/30026c5eba3f714bb80c2402c5e8f32c6fd38d87) Thanks [@cesr](https://github.com/cesr)! - Fix Telegram conversation instability on serverless: use stable platformThreadId instead of in-memory session counter.
+
 ## 0.7.7
 
 ### Patch Changes
