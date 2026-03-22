@@ -33,6 +33,11 @@ export type IncomingMessageHandler = (
   message: IncomingMessage,
 ) => Promise<void>;
 
+export type ResetHandler = (
+  platform: string,
+  threadRef: ThreadRef,
+) => Promise<void>;
+
 // ---------------------------------------------------------------------------
 // Route registration (adapter ↔ HTTP server contract)
 // ---------------------------------------------------------------------------
@@ -72,6 +77,9 @@ export interface MessagingAdapter {
 
   /** Set the handler that processes incoming messages. */
   onMessage(handler: IncomingMessageHandler): void;
+
+  /** Set the handler called when a user resets the conversation (e.g. /new). */
+  onReset?(handler: ResetHandler): void;
 
   /** Post a reply back to the originating thread. */
   sendReply(
@@ -133,6 +141,12 @@ export interface AgentRunner {
     steps?: number;
     maxSteps?: number;
   }>;
+
+  /**
+   * Reset a conversation by clearing its messages, making the next
+   * interaction start fresh while keeping the same conversation ID.
+   */
+  resetConversation?(conversationId: string): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

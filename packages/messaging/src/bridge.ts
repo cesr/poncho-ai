@@ -50,6 +50,14 @@ export class AgentBridge {
       this.waitUntil(processing);
       return processing;
     });
+
+    if (this.adapter.onReset && this.runner.resetConversation) {
+      this.adapter.onReset(async (platform, threadRef) => {
+        const conversationId = conversationIdFromThread(platform, threadRef);
+        await this.runner.resetConversation!(conversationId);
+      });
+    }
+
     await this.adapter.initialize();
   }
 

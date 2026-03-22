@@ -4,6 +4,7 @@ import type {
   IncomingMessage as PonchoIncomingMessage,
   IncomingMessageHandler,
   MessagingAdapter,
+  ResetHandler,
   RouteRegistrar,
   ThreadRef,
 } from "../../types.js";
@@ -82,6 +83,7 @@ export class TelegramAdapter implements MessagingAdapter {
   private readonly webhookSecretEnv: string;
   private readonly allowedUserIds: number[] | undefined;
   private handler: IncomingMessageHandler | undefined;
+  private resetHandler: ResetHandler | undefined;
   private approvalDecisionHandler: TelegramApprovalDecisionHandler | undefined;
   private readonly sessionCounters = new Map<string, number>();
   private readonly approvalMessageIds = new Map<string, { chatId: string; messageId: number }>();
@@ -118,6 +120,10 @@ export class TelegramAdapter implements MessagingAdapter {
 
   onMessage(handler: IncomingMessageHandler): void {
     this.handler = handler;
+  }
+
+  onReset(handler: ResetHandler): void {
+    this.resetHandler = handler;
   }
 
   registerRoutes(router: RouteRegistrar): void {
@@ -374,6 +380,24 @@ export class TelegramAdapter implements MessagingAdapter {
 
       res.writeHead(200);
       res.end();
+
+      // Persist the reset so it survives serverless cold starts.
+      // The in-memory counter handles long-running processes; the bridge
+      // clears messages in the conversation store for serverless.
+      if (this.resetHandler) {
+        const topicId = message.message_thread_id;
+        const prevThreadId = topicId
+          ? `${chatId}:${topicId}:${current}`
+          : `${chatId}:${current}`;
+        try {
+          await this.resetHandler("telegram", {
+            channelId: chatId,
+            platformThreadId: prevThreadId,
+          });
+        } catch (err) {
+          console.error("[telegram-adapter] reset handler error:", err instanceof Error ? err.message : err);
+        }
+      }
 
       await sendMessage(
         this.botToken,
