@@ -1,5 +1,14 @@
 # @poncho-ai/cli
 
+## 0.32.6
+
+### Patch Changes
+
+- [#61](https://github.com/cesr/poncho-ai/pull/61) [`0a51abe`](https://github.com/cesr/poncho-ai/commit/0a51abec12191397fd36ab1fd4feca7460489e33) Thanks [@cesr](https://github.com/cesr)! - Fix /new command on Telegram in serverless environments: persist conversation reset to the store so it survives cold starts.
+
+- Updated dependencies [[`0a51abe`](https://github.com/cesr/poncho-ai/commit/0a51abec12191397fd36ab1fd4feca7460489e33)]:
+  - @poncho-ai/messaging@0.7.7
+
 ## 0.32.5
 
 ### Patch Changes
