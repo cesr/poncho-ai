@@ -312,9 +312,21 @@ const normalizeMessageForClient = (message: Message): Message => {
     const text = typeof parsed.text === "string" ? parsed.text : undefined;
     const toolCalls = Array.isArray(parsed.tool_calls) ? parsed.tool_calls : undefined;
     if (typeof text === "string" && toolCalls) {
+      const meta = { ...(message.metadata ?? {}) } as Record<string, unknown>;
+      if (!meta.sections && toolCalls.length > 0) {
+        const toolLabels = toolCalls.map((tc: Record<string, unknown>) => {
+          const name = typeof tc.name === "string" ? tc.name : "tool";
+          return `✓ ${name}`;
+        });
+        const sections: { type: string; content: string | string[] }[] = [];
+        if (toolLabels.length > 0) sections.push({ type: "tools", content: toolLabels });
+        if (text) sections.push({ type: "text", content: text });
+        meta.sections = sections;
+      }
       return {
         ...message,
         content: text,
+        metadata: meta as Message["metadata"],
       };
     }
   } catch {
