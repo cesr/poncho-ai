@@ -119,6 +119,17 @@ const readRequestBody = async (request: IncomingMessage): Promise<unknown> => {
   return body.length > 0 ? (JSON.parse(body) as unknown) : {};
 };
 
+const parseTelegramMessageThreadIdFromPlatformThreadId = (
+  platformThreadId: string | undefined,
+  chatId: string | undefined,
+): number | undefined => {
+  if (!platformThreadId || !chatId) return undefined;
+  const parts = platformThreadId.split(":");
+  if (parts.length !== 3 || parts[0] !== chatId) return undefined;
+  const threadId = Number(parts[1]);
+  return Number.isInteger(threadId) ? threadId : undefined;
+};
+
 const MAX_UPLOAD_SIZE = 25 * 1024 * 1024; // 25MB per file
 
 interface ParsedMultipart {
@@ -2661,9 +2672,14 @@ export const createRequestHandler = async (options?: {
             if (conv.channelMeta?.platform === "telegram") {
               const tgAdapter = messagingAdapters.get("telegram") as TelegramAdapter | undefined;
               if (tgAdapter) {
+                const messageThreadId = parseTelegramMessageThreadIdFromPlatformThreadId(
+                  conv.channelMeta.platformThreadId,
+                  conv.channelMeta.channelId,
+                );
                 void tgAdapter.sendApprovalRequest(
                   conv.channelMeta.channelId,
                   event.approvals.map(a => ({ approvalId: a.approvalId, tool: a.tool, input: a.input })),
+                  { message_thread_id: messageThreadId },
                 ).catch(() => {});
               }
             }
@@ -3021,9 +3037,14 @@ export const createRequestHandler = async (options?: {
                   tool: a.tool,
                   input: a.input,
                 }));
+                const messageThreadId = parseTelegramMessageThreadIdFromPlatformThreadId(
+                  conv.channelMeta.platformThreadId,
+                  conv.channelMeta.channelId,
+                );
                 void tgAdapter.sendApprovalRequest(
                   conv.channelMeta.channelId,
                   approvals,
+                  { message_thread_id: messageThreadId },
                 ).catch((err: unknown) => {
                   console.error("[messaging-runner] failed to send Telegram approval request:", err instanceof Error ? err.message : err);
                 });
@@ -4787,6 +4808,7 @@ export const createRequestHandler = async (options?: {
               runId: a.runId,
               tool: a.tool,
               input: a.input,
+              decision: a.decision,
             }))
           : [];
         // Collect pending approvals from subagent conversations (in-memory map, no disk I/O)

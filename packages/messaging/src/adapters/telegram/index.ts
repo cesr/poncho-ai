@@ -30,6 +30,19 @@ import {
 const TYPING_INTERVAL_MS = 4_000;
 const NEW_COMMAND_RE = /^\/new(?:@(\S+))?$/i;
 
+const parseMessageThreadId = (
+  platformThreadId: string,
+  chatId: string,
+): number | undefined => {
+  const parts = platformThreadId.split(":");
+  // Telegram thread format:
+  // - non-topic chats: `${chatId}:${session}`
+  // - forum topics: `${chatId}:${message_thread_id}:${session}`
+  if (parts.length !== 3 || parts[0] !== chatId) return undefined;
+  const threadId = Number(parts[1]);
+  return Number.isInteger(threadId) ? threadId : undefined;
+};
+
 export interface TelegramApprovalInfo {
   approvalId: string;
   tool: string;
@@ -122,12 +135,17 @@ export class TelegramAdapter implements MessagingAdapter {
     const replyTo = threadRef.messageId
       ? Number(threadRef.messageId)
       : undefined;
+    const messageThreadId = parseMessageThreadId(
+      threadRef.platformThreadId,
+      chatId,
+    );
 
     if (content) {
       const chunks = splitMessage(content);
       for (const chunk of chunks) {
         await sendMessage(this.botToken, chatId, chunk, {
           reply_to_message_id: replyTo,
+          message_thread_id: messageThreadId,
         });
       }
     }
@@ -137,11 +155,13 @@ export class TelegramAdapter implements MessagingAdapter {
         if (file.mediaType.startsWith("image/")) {
           await sendPhoto(this.botToken, chatId, file.data, {
             reply_to_message_id: replyTo,
+            message_thread_id: messageThreadId,
             filename: file.filename,
           });
         } else {
           await sendDocument(this.botToken, chatId, file.data, {
             reply_to_message_id: replyTo,
+            message_thread_id: messageThreadId,
             filename: file.filename,
             mediaType: file.mediaType,
           });

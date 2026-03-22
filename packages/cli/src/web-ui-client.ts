@@ -491,11 +491,20 @@ export const getWebUiClientScript = (markedSource: string): string => `
               return null;
             }
             const toolName = item && typeof item.tool === "string" ? item.tool : "tool";
+            const decision =
+              item && typeof item.decision === "string" ? item.decision : null;
+            const isResolved = decision === "approved" || decision === "denied";
             return {
               approvalId,
               tool: toolName,
               input: item?.input ?? {},
-              state: "pending",
+              state: isResolved ? "resolved" : "pending",
+              resolvedDecision:
+                decision === "approved"
+                  ? "approve"
+                  : decision === "denied"
+                    ? "deny"
+                    : null,
             };
           })
           .filter(Boolean);
