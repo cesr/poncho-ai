@@ -32,6 +32,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
         todoPanelCollapsed: false,
         cronSectionCollapsed: true,
         cronShowAll: false,
+        subagentPollInFlight: {},
       };
 
       const agentInitial = document.body.dataset.agentInitial || "A";
@@ -1554,8 +1555,8 @@ export const getWebUiClientScript = (markedSource: string): string => `
               updateContextRing();
               renderMessages(state.activeMessages, payload.hasActiveRun);
             }
-            if (payload.hasActiveRun) {
-              if (window._connectBrowserStream) window._connectBrowserStream();
+            if (payload.hasActiveRun || payload.hasRunningSubagents) {
+              if (payload.hasActiveRun && window._connectBrowserStream) window._connectBrowserStream();
               setTimeout(poll, 2000);
             } else {
               setStreaming(false);
@@ -1570,9 +1571,15 @@ export const getWebUiClientScript = (markedSource: string): string => `
       };
 
       const pollForSubagentResults = (conversationId) => {
+        if (state.subagentPollInFlight[conversationId]) return;
+        state.subagentPollInFlight[conversationId] = true;
         let lastMessageCount = state.activeMessages ? state.activeMessages.length : 0;
+        let lastUpdatedAt = 0;
         const poll = async () => {
-          if (state.activeConversationId !== conversationId) return;
+          if (state.activeConversationId !== conversationId) {
+            delete state.subagentPollInFlight[conversationId];
+            return;
+          }
           try {
             var payload = await api("/api/conversations/" + encodeURIComponent(conversationId));
             if (state.activeConversationId !== conversationId) return;
@@ -1593,13 +1600,17 @@ export const getWebUiClientScript = (markedSource: string): string => `
                   });
                 });
               }
-              if (messages.length > lastMessageCount) {
+              const conversationUpdatedAt =
+                typeof payload.conversation.updatedAt === "number" ? payload.conversation.updatedAt : 0;
+              if (messages.length > lastMessageCount || conversationUpdatedAt > lastUpdatedAt) {
                 lastMessageCount = messages.length;
+                lastUpdatedAt = conversationUpdatedAt;
                 state.activeMessages = hydratePendingApprovals(messages, allPending);
                 renderMessages(state.activeMessages, payload.hasActiveRun || payload.hasRunningSubagents);
               }
               if (payload.hasActiveRun) {
                 // Parent agent started its continuation run — switch to live stream
+                delete state.subagentPollInFlight[conversationId];
                 setStreaming(true);
                 state.activeMessages = hydratePendingApprovals(messages, allPending);
                 streamConversationEvents(conversationId, { liveOnly: true }).finally(() => {
@@ -1612,6 +1623,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
               } else {
                 renderMessages(state.activeMessages, false);
                 await loadConversations();
+                delete state.subagentPollInFlight[conversationId];
               }
             }
           } catch {
@@ -2539,6 +2551,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
           let _maxSteps = 0;
           let _receivedTerminalEvent = false;
           let _shouldContinue = false;
+          let _pendingSubagentsConversation = null;
 
           // Helper to read an SSE stream from a fetch response
           const readSseStream = async (response) => {
@@ -2856,7 +2869,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
                       assistantMessage.content = String(payload.result?.response || "");
                     }
                     if (payload.pendingSubagents) {
-                      pollForSubagentResults(conversationId);
+                      _pendingSubagentsConversation = conversationId;
                     }
                     renderIfActiveConversation(false);
                   }
@@ -2983,6 +2996,19 @@ export const getWebUiClientScript = (markedSource: string): string => `
             loadConversation(conversationId).catch(function() {});
           }
           elements.prompt.focus();
+        }
+
+        // Subagent callback: after sendMessage fully completes (including
+        // finally cleanup), reload the conversation. loadConversation is
+        // the exact same code path as a manual refresh — if the callback
+        // is still running it connects to the event stream; if it already
+        // finished it just renders the final persisted state.
+        if (_pendingSubagentsConversation && state.activeConversationId === _pendingSubagentsConversation) {
+          const cbConvId = _pendingSubagentsConversation;
+          await new Promise(r => setTimeout(r, 1200));
+          if (state.activeConversationId === cbConvId && !state.isStreaming) {
+            await loadConversation(cbConvId);
+          }
         }
       };
 
@@ -3217,9 +3243,22 @@ export const getWebUiClientScript = (markedSource: string): string => `
         }));
         return api("/api/approvals/" + encodeURIComponent(approvalId), {
           method: "POST",
-          body: JSON.stringify({ approved: decision === "approve" }),
+          body: JSON.stringify({
+            approved: decision === "approve",
+            conversationId: state.activeConversationId || undefined,
+          }),
         }).catch((error) => {
           const isStale = error && error.payload && error.payload.code === "APPROVAL_NOT_FOUND";
+          const isNotReady = error && error.payload && error.payload.code === "APPROVAL_NOT_READY";
+          if (isNotReady) {
+            updatePendingApproval(approvalId, (request) => ({
+              ...request,
+              state: "pending",
+              pendingDecision: null,
+              resolvedDecision: null,
+            }));
+            return;
+          }
           if (isStale) {
             updatePendingApproval(approvalId, () => null);
           } else {
@@ -3290,9 +3329,23 @@ export const getWebUiClientScript = (markedSource: string): string => `
             for (const aid of pending) {
               await api("/api/approvals/" + encodeURIComponent(aid), {
                 method: "POST",
-                body: JSON.stringify({ approved: decision === "approve" }),
+                body: JSON.stringify({
+                  approved: decision === "approve",
+                  conversationId: state.activeConversationId || undefined,
+                }),
               }).catch((error) => {
                 const isStale = error && error.payload && error.payload.code === "APPROVAL_NOT_FOUND";
+                const isNotReady = error && error.payload && error.payload.code === "APPROVAL_NOT_READY";
+                if (isNotReady) {
+                  updatePendingApproval(aid, (request) => ({
+                    ...request,
+                    state: "pending",
+                    pendingDecision: null,
+                    resolvedDecision: null,
+                  }));
+                  renderMessages(state.activeMessages, state.isStreaming);
+                  return;
+                }
                 if (isStale) {
                   updatePendingApproval(aid, () => null);
                 } else {
