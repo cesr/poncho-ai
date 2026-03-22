@@ -323,6 +323,305 @@ const normalizeMessageForClient = (message: Message): Message => {
   return message;
 };
 
+const isMessageArray = (value: unknown): value is Message[] =>
+  Array.isArray(value) &&
+  value.every((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const row = entry as Record<string, unknown>;
+    const role = row.role;
+    const content = row.content;
+    const roleOk = role === "system" || role === "user" || role === "assistant" || role === "tool";
+    const contentOk = typeof content === "string" || Array.isArray(content);
+    return roleOk && contentOk;
+  });
+
+type HistorySource = "harness" | "continuation" | "messages";
+
+const loadCanonicalHistory = (
+  conversation: Conversation,
+): { messages: Message[]; source: HistorySource } => {
+  if (isMessageArray(conversation._harnessMessages) && conversation._harnessMessages.length > 0) {
+    return { messages: [...conversation._harnessMessages], source: "harness" };
+  }
+  return { messages: [...conversation.messages], source: "messages" };
+};
+
+const loadRunHistory = (
+  conversation: Conversation,
+  options?: { preferContinuation?: boolean },
+): { messages: Message[]; source: HistorySource; shouldRebuildCanonical: boolean } => {
+  if (options?.preferContinuation && isMessageArray(conversation._continuationMessages) && conversation._continuationMessages.length > 0) {
+    return {
+      messages: [...conversation._continuationMessages],
+      source: "continuation",
+      shouldRebuildCanonical: !isMessageArray(conversation._harnessMessages) || conversation._harnessMessages.length === 0,
+    };
+  }
+  const canonical = loadCanonicalHistory(conversation);
+  return {
+    ...canonical,
+    shouldRebuildCanonical: canonical.source !== "harness",
+  };
+};
+
+type StoredApproval = NonNullable<Conversation["pendingApprovals"]>[number];
+type PendingToolCall = { id: string; name: string; input: Record<string, unknown> };
+type ApprovalEventItem = {
+  approvalId: string;
+  tool: string;
+  toolCallId?: string;
+  input: Record<string, unknown>;
+};
+type RunRequest = {
+  conversationId: string;
+  messages: Message[];
+  preferContinuation?: boolean;
+};
+type RunOutcome = {
+  source: HistorySource;
+  shouldRebuildCanonical: boolean;
+  messages: Message[];
+};
+type TurnSection = { type: "text" | "tools"; content: string | string[] };
+type TurnDraftState = {
+  assistantResponse: string;
+  toolTimeline: string[];
+  sections: TurnSection[];
+  currentTools: string[];
+  currentText: string;
+};
+type ExecuteTurnResult = {
+  latestRunId: string;
+  runCancelled: boolean;
+  runContinuation: boolean;
+  runContinuationMessages?: Message[];
+  runHarnessMessages?: Message[];
+  runContextTokens: number;
+  runContextWindow: number;
+  runSteps: number;
+  runMaxSteps?: number;
+  draft: TurnDraftState;
+};
+
+const createTurnDraftState = (): TurnDraftState => ({
+  assistantResponse: "",
+  toolTimeline: [],
+  sections: [],
+  currentTools: [],
+  currentText: "",
+});
+
+const cloneSections = (sections: TurnSection[]): TurnSection[] =>
+  sections.map((section) => ({
+    type: section.type,
+    content: Array.isArray(section.content) ? [...section.content] : section.content,
+  }));
+
+const flushTurnDraft = (draft: TurnDraftState): void => {
+  if (draft.currentTools.length > 0) {
+    draft.sections.push({ type: "tools", content: draft.currentTools });
+    draft.currentTools = [];
+  }
+  if (draft.currentText.length > 0) {
+    draft.sections.push({ type: "text", content: draft.currentText });
+    draft.currentText = "";
+  }
+};
+
+const recordStandardTurnEvent = (draft: TurnDraftState, event: AgentEvent): void => {
+  if (event.type === "model:chunk") {
+    if (draft.currentTools.length > 0) {
+      draft.sections.push({ type: "tools", content: draft.currentTools });
+      draft.currentTools = [];
+      if (draft.assistantResponse.length > 0 && !/\s$/.test(draft.assistantResponse)) {
+        draft.assistantResponse += " ";
+      }
+    }
+    draft.assistantResponse += event.content;
+    draft.currentText += event.content;
+    return;
+  }
+  if (event.type === "tool:started") {
+    if (draft.currentText.length > 0) {
+      draft.sections.push({ type: "text", content: draft.currentText });
+      draft.currentText = "";
+    }
+    const toolText = `- start \`${event.tool}\``;
+    draft.toolTimeline.push(toolText);
+    draft.currentTools.push(toolText);
+    return;
+  }
+  if (event.type === "tool:completed") {
+    const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
+    draft.toolTimeline.push(toolText);
+    draft.currentTools.push(toolText);
+    return;
+  }
+  if (event.type === "tool:error") {
+    const toolText = `- error \`${event.tool}\`: ${event.error}`;
+    draft.toolTimeline.push(toolText);
+    draft.currentTools.push(toolText);
+  }
+};
+
+const buildAssistantMetadata = (
+  draft: TurnDraftState,
+  sectionsOverride?: TurnSection[],
+): Message["metadata"] | undefined => {
+  const sections = sectionsOverride ?? cloneSections(draft.sections);
+  if (draft.toolTimeline.length === 0 && sections.length === 0) return undefined;
+  return {
+    toolActivity: [...draft.toolTimeline],
+    sections: sections.length > 0 ? sections : undefined,
+  } as Message["metadata"];
+};
+
+const executeConversationTurn = async ({
+  harness,
+  runInput,
+  initialContextTokens = 0,
+  initialContextWindow = 0,
+  onEvent,
+}: {
+  harness: AgentHarness;
+  runInput: Parameters<AgentHarness["runWithTelemetry"]>[0];
+  initialContextTokens?: number;
+  initialContextWindow?: number;
+  onEvent?: (event: AgentEvent, draft: TurnDraftState) => void | Promise<void>;
+}): Promise<ExecuteTurnResult> => {
+  const draft = createTurnDraftState();
+  let latestRunId = "";
+  let runCancelled = false;
+  let runContinuation = false;
+  let runContinuationMessages: Message[] | undefined;
+  let runHarnessMessages: Message[] | undefined;
+  let runContextTokens = initialContextTokens;
+  let runContextWindow = initialContextWindow;
+  let runSteps = 0;
+  let runMaxSteps: number | undefined;
+
+  for await (const event of harness.runWithTelemetry(runInput)) {
+    recordStandardTurnEvent(draft, event);
+    if (event.type === "run:started") {
+      latestRunId = event.runId;
+    }
+    if (event.type === "run:cancelled") {
+      runCancelled = true;
+    }
+    if (event.type === "run:completed") {
+      runContinuation = event.result.continuation === true;
+      runContinuationMessages = event.result.continuationMessages;
+      runHarnessMessages = event.result.continuationMessages;
+      runContextTokens = event.result.contextTokens ?? runContextTokens;
+      runContextWindow = event.result.contextWindow ?? runContextWindow;
+      runSteps = event.result.steps;
+      if (typeof event.result.maxSteps === "number") {
+        runMaxSteps = event.result.maxSteps;
+      }
+      if (draft.assistantResponse.length === 0 && event.result.response) {
+        draft.assistantResponse = event.result.response;
+      }
+    }
+    if (event.type === "run:error") {
+      draft.assistantResponse = draft.assistantResponse || `[Error: ${event.error.message}]`;
+    }
+    if (onEvent) {
+      await onEvent(event, draft);
+    }
+  }
+
+  return {
+    latestRunId,
+    runCancelled,
+    runContinuation,
+    runContinuationMessages,
+    runHarnessMessages,
+    runContextTokens,
+    runContextWindow,
+    runSteps,
+    runMaxSteps,
+    draft,
+  };
+};
+
+const normalizePendingToolCalls = (value: unknown): PendingToolCall[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is PendingToolCall => {
+      if (!entry || typeof entry !== "object") return false;
+      const row = entry as Record<string, unknown>;
+      return (
+        typeof row.id === "string" &&
+        typeof row.name === "string" &&
+        typeof row.input === "object" &&
+        row.input !== null
+      );
+    })
+    .map((entry) => ({ id: entry.id, name: entry.name, input: entry.input }));
+};
+
+const normalizeApprovalCheckpoint = (
+  approval: StoredApproval,
+  fallbackMessages: Message[],
+): StoredApproval => ({
+  ...approval,
+  checkpointMessages: isMessageArray(approval.checkpointMessages) ? approval.checkpointMessages : [...fallbackMessages],
+  baseMessageCount: typeof approval.baseMessageCount === "number" && approval.baseMessageCount >= 0
+    ? approval.baseMessageCount
+    : 0,
+  pendingToolCalls: normalizePendingToolCalls(approval.pendingToolCalls),
+});
+
+const buildApprovalCheckpoints = ({
+  approvals,
+  runId,
+  checkpointMessages,
+  baseMessageCount,
+  pendingToolCalls,
+}: {
+  approvals: ApprovalEventItem[];
+  runId: string;
+  checkpointMessages: Message[];
+  baseMessageCount: number;
+  pendingToolCalls: PendingToolCall[];
+}): NonNullable<Conversation["pendingApprovals"]> =>
+  approvals.map((approval) => ({
+    approvalId: approval.approvalId,
+    runId,
+    tool: approval.tool,
+    toolCallId: approval.toolCallId,
+    input: approval.input,
+    checkpointMessages,
+    baseMessageCount,
+    pendingToolCalls,
+  }));
+
+const resolveRunRequest = (
+  conversation: Conversation,
+  request: RunRequest,
+): RunOutcome => {
+  const resolved = loadRunHistory(conversation, {
+    preferContinuation: request.preferContinuation,
+  });
+  return {
+    source: resolved.source,
+    shouldRebuildCanonical: resolved.shouldRebuildCanonical,
+    messages: resolved.messages.length > 0 ? resolved.messages : request.messages,
+  };
+};
+
+export const __internalRunOrchestration = {
+  isMessageArray,
+  loadCanonicalHistory,
+  loadRunHistory,
+  normalizeApprovalCheckpoint,
+  buildApprovalCheckpoints,
+  resolveRunRequest,
+  createTurnDraftState,
+  recordStandardTurnEvent,
+  executeConversationTurn,
+};
+
 const AGENT_TEMPLATE = (
   name: string,
   id: string,
@@ -1652,6 +1951,77 @@ export const createRequestHandler = async (options?: {
   // separate copy, causing last-writer-wins when decisions overlap).
   const approvalDecisionTracker = new Map<string, Map<string, boolean>>();
 
+  const findPendingApproval = async (
+    approvalId: string,
+    owner: string,
+  ): Promise<{ conversation: Conversation; approval: StoredApproval } | undefined> => {
+    const searchedConversationIds = new Set<string>();
+    const scan = async (conversations: Conversation[]) => {
+      for (const conv of conversations) {
+        if (searchedConversationIds.has(conv.conversationId)) continue;
+        searchedConversationIds.add(conv.conversationId);
+        if (!Array.isArray(conv.pendingApprovals)) continue;
+        const match = conv.pendingApprovals.find((approval) => approval.approvalId === approvalId);
+        if (match) {
+          return { conversation: conv, approval: match as StoredApproval };
+        }
+      }
+      return undefined;
+    };
+
+    const ownerScoped = await scan(await conversationStore.list(owner));
+    if (ownerScoped) return ownerScoped;
+
+    // In local-owner mode (default dev), historical conversations may exist
+    // with mixed ownership keys; do one global fallback scan.
+    if (owner === "local-owner") {
+      return await scan(await conversationStore.list());
+    }
+    return undefined;
+  };
+
+  const hasRunningSubagentsForParent = async (
+    parentConversationId: string,
+    owner: string,
+  ): Promise<boolean> => {
+    let hasRunning = Array.from(activeSubagentRuns.values()).some(
+      (run) => run.parentConversationId === parentConversationId,
+    );
+    if (hasRunning) return true;
+
+    const summaries = await conversationStore.listSummaries(owner);
+    for (const summary of summaries) {
+      if (summary.parentConversationId !== parentConversationId) continue;
+      const childConversation = await conversationStore.get(summary.conversationId);
+      if (childConversation?.subagentMeta?.status === "running") {
+        hasRunning = true;
+        break;
+      }
+    }
+    return hasRunning;
+  };
+
+  const hasPendingSubagentWorkForParent = async (
+    parentConversationId: string,
+    owner: string,
+  ): Promise<boolean> => {
+    if (await hasRunningSubagentsForParent(parentConversationId, owner)) {
+      return true;
+    }
+    if (pendingCallbackNeeded.has(parentConversationId)) {
+      return true;
+    }
+    const parentConversation = await conversationStore.get(parentConversationId);
+    if (!parentConversation) return false;
+    if (Array.isArray(parentConversation.pendingSubagentResults) && parentConversation.pendingSubagentResults.length > 0) {
+      return true;
+    }
+    if (typeof parentConversation.runningCallbackSince === "number" && parentConversation.runningCallbackSince > 0) {
+      return true;
+    }
+    return false;
+  };
+
   const getSubagentDepth = async (conversationId: string): Promise<number> => {
     let depth = 0;
     let current = await conversationStore.get(conversationId);
@@ -1703,7 +2073,9 @@ export const createRequestHandler = async (options?: {
     const conv = await conversationStore.get(subagentId);
     if (!conv || !conv.parentConversationId) return;
 
-    const allApprovals = conv.pendingApprovals ?? [];
+    const allApprovals = (conv.pendingApprovals ?? []).map((approval) =>
+      normalizeApprovalCheckpoint(approval, conv.messages),
+    );
     if (allApprovals.length === 0) return;
     const allDecided = allApprovals.every(a => a.decision != null);
     if (!allDecided) return;
@@ -1795,9 +2167,11 @@ export const createRequestHandler = async (options?: {
       conversation.lastActivityAt = Date.now();
       await conversationStore.update(conversation);
 
-      const harnessMessages = conversation._harnessMessages?.length
-        ? [...conversation._harnessMessages]
-        : [...conversation.messages];
+      const runOutcome = resolveRunRequest(conversation, {
+        conversationId: childConversationId,
+        messages: conversation.messages,
+      });
+      const harnessMessages = [...runOutcome.messages];
 
       for await (const event of childHarness.runWithTelemetry({
         task,
@@ -1860,16 +2234,13 @@ export const createRequestHandler = async (options?: {
         if (event.type === "tool:approval:checkpoint") {
           const cpConv = await conversationStore.get(childConversationId);
           if (cpConv) {
-            const allCpData: NonNullable<Conversation["pendingApprovals"]> = event.approvals.map(a => ({
-              approvalId: a.approvalId,
+            const allCpData = buildApprovalCheckpoints({
+              approvals: event.approvals,
               runId: latestRunId,
-              tool: a.tool,
-              toolCallId: a.toolCallId,
-              input: a.input,
               checkpointMessages: [...harnessMessages, ...event.checkpointMessages],
               baseMessageCount: 0,
               pendingToolCalls: event.pendingToolCalls,
-            }));
+            });
             cpConv.pendingApprovals = allCpData;
             cpConv.updatedAt = Date.now();
             await conversationStore.update(cpConv);
@@ -1886,7 +2257,7 @@ export const createRequestHandler = async (options?: {
               }
             });
 
-            const checkpointRef = allCpData[0]!;
+            const checkpointRef = normalizeApprovalCheckpoint(allCpData[0]!, [...harnessMessages]);
             const toolContext = {
               runId: checkpointRef.runId,
               agentId: identity.id,
@@ -2019,6 +2390,8 @@ export const createRequestHandler = async (options?: {
         }
         if (runResult?.continuationMessages) {
           conv._harnessMessages = runResult.continuationMessages;
+        } else if (runOutcome.shouldRebuildCanonical) {
+          conv._harnessMessages = conv.messages;
         }
         conv._toolResultArchive = childHarness.getToolResultArchive(childConversationId);
         conv.lastActivityAt = Date.now();
@@ -2187,6 +2560,9 @@ export const createRequestHandler = async (options?: {
         metadata: { _subagentCallback: true, subagentId: pr.subagentId, task: pr.task, timestamp: pr.timestamp } as Message["metadata"],
       });
     }
+    // Callback-injected result messages must be visible to the next parent turn.
+    // Keep canonical transcript in sync before resolving callback run history.
+    conversation._harnessMessages = [...conversation.messages];
     conversation.updatedAt = Date.now();
     await conversationStore.update(conversation);
 
@@ -2221,120 +2597,74 @@ export const createRequestHandler = async (options?: {
       });
     }
 
-    const historyMessages = isContinuationResume && conversation._continuationMessages?.length
-      ? [...conversation._continuationMessages]
-      : conversation._harnessMessages?.length
-        ? [...conversation._harnessMessages]
-        : [...conversation.messages];
-    let assistantResponse = "";
-    let latestRunId = "";
-    let runContinuation = false;
-    let runContinuationMessages: Message[] | undefined;
-    let runHarnessMessages: Message[] | undefined;
-    let runContextTokens = conversation.contextTokens ?? 0;
-    let runContextWindow = conversation.contextWindow ?? 0;
-    const toolTimeline: string[] = [];
-    const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
-    let currentTools: string[] = [];
-    let currentText = "";
+    const historySelection = resolveRunRequest(conversation, {
+      conversationId,
+      messages: conversation.messages,
+      preferContinuation: isContinuationResume,
+    });
+    const historyMessages = [...historySelection.messages];
+    console.info(
+      `[poncho][subagent-callback] conversation="${conversationId}" history_source=${historySelection.source}`,
+    );
+    let execution: ExecuteTurnResult | undefined;
 
     try {
-      for await (const event of harness.runWithTelemetry({
-        task: undefined,
-        conversationId,
-        parameters: withToolResultArchiveParam({
-          __activeConversationId: conversationId,
-          __ownerId: conversation.ownerId,
-        }, conversation),
-        messages: historyMessages,
-        abortSignal: abortController.signal,
-      })) {
-        if (event.type === "run:started") {
-          latestRunId = event.runId;
-          const active = activeConversationRuns.get(conversationId);
-          if (active) active.runId = event.runId;
-        }
-        if (event.type === "model:chunk") {
-          if (currentTools.length > 0) {
-            sections.push({ type: "tools", content: currentTools });
-            currentTools = [];
-            if (assistantResponse.length > 0 && !/\s$/.test(assistantResponse)) {
-              assistantResponse += " ";
-            }
+      execution = await executeConversationTurn({
+        harness,
+        runInput: {
+          task: undefined,
+          conversationId,
+          parameters: withToolResultArchiveParam({
+            __activeConversationId: conversationId,
+            __ownerId: conversation.ownerId,
+          }, conversation),
+          messages: historyMessages,
+          abortSignal: abortController.signal,
+        },
+        initialContextTokens: conversation.contextTokens ?? 0,
+        initialContextWindow: conversation.contextWindow ?? 0,
+        onEvent: (event) => {
+          if (event.type === "run:started") {
+            const active = activeConversationRuns.get(conversationId);
+            if (active) active.runId = event.runId;
           }
-          assistantResponse += event.content;
-          currentText += event.content;
-        }
-        if (event.type === "tool:started") {
-          if (currentText.length > 0) {
-            sections.push({ type: "text", content: currentText });
-            currentText = "";
-          }
-          const toolText = `- start \`${event.tool}\``;
-          toolTimeline.push(toolText);
-          currentTools.push(toolText);
-        }
-        if (event.type === "tool:completed") {
-          const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
-          toolTimeline.push(toolText);
-          currentTools.push(toolText);
-        }
-        if (event.type === "tool:error") {
-          const toolText = `- error \`${event.tool}\`: ${event.error}`;
-          toolTimeline.push(toolText);
-          currentTools.push(toolText);
-        }
-        if (event.type === "run:completed") {
-          if (assistantResponse.length === 0 && event.result.response) {
-            assistantResponse = event.result.response;
-          }
-          runContextTokens = event.result.contextTokens ?? runContextTokens;
-          runContextWindow = event.result.contextWindow ?? runContextWindow;
-          if (event.result.continuationMessages) {
-            runHarnessMessages = event.result.continuationMessages;
-          }
-          if (event.result.continuation) {
-            runContinuation = true;
-            if (event.result.continuationMessages) {
-              runContinuationMessages = event.result.continuationMessages;
-            }
-          }
-        }
-        broadcastEvent(conversationId, event);
-      }
+          broadcastEvent(conversationId, event);
+        },
+      });
+      flushTurnDraft(execution.draft);
 
-      if (currentTools.length > 0) sections.push({ type: "tools", content: currentTools });
-      if (currentText.length > 0) sections.push({ type: "text", content: currentText });
-
-      if (runContinuationMessages || assistantResponse.length > 0 || toolTimeline.length > 0) {
+      const callbackNeedsContinuation = execution.runContinuation && execution.runContinuationMessages;
+      if (callbackNeedsContinuation || execution.draft.assistantResponse.length > 0 || execution.draft.toolTimeline.length > 0) {
         const freshConv = await conversationStore.get(conversationId);
         if (freshConv) {
-          if (runContinuationMessages) {
-            freshConv._continuationMessages = runContinuationMessages;
+          if (callbackNeedsContinuation) {
+            freshConv._continuationMessages = execution.runContinuationMessages;
           } else {
             freshConv._continuationMessages = undefined;
             freshConv.messages.push({
               role: "assistant",
-              content: assistantResponse,
-              metadata: toolTimeline.length > 0 || sections.length > 0
-                ? { toolActivity: toolTimeline, sections: sections.length > 0 ? sections : undefined } as Message["metadata"]
-                : undefined,
+              content: execution.draft.assistantResponse,
+              metadata: buildAssistantMetadata(execution.draft),
             });
           }
-          if (runHarnessMessages) {
-            freshConv._harnessMessages = runHarnessMessages;
+          if (callbackNeedsContinuation && execution.runHarnessMessages) {
+            freshConv._harnessMessages = execution.runHarnessMessages;
+          } else if (historySelection.shouldRebuildCanonical) {
+            freshConv._harnessMessages = freshConv.messages;
+          } else {
+            freshConv._harnessMessages = freshConv.messages;
           }
           freshConv._toolResultArchive = harness.getToolResultArchive(conversationId);
-          freshConv.runtimeRunId = latestRunId || freshConv.runtimeRunId;
+          freshConv.runtimeRunId = execution.latestRunId || freshConv.runtimeRunId;
           freshConv.runningCallbackSince = undefined;
           freshConv.runStatus = "idle";
-          if (runContextTokens > 0) freshConv.contextTokens = runContextTokens;
-          if (runContextWindow > 0) freshConv.contextWindow = runContextWindow;
+          if (execution.runContextTokens > 0) freshConv.contextTokens = execution.runContextTokens;
+          if (execution.runContextWindow > 0) freshConv.contextWindow = execution.runContextWindow;
           freshConv.updatedAt = Date.now();
           await conversationStore.update(freshConv);
 
           // Proactive messaging notification if conversation has a messaging channel
-          if (freshConv.channelMeta && assistantResponse.length > 0) {
+          if (freshConv.channelMeta && execution.draft.assistantResponse.length > 0) {
             const adapter = messagingAdapters.get(freshConv.channelMeta.platform);
             if (adapter) {
               try {
@@ -2343,7 +2673,7 @@ export const createRequestHandler = async (options?: {
                     channelId: freshConv.channelMeta.channelId,
                     platformThreadId: freshConv.channelMeta.platformThreadId,
                   },
-                  assistantResponse,
+                  execution.draft.assistantResponse,
                 );
               } catch (sendErr) {
                 console.error(`[poncho][subagent-callback] Messaging notify failed:`, sendErr instanceof Error ? sendErr.message : sendErr);
@@ -2354,7 +2684,7 @@ export const createRequestHandler = async (options?: {
       }
 
       // Handle continuation for the callback run itself
-      if (runContinuation) {
+      if (execution.runContinuation) {
         if (isServerless) {
           const work = selfFetchWithRetry(`/api/internal/conversations/${encodeURIComponent(conversationId)}/subagent-callback`).catch(err =>
             console.error(`[poncho][subagent-callback] Continuation self-fetch failed:`, err instanceof Error ? err.message : err),
@@ -2376,7 +2706,6 @@ export const createRequestHandler = async (options?: {
       }
     } finally {
       activeConversationRuns.delete(conversationId);
-      finishConversationStream(conversationId);
 
       // Check both the in-memory flag (always reliable) and the store.
       // We drain the flag first so a concurrent triggerParentCallback that
@@ -2385,6 +2714,16 @@ export const createRequestHandler = async (options?: {
       const hadDeferredTrigger = pendingCallbackNeeded.delete(conversationId);
       const freshConv = await conversationStore.get(conversationId);
       const hasPendingInStore = !!freshConv?.pendingSubagentResults?.length;
+      const hasRunningCallbackChildren = Array.from(activeSubagentRuns.values()).some(
+        (run) => run.parentConversationId === conversationId,
+      );
+
+      // Only close the event stream when no further subagent work is pending.
+      // If more callbacks are about to run, the stream stays alive so clients
+      // receive the next callback's events through the same SSE connection.
+      if (!hadDeferredTrigger && !hasPendingInStore && !hasRunningCallbackChildren) {
+        finishConversationStream(conversationId);
+      }
 
       if (hadDeferredTrigger || hasPendingInStore) {
         // Re-trigger immediately. Skip the runningCallbackSince lock check
@@ -2562,10 +2901,11 @@ export const createRequestHandler = async (options?: {
     let runContextWindow = conversation.contextWindow ?? 0;
     let resumeHarnessMessages: Message[] | undefined;
 
-    const baseMessages = checkpoint.baseMessageCount != null
-      ? conversation.messages.slice(0, checkpoint.baseMessageCount)
+    const normalizedCheckpoint = normalizeApprovalCheckpoint(checkpoint, conversation.messages);
+    const baseMessages = normalizedCheckpoint.baseMessageCount != null
+      ? conversation.messages.slice(0, normalizedCheckpoint.baseMessageCount)
       : [];
-    const fullCheckpointMessages = [...baseMessages, ...checkpoint.checkpointMessages!];
+    const fullCheckpointMessages = [...baseMessages, ...normalizedCheckpoint.checkpointMessages!];
 
     // Build the tool result message that continueFromToolResult will also
     // construct internally.  We need it here so that if the resumed run hits
@@ -2656,16 +2996,13 @@ export const createRequestHandler = async (options?: {
         if (event.type === "tool:approval:checkpoint") {
           const conv = await conversationStore.get(conversationId);
           if (conv) {
-            conv.pendingApprovals = event.approvals.map(a => ({
-              approvalId: a.approvalId,
+            conv.pendingApprovals = buildApprovalCheckpoints({
+              approvals: event.approvals,
               runId: latestRunId,
-              tool: a.tool,
-              toolCallId: a.toolCallId,
-              input: a.input,
               checkpointMessages: [...fullCheckpointWithResults, ...event.checkpointMessages],
               baseMessageCount: 0,
               pendingToolCalls: event.pendingToolCalls,
-            }));
+            });
             conv.updatedAt = Date.now();
             await conversationStore.update(conv);
 
@@ -2761,6 +3098,8 @@ export const createRequestHandler = async (options?: {
         }
         if (resumeHarnessMessages) {
           conv._harnessMessages = resumeHarnessMessages;
+        } else {
+          conv._harnessMessages = conv.messages;
         }
         conv.runtimeRunId = latestRunId || conv.runtimeRunId;
         conv.pendingApprovals = [];
@@ -2779,7 +3118,6 @@ export const createRequestHandler = async (options?: {
       }
     }
 
-    finishConversationStream(conversationId);
     activeConversationRuns.delete(conversationId);
     if (latestRunId) {
       runOwners.delete(latestRunId);
@@ -2790,7 +3128,14 @@ export const createRequestHandler = async (options?: {
     // Check for pending subagent results that arrived during the run
     const hadDeferred = pendingCallbackNeeded.delete(conversationId);
     const postConv = await conversationStore.get(conversationId);
-    if (hadDeferred || postConv?.pendingSubagentResults?.length) {
+    const needsResumeCallback = hadDeferred || !!postConv?.pendingSubagentResults?.length;
+    const hasRunningResumeChildren = Array.from(activeSubagentRuns.values()).some(
+      (run) => run.parentConversationId === conversationId,
+    );
+    if (!needsResumeCallback && !hasRunningResumeChildren) {
+      finishConversationStream(conversationId);
+    }
+    if (needsResumeCallback) {
       processSubagentCallback(conversationId, true).catch(err =>
         console.error(`[poncho][subagent-callback] Post-resume callback failed:`, err instanceof Error ? err.message : err),
       );
@@ -2802,7 +3147,6 @@ export const createRequestHandler = async (options?: {
   // adapter handles its own request verification (e.g. Slack signing secret).
   // ---------------------------------------------------------------------------
   const messagingRoutes = new Map<string, Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>>();
-  const messagingRunQueues = new Map<string, Promise<void>>();
   const messagingRouteRegistrar: RouteRegistrar = (method, path, routeHandler) => {
     let byMethod = messagingRoutes.get(path);
     if (!byMethod) {
@@ -2824,7 +3168,7 @@ export const createRequestHandler = async (options?: {
           };
           await conversationStore.update(existing);
         }
-        return { messages: existing._harnessMessages?.length ? existing._harnessMessages : existing.messages };
+        return { messages: loadCanonicalHistory(existing).messages };
       }
       const now = Date.now();
       const channelMeta = meta.channelId
@@ -2848,28 +3192,22 @@ export const createRequestHandler = async (options?: {
       return { messages: [] };
     },
     async run(conversationId, input) {
-      const previous = messagingRunQueues.get(conversationId) ?? Promise.resolve();
-      let releaseQueue: (() => void) | undefined;
-      const current = new Promise<void>((resolve) => {
-        releaseQueue = resolve;
-      });
-      const chained = previous.then(() => current);
-      messagingRunQueues.set(conversationId, chained);
-      await previous;
-      try {
-        const latestConversation = await conversationStore.get(conversationId);
-        const latestMessages = latestConversation
-          ? (latestConversation._harnessMessages?.length
-            ? [...latestConversation._harnessMessages]
-            : [...latestConversation.messages])
-          : [...input.messages];
+      const latestConversation = await conversationStore.get(conversationId);
+      const canonicalHistory = latestConversation
+        ? loadCanonicalHistory(latestConversation)
+        : { messages: [...input.messages], source: "messages" as const };
+      const shouldRebuildCanonical = canonicalHistory.source !== "harness";
 
-        const isContinuation = input.task == null;
-        console.log("[messaging-runner] starting run for", conversationId, isContinuation ? "(continuation)" : `task: ${input.task!.slice(0, 80)}`);
+      const isContinuation = input.task == null;
+      console.log(
+        `[messaging-runner] starting run for ${conversationId} ` +
+        `${isContinuation ? "(continuation)" : `task: ${input.task!.slice(0, 80)}`} ` +
+        `history_source=${canonicalHistory.source}`,
+      );
 
-        const historyMessages = [...latestMessages];
-        const preRunMessages = [...latestMessages];
-        const userContent = input.task;
+      const historyMessages = [...canonicalHistory.messages];
+      const preRunMessages = [...canonicalHistory.messages];
+      const userContent = input.task;
 
       // Read-modify-write helper: always fetches the latest version from
       // the store before writing, so concurrent writers don't get clobbered.
@@ -2891,11 +3229,7 @@ export const createRequestHandler = async (options?: {
       });
 
       let latestRunId = "";
-      let assistantResponse = "";
-      const toolTimeline: string[] = [];
-      const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
-      let currentTools: string[] = [];
-      let currentText = "";
+      const draft = createTurnDraftState();
       let checkpointedRun = false;
       let runContextTokens = 0;
       let runContextWindow = 0;
@@ -2905,23 +3239,18 @@ export const createRequestHandler = async (options?: {
       let runMaxSteps: number | undefined;
 
       const buildMessages = (): Message[] => {
-        const draftSections: Array<{ type: "text" | "tools"; content: string | string[] }> = [
-          ...sections.map((s) => ({
-            type: s.type,
-            content: Array.isArray(s.content) ? [...s.content] : s.content,
-          })),
-        ];
-        if (currentTools.length > 0) {
-          draftSections.push({ type: "tools", content: [...currentTools] });
+        const draftSections = cloneSections(draft.sections);
+        if (draft.currentTools.length > 0) {
+          draftSections.push({ type: "tools", content: [...draft.currentTools] });
         }
-        if (currentText.length > 0) {
-          draftSections.push({ type: "text", content: currentText });
+        if (draft.currentText.length > 0) {
+          draftSections.push({ type: "text", content: draft.currentText });
         }
         const userTurn: Message[] = userContent != null
           ? [{ role: "user" as const, content: userContent }]
           : [];
         const hasDraftContent =
-          assistantResponse.length > 0 || toolTimeline.length > 0 || draftSections.length > 0;
+          draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0 || draftSections.length > 0;
         if (!hasDraftContent) {
           return [...historyMessages, ...userTurn];
         }
@@ -2930,20 +3259,14 @@ export const createRequestHandler = async (options?: {
           ...userTurn,
           {
             role: "assistant" as const,
-            content: assistantResponse,
-            metadata:
-              toolTimeline.length > 0 || draftSections.length > 0
-                ? ({
-                    toolActivity: [...toolTimeline],
-                    sections: draftSections.length > 0 ? draftSections : undefined,
-                  } as Message["metadata"])
-                : undefined,
+            content: draft.assistantResponse,
+            metadata: buildAssistantMetadata(draft, draftSections),
           },
         ];
       };
 
       const persistDraftAssistantTurn = async (): Promise<void> => {
-        if (assistantResponse.length === 0 && toolTimeline.length === 0) return;
+        if (draft.assistantResponse.length === 0 && draft.toolTimeline.length === 0) return;
         await updateConversation((c) => {
           c.messages = buildMessages();
         });
@@ -2966,64 +3289,39 @@ export const createRequestHandler = async (options?: {
       };
 
       try {
-        for await (const event of harness.runWithTelemetry(runInput)) {
-          if (event.type === "run:started") {
-            latestRunId = event.runId;
-            runOwners.set(event.runId, "local-owner");
-            runConversations.set(event.runId, conversationId);
-          }
-          if (event.type === "model:chunk") {
-            if (currentTools.length > 0) {
-              sections.push({ type: "tools", content: currentTools });
-              currentTools = [];
-              if (assistantResponse.length > 0 && !/\s$/.test(assistantResponse)) {
-                assistantResponse += " ";
-              }
+        const execution = await executeConversationTurn({
+          harness,
+          runInput,
+          onEvent: async (event, eventDraft) => {
+            draft.assistantResponse = eventDraft.assistantResponse;
+            draft.toolTimeline = eventDraft.toolTimeline;
+            draft.sections = eventDraft.sections;
+            draft.currentTools = eventDraft.currentTools;
+            draft.currentText = eventDraft.currentText;
+            if (event.type === "run:started") {
+              latestRunId = event.runId;
+              runOwners.set(event.runId, "local-owner");
+              runConversations.set(event.runId, conversationId);
             }
-            assistantResponse += event.content;
-            currentText += event.content;
-          }
-          if (event.type === "tool:started") {
-            if (currentText.length > 0) {
-              sections.push({ type: "text", content: currentText });
-              currentText = "";
-            }
-            const toolText = `- start \`${event.tool}\``;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-          }
-          if (event.type === "tool:completed") {
-            const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-          }
-          if (event.type === "tool:error") {
-            const toolText = `- error \`${event.tool}\`: ${event.error}`;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-          }
           if (event.type === "step:completed") {
             await persistDraftAssistantTurn();
           }
           if (event.type === "tool:approval:required") {
             const toolText = `- approval required \`${event.tool}\``;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
+            draft.toolTimeline.push(toolText);
+            draft.currentTools.push(toolText);
             await persistDraftAssistantTurn();
           }
           if (event.type === "tool:approval:checkpoint") {
             await updateConversation((c) => {
               c.messages = buildMessages();
-              c.pendingApprovals = event.approvals.map(a => ({
-                approvalId: a.approvalId,
+              c.pendingApprovals = buildApprovalCheckpoints({
+                approvals: event.approvals,
                 runId: latestRunId,
-                tool: a.tool,
-                toolCallId: a.toolCallId,
-                input: a.input,
                 checkpointMessages: event.checkpointMessages,
                 baseMessageCount: historyMessages.length,
                 pendingToolCalls: event.pendingToolCalls,
-              }));
+              });
             });
             checkpointedRun = true;
 
@@ -3067,38 +3365,22 @@ export const createRequestHandler = async (options?: {
               });
             }
           }
-          if (event.type === "run:completed") {
-            if (assistantResponse.length === 0 && event.result.response) {
-              assistantResponse = event.result.response;
-            }
-            runContinuation = event.result.continuation === true;
-            if (event.result.continuationMessages) {
-              runContinuationMessages = event.result.continuationMessages;
-            }
-            runSteps = event.result.steps;
-            if (typeof event.result.maxSteps === "number") runMaxSteps = event.result.maxSteps;
-            runContextTokens = event.result.contextTokens ?? runContextTokens;
-            runContextWindow = event.result.contextWindow ?? runContextWindow;
-          }
-          if (event.type === "run:error") {
-            assistantResponse = assistantResponse || `[Error: ${event.error.message}]`;
-          }
-          broadcastEvent(conversationId, event);
-        }
+            broadcastEvent(conversationId, event);
+          },
+        });
+        runContinuation = execution.runContinuation;
+        runContinuationMessages = execution.runContinuationMessages;
+        runSteps = execution.runSteps;
+        runMaxSteps = execution.runMaxSteps;
+        runContextTokens = execution.runContextTokens;
+        runContextWindow = execution.runContextWindow;
+        latestRunId = execution.latestRunId || latestRunId;
       } catch (err) {
         console.error("[messaging-runner] run failed:", err instanceof Error ? err.message : err);
-        assistantResponse = assistantResponse || `[Error: ${err instanceof Error ? err.message : "Unknown error"}]`;
+        draft.assistantResponse = draft.assistantResponse || `[Error: ${err instanceof Error ? err.message : "Unknown error"}]`;
       }
 
-      // Finalize sections (clear after pushing so buildMessages doesn't re-add)
-      if (currentTools.length > 0) {
-        sections.push({ type: "tools", content: currentTools });
-        currentTools = [];
-      }
-      if (currentText.length > 0) {
-        sections.push({ type: "text", content: currentText });
-        currentText = "";
-      }
+      flushTurnDraft(draft);
 
       if (!checkpointedRun) {
         await updateConversation((c) => {
@@ -3110,6 +3392,10 @@ export const createRequestHandler = async (options?: {
           }
           if (runContinuationMessages) {
             c._harnessMessages = runContinuationMessages;
+          } else if (shouldRebuildCanonical) {
+            c._harnessMessages = c.messages;
+          } else {
+            c._harnessMessages = c.messages;
           }
           c.runtimeRunId = latestRunId || c.runtimeRunId;
           c.pendingApprovals = [];
@@ -3119,6 +3405,9 @@ export const createRequestHandler = async (options?: {
         });
       } else {
         await updateConversation((c) => {
+          if (shouldRebuildCanonical && !c._harnessMessages?.length) {
+            c._harnessMessages = c.messages;
+          }
           c.runStatus = "idle";
         });
       }
@@ -3128,21 +3417,15 @@ export const createRequestHandler = async (options?: {
         runConversations.delete(latestRunId);
       }
 
-        console.log("[messaging-runner] run complete, response length:", assistantResponse.length, runContinuation ? "(continuation)" : "");
-        const response = assistantResponse;
+      console.log("[messaging-runner] run complete, response length:", draft.assistantResponse.length, runContinuation ? "(continuation)" : "");
+      const response = draft.assistantResponse;
 
-        return {
-          response,
-          continuation: runContinuation,
-          steps: runSteps,
-          maxSteps: runMaxSteps,
-        };
-      } finally {
-        releaseQueue?.();
-        if (messagingRunQueues.get(conversationId) === chained) {
-          messagingRunQueues.delete(conversationId);
-        }
-      }
+      return {
+        response,
+        continuation: runContinuation,
+        steps: runSteps,
+        maxSteps: runMaxSteps,
+      };
     },
   };
 
@@ -3292,6 +3575,7 @@ export const createRequestHandler = async (options?: {
   ): AsyncGenerator<AgentEvent> {
     const conversation = await conversationStore.get(conversationId);
     if (!conversation) return;
+    if (Array.isArray(conversation.pendingApprovals) && conversation.pendingApprovals.length > 0) return;
     if (!conversation._continuationMessages?.length) return;
     if (conversation.runStatus === "running") return;
 
@@ -3459,7 +3743,11 @@ export const createRequestHandler = async (options?: {
       freshConv._continuationCount = undefined;
     }
 
-    if (nextHarnessMessages) freshConv._harnessMessages = nextHarnessMessages;
+    if (nextHarnessMessages) {
+      freshConv._harnessMessages = nextHarnessMessages;
+    } else {
+      freshConv._harnessMessages = freshConv.messages;
+    }
     freshConv._toolResultArchive = harness.getToolResultArchive(conversationId);
     freshConv.runtimeRunId = latestRunId || freshConv.runtimeRunId;
     freshConv.pendingApprovals = [];
@@ -3596,6 +3884,8 @@ export const createRequestHandler = async (options?: {
         }
         if (runResult?.continuationMessages) {
           conv._harnessMessages = runResult.continuationMessages;
+        } else {
+          conv._harnessMessages = conv.messages;
         }
         conv._toolResultArchive = childHarness.getToolResultArchive(conversationId);
         conv.lastActivityAt = Date.now();
@@ -3795,23 +4085,15 @@ export const createRequestHandler = async (options?: {
           }
 
           // Regular (non-subagent) approval
-          const conversations = await conversationStore.list("local-owner");
-          let foundConversation: Conversation | undefined;
-          let foundApproval: NonNullable<Conversation["pendingApprovals"]>[number] | undefined;
-          for (const conv of conversations) {
-            if (!Array.isArray(conv.pendingApprovals)) continue;
-            const match = conv.pendingApprovals.find(a => a.approvalId === approvalId);
-            if (match) {
-              foundConversation = conv;
-              foundApproval = match;
-              break;
-            }
-          }
+          const found = await findPendingApproval(approvalId, "local-owner");
+          let foundConversation = found?.conversation;
+          let foundApproval = found?.approval;
 
           if (!foundConversation || !foundApproval) {
             console.warn("[telegram-approval] approval not found:", approvalId);
             return;
           }
+          foundApproval = normalizeApprovalCheckpoint(foundApproval, foundConversation.messages);
 
           await adapter.updateApprovalMessage(approvalId, approved ? "approved" : "denied", foundApproval.tool);
 
@@ -3823,7 +4105,9 @@ export const createRequestHandler = async (options?: {
               : { type: "tool:approval:denied", approvalId },
           );
 
-          const allApprovals = foundConversation.pendingApprovals ?? [];
+          const allApprovals = (foundConversation.pendingApprovals ?? []).map((approval) =>
+            normalizeApprovalCheckpoint(approval, foundConversation!.messages),
+          );
           const allDecided = allApprovals.length > 0 && allApprovals.every(a => a.decision != null);
 
           if (!allDecided) {
@@ -4241,6 +4525,9 @@ export const createRequestHandler = async (options?: {
         pathname !== "/api/auth/login" &&
         request.headers["x-csrf-token"] !== session?.csrfToken
       ) {
+        console.warn(
+          `[poncho][csrf] blocked request method=${request.method} path="${pathname}" session=${session.sessionId}`,
+        );
         writeJson(response, 403, {
           code: "CSRF_ERROR",
           message: "Invalid CSRF token",
@@ -4464,8 +4751,11 @@ export const createRequestHandler = async (options?: {
     const approvalMatch = pathname.match(/^\/api\/approvals\/([^/]+)$/);
     if (approvalMatch && request.method === "POST") {
       const approvalId = decodeURIComponent(approvalMatch[1] ?? "");
-      const body = (await readRequestBody(request)) as { approved?: boolean };
+      const body = (await readRequestBody(request)) as { approved?: boolean; conversationId?: string };
       const approved = body.approved === true;
+      const hintedConversationId = typeof body.conversationId === "string" && body.conversationId.trim().length > 0
+        ? body.conversationId.trim()
+        : undefined;
 
       // Check if this is a pending subagent approval (handled inline by runSubagent)
       const pendingSubagent = pendingSubagentApprovals.get(approvalId);
@@ -4501,17 +4791,22 @@ export const createRequestHandler = async (options?: {
       }
 
       // Find the approval in the conversation store (checkpoint-based flow)
-      const conversations = await conversationStore.list(ownerId);
       let foundConversation: Conversation | undefined;
       let foundApproval: NonNullable<Conversation["pendingApprovals"]>[number] | undefined;
-      for (const conv of conversations) {
-        if (!Array.isArray(conv.pendingApprovals)) continue;
-        const match = conv.pendingApprovals.find(a => a.approvalId === approvalId);
-        if (match) {
-          foundConversation = conv;
-          foundApproval = match;
-          break;
+      if (hintedConversationId) {
+        const hintedConversation = await conversationStore.get(hintedConversationId);
+        if (hintedConversation && hintedConversation.ownerId === ownerId && Array.isArray(hintedConversation.pendingApprovals)) {
+          const hintedMatch = hintedConversation.pendingApprovals.find((approval) => approval.approvalId === approvalId);
+          if (hintedMatch) {
+            foundConversation = hintedConversation;
+            foundApproval = hintedMatch;
+          }
         }
+      }
+      if (!foundConversation || !foundApproval) {
+        const found = await findPendingApproval(approvalId, ownerId);
+        foundConversation = found?.conversation;
+        foundApproval = found?.approval;
       }
 
       if (!foundConversation || !foundApproval) {
@@ -4523,28 +4818,23 @@ export const createRequestHandler = async (options?: {
       }
 
       const conversationId = foundConversation.conversationId;
+      foundApproval = normalizeApprovalCheckpoint(foundApproval, foundConversation.messages);
 
       if (!foundApproval.checkpointMessages || !foundApproval.toolCallId) {
-        foundConversation.pendingApprovals = (foundConversation.pendingApprovals ?? [])
-          .filter(a => a.approvalId !== approvalId);
-        await conversationStore.update(foundConversation);
-        writeJson(response, 404, {
-          code: "APPROVAL_NOT_FOUND",
-          message: "Approval request is no longer active (no checkpoint data)",
+        writeJson(response, 409, {
+          code: "APPROVAL_NOT_READY",
+          message: "Approval checkpoint is not ready yet. Please retry shortly.",
         });
         return;
       }
 
-      // Track decision in memory so parallel batch requests see a consistent
-      // view (file-store reads return independent copies, causing lost updates).
-      let batchDecisions = approvalDecisionTracker.get(conversationId);
-      if (!batchDecisions) {
-        batchDecisions = new Map();
-        approvalDecisionTracker.set(conversationId, batchDecisions);
-      }
-      batchDecisions.set(approvalId, approved);
-
-      foundApproval.decision = approved ? "approved" : "denied";
+      const approvalDecision = approved ? "approved" : "denied";
+      foundConversation.pendingApprovals = (foundConversation.pendingApprovals ?? []).map((approval) =>
+        approval.approvalId === approvalId
+          ? { ...normalizeApprovalCheckpoint(approval, foundConversation!.messages), decision: approvalDecision }
+          : normalizeApprovalCheckpoint(approval, foundConversation!.messages),
+      );
+      await conversationStore.update(foundConversation);
 
       broadcastEvent(conversationId,
         approved
@@ -4552,25 +4842,18 @@ export const createRequestHandler = async (options?: {
           : { type: "tool:approval:denied", approvalId },
       );
 
-      const allApprovals = foundConversation.pendingApprovals ?? [];
+      const refreshedConversation = await conversationStore.get(conversationId);
+      const allApprovals = (refreshedConversation?.pendingApprovals ?? []).map((approval) =>
+        normalizeApprovalCheckpoint(approval, refreshedConversation!.messages),
+      );
       const allDecided = allApprovals.length > 0 &&
-        allApprovals.every(a => batchDecisions!.has(a.approvalId));
+        allApprovals.every(a => a.decision != null);
 
       if (!allDecided) {
-        // Still waiting for more decisions — persist best-effort and respond.
-        // The write may be overwritten by a concurrent request, but that's
-        // fine: the in-memory tracker is the source of truth for completion.
-        await conversationStore.update(foundConversation);
         writeJson(response, 200, { ok: true, approvalId, approved, batchComplete: false });
         return;
       }
 
-      // All approvals in the batch are decided — apply tracked decisions,
-      // execute approved tools, and resume the run.
-      for (const a of allApprovals) {
-        const d = batchDecisions.get(a.approvalId);
-        if (d != null) a.decision = d ? "approved" : "denied";
-      }
       approvalDecisionTracker.delete(conversationId);
 
       foundConversation.pendingApprovals = [];
@@ -4827,26 +5110,17 @@ export const createRequestHandler = async (options?: {
         }
         const activeStream = conversationEventStreams.get(conversationId);
         const hasActiveRun = (!!activeStream && !activeStream.finished) || conversation.runStatus === "running";
-        let hasRunningSubagents = Array.from(activeSubagentRuns.values()).some(
-          r => r.parentConversationId === conversationId,
-        );
-        // On serverless, in-memory maps may be empty — also check store
-        if (!hasRunningSubagents && !conversation.parentConversationId) {
-          const summaries = await conversationStore.listSummaries(conversation.ownerId);
-          for (const s of summaries) {
-            if (s.parentConversationId !== conversationId) continue;
-            const c = await conversationStore.get(s.conversationId);
-            if (c?.subagentMeta?.status === "running") {
-              hasRunningSubagents = true;
-              break;
-            }
-          }
-        }
+        const hasRunningSubagents = !conversation.parentConversationId
+          ? await hasRunningSubagentsForParent(conversationId, conversation.ownerId)
+          : false;
         const hasPendingCallbackResults = Array.isArray(conversation.pendingSubagentResults)
           && conversation.pendingSubagentResults.length > 0;
+        const hasPendingApprovals = Array.isArray(conversation.pendingApprovals)
+          && conversation.pendingApprovals.length > 0;
         const needsContinuation = !hasActiveRun
           && Array.isArray(conversation._continuationMessages)
-          && conversation._continuationMessages.length > 0;
+          && conversation._continuationMessages.length > 0
+          && !hasPendingApprovals;
         writeJson(response, 200, {
           conversation: {
             ...conversation,
@@ -5058,11 +5332,9 @@ export const createRequestHandler = async (options?: {
           eventCount++;
           let sseEvent: AgentEvent = event;
           if (sseEvent.type === "run:completed") {
-            const hasRunningSubagents = Array.from(activeSubagentRuns.values()).some(
-              r => r.parentConversationId === conversationId,
-            );
+            const hasPendingSubagents = await hasPendingSubagentWorkForParent(conversationId, ownerId);
             const stripped = { ...sseEvent, result: { ...sseEvent.result, continuationMessages: undefined } };
-            sseEvent = hasRunningSubagents ? { ...stripped, pendingSubagents: true } : stripped;
+            sseEvent = hasPendingSubagents ? { ...stripped, pendingSubagents: true } : stripped;
           }
           try {
             response.write(formatSseEvent(sseEvent));
@@ -5089,7 +5361,10 @@ export const createRequestHandler = async (options?: {
         // fire a delayed safety net in case the client disconnects before
         // POSTing the next /continue.
         const freshConv = await conversationStore.get(conversationId);
-        if (freshConv?._continuationMessages?.length) {
+        if (
+          freshConv?._continuationMessages?.length &&
+          (!Array.isArray(freshConv.pendingApprovals) || freshConv.pendingApprovals.length === 0)
+        ) {
           doWaitUntil(
             new Promise(r => setTimeout(r, 3000)).then(() =>
               selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(conversationId)}`),
@@ -5181,11 +5456,17 @@ export const createRequestHandler = async (options?: {
         Connection: "keep-alive",
         "X-Accel-Buffering": "no",
       });
-      const harnessMessages = conversation._harnessMessages?.length
-        ? [...conversation._harnessMessages]
-        : [...conversation.messages];
+      const canonicalHistory = resolveRunRequest(conversation, {
+        conversationId,
+        messages: conversation.messages,
+      });
+      const shouldRebuildCanonical = canonicalHistory.shouldRebuildCanonical;
+      const harnessMessages = [...canonicalHistory.messages];
       const historyMessages = [...conversation.messages];
       const preRunMessages = [...conversation.messages];
+      console.info(
+        `[poncho] conversation="${conversationId}" history_source=${canonicalHistory.source}`,
+      );
       let latestRunId = conversation.runtimeRunId ?? "";
       let assistantResponse = "";
       const toolTimeline: string[] = [];
@@ -5401,6 +5682,26 @@ export const createRequestHandler = async (options?: {
             const toolText = `- approval required \`${event.tool}\``;
             toolTimeline.push(toolText);
             currentTools.push(toolText);
+            const existingApprovals = Array.isArray(conversation.pendingApprovals)
+              ? conversation.pendingApprovals
+              : [];
+            if (!existingApprovals.some((approval) => approval.approvalId === event.approvalId)) {
+              conversation.pendingApprovals = [
+                ...existingApprovals,
+                {
+                  approvalId: event.approvalId,
+                  runId: latestRunId || conversation.runtimeRunId || "",
+                  tool: event.tool,
+                  toolCallId: undefined,
+                  input: (event.input ?? {}) as Record<string, unknown>,
+                  checkpointMessages: undefined,
+                  baseMessageCount: historyMessages.length,
+                  pendingToolCalls: [],
+                },
+              ];
+              conversation.updatedAt = Date.now();
+              await conversationStore.update(conversation);
+            }
             await persistDraftAssistantTurn();
           }
           if (event.type === "tool:approval:checkpoint") {
@@ -5424,16 +5725,13 @@ export const createRequestHandler = async (options?: {
                   }]
                 : []),
             ];
-            conversation.pendingApprovals = event.approvals.map(a => ({
-              approvalId: a.approvalId,
+            conversation.pendingApprovals = buildApprovalCheckpoints({
+              approvals: event.approvals,
               runId: latestRunId,
-              tool: a.tool,
-              toolCallId: a.toolCallId,
-              input: a.input,
               checkpointMessages: event.checkpointMessages,
               baseMessageCount: historyMessages.length,
               pendingToolCalls: event.pendingToolCalls,
-            }));
+            });
             conversation._toolResultArchive = harness.getToolResultArchive(conversationId);
             conversation.updatedAt = Date.now();
             await conversationStore.update(conversation);
@@ -5469,7 +5767,9 @@ export const createRequestHandler = async (options?: {
               conversation._harnessMessages = runContinuationMessages;
               conversation._toolResultArchive = harness.getToolResultArchive(conversationId);
               conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
-              conversation.pendingApprovals = [];
+              if (!checkpointedRun) {
+                conversation.pendingApprovals = [];
+              }
               if (runContextTokens > 0) conversation.contextTokens = runContextTokens;
               if (runContextWindow > 0) conversation.contextWindow = runContextWindow;
               conversation.updatedAt = Date.now();
@@ -5477,11 +5777,13 @@ export const createRequestHandler = async (options?: {
 
               // Delayed safety net: if the client doesn't POST to /continue
               // within 3 seconds (e.g. browser closed), the server picks it up.
-              doWaitUntil(
-                new Promise(r => setTimeout(r, 3000)).then(() =>
-                  selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(conversationId)}`),
-                ),
-              );
+              if (!checkpointedRun) {
+                doWaitUntil(
+                  new Promise(r => setTimeout(r, 3000)).then(() =>
+                    selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(conversationId)}`),
+                  ),
+                );
+              }
             }
           }
           await telemetry.emit(event);
@@ -5489,11 +5791,9 @@ export const createRequestHandler = async (options?: {
             ? { ...event, compactedMessages: undefined }
             : event;
           if (sseEvent.type === "run:completed") {
-            const hasRunningSubagents = Array.from(activeSubagentRuns.values()).some(
-              r => r.parentConversationId === conversationId,
-            );
+            const hasPendingSubagents = await hasPendingSubagentWorkForParent(conversationId, ownerId);
             const stripped = { ...sseEvent, result: { ...sseEvent.result, continuationMessages: undefined } };
-            if (hasRunningSubagents) {
+            if (hasPendingSubagents) {
               sseEvent = { ...stripped, pendingSubagents: true };
             } else {
               sseEvent = stripped;
@@ -5541,6 +5841,10 @@ export const createRequestHandler = async (options?: {
           conversation._continuationMessages = undefined;
           if (runHarnessMessages) {
             conversation._harnessMessages = runHarnessMessages;
+          } else if (shouldRebuildCanonical) {
+            conversation._harnessMessages = conversation.messages;
+          } else {
+            conversation._harnessMessages = conversation.messages;
           }
           conversation._toolResultArchive = harness.getToolResultArchive(conversationId);
           conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
@@ -5578,7 +5882,9 @@ export const createRequestHandler = async (options?: {
             conversation.updatedAt = Date.now();
             await conversationStore.update(conversation);
           }
-          await clearPendingApprovalsForConversation(conversationId);
+          if (!checkpointedRun) {
+            await clearPendingApprovalsForConversation(conversationId);
+          }
           return;
         }
         try {
@@ -5626,20 +5932,32 @@ export const createRequestHandler = async (options?: {
         if (active && active.abortController === abortController) {
           activeConversationRuns.delete(conversationId);
         }
-        finishConversationStream(conversationId);
         if (latestRunId) {
           runOwners.delete(latestRunId);
           runConversations.delete(latestRunId);
         }
+
+        // Determine if subagent work is pending before deciding to close the
+        // event stream.  When a callback is about to run, the stream stays open
+        // so clients that subscribe to /events receive callback-run events in
+        // real-time — the same delivery path used for every other run.
+        const hadDeferred = pendingCallbackNeeded.delete(conversationId);
+        const freshConv = await conversationStore.get(conversationId);
+        const needsCallback = hadDeferred || !!freshConv?.pendingSubagentResults?.length;
+        const hasRunningChildren = Array.from(activeSubagentRuns.values()).some(
+          (run) => run.parentConversationId === conversationId,
+        );
+
+        if (!needsCallback && !hasRunningChildren) {
+          finishConversationStream(conversationId);
+        }
+
         try {
           response.end();
         } catch {
           // Already closed.
         }
-        // Check for pending subagent results that arrived during the run
-        const hadDeferred = pendingCallbackNeeded.delete(conversationId);
-        const freshConv = await conversationStore.get(conversationId);
-        if (hadDeferred || freshConv?.pendingSubagentResults?.length) {
+        if (needsCallback) {
           processSubagentCallback(conversationId, true).catch(err =>
             console.error(`[poncho][subagent-callback] Post-run callback failed:`, err instanceof Error ? err.message : err),
           );
@@ -5704,46 +6022,42 @@ export const createRequestHandler = async (options?: {
             if (!conv) continue;
 
             const task = `[Scheduled: ${jobName}]\n${cronJob.task}`;
-            const historyMessages = conv._harnessMessages?.length
-              ? [...conv._harnessMessages]
-              : [...conv.messages];
+            const historySelection = resolveRunRequest(conv, {
+              conversationId: conv.conversationId,
+              messages: conv.messages,
+            });
+            const historyMessages = [...historySelection.messages];
             try {
-              let assistantResponse = "";
-              let steps = 0;
-              let cronHarnessMessages: Message[] | undefined;
-              for await (const event of harness.runWithTelemetry({
-                task,
-                conversationId: conv.conversationId,
-                parameters: withToolResultArchiveParam(
-                  { __activeConversationId: conv.conversationId },
-                  conv,
-                ),
-                messages: historyMessages,
-              })) {
-                if (event.type === "model:chunk") {
-                  assistantResponse += event.content;
-                }
-                if (event.type === "run:completed") {
-                  steps = event.result.steps;
-                  if (!assistantResponse && event.result.response) {
-                    assistantResponse = event.result.response;
-                  }
-                  if (event.result.continuationMessages) {
-                    cronHarnessMessages = event.result.continuationMessages;
-                  }
-                }
-                await telemetry.emit(event);
-              }
+              const execution = await executeConversationTurn({
+                harness,
+                runInput: {
+                  task,
+                  conversationId: conv.conversationId,
+                  parameters: withToolResultArchiveParam(
+                    { __activeConversationId: conv.conversationId },
+                    conv,
+                  ),
+                  messages: historyMessages,
+                },
+                onEvent: async (event) => {
+                  await telemetry.emit(event);
+                },
+              });
+              const assistantResponse = execution.draft.assistantResponse;
 
               conv.messages = [
                 ...historyMessages,
                 { role: "user" as const, content: task },
                 ...(assistantResponse ? [{ role: "assistant" as const, content: assistantResponse }] : []),
               ];
-              if (cronHarnessMessages) {
-                conv._harnessMessages = cronHarnessMessages;
+              if (execution.runHarnessMessages) {
+                conv._harnessMessages = execution.runHarnessMessages;
+              } else if (historySelection.shouldRebuildCanonical) {
+                conv._harnessMessages = conv.messages;
               }
               conv._toolResultArchive = harness.getToolResultArchive(conv.conversationId);
+              if (execution.runContextTokens > 0) conv.contextTokens = execution.runContextTokens;
+              if (execution.runContextWindow > 0) conv.contextWindow = execution.runContextWindow;
               conv.updatedAt = Date.now();
               await conversationStore.update(conv);
 
@@ -5760,7 +6074,7 @@ export const createRequestHandler = async (options?: {
                   console.error(`[cron] ${jobName}: send to ${chatId} failed:`, sendError instanceof Error ? sendError.message : sendError);
                 }
               }
-              chatResults.push({ chatId, status: "completed", steps });
+              chatResults.push({ chatId, status: "completed", steps: execution.runSteps });
             } catch (runError) {
               chatResults.push({ chatId, status: "error" });
               console.error(`[cron] ${jobName}: run for chat ${chatId} failed:`, runError instanceof Error ? runError.message : runError);
@@ -6060,91 +6374,32 @@ export const startDevServer = async (
     conversationId: string,
     historyMessages: Message[],
     toolResultArchive?: Conversation["_toolResultArchive"],
-    onEvent?: (event: AgentEvent) => void,
+    onEvent?: (event: AgentEvent) => void | Promise<void>,
   ): Promise<CronRunResult> => {
-    let assistantResponse = "";
-    let steps = 0;
-    let contextTokens = 0;
-    let contextWindow = 0;
-    let harnessMessages: Message[] | undefined;
-    const toolTimeline: string[] = [];
-    const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
-    let currentTools: string[] = [];
-    let currentText = "";
-    for await (const event of harnessRef.runWithTelemetry({
-      task,
-      conversationId,
-      parameters: {
-        __activeConversationId: conversationId,
-        [TOOL_RESULT_ARCHIVE_PARAM]: toolResultArchive ?? {},
+    const execution = await executeConversationTurn({
+      harness: harnessRef,
+      runInput: {
+        task,
+        conversationId,
+        parameters: {
+          __activeConversationId: conversationId,
+          [TOOL_RESULT_ARCHIVE_PARAM]: toolResultArchive ?? {},
+        },
+        messages: historyMessages,
       },
-      messages: historyMessages,
-    })) {
-      onEvent?.(event);
-      if (event.type === "model:chunk") {
-        if (currentTools.length > 0) {
-          sections.push({ type: "tools", content: currentTools });
-          currentTools = [];
-          if (assistantResponse.length > 0 && !/\s$/.test(assistantResponse)) {
-            assistantResponse += " ";
-          }
-        }
-        assistantResponse += event.content;
-        currentText += event.content;
-      }
-      if (event.type === "tool:started") {
-        if (currentText.length > 0) {
-          sections.push({ type: "text", content: currentText });
-          currentText = "";
-        }
-        const toolText = `- start \`${event.tool}\``;
-        toolTimeline.push(toolText);
-        currentTools.push(toolText);
-      }
-      if (event.type === "tool:completed") {
-        const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
-        toolTimeline.push(toolText);
-        currentTools.push(toolText);
-      }
-      if (event.type === "tool:error") {
-        const toolText = `- error \`${event.tool}\`: ${event.error}`;
-        toolTimeline.push(toolText);
-        currentTools.push(toolText);
-      }
-      if (event.type === "run:completed") {
-        steps = event.result.steps;
-        contextTokens = event.result.contextTokens ?? 0;
-        contextWindow = event.result.contextWindow ?? 0;
-        if (event.result.continuationMessages) {
-          harnessMessages = event.result.continuationMessages;
-        }
-        if (!assistantResponse && event.result.response) {
-          assistantResponse = event.result.response;
-        }
-      }
-    }
-    if (currentTools.length > 0) {
-      sections.push({ type: "tools", content: currentTools });
-    }
-    if (currentText.length > 0) {
-      sections.push({ type: "text", content: currentText });
-    }
-    const hasContent = assistantResponse.length > 0 || toolTimeline.length > 0;
-    const assistantMetadata =
-      toolTimeline.length > 0 || sections.length > 0
-        ? ({
-            toolActivity: [...toolTimeline],
-            sections: sections.length > 0 ? sections : undefined,
-          } as Message["metadata"])
-        : undefined;
+      onEvent,
+    });
+    flushTurnDraft(execution.draft);
+    const hasContent = execution.draft.assistantResponse.length > 0 || execution.draft.toolTimeline.length > 0;
+    const assistantMetadata = buildAssistantMetadata(execution.draft);
     return {
-      response: assistantResponse,
-      steps,
+      response: execution.draft.assistantResponse,
+      steps: execution.runSteps,
       assistantMetadata,
       hasContent,
-      contextTokens,
-      contextWindow,
-      harnessMessages,
+      contextTokens: execution.runContextTokens,
+      contextWindow: execution.runContextWindow,
+      harnessMessages: execution.runHarnessMessages,
       toolResultArchive: harnessRef.getToolResultArchive(conversationId),
     };
   };
@@ -6216,9 +6471,11 @@ export const startDevServer = async (
                 if (!conversation) continue;
 
                 const task = `[Scheduled: ${jobName}]\n${config.task}`;
-                const historyMessages = conversation._harnessMessages?.length
-                  ? [...conversation._harnessMessages]
-                  : [...conversation.messages];
+                const historySelection = resolveRunRequest(conversation, {
+                  conversationId: conversation.conversationId,
+                  messages: conversation.messages,
+                });
+                const historyMessages = [...historySelection.messages];
                 const convId = conversation.conversationId;
 
                 activeRuns?.set(convId, {
@@ -6239,6 +6496,8 @@ export const startDevServer = async (
                     freshConv.messages = buildCronMessages(task, historyMessages, result);
                     if (result.harnessMessages) {
                       freshConv._harnessMessages = result.harnessMessages;
+                    } else if (historySelection.shouldRebuildCanonical) {
+                      freshConv._harnessMessages = freshConv.messages;
                     }
                     if (result.toolResultArchive) {
                       freshConv._toolResultArchive = result.toolResultArchive;
