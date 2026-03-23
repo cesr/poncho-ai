@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.32.1
+
+### Patch Changes
+
+- [`67424e0`](https://github.com/cesr/poncho-ai/commit/67424e073b2faa28a255781f91a80f4602c745e2) Thanks [@cesr](https://github.com/cesr)! - Fix stale fired reminders not being cleaned up: pruneStale now removes all fired reminders immediately and runs on list() in addition to create().
+
 ## 0.32.0
 
 ### Minor Changes
