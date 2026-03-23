@@ -13,6 +13,8 @@ export * from "./schema-converter.js";
 export * from "./search-tools.js";
 export * from "./skill-context.js";
 export * from "./skill-tools.js";
+export * from "./reminder-store.js";
+export * from "./reminder-tools.js";
 export * from "./state.js";
 export * from "./upload-store.js";
 export * from "./telemetry.js";

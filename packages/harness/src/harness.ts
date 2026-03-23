@@ -24,6 +24,8 @@ import {
   type MemoryStore,
 } from "./memory.js";
 import { createTodoStore, createTodoTools, type TodoItem, type TodoStore } from "./todo-tools.js";
+import { createReminderStore, type ReminderStore } from "./reminder-store.js";
+import { createReminderTools } from "./reminder-tools.js";
 import { LocalMcpBridge } from "./mcp.js";
 import { createModelProvider, getModelContextWindow, type ModelProviderFactory, type ProviderConfig } from "./model-factory.js";
 import { buildSkillContextWindow, loadSkillMetadata } from "./skill-context.js";
@@ -638,6 +640,7 @@ export class AgentHarness {
   private skillContextWindow = "";
   private memoryStore?: MemoryStore;
   private todoStore?: TodoStore;
+  reminderStore?: ReminderStore;
   private loadedConfig?: PonchoConfig;
   private loadedSkills: SkillMetadata[] = [];
   private skillFingerprint = "";
@@ -1332,6 +1335,15 @@ export class AgentHarness {
       }
     }
 
+    if (config?.reminders?.enabled) {
+      this.reminderStore = createReminderStore(agentId, stateConfig, { workingDir: this.workingDir });
+      for (const tool of createReminderTools(this.reminderStore)) {
+        if (this.isToolEnabled(tool.name)) {
+          this.registerIfMissing(tool);
+        }
+      }
+    }
+
     if (config?.browser) {
       await this.initBrowserTools(config)
         .catch((e) => {
@@ -1839,7 +1851,10 @@ ${boundedMainMemory.trim()}`
       const promptWithSkills = this.skillContextWindow
         ? `${agentPrompt}${developmentContext}\n\n${this.skillContextWindow}${browserContext}`
         : `${agentPrompt}${developmentContext}${browserContext}`;
-      return `${promptWithSkills}${memoryContext}
+      const timeContext = this.reminderStore
+        ? `\n\nCurrent UTC time: ${new Date().toISOString()}`
+        : "";
+      return `${promptWithSkills}${memoryContext}${timeContext}
 
 ## Execution Integrity
 

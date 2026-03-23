@@ -160,6 +160,12 @@ export default {
   //   cdpUrl: 'wss://...',     // Or connect via CDP URL (alternative to provider)
   // },
 
+  // One-off reminders (enabled by default in new projects)
+  reminders: {
+    enabled: true,
+    // pollSchedule: '*/10 * * * *', // how often to check for due reminders
+  },
+
   // Headless mode: disable the built-in Web UI (API-only)
   // webUi: false,
 
