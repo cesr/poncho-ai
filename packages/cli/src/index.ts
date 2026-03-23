@@ -984,6 +984,26 @@ cron:
 
 Add \`channel: telegram\` (or another platform) to have the agent proactively send the response to all known chats on that platform. The bot must have received at least one message from each user first.
 
+## Reminders
+
+One-off reminders are enabled by default. The agent gets \`set_reminder\`, \`list_reminders\`, and \`cancel_reminder\` tools. Users can say things like "remind me tomorrow at 9am to check the report."
+
+Configure in \`poncho.config.js\`:
+
+\`\`\`javascript
+export default {
+  reminders: {
+    enabled: true,
+    pollSchedule: '*/10 * * * *', // how often to check for due reminders
+  },
+};
+\`\`\`
+
+- Reminders fire via a polling loop (same interval locally and on serverless).
+- On Vercel, \`poncho build vercel\` adds a cron entry for \`/api/reminders/check\`.
+- Channel reminders (Telegram/Slack) reply in the original conversation.
+- Non-channel reminders create a new \`[reminder]\` conversation visible in the web UI.
+
 ## Messaging (Slack)
 
 Connect your agent to Slack so it responds to @mentions:
@@ -1325,9 +1345,26 @@ const checkVercelCronDrift = async (projectDir: string): Promise<void> => {
   for (const [jobName, schedule] of vercelCronMap) {
     diffs.push(`  - removed job "${jobName}" (${schedule})`);
   }
+
+  // Check reminder polling cron
+  try {
+    const cfg = await loadPonchoConfig(projectDir);
+    const reminderCron = vercelCrons.find((c) => c.path === "/api/reminders/check");
+    if (cfg?.reminders?.enabled && !reminderCron) {
+      diffs.push(`  + missing reminders polling cron`);
+    } else if (!cfg?.reminders?.enabled && reminderCron) {
+      diffs.push(`  - reminders polling cron present but reminders disabled`);
+    } else if (cfg?.reminders?.enabled && reminderCron) {
+      const expected = cfg.reminders.pollSchedule ?? "*/10 * * * *";
+      if (reminderCron.schedule !== expected) {
+        diffs.push(`  ~ reminders poll schedule changed: "${reminderCron.schedule}" → "${expected}"`);
+      }
+    }
+  } catch { /* best-effort */ }
+
   if (diffs.length > 0) {
     process.stderr.write(
-      `\u26A0 vercel.json crons are out of sync with AGENT.md:\n${diffs.join("\n")}\n  Run \`poncho build vercel --force\` to update.\n\n`,
+      `\u26A0 vercel.json crons are out of sync with AGENT.md / poncho.config.js:\n${diffs.join("\n")}\n  Run \`poncho build vercel --force\` to update.\n\n`,
     );
   }
 };
@@ -1446,6 +1483,16 @@ export default async function handler(req, res) {
       ],
       routes: [{ src: "/(.*)", dest: "/api/index.mjs" }],
     };
+    // Add reminder polling cron if reminders are enabled
+    try {
+      const cfg = await loadPonchoConfig(projectDir);
+      if (cfg?.reminders?.enabled) {
+        const schedule = cfg.reminders.pollSchedule ?? "*/10 * * * *";
+        if (!vercelCrons) vercelCrons = [];
+        vercelCrons.push({ path: "/api/reminders/check", schedule });
+      }
+    } catch { /* best-effort */ }
+
     if (vercelCrons && vercelCrons.length > 0) {
       vercelConfig.crons = vercelCrons;
     }
@@ -1498,6 +1545,9 @@ export const handler = async (event = {}) => {
 // Create a rule for each cron job defined in AGENT.md that sends a GET request to:
 //   /api/cron/<jobName>
 // Include the Authorization header with your PONCHO_AUTH_TOKEN as a Bearer token.
+//
+// Reminders: Create a CloudWatch Events rule that triggers GET /api/reminders/check
+// every 10 minutes (or your preferred interval) with Authorization: Bearer <PONCHO_AUTH_TOKEN>.
 `,
       { force: options?.force, writtenPaths, baseDir: projectDir },
     );
@@ -1775,6 +1825,8 @@ export type RequestHandler = ((
   _processSubagentCallback?: (conversationId: string, skipLockCheck?: boolean) => Promise<void>;
   _broadcastEvent?: (conversationId: string, event: AgentEvent) => void;
   _finishConversationStream?: (conversationId: string) => void;
+  _checkAndFireReminders?: () => Promise<{ fired: string[]; count: number; duration: number }>;
+  _reminderPollIntervalMs?: number;
 };
 
 export const createRequestHandler = async (options?: {
@@ -4527,7 +4579,7 @@ export const createRequestHandler = async (options?: {
 
     if (pathname.startsWith("/api/")) {
       // Internal self-fetch requests bypass user-facing auth
-      const isInternalPath = pathname.startsWith("/api/internal/") || pathname.startsWith("/api/cron/");
+      const isInternalPath = pathname.startsWith("/api/internal/") || pathname.startsWith("/api/cron/") || pathname === "/api/reminders/check";
       const isInternal = isInternalPath && request.method === "POST" && isValidInternalRequest(request.headers);
 
       // Check authentication: either valid session (Web UI), valid Bearer token (API), or valid internal request
@@ -6309,8 +6361,139 @@ export const createRequestHandler = async (options?: {
       return;
     }
 
+    // ── Reminders check endpoint ────────────────────────────────────
+    if (pathname === "/api/reminders/check" && (request.method === "GET" || request.method === "POST")) {
+      const result = await checkAndFireReminders();
+      writeJson(response, 200, result);
+      return;
+    }
+
     writeJson(response, 404, { error: "Not found" });
   };
+
+  // ── Reminder polling logic ──────────────────────────────────────
+  const DEFAULT_POLL_SCHEDULE = "*/10 * * * *";
+
+  const pollScheduleToMs = (schedule: string): number => {
+    const m = schedule.match(/^\*\/(\d+)\s/);
+    if (m) return Number(m[1]) * 60 * 1000;
+    return 10 * 60 * 1000;
+  };
+
+  const reminderPollSchedule = config?.reminders?.pollSchedule ?? DEFAULT_POLL_SCHEDULE;
+  const reminderPollWindowMs = pollScheduleToMs(reminderPollSchedule);
+
+  const checkAndFireReminders = async (): Promise<{
+    fired: string[];
+    count: number;
+    duration: number;
+  }> => {
+    const reminderStore = harness.reminderStore;
+    if (!reminderStore) return { fired: [], count: 0, duration: 0 };
+
+    const start = Date.now();
+    const firedIds: string[] = [];
+
+    try {
+      const reminders = await reminderStore.list();
+      const cutoff = Date.now() + reminderPollWindowMs;
+      const due = reminders.filter((r) => r.status === "pending" && r.scheduledAt <= cutoff);
+
+      for (const reminder of due) {
+        try {
+          await reminderStore.delete(reminder.id);
+
+          const originConv = reminder.conversationId
+            ? await conversationStore.get(reminder.conversationId)
+            : undefined;
+          const channelMeta = originConv?.channelMeta;
+
+          const framedMessage =
+            `[Reminder] A reminder you previously set has fired.\n` +
+            `Task: "${reminder.task}"\n` +
+            `Originally set at: ${new Date(reminder.createdAt).toISOString()}\n` +
+            `Scheduled for: ${new Date(reminder.scheduledAt).toISOString()}`;
+
+          if (channelMeta) {
+            const adapter = messagingAdapters.get(channelMeta.platform);
+            if (adapter && originConv) {
+              const historyMessages = originConv.messages ?? [];
+              let assistantResponse = "";
+              for await (const event of harness.runWithTelemetry({
+                task: framedMessage,
+                conversationId: originConv.conversationId,
+                parameters: { __activeConversationId: originConv.conversationId },
+                messages: historyMessages,
+              })) {
+                if (event.type === "model:chunk") {
+                  assistantResponse += event.content;
+                }
+              }
+              if (assistantResponse) {
+                try {
+                  await adapter.sendReply(
+                    {
+                      channelId: channelMeta.channelId,
+                      platformThreadId: channelMeta.platformThreadId ?? channelMeta.channelId,
+                    },
+                    assistantResponse,
+                  );
+                } catch (sendError) {
+                  console.error(`[reminder] Send to ${channelMeta.platform} failed:`, sendError instanceof Error ? sendError.message : sendError);
+                }
+              }
+              const freshConv = await conversationStore.get(originConv.conversationId);
+              if (freshConv) {
+                freshConv.messages = [
+                  ...historyMessages,
+                  { role: "user" as const, content: framedMessage },
+                  ...(assistantResponse ? [{ role: "assistant" as const, content: assistantResponse }] : []),
+                ];
+                freshConv.updatedAt = Date.now();
+                await conversationStore.update(freshConv);
+              }
+            }
+          } else {
+            const timestamp = new Date().toISOString();
+            const conversation = await conversationStore.create(
+              reminder.ownerId ?? "local-owner",
+              `[reminder] ${reminder.task.slice(0, 80)} ${timestamp}`,
+            );
+            const convId = conversation.conversationId;
+            let assistantResponse = "";
+            for await (const event of harness.runWithTelemetry({
+              task: framedMessage,
+              conversationId: convId,
+              parameters: { __activeConversationId: convId },
+              messages: [],
+            })) {
+              if (event.type === "model:chunk") {
+                assistantResponse += event.content;
+              }
+            }
+            const freshConv = await conversationStore.get(convId);
+            if (freshConv) {
+              freshConv.messages = [
+                { role: "user" as const, content: framedMessage },
+                ...(assistantResponse ? [{ role: "assistant" as const, content: assistantResponse }] : []),
+              ];
+              freshConv.updatedAt = Date.now();
+              await conversationStore.update(freshConv);
+            }
+          }
+
+          firedIds.push(reminder.id);
+        } catch (err) {
+          console.error(`[reminder] Failed to fire reminder "${reminder.id}":`, err instanceof Error ? err.message : err);
+        }
+      }
+    } catch (err) {
+      console.error("[reminder] Error checking reminders:", err instanceof Error ? err.message : err);
+    }
+
+    return { fired: firedIds, count: firedIds.length, duration: Date.now() - start };
+  };
+
   handler._harness = harness;
   handler._cronJobs = cronJobs;
   handler._conversationStore = conversationStore;
@@ -6320,6 +6503,8 @@ export const createRequestHandler = async (options?: {
   handler._processSubagentCallback = processSubagentCallback;
   handler._broadcastEvent = broadcastEvent;
   handler._finishConversationStream = finishConversationStream;
+  handler._checkAndFireReminders = checkAndFireReminders;
+  handler._reminderPollIntervalMs = reminderPollWindowMs;
 
   // Recover stale subagent runs that were "running" when the server last stopped
   // or that have been inactive longer than the staleness threshold.
@@ -6659,8 +6844,29 @@ export const startDevServer = async (
     }, 500);
   });
 
+  // ── Reminder polling ─────────────────────────────────────────────
+  let reminderInterval: ReturnType<typeof setInterval> | null = null;
+  if (handler._checkAndFireReminders && handler._reminderPollIntervalMs) {
+    const pollMs = handler._reminderPollIntervalMs;
+    const check = handler._checkAndFireReminders;
+    reminderInterval = setInterval(async () => {
+      try {
+        const result = await check();
+        if (result.count > 0) {
+          process.stdout.write(
+            `[reminder] Fired ${result.count} reminder${result.count === 1 ? "" : "s"} (${result.duration}ms)\n`,
+          );
+        }
+      } catch (err) {
+        console.error("[reminder] Poll error:", err instanceof Error ? err.message : err);
+      }
+    }, pollMs);
+    process.stdout.write(`[reminder] Polling every ${Math.round(pollMs / 1000)}s\n`);
+  }
+
   const shutdown = () => {
     watcher.close();
+    if (reminderInterval) clearInterval(reminderInterval);
     for (const job of activeJobs) {
       job.stop();
     }

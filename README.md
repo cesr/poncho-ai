@@ -68,6 +68,7 @@ Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` 
 ### Deploy & Integrate
 - [Building and Deploying](#building-and-deploying)
 - [Cron Jobs](#cron-jobs)
+- [Reminders](#reminders)
 - HTTP API & Client
   - [HTTP API](docs/api.md)
   - [Client SDK](docs/api.md#typescriptjavascript-client)
@@ -900,6 +901,55 @@ If your `vercel.json` crons fall out of sync with `AGENT.md` (e.g. you change a 
 ### Vercel plan limits
 
 Vercel Hobby allows 1 cron job with daily minimum granularity. Vercel Pro allows more jobs and finer schedules. See [Vercel Cron Jobs docs](https://vercel.com/docs/cron-jobs) for details.
+
+## Reminders
+
+Poncho agents can set one-off reminders that fire at a specific time. Unlike cron jobs (recurring, defined in `AGENT.md`), reminders are dynamic — created by the agent during conversations (e.g. when a user says "remind me tomorrow at 9am").
+
+### Enabling reminders
+
+Add to your `poncho.config.js`:
+
+```javascript
+export default {
+  reminders: {
+    enabled: true,
+    pollSchedule: '*/10 * * * *', // optional, default every 10 minutes
+  },
+};
+```
+
+New projects created with `poncho init` have reminders enabled by default.
+
+### How it works
+
+When enabled, the agent gets three built-in tools:
+
+- **`set_reminder`** — Create a reminder with a task and ISO 8601 datetime.
+- **`list_reminders`** — List all reminders (pending, fired, cancelled).
+- **`cancel_reminder`** — Cancel a pending reminder by ID.
+
+The current UTC time is injected into the system prompt so the agent can convert natural language times ("tomorrow at 9am") into precise datetimes.
+
+### How reminders fire
+
+A polling loop checks for due reminders at the interval set by `pollSchedule`. Reminders that fall within the next poll window are fired early rather than late.
+
+- **Local dev** (`poncho dev`): A `setInterval` polling loop runs in-process.
+- **Vercel**: `poncho build vercel` adds a cron entry to `vercel.json` that hits `GET /api/reminders/check`. Set `CRON_SECRET` to the same value as `PONCHO_AUTH_TOKEN`.
+- **Docker / Fly.io**: The polling loop activates automatically.
+- **Lambda**: Use AWS EventBridge to trigger `GET /api/reminders/check` on schedule.
+
+### Delivery
+
+When a reminder fires:
+
+- If the original conversation was on a messaging channel (Telegram, Slack), the agent replies in that conversation via the channel adapter.
+- Otherwise, a new conversation titled `[reminder] <task>` is created and the agent runs the reminder task. These appear in the web UI under the "Reminders" sidebar section.
+
+### Storage
+
+Reminders use the same storage backend as other Poncho data (configured via `storage.provider`). Fired and cancelled reminders older than 30 days are automatically cleaned up.
 
 ## Examples
 

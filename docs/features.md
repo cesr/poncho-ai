@@ -200,6 +200,23 @@ The system auto-discovers all Telegram chats the bot has interacted with and sen
 
 The bot must have received at least one message from a user before it can send proactive messages to that chat (Telegram API requirement).
 
+#### One-off reminders
+
+Unlike cron jobs (which are recurring and static), reminders are one-off and dynamic — created by the agent during conversations. Enable in `poncho.config.js`:
+
+```javascript
+export default {
+  reminders: {
+    enabled: true,
+    pollSchedule: '*/10 * * * *',
+  },
+};
+```
+
+When enabled, the agent gets `set_reminder`, `list_reminders`, and `cancel_reminder` tools. If the original conversation is on a messaging channel, the reminder fires as a reply in that conversation. Otherwise, a new `[reminder]` conversation is created.
+
+Reminders are checked on a polling interval (configured by `pollSchedule`). Reminders due within the next poll window fire early rather than late.
+
 ### Email (Resend)
 
 #### 1. Set up Resend

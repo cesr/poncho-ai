@@ -134,6 +134,12 @@ export interface PonchoConfig extends McpConfig {
     lambda?: Record<string, unknown>;
     fly?: Record<string, unknown>;
   };
+  /** One-off reminders. When enabled, the agent gets set_reminder / list_reminders / cancel_reminder tools. */
+  reminders?: {
+    enabled?: boolean;
+    /** Cron expression controlling how often the reminder poll runs (local and serverless). Default: every 10 minutes. */
+    pollSchedule?: string;
+  };
   /** Set to `false` to disable the built-in web UI (headless / API-only mode). */
   webUi?: false;
   /** Enable browser automation tools. Set `true` for defaults, or provide config. */

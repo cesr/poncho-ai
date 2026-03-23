@@ -346,6 +346,7 @@ export const buildConfigFromOnboardingAnswers = (
     auth,
     storage,
     telemetry,
+    reminders: { enabled: true },
   };
 
   if (messagingPlatform !== "none") {
@@ -375,7 +376,7 @@ export const isDefaultOnboardingConfig = (
     return true;
   }
   const topLevelKeys = Object.keys(config);
-  const allowedTopLevel = new Set(["mcp", "auth", "storage", "telemetry", "messaging"]);
+  const allowedTopLevel = new Set(["mcp", "auth", "storage", "telemetry", "messaging", "reminders"]);
   if (topLevelKeys.some((key) => !allowedTopLevel.has(key))) {
     return false;
   }
