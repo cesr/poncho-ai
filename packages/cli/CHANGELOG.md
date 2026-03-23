@@ -1,5 +1,16 @@
 # @poncho-ai/cli
 
+## 0.33.0
+
+### Minor Changes
+
+- [#68](https://github.com/cesr/poncho-ai/pull/68) [`5a7e370`](https://github.com/cesr/poncho-ai/commit/5a7e3700a5ee441ef41cf4dc0ca70ff90e57d282) Thanks [@cesr](https://github.com/cesr)! - Add one-off reminders: agents can dynamically set, list, and cancel reminders that fire at a specific time. Fired reminders are immediately deleted from storage. Includes polling for local dev and Vercel cron integration.
+
+### Patch Changes
+
+- Updated dependencies [[`5a7e370`](https://github.com/cesr/poncho-ai/commit/5a7e3700a5ee441ef41cf4dc0ca70ff90e57d282)]:
+  - @poncho-ai/harness@0.32.0
+
 ## 0.32.8
 
 ### Patch Changes
