@@ -926,7 +926,7 @@ New projects created with `poncho init` have reminders enabled by default.
 When enabled, the agent gets three built-in tools:
 
 - **`set_reminder`** — Create a reminder with a task and ISO 8601 datetime.
-- **`list_reminders`** — List all reminders (pending, fired, cancelled).
+- **`list_reminders`** — List reminders (pending or recently cancelled).
 - **`cancel_reminder`** — Cancel a pending reminder by ID.
 
 The current UTC time is injected into the system prompt so the agent can convert natural language times ("tomorrow at 9am") into precise datetimes.
@@ -949,7 +949,7 @@ When a reminder fires:
 
 ### Storage
 
-Reminders use the same storage backend as other Poncho data (configured via `storage.provider`). Fired and cancelled reminders older than 30 days are automatically cleaned up.
+Reminders use the same storage backend as other Poncho data (configured via `storage.provider`). Fired reminders are deleted immediately after delivery. Cancelled reminders are cleaned up after 7 days.
 
 ## Examples
 

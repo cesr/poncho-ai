@@ -66,11 +66,13 @@ const parseReminderList = (raw: unknown): Reminder[] => {
   return raw.filter(isValidReminder);
 };
 
-/** Remove cancelled reminders older than 7 days. Fired reminders are deleted immediately on fire. */
+/** Remove all fired reminders and cancelled reminders older than 7 days. */
 const pruneStale = (reminders: Reminder[]): Reminder[] => {
   const cutoff = Date.now() - STALE_CANCELLED_MS;
   return reminders.filter(
-    (r) => r.status === "pending" || r.createdAt > cutoff,
+    (r) =>
+      r.status === "pending" ||
+      (r.status === "cancelled" && r.createdAt > cutoff),
   );
 };
 
@@ -85,6 +87,7 @@ class InMemoryReminderStore implements ReminderStore {
   private reminders: Reminder[] = [];
 
   async list(): Promise<Reminder[]> {
+    this.reminders = pruneStale(this.reminders);
     return [...this.reminders];
   }
 
@@ -160,7 +163,10 @@ class FileReminderStore implements ReminderStore {
   }
 
   async list(): Promise<Reminder[]> {
-    return this.readAll();
+    const all = await this.readAll();
+    const pruned = pruneStale(all);
+    if (pruned.length !== all.length) await this.writeAll(pruned);
+    return pruned;
   }
 
   async create(input: {
@@ -245,7 +251,10 @@ class KVBackedReminderStore implements ReminderStore {
   }
 
   async list(): Promise<Reminder[]> {
-    return this.readAll();
+    const all = await this.readAll();
+    const pruned = pruneStale(all);
+    if (pruned.length !== all.length) await this.writeAll(pruned);
+    return pruned;
   }
 
   async create(input: {
