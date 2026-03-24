@@ -303,15 +303,21 @@ const parseParams = (values: string[]): Record<string, string> => {
   return params;
 };
 
-const normalizeMessageForClient = (message: Message): Message => {
+const normalizeMessageForClient = (message: Message): Message | null => {
+  // Hide tool-role and system-role messages from the web UI — they are
+  // internal harness bookkeeping that leaks into conv.messages when
+  // _harnessMessages are used as canonical history.
+  if (message.role === "tool" || message.role === "system") {
+    return null;
+  }
   if (message.role !== "assistant" || typeof message.content !== "string") {
     return message;
   }
   try {
     const parsed = JSON.parse(message.content) as Record<string, unknown>;
-    const text = typeof parsed.text === "string" ? parsed.text : undefined;
     const toolCalls = Array.isArray(parsed.tool_calls) ? parsed.tool_calls : undefined;
-    if (typeof text === "string" && toolCalls) {
+    if (toolCalls) {
+      const text = typeof parsed.text === "string" ? parsed.text : "";
       const meta = { ...(message.metadata ?? {}) } as Record<string, unknown>;
       if (!meta.sections && toolCalls.length > 0) {
         const toolLabels = toolCalls.map((tc: Record<string, unknown>) => {
@@ -632,6 +638,84 @@ export const __internalRunOrchestration = {
   createTurnDraftState,
   recordStandardTurnEvent,
   executeConversationTurn,
+};
+
+// ── Shared cron helpers ──────────────────────────────────────────
+// Used by both the HTTP /api/cron endpoint and the local-dev scheduler.
+
+type CronRunResult = {
+  response: string;
+  steps: number;
+  assistantMetadata?: Message["metadata"];
+  hasContent: boolean;
+  contextTokens: number;
+  contextWindow: number;
+  harnessMessages?: Message[];
+  toolResultArchive?: Conversation["_toolResultArchive"];
+  latestRunId: string;
+  continuation: boolean;
+  continuationMessages?: Message[];
+};
+
+const runCronAgent = async (
+  harnessRef: AgentHarness,
+  task: string,
+  conversationId: string,
+  historyMessages: Message[],
+  toolResultArchive?: Conversation["_toolResultArchive"],
+  onEvent?: (event: AgentEvent) => void | Promise<void>,
+): Promise<CronRunResult> => {
+  const execution = await executeConversationTurn({
+    harness: harnessRef,
+    runInput: {
+      task,
+      conversationId,
+      parameters: {
+        __activeConversationId: conversationId,
+        [TOOL_RESULT_ARCHIVE_PARAM]: toolResultArchive ?? {},
+      },
+      messages: historyMessages,
+    },
+    onEvent,
+  });
+  flushTurnDraft(execution.draft);
+  const hasContent = execution.draft.assistantResponse.length > 0 || execution.draft.toolTimeline.length > 0;
+  const assistantMetadata = buildAssistantMetadata(execution.draft);
+  return {
+    response: execution.draft.assistantResponse,
+    steps: execution.runSteps,
+    assistantMetadata,
+    hasContent,
+    contextTokens: execution.runContextTokens,
+    contextWindow: execution.runContextWindow,
+    harnessMessages: execution.runHarnessMessages,
+    toolResultArchive: harnessRef.getToolResultArchive(conversationId),
+    latestRunId: execution.latestRunId,
+    continuation: execution.runContinuation,
+    continuationMessages: execution.runContinuationMessages,
+  };
+};
+
+const buildCronMessages = (
+  task: string,
+  historyMessages: Message[],
+  result: CronRunResult,
+): Message[] => [
+  ...historyMessages,
+  { role: "user" as const, content: task },
+  ...(result.hasContent
+    ? [{ role: "assistant" as const, content: result.response, metadata: result.assistantMetadata }]
+    : []),
+];
+
+/** Append a cron turn to a freshly-fetched conversation (avoids overwriting concurrent writes). */
+const appendCronTurn = (conv: Conversation, task: string, result: CronRunResult): void => {
+  conv.messages.push(
+    { role: "user" as const, content: task },
+    ...(result.hasContent
+      ? [{ role: "assistant" as const, content: result.response, metadata: result.assistantMetadata }]
+      : []),
+  );
 };
 
 const AGENT_TEMPLATE = (
@@ -3341,7 +3425,7 @@ export const createRequestHandler = async (options?: {
         conversationId,
         messages: historyMessages,
         files: input.files,
-        parameters: {
+        parameters: withToolResultArchiveParam({
           ...(input.metadata ? {
             __messaging_platform: input.metadata.platform,
             __messaging_sender_id: input.metadata.sender.id,
@@ -3349,7 +3433,7 @@ export const createRequestHandler = async (options?: {
             __messaging_thread_id: input.metadata.threadId,
           } : {}),
           __activeConversationId: conversationId,
-        },
+        }, latestConversation ?? { _toolResultArchive: {} } as Conversation),
       };
 
       try {
@@ -3461,6 +3545,7 @@ export const createRequestHandler = async (options?: {
           } else {
             c._harnessMessages = c.messages;
           }
+          c._toolResultArchive = harness.getToolResultArchive(conversationId);
           c.runtimeRunId = latestRunId || c.runtimeRunId;
           c.pendingApprovals = [];
           c.runStatus = "idle";
@@ -3472,6 +3557,7 @@ export const createRequestHandler = async (options?: {
           if (shouldRebuildCanonical && !c._harnessMessages?.length) {
             c._harnessMessages = c.messages;
           }
+          c._toolResultArchive = harness.getToolResultArchive(conversationId);
           c.runStatus = "idle";
         });
       }
@@ -5202,7 +5288,7 @@ export const createRequestHandler = async (options?: {
         writeJson(response, 200, {
           conversation: {
             ...conversation,
-            messages: conversation.messages.map(normalizeMessageForClient),
+            messages: conversation.messages.map(normalizeMessageForClient).filter((m): m is Message => m !== null),
             pendingApprovals: storedPending,
             _continuationMessages: undefined,
             _harnessMessages: undefined,
@@ -6106,53 +6192,42 @@ export const createRequestHandler = async (options?: {
             });
             const historyMessages = [...historySelection.messages];
             try {
-              const execution = await executeConversationTurn({
-                harness,
-                runInput: {
-                  task,
-                  conversationId: conv.conversationId,
-                  parameters: withToolResultArchiveParam(
-                    { __activeConversationId: conv.conversationId },
-                    conv,
-                  ),
-                  messages: historyMessages,
-                },
-                onEvent: async (event) => {
-                  await telemetry.emit(event);
-                },
-              });
-              const assistantResponse = execution.draft.assistantResponse;
+              const result = await runCronAgent(harness, task, conv.conversationId, historyMessages,
+                conv._toolResultArchive,
+                async (event) => { await telemetry.emit(event); },
+              );
 
-              conv.messages = [
-                ...historyMessages,
-                { role: "user" as const, content: task },
-                ...(assistantResponse ? [{ role: "assistant" as const, content: assistantResponse }] : []),
-              ];
-              if (execution.runHarnessMessages) {
-                conv._harnessMessages = execution.runHarnessMessages;
-              } else if (historySelection.shouldRebuildCanonical) {
-                conv._harnessMessages = conv.messages;
+              const freshConv = await conversationStore.get(conv.conversationId);
+              if (freshConv) {
+                appendCronTurn(freshConv, task, result);
+                if (result.harnessMessages) {
+                  freshConv._harnessMessages = result.harnessMessages;
+                } else if (historySelection.shouldRebuildCanonical) {
+                  freshConv._harnessMessages = freshConv.messages;
+                }
+                if (result.toolResultArchive) {
+                  freshConv._toolResultArchive = result.toolResultArchive;
+                }
+                if (result.contextTokens > 0) freshConv.contextTokens = result.contextTokens;
+                if (result.contextWindow > 0) freshConv.contextWindow = result.contextWindow;
+                freshConv.updatedAt = Date.now();
+                await conversationStore.update(freshConv);
               }
-              conv._toolResultArchive = harness.getToolResultArchive(conv.conversationId);
-              if (execution.runContextTokens > 0) conv.contextTokens = execution.runContextTokens;
-              if (execution.runContextWindow > 0) conv.contextWindow = execution.runContextWindow;
-              conv.updatedAt = Date.now();
-              await conversationStore.update(conv);
 
-              if (assistantResponse) {
+              if (result.response) {
                 try {
                   await adapter.sendReply(
                     {
                       channelId: chatId,
-                      platformThreadId: conv.channelMeta?.platformThreadId ?? chatId,
+                      platformThreadId: (freshConv ?? conv).channelMeta?.platformThreadId ?? chatId,
                     },
-                    assistantResponse,
+                    result.response,
                   );
                 } catch (sendError) {
                   console.error(`[cron] ${jobName}: send to ${chatId} failed:`, sendError instanceof Error ? sendError.message : sendError);
                 }
               }
-              chatResults.push({ chatId, status: "completed", steps: execution.runSteps });
+              chatResults.push({ chatId, status: "completed", steps: result.steps });
             } catch (runError) {
               chatResults.push({ chatId, status: "error" });
               console.error(`[cron] ${jobName}: run for chat ${chatId} failed:`, runError instanceof Error ? runError.message : runError);
@@ -6180,7 +6255,6 @@ export const createRequestHandler = async (options?: {
           cronOwnerId,
           `[cron] ${jobName} ${timestamp}`,
         );
-        const historyMessages: Message[] = [];
 
         const convId = conversation.conversationId;
         activeConversationRuns.set(convId, {
@@ -6190,152 +6264,57 @@ export const createRequestHandler = async (options?: {
         });
 
         try {
-        const abortController = new AbortController();
-        let assistantResponse = "";
-        let latestRunId = "";
-        let runContinuationMessages: Message[] | undefined;
-        const toolTimeline: string[] = [];
-        const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
-        let currentTools: string[] = [];
-        let currentText = "";
-        let runResult: { status: string; steps: number; continuation?: boolean; contextTokens?: number; contextWindow?: number; harnessMessages?: Message[] } = {
-          status: "completed",
-          steps: 0,
-        };
-
-        const platformMaxDurationSec = Number(process.env.PONCHO_MAX_DURATION) || 0;
-        const softDeadlineMs = platformMaxDurationSec > 0
-          ? platformMaxDurationSec * 800
-          : 0;
-
-        for await (const event of harness.runWithTelemetry({
-          task: cronJob.task,
-          conversationId: convId,
-          parameters: withToolResultArchiveParam({ __activeConversationId: convId }, conversation),
-          messages: historyMessages,
-          abortSignal: abortController.signal,
-        })) {
-          if (event.type === "run:started") {
-            latestRunId = event.runId;
-          }
-          if (event.type === "model:chunk") {
-            if (currentTools.length > 0) {
-              sections.push({ type: "tools", content: currentTools });
-              currentTools = [];
-              if (assistantResponse.length > 0 && !/\s$/.test(assistantResponse)) {
-                assistantResponse += " ";
-              }
-            }
-            assistantResponse += event.content;
-            currentText += event.content;
-          }
-          if (event.type === "tool:started") {
-            if (currentText.length > 0) {
-              sections.push({ type: "text", content: currentText });
-              currentText = "";
-            }
-            const toolText = `- start \`${event.tool}\``;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-          }
-          if (event.type === "tool:completed") {
-            const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-          }
-          if (event.type === "tool:error") {
-            const toolText = `- error \`${event.tool}\`: ${event.error}`;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-          }
-          if (event.type === "run:completed") {
-            runResult = {
-              status: event.result.status,
-              steps: event.result.steps,
-              continuation: event.result.continuation,
-              contextTokens: event.result.contextTokens,
-              contextWindow: event.result.contextWindow,
-              harnessMessages: event.result.continuationMessages,
-            };
-            if (event.result.continuation && event.result.continuationMessages) {
-              runContinuationMessages = event.result.continuationMessages;
-            }
-            if (!assistantResponse && event.result.response) {
-              assistantResponse = event.result.response;
-            }
-          }
-          broadcastEvent(convId, event);
-          await telemetry.emit(event);
-        }
-
-        finishConversationStream(convId);
-
-        if (currentTools.length > 0) {
-          sections.push({ type: "tools", content: currentTools });
-        }
-        if (currentText.length > 0) {
-          sections.push({ type: "text", content: currentText });
-          currentText = "";
-        }
-
-        // Persist the conversation — read fresh state to avoid clobbering
-        // pendingSubagentResults appended during the run.
-        const hasContent = assistantResponse.length > 0 || toolTimeline.length > 0;
-        const assistantMetadata =
-          toolTimeline.length > 0 || sections.length > 0
-            ? ({
-                toolActivity: [...toolTimeline],
-                sections: sections.length > 0 ? sections : undefined,
-              } as Message["metadata"])
-            : undefined;
-        const messages: Message[] = [
-          ...historyMessages,
-          { role: "user" as const, content: cronJob.task },
-          ...(hasContent
-            ? [{ role: "assistant" as const, content: assistantResponse, metadata: assistantMetadata }]
-            : []),
-        ];
-        const freshConv = await conversationStore.get(convId);
-        if (freshConv) {
-          // Always persist intermediate messages so clients see progress
-          freshConv.messages = messages;
-          if (runContinuationMessages) {
-            freshConv._continuationMessages = runContinuationMessages;
-          } else {
-            freshConv._continuationMessages = undefined;
-            freshConv._continuationCount = undefined;
-          }
-          if (runResult.harnessMessages) {
-            freshConv._harnessMessages = runResult.harnessMessages;
-          }
-          freshConv._toolResultArchive = harness.getToolResultArchive(convId);
-          freshConv.runtimeRunId = latestRunId || freshConv.runtimeRunId;
-          if (runResult.contextTokens) freshConv.contextTokens = runResult.contextTokens;
-          if (runResult.contextWindow) freshConv.contextWindow = runResult.contextWindow;
-          freshConv.updatedAt = Date.now();
-          await conversationStore.update(freshConv);
-        }
-
-        if (runResult.continuation) {
-          const work = selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(convId)}`).catch(err =>
-            console.error(`[poncho][cron] Continuation self-fetch failed:`, err instanceof Error ? err.message : err),
+          const result = await runCronAgent(harness, cronJob.task, convId, [],
+            conversation._toolResultArchive,
+            async (event) => {
+              broadcastEvent(convId, event);
+              await telemetry.emit(event);
+            },
           );
-          doWaitUntil(work);
+          finishConversationStream(convId);
+
+          const freshConv = await conversationStore.get(convId);
+          if (freshConv) {
+            freshConv.messages = buildCronMessages(cronJob.task, [], result);
+            if (result.continuation && result.continuationMessages) {
+              freshConv._continuationMessages = result.continuationMessages;
+            } else {
+              freshConv._continuationMessages = undefined;
+              freshConv._continuationCount = undefined;
+            }
+            if (result.harnessMessages) {
+              freshConv._harnessMessages = result.harnessMessages;
+            }
+            if (result.toolResultArchive) {
+              freshConv._toolResultArchive = result.toolResultArchive;
+            }
+            freshConv.runtimeRunId = result.latestRunId || freshConv.runtimeRunId;
+            if (result.contextTokens > 0) freshConv.contextTokens = result.contextTokens;
+            if (result.contextWindow > 0) freshConv.contextWindow = result.contextWindow;
+            freshConv.updatedAt = Date.now();
+            await conversationStore.update(freshConv);
+          }
+
+          if (result.continuation) {
+            const work = selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(convId)}`).catch(err =>
+              console.error(`[poncho][cron] Continuation self-fetch failed:`, err instanceof Error ? err.message : err),
+            );
+            doWaitUntil(work);
+            writeJson(response, 200, {
+              conversationId: convId,
+              status: "continued",
+              duration: Date.now() - start,
+            });
+            return;
+          }
+
           writeJson(response, 200, {
             conversationId: convId,
-            status: "continued",
+            status: "completed",
+            response: result.response.slice(0, 500),
             duration: Date.now() - start,
+            steps: result.steps,
           });
-          return;
-        }
-
-        writeJson(response, 200, {
-          conversationId: convId,
-          status: runResult.status,
-          response: assistantResponse.slice(0, 500),
-          duration: Date.now() - start,
-          steps: runResult.steps,
-        });
         } finally {
           activeConversationRuns.delete(convId);
           const hadDeferred = pendingCallbackNeeded.delete(convId);
@@ -6417,26 +6396,19 @@ export const createRequestHandler = async (options?: {
           if (channelMeta) {
             const adapter = messagingAdapters.get(channelMeta.platform);
             if (adapter && originConv) {
-              const historyMessages = originConv.messages ?? [];
-              let assistantResponse = "";
-              for await (const event of harness.runWithTelemetry({
-                task: framedMessage,
-                conversationId: originConv.conversationId,
-                parameters: { __activeConversationId: originConv.conversationId },
-                messages: historyMessages,
-              })) {
-                if (event.type === "model:chunk") {
-                  assistantResponse += event.content;
-                }
-              }
-              if (assistantResponse) {
+              const result = await runCronAgent(
+                harness, framedMessage, originConv.conversationId,
+                originConv.messages ?? [],
+                originConv._toolResultArchive,
+              );
+              if (result.response) {
                 try {
                   await adapter.sendReply(
                     {
                       channelId: channelMeta.channelId,
                       platformThreadId: channelMeta.platformThreadId ?? channelMeta.channelId,
                     },
-                    assistantResponse,
+                    result.response,
                   );
                 } catch (sendError) {
                   console.error(`[reminder] Send to ${channelMeta.platform} failed:`, sendError instanceof Error ? sendError.message : sendError);
@@ -6444,11 +6416,13 @@ export const createRequestHandler = async (options?: {
               }
               const freshConv = await conversationStore.get(originConv.conversationId);
               if (freshConv) {
-                freshConv.messages = [
-                  ...historyMessages,
-                  { role: "user" as const, content: framedMessage },
-                  ...(assistantResponse ? [{ role: "assistant" as const, content: assistantResponse }] : []),
-                ];
+                appendCronTurn(freshConv, framedMessage, result);
+                if (result.harnessMessages) {
+                  freshConv._harnessMessages = result.harnessMessages;
+                }
+                if (result.toolResultArchive) {
+                  freshConv._toolResultArchive = result.toolResultArchive;
+                }
                 freshConv.updatedAt = Date.now();
                 await conversationStore.update(freshConv);
               }
@@ -6460,23 +6434,16 @@ export const createRequestHandler = async (options?: {
               `[reminder] ${reminder.task.slice(0, 80)} ${timestamp}`,
             );
             const convId = conversation.conversationId;
-            let assistantResponse = "";
-            for await (const event of harness.runWithTelemetry({
-              task: framedMessage,
-              conversationId: convId,
-              parameters: { __activeConversationId: convId },
-              messages: [],
-            })) {
-              if (event.type === "model:chunk") {
-                assistantResponse += event.content;
-              }
-            }
+            const result = await runCronAgent(harness, framedMessage, convId, []);
             const freshConv = await conversationStore.get(convId);
             if (freshConv) {
-              freshConv.messages = [
-                { role: "user" as const, content: framedMessage },
-                ...(assistantResponse ? [{ role: "assistant" as const, content: assistantResponse }] : []),
-              ];
+              freshConv.messages = buildCronMessages(framedMessage, [], result);
+              if (result.harnessMessages) {
+                freshConv._harnessMessages = result.harnessMessages;
+              }
+              if (result.toolResultArchive) {
+                freshConv._toolResultArchive = result.toolResultArchive;
+              }
               freshConv.updatedAt = Date.now();
               await conversationStore.update(freshConv);
             }
@@ -6568,65 +6535,6 @@ export const startDevServer = async (
   type CronJob = InstanceType<typeof Cron>;
   let activeJobs: CronJob[] = [];
 
-  type CronRunResult = {
-    response: string;
-    steps: number;
-    assistantMetadata?: Message["metadata"];
-    hasContent: boolean;
-    contextTokens: number;
-    contextWindow: number;
-    harnessMessages?: Message[];
-    toolResultArchive?: Conversation["_toolResultArchive"];
-  };
-
-  const runCronAgent = async (
-    harnessRef: AgentHarness,
-    task: string,
-    conversationId: string,
-    historyMessages: Message[],
-    toolResultArchive?: Conversation["_toolResultArchive"],
-    onEvent?: (event: AgentEvent) => void | Promise<void>,
-  ): Promise<CronRunResult> => {
-    const execution = await executeConversationTurn({
-      harness: harnessRef,
-      runInput: {
-        task,
-        conversationId,
-        parameters: {
-          __activeConversationId: conversationId,
-          [TOOL_RESULT_ARCHIVE_PARAM]: toolResultArchive ?? {},
-        },
-        messages: historyMessages,
-      },
-      onEvent,
-    });
-    flushTurnDraft(execution.draft);
-    const hasContent = execution.draft.assistantResponse.length > 0 || execution.draft.toolTimeline.length > 0;
-    const assistantMetadata = buildAssistantMetadata(execution.draft);
-    return {
-      response: execution.draft.assistantResponse,
-      steps: execution.runSteps,
-      assistantMetadata,
-      hasContent,
-      contextTokens: execution.runContextTokens,
-      contextWindow: execution.runContextWindow,
-      harnessMessages: execution.runHarnessMessages,
-      toolResultArchive: harnessRef.getToolResultArchive(conversationId),
-    };
-  };
-
-  const buildCronMessages = (
-    task: string,
-    historyMessages: Message[],
-    result: CronRunResult,
-  ): Message[] => [
-    ...historyMessages,
-    { role: "user" as const, content: task },
-    ...(result.hasContent
-      ? [{ role: "assistant" as const, content: result.response, metadata: result.assistantMetadata }]
-      : []),
-  ];
-
   const scheduleCronJobs = (jobs: Record<string, CronJobConfig>): void => {
     for (const job of activeJobs) {
       job.stop();
@@ -6704,7 +6612,7 @@ export const startDevServer = async (
 
                   const freshConv = await store.get(convId);
                   if (freshConv) {
-                    freshConv.messages = buildCronMessages(task, historyMessages, result);
+                    appendCronTurn(freshConv, task, result);
                     if (result.harnessMessages) {
                       freshConv._harnessMessages = result.harnessMessages;
                     } else if (historySelection.shouldRebuildCanonical) {
