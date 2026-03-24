@@ -18,8 +18,6 @@ All credentials in `poncho.config.js` use **env var name** fields (`*Env` suffix
 | `auth.tokenEnv` | `PONCHO_AUTH_TOKEN` | Auth passphrase / bearer token |
 | `storage.urlEnv` | `UPSTASH_REDIS_REST_URL` / `REDIS_URL` | Storage connection URL |
 | `storage.tokenEnv` | `UPSTASH_REDIS_REST_TOKEN` | Upstash REST token |
-| `telemetry.latitude.apiKeyEnv` | `LATITUDE_API_KEY` | Latitude API key |
-| `telemetry.latitude.projectIdEnv` | `LATITUDE_PROJECT_ID` | Latitude project ID |
 | `messaging[].botTokenEnv` | `SLACK_BOT_TOKEN` | Slack bot token |
 | `messaging[].signingSecretEnv` | `SLACK_SIGNING_SECRET` | Slack signing secret |
 | `messaging[].botTokenEnv` | `TELEGRAM_BOT_TOKEN` | Telegram bot token |
@@ -108,7 +106,7 @@ export default {
     },
   },
 
-  // Telemetry destination — generic OTLP and/or Latitude
+  // Telemetry — send OpenTelemetry traces to any OTLP-compatible collector
   telemetry: {
     enabled: true,
     // Generic OTLP: string shorthand or { url, headers? } object
@@ -118,12 +116,6 @@ export default {
     //   url: 'https://api.honeycomb.io/v1/traces',
     //   headers: { 'x-honeycomb-team': process.env.HONEYCOMB_API_KEY },
     // },
-    // Latitude (reads from LATITUDE_API_KEY and LATITUDE_PROJECT_ID env vars by default)
-    latitude: {
-      // apiKeyEnv: 'LATITUDE_API_KEY',       // default
-      // projectIdEnv: 'LATITUDE_PROJECT_ID', // default
-      path: 'your/prompt-path',               // optional, defaults to agent name
-    },
   },
 
   // Messaging platform integrations
@@ -203,9 +195,6 @@ Remote storage keys are namespaced and versioned, for example `poncho:v1:<agentI
 | `PONCHO_INTERNAL_SECRET` | No | Shared secret used by internal serverless callbacks (recommended for Vercel/Lambda) |
 | `PONCHO_SELF_BASE_URL` | No | Explicit base URL for internal self-callbacks when auto-detection is unavailable |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | OTLP trace endpoint (Jaeger, Tempo, Honeycomb, etc.) |
-| `LATITUDE_API_KEY` | No | Latitude dashboard integration |
-| `LATITUDE_PROJECT_ID` | No | Latitude project identifier for capture traces |
-| `LATITUDE_PATH` | No | Latitude prompt path for grouping traces |
 | `KV_REST_API_URL` | No | Upstash REST URL (Vercel Marketplace naming) |
 | `KV_REST_API_TOKEN` | No | Upstash REST write token (Vercel Marketplace naming) |
 | `UPSTASH_REDIS_REST_URL` | No | Upstash REST URL (direct Upstash naming) |
@@ -282,30 +271,6 @@ export default {
   }
 }
 ```
-
-### Latitude integration (optional)
-
-Send traces to [Latitude](https://latitude.so) for a dashboard with cost tracking and prompt management:
-
-```bash
-LATITUDE_API_KEY=lat_xxx
-LATITUDE_PROJECT_ID=123
-LATITUDE_PATH=agents/my-agent/run
-```
-
-Or configure via `poncho.config.js`:
-
-```javascript
-telemetry: {
-  latitude: {
-    // apiKeyEnv: 'LATITUDE_API_KEY',       // default
-    // projectIdEnv: 'LATITUDE_PROJECT_ID', // default
-    path: 'your/prompt-path',
-  },
-}
-```
-
-Both `otlp` and `latitude` can be configured simultaneously — all spans flow to both destinations.
 
 ## Security
 

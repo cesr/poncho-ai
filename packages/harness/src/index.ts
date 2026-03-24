@@ -4,7 +4,6 @@ export * from "./compaction.js";
 export * from "./config.js";
 export * from "./default-tools.js";
 export * from "./harness.js";
-export * from "./latitude-capture.js";
 export * from "./memory.js";
 export * from "./mcp.js";
 export * from "./model-factory.js";

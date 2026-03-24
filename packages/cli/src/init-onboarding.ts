@@ -408,7 +408,6 @@ export const isDefaultOnboardingConfig = (
   const telemetryEnabled = config.telemetry?.enabled ?? true;
   const telemetryHasExtra =
     typeof config.telemetry?.otlp !== "undefined" ||
-    typeof config.telemetry?.latitude !== "undefined" ||
     typeof config.telemetry?.handler !== "undefined";
   if (!telemetryEnabled || telemetryHasExtra) {
     return false;
@@ -536,12 +535,8 @@ const collectEnvFileLines = (answers: OnboardingAnswers): string[] => {
 
   const telemetryEnabled = Boolean(answers["telemetry.enabled"] ?? true);
   if (telemetryEnabled) {
-    lines.push("# Telemetry (optional)");
-    lines.push("# Latitude telemetry setup: https://docs.latitude.so/");
-    lines.push("# If not using Latitude yet, you can leave these empty.");
-    lines.push("LATITUDE_API_KEY=");
-    lines.push("LATITUDE_PROJECT_ID=");
-    lines.push("LATITUDE_PATH=");
+    lines.push("# Telemetry (optional) — set an OTLP endpoint to export traces");
+    lines.push("# OTEL_EXPORTER_OTLP_ENDPOINT=");
     lines.push("");
   }
 

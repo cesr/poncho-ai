@@ -115,12 +115,6 @@ export interface PonchoConfig extends McpConfig {
       url: string;
       headers?: Record<string, string>;
     };
-    latitude?: {
-      apiKeyEnv?: string;
-      projectIdEnv?: string;
-      path?: string;
-      documentPath?: string;
-    };
     handler?: (event: unknown) => Promise<void> | void;
   };
   skills?: Record<string, Record<string, unknown>>;

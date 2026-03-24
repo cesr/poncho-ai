@@ -27,12 +27,6 @@ export function normalizeOtlp(opt: OtlpOption | undefined): OtlpConfig | undefin
 export interface TelemetryConfig {
   enabled?: boolean;
   otlp?: OtlpOption;
-  latitude?: {
-    apiKeyEnv?: string;
-    projectIdEnv?: string;
-    path?: string;
-    documentPath?: string;
-  };
   handler?: (event: AgentEvent) => Promise<void> | void;
 }
 
@@ -55,8 +49,6 @@ export class TelemetryEmitter {
     if (otlp) {
       await this.sendOtlp(event, otlp);
     }
-    // Latitude telemetry is handled by LatitudeTelemetry (from
-    // @latitude-data/telemetry) via harness.runWithTelemetry().
     // Default behavior in local dev: print concise structured logs.
     // Skip per-token stream logs to keep console output readable.
     if (event.type === "model:chunk") {

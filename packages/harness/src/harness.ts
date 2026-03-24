@@ -37,8 +37,7 @@ import { createSkillTools, normalizeScriptPolicyPath } from "./skill-tools.js";
 import { createSearchTools } from "./search-tools.js";
 import { createSubagentTools } from "./subagent-tools.js";
 import type { SubagentManager } from "./subagent-manager.js";
-import { LatitudeTelemetry } from "@latitude-data/telemetry";
-import { trace, context as otelContext, SpanStatusCode } from "@opentelemetry/api";
+import { trace, context as otelContext, SpanStatusCode, SpanKind } from "@opentelemetry/api";
 import { NodeTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-node";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { normalizeOtlp } from "./telemetry.js";
@@ -502,24 +501,16 @@ When modifying \`AGENT.md\`, follow these rules strictly:
 
 ## Telemetry Configuration (\`poncho.config.js\`)
 
-When configuring Latitude telemetry, use **exactly** these field names:
+Send OpenTelemetry traces to any OTLP-compatible collector (Jaeger, Grafana Tempo, Honeycomb, Datadog, etc.):
 
 \`\`\`javascript
 telemetry: {
   enabled: true,
-  latitude: {
-    apiKeyEnv: "LATITUDE_API_KEY",       // env var name (default)
-    projectIdEnv: "LATITUDE_PROJECT_ID", // env var name (default)
-    path: "your/prompt-path",            // optional, defaults to agent name
-  },
+  otlp: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
+  // Or with auth headers:
+  // otlp: { url: "https://api.honeycomb.io/v1/traces", headers: { "x-honeycomb-team": process.env.HONEYCOMB_API_KEY } },
 },
 \`\`\`
-
-- \`apiKeyEnv\` specifies the environment variable name for the Latitude API key (defaults to \`"LATITUDE_API_KEY"\`).
-- \`projectIdEnv\` specifies the environment variable name for the project ID (defaults to \`"LATITUDE_PROJECT_ID"\`).
-- With defaults, you only need \`telemetry: { latitude: {} }\` if the env vars are already named \`LATITUDE_API_KEY\` and \`LATITUDE_PROJECT_ID\`.
-- \`path\` must only contain letters, numbers, hyphens, underscores, dots, and slashes.
-- For a generic OTLP endpoint instead: \`telemetry: { otlp: process.env.OTEL_EXPORTER_OTLP_ENDPOINT }\`.
 
 ## Credential Configuration Pattern
 
@@ -545,10 +536,7 @@ export default {
     tokenEnv: "UPSTASH_REDIS_REST_TOKEN",   // default (falls back to KV_REST_API_TOKEN)
   },
   telemetry: {
-    latitude: {
-      apiKeyEnv: "LATITUDE_API_KEY",       // default
-      projectIdEnv: "LATITUDE_PROJECT_ID", // default
-    },
+    otlp: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
   },
   messaging: [{ platform: "slack" }],      // reads SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET by default
 }
@@ -647,11 +635,9 @@ export class AgentHarness {
   private lastSkillRefreshAt = 0;
   private readonly activeSkillNames = new Set<string>();
   private readonly registeredMcpToolNames = new Set<string>();
-  private latitudeTelemetry?: LatitudeTelemetry;
   private otlpSpanProcessor?: BatchSpanProcessor;
   private otlpTracerProvider?: NodeTracerProvider;
   private hasOtlpExporter = false;
-  private insideTelemetryCapture = false;
   private _browserSession?: unknown;
   private _browserMod?: {
     createBrowserTools: (getSession: () => unknown, getConversationId?: () => string) => ToolDefinition[];
@@ -1357,29 +1343,7 @@ export class AgentHarness {
     await bridge.discoverTools();
     await this.refreshMcpTools("initialize");
 
-    // Initialize Latitude telemetry once so the OpenTelemetry global state
-    // (context manager, tracer provider, propagator) is set up exactly once.
-    // Creating a new LatitudeTelemetry per run would break on the second call
-    // because @opentelemetry/api silently ignores repeated global registrations.
     const telemetryEnabled = config?.telemetry?.enabled !== false;
-    const latitudeBlock = config?.telemetry?.latitude;
-    const latApiKeyEnv = latitudeBlock?.apiKeyEnv ?? "LATITUDE_API_KEY";
-    const latProjectIdEnv = latitudeBlock?.projectIdEnv ?? "LATITUDE_PROJECT_ID";
-    const latitudeApiKey = process.env[latApiKeyEnv];
-    const rawProjectId = process.env[latProjectIdEnv];
-    const latitudeProjectId = rawProjectId ? parseInt(rawProjectId, 10) : undefined;
-    if (telemetryEnabled && latitudeApiKey && latitudeProjectId) {
-      this.latitudeTelemetry = new LatitudeTelemetry(latitudeApiKey);
-    } else if (telemetryEnabled && latitudeBlock && (!latitudeApiKey || !latitudeProjectId)) {
-      const missing: string[] = [];
-      if (!latitudeApiKey) missing.push(`${latApiKeyEnv} env var`);
-      if (!latitudeProjectId) missing.push(`${latProjectIdEnv} env var`);
-      console.warn(
-        `[poncho][telemetry] Latitude telemetry is configured but missing: ${missing.join(", ")}. Traces will NOT be sent.`,
-      );
-    }
-
-    // Generic OTLP trace exporter — works alongside or instead of Latitude.
     const otlpConfig = telemetryEnabled ? normalizeOtlp(config?.telemetry?.otlp) : undefined;
     if (otlpConfig) {
       const exporter = new OTLPTraceExporter({
@@ -1388,26 +1352,13 @@ export class AgentHarness {
       });
       const processor = new BatchSpanProcessor(exporter);
       this.otlpSpanProcessor = processor;
-
-      if (this.latitudeTelemetry) {
-        // Latitude already registered a global TracerProvider (v1.x) — add our
-        // processor to it so every span flows to both destinations.
-        const globalProvider = trace.getTracerProvider();
-        const delegate = (globalProvider as unknown as { getDelegate?: () => unknown })
-          .getDelegate?.() ?? globalProvider;
-        if (typeof (delegate as Record<string, unknown>).addSpanProcessor === "function") {
-          (delegate as unknown as { addSpanProcessor(p: BatchSpanProcessor): void }).addSpanProcessor(processor);
-        }
-        console.info(`[poncho][telemetry] OTLP exporter added (piggybacking on Latitude provider) → ${otlpConfig.url}`);
-      } else {
-        const provider = new NodeTracerProvider({
-          spanProcessors: [processor],
-        });
-        provider.register();
-        this.otlpTracerProvider = provider;
-        console.info(`[poncho][telemetry] OTLP exporter active (standalone provider) → ${otlpConfig.url}`);
-      }
+      const provider = new NodeTracerProvider({
+        spanProcessors: [processor],
+      });
+      provider.register();
+      this.otlpTracerProvider = provider;
       this.hasOtlpExporter = true;
+      console.info(`[poncho][telemetry] OTLP exporter active → ${otlpConfig.url}`);
     }
   }
 
@@ -1570,16 +1521,6 @@ export class AgentHarness {
     }
 
     await this.mcpBridge?.stopLocalServers();
-    if (this.latitudeTelemetry) {
-      await this.latitudeTelemetry.shutdown().catch((err) => {
-        console.warn(
-          `[poncho][telemetry] Latitude telemetry shutdown error: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      });
-      this.latitudeTelemetry = undefined;
-    }
     if (this.otlpSpanProcessor) {
       await this.otlpSpanProcessor.shutdown().catch((err) => {
         console.warn(
@@ -1608,107 +1549,23 @@ export class AgentHarness {
   }
 
   /**
-   * Wraps the run() generator with telemetry capture for complete trace coverage.
-   * Supports Latitude, generic OTLP, or both simultaneously.
-   * Streams events in real-time using an event queue pattern.
+   * Wraps the run() generator with an OTel root span (invoke_agent) so all
+   * child spans (LLM calls via AI SDK, tool execution) group under one trace.
    */
   async *runWithTelemetry(input: RunInput): AsyncGenerator<AgentEvent> {
-    const config = this.loadedConfig;
-    const telemetry = this.latitudeTelemetry;
-
-    if (telemetry) {
-      // Latitude capture path — wraps run() inside telemetry.capture().
-      // If OTLP is also configured, spans flow to both via the shared provider.
-      const latProjectIdEnv2 = config?.telemetry?.latitude?.projectIdEnv ?? "LATITUDE_PROJECT_ID";
-      const projectId = parseInt(process.env[latProjectIdEnv2] ?? "", 10) as number;
-      const rawPath = config?.telemetry?.latitude?.path ?? this.parsedAgent?.frontmatter.name ?? 'agent';
-      const path = rawPath.replace(/[^\w\-./]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '') || 'agent';
-
-      const rawConversationId = input.conversationId ?? (
-        typeof input.parameters?.__activeConversationId === "string"
-          ? input.parameters.__activeConversationId
-          : undefined
-      );
-      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      const conversationUuid = rawConversationId && UUID_RE.test(rawConversationId)
-        ? rawConversationId
-        : undefined;
-
-      console.info(
-        `[poncho][telemetry] Latitude telemetry active – projectId=${projectId}, path="${path}"${conversationUuid ? `, conversation="${conversationUuid}"` : ""}`,
-      );
-
-      const eventQueue: AgentEvent[] = [];
-      let queueResolve: ((value: void) => void) | null = null;
-      let generatorDone = false;
-      let generatorError: Error | null = null;
-
-      const capturePromise = telemetry.capture({ projectId, path, conversationUuid }, async () => {
-        this.insideTelemetryCapture = true;
-        try {
-          for await (const event of this.run(input)) {
-            eventQueue.push(event);
-            if (queueResolve) {
-              const resolve = queueResolve;
-              queueResolve = null;
-              resolve();
-            }
-          }
-        } catch (error) {
-          generatorError = error as Error;
-        } finally {
-          this.insideTelemetryCapture = false;
-          generatorDone = true;
-          if (queueResolve) {
-            queueResolve();
-            queueResolve = null;
-          }
-        }
-      });
-
-      try {
-        while (!generatorDone || eventQueue.length > 0) {
-          if (eventQueue.length > 0) {
-            yield eventQueue.shift()!;
-          } else if (!generatorDone) {
-            await new Promise<void>((resolve) => {
-              queueResolve = resolve;
-            });
-          }
-        }
-
-        if (generatorError) {
-          throw generatorError;
-        }
-      } finally {
-        try {
-          await capturePromise;
-        } finally {
-          try {
-            await telemetry.flush();
-            console.info("[poncho][telemetry] flush completed");
-          } catch (flushErr) {
-            console.error("[poncho][telemetry] flush failed:", flushErr);
-          }
-        }
-      }
-    } else if (this.hasOtlpExporter) {
-      // Standalone OTLP path — create a root span for the agent run so all
-      // child spans (LLM calls via Vercel AI SDK, tool spans) are grouped
-      // under a single trace.
-      const tracer = trace.getTracer("poncho");
+    if (this.hasOtlpExporter) {
+      const tracer = trace.getTracer("gen_ai");
       const agentName = this.parsedAgent?.frontmatter.name ?? "agent";
 
-      const rootSpan = tracer.startSpan(`agent.run ${agentName}`);
-      rootSpan.setAttribute("poncho.agent.name", agentName);
-      if (input.conversationId) {
-        rootSpan.setAttribute("poncho.conversation.id", input.conversationId);
-      }
+      const rootSpan = tracer.startSpan(`invoke_agent ${agentName}`, {
+        kind: SpanKind.INTERNAL,
+        attributes: {
+          "gen_ai.operation.name": "invoke_agent",
+          ...(input.conversationId ? { "gen_ai.conversation.id": input.conversationId } : {}),
+        },
+      });
 
-      // Bind the root span's context so every async step (including
-      // streamText and tool calls) sees it as the parent span.
       const spanContext = trace.setSpan(otelContext.active(), rootSpan);
-      this.insideTelemetryCapture = true;
 
       try {
         const gen = this.run(input);
@@ -1726,7 +1583,6 @@ export class AgentHarness {
         rootSpan.recordException(error instanceof Error ? error : new Error(String(error)));
         throw error;
       } finally {
-        this.insideTelemetryCapture = false;
         rootSpan.end();
         try {
           await this.otlpSpanProcessor?.forceFlush();
@@ -1755,9 +1611,12 @@ export class AgentHarness {
     if (!this.parsedAgent) {
       await this.initialize();
     }
-    // Start memory fetch early so it overlaps with refresh I/O
+    // Start memory + todo fetches early so they overlap with refresh I/O
     const memoryPromise = this.memoryStore
       ? this.memoryStore.getMainMemory()
+      : undefined;
+    const todosPromise = this.todoStore
+      ? this.todoStore.get(input.conversationId ?? "__default__")
       : undefined;
     await this.refreshAgentIfChanged();
     await this.refreshSkillsIfChanged();
@@ -1846,6 +1705,14 @@ Each conversation gets its own browser tab sharing a single browser instance. Ca
 ${boundedMainMemory.trim()}`
         : "";
 
+    const openTodos = (await todosPromise)?.filter(
+      (t) => t.status === "pending" || t.status === "in_progress",
+    ) ?? [];
+    const todoContext =
+      openTodos.length > 0
+        ? `\n\n## Open Tasks\n\n${openTodos.map((t) => `- [${t.status === "in_progress" ? "IN PROGRESS" : "PENDING"}] ${t.content} (id: ${t.id})`).join("\n")}`
+        : "";
+
     const buildSystemPrompt = (): string => {
       const agentPrompt = renderCurrentAgentPrompt();
       const promptWithSkills = this.skillContextWindow
@@ -1854,16 +1721,9 @@ ${boundedMainMemory.trim()}`
       const timeContext = this.reminderStore
         ? `\n\nCurrent UTC time: ${new Date().toISOString()}`
         : "";
-      return `${promptWithSkills}${memoryContext}${timeContext}
-
-## Execution Integrity
-
-- Do not claim that you executed a tool unless you actually emitted a tool call in this run.
-- Do not fabricate "Tool Used" or "Tool Result" logs as plain text.
-- Never output faux execution transcripts, markdown tool logs, or "Tool Used/Result" sections.
-- If no suitable tool is available, explicitly say that and ask for guidance.`;
+      return `${promptWithSkills}${memoryContext}${todoContext}${timeContext}`;
     };
-    let integrityPrompt = buildSystemPrompt();
+    let systemPrompt = buildSystemPrompt();
     let lastPromptFingerprint = `${this.agentFileFingerprint}\n${this.skillFingerprint}`;
 
     const pushEvent = (event: AgentEvent): AgentEvent => {
@@ -2047,7 +1907,7 @@ ${boundedMainMemory.trim()}`
           inputSchema: t.inputSchema,
         })),
       );
-      const requestTokenEstimate = estimateTotalTokens(integrityPrompt, messages, toolDefsJsonForEstimate);
+      const requestTokenEstimate = estimateTotalTokens(systemPrompt, messages, toolDefsJsonForEstimate);
       yield pushEvent({ type: "model:request", tokens: requestTokenEstimate });
 
         // Convert messages to ModelMessage format
@@ -2289,7 +2149,7 @@ ${boundedMainMemory.trim()}`
         // Re-check every N steps to curb runaway context growth in longer runs.
         const compactionConfig = resolveCompactionConfig(agent.frontmatter.compaction);
         if (compactionConfig.enabled && (step === 1 || step % COMPACTION_CHECK_INTERVAL_STEPS === 0)) {
-          const estimated = estimateTotalTokens(integrityPrompt, messages, toolDefsJsonForEstimate);
+          const estimated = estimateTotalTokens(systemPrompt, messages, toolDefsJsonForEstimate);
           const lastReportedInput = totalInputTokens > 0 ? totalInputTokens : 0;
           const effectiveTokens = Math.max(estimated, lastReportedInput);
 
@@ -2314,7 +2174,7 @@ ${boundedMainMemory.trim()}`
                   emittedMessages.pop();
                 }
               }
-              const tokensAfterCompaction = estimateTotalTokens(integrityPrompt, messages, toolDefsJsonForEstimate);
+              const tokensAfterCompaction = estimateTotalTokens(systemPrompt, messages, toolDefsJsonForEstimate);
               latestContextTokens = tokensAfterCompaction;
               toolOutputEstimateSinceModel = 0;
               yield pushEvent({
@@ -2356,14 +2216,14 @@ ${boundedMainMemory.trim()}`
 
         const result = await streamText({
           model: modelInstance,
-          system: integrityPrompt,
+          system: systemPrompt,
           messages: cachedMessages,
           tools,
           temperature,
           abortSignal: input.abortSignal,
           ...(typeof maxTokens === "number" ? { maxTokens } : {}),
           experimental_telemetry: {
-            isEnabled: telemetryEnabled && !!(this.latitudeTelemetry || this.hasOtlpExporter),
+            isEnabled: telemetryEnabled && this.hasOtlpExporter,
             recordInputs: true,
             recordOutputs: true,
           },
@@ -2779,39 +2639,24 @@ ${boundedMainMemory.trim()}`
         return;
       }
 
-      // Create telemetry tool spans so tool calls appear in traces
-      type ToolSpanHandle = { end: (opts: { result: { value: unknown; isError: boolean } }) => void };
-      const toolSpans = new Map<string, ToolSpanHandle>();
-      if (this.insideTelemetryCapture && this.latitudeTelemetry) {
+      // OTel GenAI execute_tool spans for tool call visibility in traces
+      type OtelSpan = ReturnType<ReturnType<typeof trace.getTracer>["startSpan"]>;
+      const toolSpans = new Map<string, OtelSpan>();
+      if (this.hasOtlpExporter) {
+        const tracer = trace.getTracer("gen_ai");
         for (const call of approvedCalls) {
-          toolSpans.set(
-            call.id,
-            this.latitudeTelemetry.span.tool({
-              name: call.name,
-              call: { id: call.id, arguments: call.input },
-            }),
-          );
-        }
-      } else if (this.insideTelemetryCapture && this.hasOtlpExporter) {
-        const tracer = trace.getTracer("poncho");
-        for (const call of approvedCalls) {
-          const span = tracer.startSpan(`tool ${call.name}`, {
+          const toolDef = this.dispatcher.get(call.name);
+          toolSpans.set(call.id, tracer.startSpan(`execute_tool ${call.name}`, {
+            kind: SpanKind.INTERNAL,
             attributes: {
-              "poncho.tool.name": call.name,
-              "poncho.tool.call_id": call.id,
-              "poncho.tool.arguments": JSON.stringify(call.input),
+              "gen_ai.operation.name": "execute_tool",
+              "gen_ai.tool.name": call.name,
+              "gen_ai.tool.call.id": call.id,
+              "gen_ai.tool.type": "function",
+              ...(toolDef?.description ? { "gen_ai.tool.description": toolDef.description } : {}),
+              "gen_ai.tool.call.arguments": JSON.stringify(call.input),
             },
-          });
-          toolSpans.set(call.id, {
-            end(opts: { result: { value: unknown; isError: boolean } }) {
-              if (opts.result.isError) {
-                span.setStatus({ code: SpanStatusCode.ERROR, message: String(opts.result.value) });
-              } else {
-                span.setStatus({ code: SpanStatusCode.OK });
-              }
-              span.end();
-            },
-          });
+          }));
         }
       }
 
@@ -2883,7 +2728,12 @@ ${boundedMainMemory.trim()}`
       for (const result of batchResults) {
         const span = toolSpans.get(result.callId);
         if (result.error) {
-          span?.end({ result: { value: result.error, isError: true } });
+          if (span) {
+            span.setAttribute("error.type", "Error");
+            span.setStatus({ code: SpanStatusCode.ERROR, message: result.error });
+            span.recordException(new Error(result.error));
+            span.end();
+          }
           yield pushEvent({
             type: "tool:error",
             tool: result.tool,
@@ -2917,7 +2767,11 @@ ${boundedMainMemory.trim()}`
             output: { type: "json", value: { error: result.error } },
           });
         } else {
-          span?.end({ result: { value: result.output ?? null, isError: false } });
+          if (span) {
+            span.setAttribute("gen_ai.tool.call.result", JSON.stringify(result.output ?? null));
+            span.setStatus({ code: SpanStatusCode.OK });
+            span.end();
+          }
           const serialized = JSON.stringify(result.output ?? null);
           const outputTokenEstimate = Math.ceil(serialized.length / 4);
           toolOutputEstimateSinceModel += outputTokenEstimate;
@@ -3041,7 +2895,7 @@ ${boundedMainMemory.trim()}`
             agent = this.parsedAgent as ParsedAgent;
             const currentFingerprint = `${this.agentFileFingerprint}\n${this.skillFingerprint}`;
             if (currentFingerprint !== lastPromptFingerprint) {
-              integrityPrompt = buildSystemPrompt();
+              systemPrompt = buildSystemPrompt();
               lastPromptFingerprint = currentFingerprint;
             }
           }
