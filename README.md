@@ -2,7 +2,7 @@
 
 Poncho is an agent harness built for teams.
 
-You define agent behavior in code and develop locally. Your team uses the agent through a web UI, Slack, Telegram, email, or API.
+You develop agents by chatting with them locally, version-control everything in git, and deploy to production with guardrails. Your team uses the agent through a web UI, Slack, Telegram, email, or API.
 
 > **Beta**: Poncho is under active development. Expect breaking changes, and please open an issue if you hit anything confusing or sharp.
 
