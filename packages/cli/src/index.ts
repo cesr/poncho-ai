@@ -3385,6 +3385,7 @@ export const createRequestHandler = async (options?: {
       let latestRunId = "";
       const draft = createTurnDraftState();
       let checkpointedRun = false;
+      let checkpointTextAlreadySent = false;
       let runContextTokens = 0;
       let runContextWindow = 0;
       let runContinuation = false;
@@ -3479,11 +3480,27 @@ export const createRequestHandler = async (options?: {
             });
             checkpointedRun = true;
 
-            // Send inline keyboard approval buttons to Telegram
             const conv = await conversationStore.get(conversationId);
             if (conv?.channelMeta?.platform === "telegram") {
               const tgAdapter = messagingAdapters.get("telegram") as TelegramAdapter | undefined;
               if (tgAdapter) {
+                const threadRef: import("@poncho-ai/messaging").ThreadRef = {
+                  channelId: conv.channelMeta.channelId,
+                  platformThreadId: conv.channelMeta.platformThreadId,
+                };
+
+                // Send accumulated text BEFORE approval buttons so Telegram
+                // shows them in the natural order (text → approval request).
+                const pendingText = draft.assistantResponse.trim();
+                if (pendingText) {
+                  try {
+                    await tgAdapter.sendReply(threadRef, pendingText);
+                    checkpointTextAlreadySent = true;
+                  } catch (err: unknown) {
+                    console.error("[messaging-runner] failed to send pre-approval text:", err instanceof Error ? err.message : err);
+                  }
+                }
+
                 const approvals = event.approvals.map(a => ({
                   approvalId: a.approvalId,
                   tool: a.tool,
@@ -3571,8 +3588,8 @@ export const createRequestHandler = async (options?: {
         runConversations.delete(latestRunId);
       }
 
-      console.log("[messaging-runner] run complete, response length:", draft.assistantResponse.length, runContinuation ? "(continuation)" : "");
-      const response = draft.assistantResponse;
+      const response = checkpointTextAlreadySent ? "" : draft.assistantResponse;
+      console.log("[messaging-runner] run complete, response length:", response.length, checkpointTextAlreadySent ? "(text sent at checkpoint)" : "", runContinuation ? "(continuation)" : "");
 
       return {
         response,
