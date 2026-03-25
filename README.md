@@ -1,17 +1,8 @@
 # Poncho
 
-Poncho is a cloud agent harness.
+Poncho is an agent harness built for teams.
 
-Develop locally with `poncho dev`, then deploy the same agent to production (serverless, containers, long-lived servers, etc.) with your own:
-
-- Skills and scripts
-- Tools and MCP servers
-- Guardrails and approval policies
-- Persistence and memory
-- Telemetry and observability
-- Testing workflows
-
-Deployed agents are accessible via web UI, REST API, or the TypeScript SDK.
+You define agent behavior in code and develop locally. Your team uses the agent through a web UI, Slack, Telegram, email, or API.
 
 > **Beta**: Poncho is under active development. Expect breaking changes, and please open an issue if you hit anything confusing or sharp.
 
@@ -32,23 +23,27 @@ poncho dev
 
 ## What is Poncho?
 
-Poncho is a framework for building custom AI agents that are version-controlled in git, developed locally, and deployed as standard web endpoints. It works equally well on serverless platforms (Vercel, Lambda), long-lived servers (Docker, Fly.io), or anything in between. You define behavior in `AGENT.md`, iterate by chatting with the agent on your machine, and expose the same agent safely through a UI/API in production. In production, agents can only act through the skills and tools you configure.
+Poncho is a framework for building AI agents that other people can use. You define behavior in a single `AGENT.md` file, add skills and tools, develop locally by chatting with the agent, and deploy it as a web endpoint your team can access.
 
-Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` folder) and implements the [Agent Skills open standard](https://agentskills.io/home). Skills are portable across 25+ platforms including GitHub Copilot, Cursor, and VS Code.
+**For your team**, the agent is a web app they can talk to through the built-in chat UI, Slack, Telegram, email, or your own frontend via the API. They don't need to know how it works.
 
-**Key features:**
+**For you**, the agent is a git repository. Behavior, skills, tests, and configuration are all version-controlled. You iterate locally with `poncho dev`, review changes in PRs, and deploy to Vercel, Docker, Lambda, Fly.io, or anywhere else that runs Node.
 
-- **Git-native**: agent behavior, skills, and tests live in your repository (reviewable diffs + easy rollbacks).
-- **Single-file agent definition**: define runtime config + instructions in `AGENT.md` (YAML frontmatter + prompt content).
-- **Skills you can ship**: AgentSkills-style `skills/*/SKILL.md` plus TypeScript/JavaScript scripts under `scripts/`.
-- **MCP support**: connect remote tool servers and inject required environment variables through config.
-- **Conversation-first API + streaming**: stored conversations with SSE streaming responses and tool events.
-- **Multimodal inputs**: attach images, PDFs, and other files via the Web UI, API, or client SDK.
+Poncho uses the same conventions as Claude Code and OpenClaw (`AGENT.md` + `skills/` folder) and implements the [Agent Skills open standard](https://agentskills.io/home). Skills are portable across 25+ platforms including GitHub Copilot, Cursor, and VS Code.
+
+**What's included:**
+
+- **Web UI + API**: built-in chat interface and REST API with SSE streaming, conversation management, and file attachments.
+- **Messaging integrations**: connect to Slack, Telegram, and email (Resend) so your team can talk to the agent where they already work.
+- **Skills and MCP**: add capabilities via `SKILL.md` files with TypeScript/JavaScript scripts, or connect remote MCP tool servers.
+- **Guardrails**: control which tools the agent can use in production, and require human approval for risky actions.
+- **Auth**: protect your endpoint with token-based authentication.
 - **Browser automation**: headless Chromium with live viewport streaming, snapshot/ref interaction, and session persistence.
-- **Subagents**: agents can spawn asynchronous background tasks for parallel work, with independent conversations, read-only memory, and approval tunneling.
+- **Subagents**: agents can spawn background tasks for parallel work, with independent conversations and approval tunneling.
+- **Persistent memory**: the agent remembers context across conversations with semantic recall.
 - **Context compaction**: automatic summarization of older messages when the context window fills up, keeping conversations going indefinitely.
-- **Pluggable storage + memory**: local files for dev or hosted stores (e.g. Upstash), with optional persistent memory + recall.
-- **Testing + observability**: `poncho test` workflows and OpenTelemetry traces/events.
+- **Storage**: local files for dev, or hosted stores (Redis, Upstash, DynamoDB) for production.
+- **Testing + observability**: `poncho test` workflows and OpenTelemetry traces.
 
 ### Getting Started
 - [Why Poncho?](#why-poncho)
@@ -104,17 +99,17 @@ Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` 
 
 ## Why Poncho?
 
-1. ### Local-first development
-   Chat with your agent via `poncho dev` (web UI + API) or `poncho run --interactive` (terminal UI), with tool calls streaming as they run.
+1. ### Built for sharing
+   Your agent ships with a web UI, REST API, and messaging integrations (Slack, Telegram, email). Everything your team needs to use it, out of the box.
 
-2. ### Same agent in dev and prod
-   What you build locally (`AGENT.md`, `skills/`, config, tests) is what you deploy, with your guardrails.
+2. ### Developer-controlled
+   You decide what the agent can do. Skills, tools, and guardrails are configured in your repo. Risky actions can require human approval. Production behavior is locked down by default.
 
-3. ### Guardrails by configuration
-   In production, agents only act through the tools/skills you enable (and risky tools can require approval).
+3. ### Local-first development
+   Chat with your agent via `poncho dev` (web UI + API) or `poncho run --interactive` (terminal). What you build locally is what you deploy.
 
-4. ### Deployable + observable
-   Build once and run on Vercel, Docker, Lambda, Fly.io, and more, with OpenTelemetry traces and `poncho test` workflows.
+4. ### Deploy anywhere
+   Same agent code runs on Vercel, Docker, Lambda, Fly.io, and more, with OpenTelemetry traces and `poncho test` workflows.
 
 ## Quick Start
 
