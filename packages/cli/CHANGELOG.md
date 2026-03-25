@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.33.2
+
+### Patch Changes
+
+- [#70](https://github.com/cesr/poncho-ai/pull/70) [`909d9d8`](https://github.com/cesr/poncho-ai/commit/909d9d86cbd62837c77637b3d3334ac086570691) Thanks [@cesr](https://github.com/cesr)! - Unify conversation run paths into executeConversationTurn, reducing duplicated event handling and post-run persistence logic across all execution surfaces (Web UI, Telegram, cron, approvals, continuations). Net reduction of ~245 lines with no behavior changes.
+
 ## 0.33.1
 
 ### Patch Changes
