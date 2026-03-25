@@ -138,11 +138,11 @@ export class AgentBridge {
         break;
       }
 
-      if (this.adapter.autoReply) {
+      if (this.adapter.autoReply && (accumulatedResponse.trim() || accumulatedFiles.length > 0)) {
         await this.adapter.sendReply(message.threadRef, accumulatedResponse, {
           files: accumulatedFiles.length > 0 ? accumulatedFiles : undefined,
         });
-      } else if (!this.adapter.hasSentInCurrentRequest) {
+      } else if (!this.adapter.autoReply && !this.adapter.hasSentInCurrentRequest) {
         console.warn("[agent-bridge] tool mode completed without send_email being called; no reply sent");
       }
     } catch (error) {
