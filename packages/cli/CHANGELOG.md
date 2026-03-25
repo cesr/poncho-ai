@@ -1,5 +1,14 @@
 # @poncho-ai/cli
 
+## 0.33.4
+
+### Patch Changes
+
+- [#73](https://github.com/cesr/poncho-ai/pull/73) [`f72f202`](https://github.com/cesr/poncho-ai/commit/f72f202d839dbbb8240336ec76eb6340aba20f06) Thanks [@cesr](https://github.com/cesr)! - Fix Telegram approval message ordering: send accumulated assistant text before approval buttons so the conversation reads naturally. Skip empty bridge replies when text was already sent at checkpoint.
+
+- Updated dependencies [[`f72f202`](https://github.com/cesr/poncho-ai/commit/f72f202d839dbbb8240336ec76eb6340aba20f06)]:
+  - @poncho-ai/messaging@0.7.10
+
 ## 0.33.3
 
 ### Patch Changes
