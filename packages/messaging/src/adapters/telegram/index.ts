@@ -502,7 +502,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     await answerCallbackQuery(this.botToken, query.id, {
       text: approved ? "Approved" : "Denied",
-    });
+    }).catch(() => {});
 
     if (this.approvalDecisionHandler && chatId) {
       await this.approvalDecisionHandler(approvalId, approved, chatId);
