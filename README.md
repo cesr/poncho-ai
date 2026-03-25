@@ -20,9 +20,7 @@ Deployed agents are accessible via web UI, REST API, or the TypeScript SDK.
 ![Poncho CLI and Web UI](assets/poncho.png)
 
 ```bash
-npm install -g @poncho-ai/cli
-
-poncho init my-agent
+npx @poncho-ai/cli init my-agent
 cd my-agent
 poncho dev
 ```
@@ -123,13 +121,13 @@ Poncho shares conventions with Claude Code and OpenClaw (`AGENT.md` + `skills/` 
 ### 1. Create an agent
 
 ```bash
-poncho init my-agent
+npx @poncho-ai/cli init my-agent
 cd my-agent
 ```
 
 Init options:
-- `poncho init <name>`: light onboarding (recommended defaults)
-- `poncho init <name> --yes`: skip onboarding and configure manually
+- `npx @poncho-ai/cli init <name>`: light onboarding (recommended defaults)
+- `npx @poncho-ai/cli init <name> --yes`: skip onboarding and configure manually
 
 This creates a ready-to-run project:
 
@@ -154,22 +152,26 @@ my-agent/
 └── .gitignore
 ```
 
-**package.json** includes the runtime:
+**package.json** includes the CLI (which brings the runtime as a transitive dependency):
 
 ```json
 {
   "name": "my-agent",
   "private": true,
   "type": "module",
+  "scripts": {
+    "dev": "poncho dev",
+    "start": "poncho dev",
+    "test": "poncho test",
+    "build": "poncho build"
+  },
   "dependencies": {
-    "@poncho-ai/harness": "^0.16.0",
-    "@poncho-ai/sdk": "^1.1.0"
+    "@poncho-ai/cli": "^0.33.4"
   }
 }
 ```
 
-- `@poncho-ai/harness` is the agent runtime - it handles the conversation loop, tool execution, and streaming.
-- `@poncho-ai/sdk` provides shared runtime contracts used by the scaffold.
+- `@poncho-ai/cli` provides the `poncho` binary and pulls in the agent runtime (`@poncho-ai/harness`, `@poncho-ai/sdk`) as transitive dependencies.
 - Local skill scaffolds are generated under `skills/starter/` and `skills/fetch-page/`.
 
 ### 2. Configure model credentials (if you skipped onboarding)

@@ -826,38 +826,35 @@ const resolveLocalPackagesRoot = (): string | null => {
 };
 
 /**
- * Build dependency specifiers for the scaffolded project.
- * In dev mode we use `file:` paths so pnpm can resolve local packages;
+ * Resolve the @poncho-ai/cli dependency specifier for the scaffolded project.
+ * In dev mode we use `link:` so pnpm can resolve the local package;
  * in production we point at the npm registry.
  */
-const resolveCoreDeps = async (
-  projectDir: string,
-): Promise<{ harness: string; sdk: string }> => {
+const resolveCliDep = async (projectDir: string): Promise<string> => {
   const packagesRoot = resolveLocalPackagesRoot();
   if (packagesRoot) {
-    const harnessAbs = resolve(packagesRoot, "harness");
-    const sdkAbs = resolve(packagesRoot, "sdk");
-    return {
-      harness: `link:${relative(projectDir, harnessAbs)}`,
-      sdk: `link:${relative(projectDir, sdkAbs)}`,
-    };
+    const cliAbs = resolve(packagesRoot, "cli");
+    return `link:${relative(projectDir, cliAbs)}`;
   }
-  return {
-    harness: await readCliDependencyVersion("@poncho-ai/harness", "^0.6.0"),
-    sdk: await readCliDependencyVersion("@poncho-ai/sdk", "^0.6.0"),
-  };
+  const version = await readCliVersion();
+  return `^${version}`;
 };
 
 const PACKAGE_TEMPLATE = async (name: string, projectDir: string): Promise<string> => {
-  const deps = await resolveCoreDeps(projectDir);
+  const cliDep = await resolveCliDep(projectDir);
   return JSON.stringify(
     {
       name,
       private: true,
       type: "module",
+      scripts: {
+        dev: "poncho dev",
+        start: "poncho dev",
+        test: "poncho test",
+        build: "poncho build",
+      },
       dependencies: {
-        "@poncho-ai/harness": deps.harness,
-        "@poncho-ai/sdk": deps.sdk,
+        "@poncho-ai/cli": cliDep,
       },
     },
     null,
