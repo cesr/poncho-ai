@@ -1,5 +1,11 @@
 # @poncho-ai/messaging
 
+## 0.7.9
+
+### Patch Changes
+
+- [#71](https://github.com/cesr/poncho-ai/pull/71) [`3e5bf7e`](https://github.com/cesr/poncho-ai/commit/3e5bf7e527e394c5f823beac90712756e57cd491) Thanks [@cesr](https://github.com/cesr)! - Fix Telegram tool approval handler never persisting the approval decision, preventing the resume-from-checkpoint flow from triggering. Make answerCallbackQuery best-effort so transient fetch failures don't block approval processing.
+
 ## 0.7.8
 
 ### Patch Changes
