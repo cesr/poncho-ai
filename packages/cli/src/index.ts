@@ -4188,17 +4188,22 @@ export const createRequestHandler = async (options?: {
           // Regular (non-subagent) approval
           const found = await findPendingApproval(approvalId, "local-owner");
           let foundConversation = found?.conversation;
-          let foundApproval = found?.approval;
+          const foundApproval = found?.approval;
 
           if (!foundConversation || !foundApproval) {
             console.warn("[telegram-approval] approval not found:", approvalId);
             return;
           }
-          foundApproval = normalizeApprovalCheckpoint(foundApproval, foundConversation.messages);
 
-          await adapter.updateApprovalMessage(approvalId, approved ? "approved" : "denied", foundApproval.tool);
+          const approvalDecision = approved ? "approved" as const : "denied" as const;
+          await adapter.updateApprovalMessage(approvalId, approvalDecision, foundApproval.tool);
 
-          foundApproval.decision = approved ? "approved" : "denied";
+          foundConversation.pendingApprovals = (foundConversation.pendingApprovals ?? []).map((approval) =>
+            approval.approvalId === approvalId
+              ? { ...normalizeApprovalCheckpoint(approval, foundConversation!.messages), decision: approvalDecision }
+              : normalizeApprovalCheckpoint(approval, foundConversation!.messages),
+          );
+          await conversationStore.update(foundConversation);
 
           broadcastEvent(foundConversation.conversationId,
             approved
@@ -4206,15 +4211,16 @@ export const createRequestHandler = async (options?: {
               : { type: "tool:approval:denied", approvalId },
           );
 
-          const allApprovals = (foundConversation.pendingApprovals ?? []).map((approval) =>
-            normalizeApprovalCheckpoint(approval, foundConversation!.messages),
+          const refreshedConversation = await conversationStore.get(foundConversation.conversationId);
+          const allApprovals = (refreshedConversation?.pendingApprovals ?? []).map((approval) =>
+            normalizeApprovalCheckpoint(approval, refreshedConversation!.messages),
           );
           const allDecided = allApprovals.length > 0 && allApprovals.every(a => a.decision != null);
 
           if (!allDecided) {
-            await conversationStore.update(foundConversation);
             return;
           }
+          foundConversation = refreshedConversation!;
 
           // All decided — resume the run
           const conversationId = foundConversation.conversationId;
