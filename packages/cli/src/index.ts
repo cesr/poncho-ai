@@ -497,12 +497,14 @@ const buildAssistantMetadata = (
 const executeConversationTurn = async ({
   harness,
   runInput,
+  events,
   initialContextTokens = 0,
   initialContextWindow = 0,
   onEvent,
 }: {
   harness: AgentHarness;
-  runInput: Parameters<AgentHarness["runWithTelemetry"]>[0];
+  runInput?: Parameters<AgentHarness["runWithTelemetry"]>[0];
+  events?: AsyncIterable<AgentEvent>;
   initialContextTokens?: number;
   initialContextWindow?: number;
   onEvent?: (event: AgentEvent, draft: TurnDraftState) => void | Promise<void>;
@@ -518,7 +520,8 @@ const executeConversationTurn = async ({
   let runSteps = 0;
   let runMaxSteps: number | undefined;
 
-  for await (const event of harness.runWithTelemetry(runInput)) {
+  const source = events ?? harness.runWithTelemetry(runInput!);
+  for await (const event of source) {
     recordStandardTurnEvent(draft, event);
     if (event.type === "run:started") {
       latestRunId = event.runId;
@@ -638,6 +641,64 @@ export const __internalRunOrchestration = {
   createTurnDraftState,
   recordStandardTurnEvent,
   executeConversationTurn,
+};
+
+// ── Shared turn metadata helper ──────────────────────────────────
+// Standardises post-run metadata persistence across all execution paths.
+
+type TurnResultMetadata = {
+  latestRunId: string;
+  contextTokens: number;
+  contextWindow: number;
+  continuation?: boolean;
+  continuationMessages?: Message[];
+  harnessMessages?: Message[];
+  toolResultArchive?: Conversation["_toolResultArchive"];
+};
+
+const applyTurnMetadata = (
+  conv: Conversation,
+  meta: TurnResultMetadata,
+  opts: {
+    clearContinuation?: boolean;
+    clearApprovals?: boolean;
+    setIdle?: boolean;
+    shouldRebuildCanonical?: boolean;
+  } = {},
+): void => {
+  const {
+    clearContinuation = true,
+    clearApprovals = true,
+    setIdle = true,
+    shouldRebuildCanonical = false,
+  } = opts;
+
+  if (meta.continuation && meta.continuationMessages) {
+    conv._continuationMessages = meta.continuationMessages;
+  } else if (clearContinuation) {
+    conv._continuationMessages = undefined;
+    conv._continuationCount = undefined;
+  }
+
+  if (meta.harnessMessages) {
+    conv._harnessMessages = meta.harnessMessages;
+  } else if (shouldRebuildCanonical) {
+    conv._harnessMessages = conv.messages;
+  }
+
+  if (meta.toolResultArchive !== undefined) {
+    conv._toolResultArchive = meta.toolResultArchive;
+  }
+
+  conv.runtimeRunId = meta.latestRunId || conv.runtimeRunId;
+
+  if (clearApprovals) conv.pendingApprovals = [];
+  if (setIdle) conv.runStatus = "idle";
+
+  if (meta.contextTokens > 0) conv.contextTokens = meta.contextTokens;
+  if (meta.contextWindow > 0) conv.contextWindow = meta.contextWindow;
+
+  conv.updatedAt = Date.now();
 };
 
 // ── Shared cron helpers ──────────────────────────────────────────
@@ -2785,30 +2846,23 @@ export const createRequestHandler = async (options?: {
       if (callbackNeedsContinuation || execution.draft.assistantResponse.length > 0 || execution.draft.toolTimeline.length > 0) {
         const freshConv = await conversationStore.get(conversationId);
         if (freshConv) {
-          if (callbackNeedsContinuation) {
-            freshConv._continuationMessages = execution.runContinuationMessages;
-          } else {
-            freshConv._continuationMessages = undefined;
+          if (!callbackNeedsContinuation) {
             freshConv.messages.push({
               role: "assistant",
               content: execution.draft.assistantResponse,
               metadata: buildAssistantMetadata(execution.draft),
             });
           }
-          if (callbackNeedsContinuation && execution.runHarnessMessages) {
-            freshConv._harnessMessages = execution.runHarnessMessages;
-          } else if (historySelection.shouldRebuildCanonical) {
-            freshConv._harnessMessages = freshConv.messages;
-          } else {
-            freshConv._harnessMessages = freshConv.messages;
-          }
-          freshConv._toolResultArchive = harness.getToolResultArchive(conversationId);
-          freshConv.runtimeRunId = execution.latestRunId || freshConv.runtimeRunId;
+          applyTurnMetadata(freshConv, {
+            latestRunId: execution.latestRunId,
+            contextTokens: execution.runContextTokens,
+            contextWindow: execution.runContextWindow,
+            continuation: !!callbackNeedsContinuation,
+            continuationMessages: execution.runContinuationMessages,
+            harnessMessages: callbackNeedsContinuation ? execution.runHarnessMessages : undefined,
+            toolResultArchive: harness.getToolResultArchive(conversationId),
+          }, { shouldRebuildCanonical: true, clearApprovals: false });
           freshConv.runningCallbackSince = undefined;
-          freshConv.runStatus = "idle";
-          if (execution.runContextTokens > 0) freshConv.contextTokens = execution.runContextTokens;
-          if (execution.runContextWindow > 0) freshConv.contextWindow = execution.runContextWindow;
-          freshConv.updatedAt = Date.now();
           await conversationStore.update(freshConv);
 
           // Proactive messaging notification if conversation has a messaging channel
@@ -3039,15 +3093,7 @@ export const createRequestHandler = async (options?: {
       runId: null,
     });
     let latestRunId = conversation.runtimeRunId ?? "";
-    let assistantResponse = "";
-    const toolTimeline: string[] = [];
-    const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
-    let currentText = "";
-    let currentTools: string[] = [];
     let checkpointedRun = false;
-    let runContextTokens = conversation.contextTokens ?? 0;
-    let runContextWindow = conversation.contextWindow ?? 0;
-    let resumeHarnessMessages: Message[] | undefined;
 
     const normalizedCheckpoint = normalizeApprovalCheckpoint(checkpoint, conversation.messages);
     const baseMessages = normalizedCheckpoint.baseMessageCount != null
@@ -3090,136 +3136,103 @@ export const createRequestHandler = async (options?: {
       ? [...fullCheckpointMessages, resumeToolResultMsg]
       : fullCheckpointMessages;
 
+    let draftRef: TurnDraftState | undefined;
+    let execution: ExecuteTurnResult | undefined;
+
     try {
-      for await (const event of harness.continueFromToolResult({
-        messages: fullCheckpointMessages,
-        toolResults,
-        conversationId,
-        abortSignal: abortController.signal,
-      })) {
-        if (event.type === "run:started") {
-          latestRunId = event.runId;
-          runOwners.set(event.runId, conversation.ownerId);
-          runConversations.set(event.runId, conversationId);
-          const active = activeConversationRuns.get(conversationId);
-          if (active && active.abortController === abortController) {
-            active.runId = event.runId;
-          }
-        }
-        if (event.type === "model:chunk") {
-          if (currentTools.length > 0) {
-            sections.push({ type: "tools", content: currentTools });
-            currentTools = [];
-            if (assistantResponse.length > 0 && !/\s$/.test(assistantResponse)) {
-              assistantResponse += " ";
+      execution = await executeConversationTurn({
+        harness,
+        events: harness.continueFromToolResult({
+          messages: fullCheckpointMessages,
+          toolResults,
+          conversationId,
+          abortSignal: abortController.signal,
+        }),
+        initialContextTokens: conversation.contextTokens ?? 0,
+        initialContextWindow: conversation.contextWindow ?? 0,
+        onEvent: async (event, draft) => {
+          draftRef = draft;
+          if (event.type === "run:started") {
+            latestRunId = event.runId;
+            runOwners.set(event.runId, conversation.ownerId);
+            runConversations.set(event.runId, conversationId);
+            const active = activeConversationRuns.get(conversationId);
+            if (active && active.abortController === abortController) {
+              active.runId = event.runId;
             }
           }
-          assistantResponse += event.content;
-          currentText += event.content;
-        }
-        if (event.type === "tool:started") {
-          if (currentText.length > 0) {
-            sections.push({ type: "text", content: currentText });
-            currentText = "";
+          if (event.type === "tool:approval:required") {
+            const toolText = `- approval required \`${event.tool}\``;
+            draft.toolTimeline.push(toolText);
+            draft.currentTools.push(toolText);
           }
-          const toolText = `- start \`${event.tool}\``;
-          toolTimeline.push(toolText);
-          currentTools.push(toolText);
-        }
-        if (event.type === "tool:completed") {
-          const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
-          toolTimeline.push(toolText);
-          currentTools.push(toolText);
-        }
-        if (event.type === "tool:error") {
-          const toolText = `- error \`${event.tool}\`: ${event.error}`;
-          toolTimeline.push(toolText);
-          currentTools.push(toolText);
-        }
-        if (event.type === "tool:approval:required") {
-          const toolText = `- approval required \`${event.tool}\``;
-          toolTimeline.push(toolText);
-          currentTools.push(toolText);
-        }
-        if (event.type === "tool:approval:checkpoint") {
-          const conv = await conversationStore.get(conversationId);
-          if (conv) {
-            conv.pendingApprovals = buildApprovalCheckpoints({
-              approvals: event.approvals,
-              runId: latestRunId,
-              checkpointMessages: [...fullCheckpointWithResults, ...event.checkpointMessages],
-              baseMessageCount: 0,
-              pendingToolCalls: event.pendingToolCalls,
-            });
-            conv.updatedAt = Date.now();
-            await conversationStore.update(conv);
+          if (event.type === "tool:approval:checkpoint") {
+            const conv = await conversationStore.get(conversationId);
+            if (conv) {
+              conv.pendingApprovals = buildApprovalCheckpoints({
+                approvals: event.approvals,
+                runId: latestRunId,
+                checkpointMessages: [...fullCheckpointWithResults, ...event.checkpointMessages],
+                baseMessageCount: 0,
+                pendingToolCalls: event.pendingToolCalls,
+              });
+              conv.updatedAt = Date.now();
+              await conversationStore.update(conv);
 
-            if (conv.channelMeta?.platform === "telegram") {
-              const tgAdapter = messagingAdapters.get("telegram") as TelegramAdapter | undefined;
-              if (tgAdapter) {
-                const messageThreadId = parseTelegramMessageThreadIdFromPlatformThreadId(
-                  conv.channelMeta.platformThreadId,
-                  conv.channelMeta.channelId,
-                );
-                void tgAdapter.sendApprovalRequest(
-                  conv.channelMeta.channelId,
-                  event.approvals.map(a => ({ approvalId: a.approvalId, tool: a.tool, input: a.input })),
-                  { message_thread_id: messageThreadId },
-                ).catch(() => {});
+              if (conv.channelMeta?.platform === "telegram") {
+                const tgAdapter = messagingAdapters.get("telegram") as TelegramAdapter | undefined;
+                if (tgAdapter) {
+                  const messageThreadId = parseTelegramMessageThreadIdFromPlatformThreadId(
+                    conv.channelMeta.platformThreadId,
+                    conv.channelMeta.channelId,
+                  );
+                  void tgAdapter.sendApprovalRequest(
+                    conv.channelMeta.channelId,
+                    event.approvals.map(a => ({ approvalId: a.approvalId, tool: a.tool, input: a.input })),
+                    { message_thread_id: messageThreadId },
+                  ).catch(() => {});
+                }
               }
             }
+            checkpointedRun = true;
           }
-          checkpointedRun = true;
-        }
-        if (event.type === "run:completed") {
-          if (assistantResponse.length === 0 && event.result.response) {
-            assistantResponse = event.result.response;
-          }
-          runContextTokens = event.result.contextTokens ?? runContextTokens;
-          runContextWindow = event.result.contextWindow ?? runContextWindow;
-          if (event.result.continuationMessages) {
-            resumeHarnessMessages = event.result.continuationMessages;
-          }
-        }
-        if (event.type === "run:error") {
-          assistantResponse = assistantResponse || `[Error: ${event.error.message}]`;
-        }
-        await telemetry.emit(event);
-        broadcastEvent(conversationId, event);
-        emitBrowserStatusIfActive(conversationId, event);
-      }
+          await telemetry.emit(event);
+          broadcastEvent(conversationId, event);
+          emitBrowserStatusIfActive(conversationId, event);
+        },
+      });
+      flushTurnDraft(execution.draft);
+      latestRunId = execution.latestRunId || latestRunId;
     } catch (err) {
       console.error("[resume-run] error:", err instanceof Error ? err.message : err);
-      assistantResponse = assistantResponse || `[Error: ${err instanceof Error ? err.message : "Unknown error"}]`;
+      if (draftRef) {
+        draftRef.assistantResponse = draftRef.assistantResponse || `[Error: ${err instanceof Error ? err.message : "Unknown error"}]`;
+        flushTurnDraft(draftRef);
+      }
     }
 
-    if (currentTools.length > 0) {
-      sections.push({ type: "tools", content: currentTools });
-    }
-    if (currentText.length > 0) {
-      sections.push({ type: "text", content: currentText });
-    }
+    const draft = execution?.draft ?? draftRef ?? createTurnDraftState();
 
     if (!checkpointedRun) {
       const conv = await conversationStore.get(conversationId);
       if (conv) {
-        const prevMessages = conv.messages;
         const hasAssistantContent =
-          assistantResponse.length > 0 || toolTimeline.length > 0 || sections.length > 0;
+          draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0 || draft.sections.length > 0;
         if (hasAssistantContent) {
+          const prevMessages = conv.messages;
           const lastMsg = prevMessages[prevMessages.length - 1];
           if (lastMsg && lastMsg.role === "assistant" && lastMsg.metadata) {
             const existingToolActivity = (lastMsg.metadata as Record<string, unknown>).toolActivity;
             const existingSections = (lastMsg.metadata as Record<string, unknown>).sections;
             const mergedTimeline = [
               ...(Array.isArray(existingToolActivity) ? existingToolActivity as string[] : []),
-              ...toolTimeline,
+              ...draft.toolTimeline,
             ];
             const mergedSections = [
               ...(Array.isArray(existingSections) ? existingSections as Array<{ type: "text" | "tools"; content: string | string[] }> : []),
-              ...sections,
+              ...draft.sections,
             ];
-            const mergedText = (typeof lastMsg.content === "string" ? lastMsg.content : "") + assistantResponse;
+            const mergedText = (typeof lastMsg.content === "string" ? lastMsg.content : "") + draft.assistantResponse;
             conv.messages = [
               ...prevMessages.slice(0, -1),
               {
@@ -3236,25 +3249,18 @@ export const createRequestHandler = async (options?: {
               ...prevMessages,
               {
                 role: "assistant" as const,
-                content: assistantResponse,
-                metadata: (toolTimeline.length > 0 || sections.length > 0
-                  ? { toolActivity: toolTimeline, sections: sections.length > 0 ? sections : undefined }
-                  : undefined) as Message["metadata"],
+                content: draft.assistantResponse,
+                metadata: buildAssistantMetadata(draft),
               },
             ];
           }
         }
-        if (resumeHarnessMessages) {
-          conv._harnessMessages = resumeHarnessMessages;
-        } else {
-          conv._harnessMessages = conv.messages;
-        }
-        conv.runtimeRunId = latestRunId || conv.runtimeRunId;
-        conv.pendingApprovals = [];
-        conv.runStatus = "idle";
-        if (runContextTokens > 0) conv.contextTokens = runContextTokens;
-        if (runContextWindow > 0) conv.contextWindow = runContextWindow;
-        conv.updatedAt = Date.now();
+        applyTurnMetadata(conv, {
+          latestRunId,
+          contextTokens: execution?.runContextTokens ?? 0,
+          contextWindow: execution?.runContextWindow ?? 0,
+          harnessMessages: execution?.runHarnessMessages,
+        }, { shouldRebuildCanonical: true });
         await conversationStore.update(conv);
       }
     } else {
@@ -3532,33 +3538,31 @@ export const createRequestHandler = async (options?: {
 
       if (!checkpointedRun) {
         await updateConversation((c) => {
-          if (runContinuation && runContinuationMessages) {
-            c._continuationMessages = runContinuationMessages;
-          } else {
-            c._continuationMessages = undefined;
+          if (!(runContinuation && runContinuationMessages)) {
             c.messages = buildMessages();
           }
-          if (runContinuationMessages) {
-            c._harnessMessages = runContinuationMessages;
-          } else if (shouldRebuildCanonical) {
-            c._harnessMessages = c.messages;
-          } else {
-            c._harnessMessages = c.messages;
-          }
-          c._toolResultArchive = harness.getToolResultArchive(conversationId);
-          c.runtimeRunId = latestRunId || c.runtimeRunId;
-          c.pendingApprovals = [];
-          c.runStatus = "idle";
-          if (runContextTokens > 0) c.contextTokens = runContextTokens;
-          if (runContextWindow > 0) c.contextWindow = runContextWindow;
+          applyTurnMetadata(c, {
+            latestRunId,
+            contextTokens: runContextTokens,
+            contextWindow: runContextWindow,
+            continuation: runContinuation,
+            continuationMessages: runContinuationMessages,
+            harnessMessages: runContinuationMessages,
+            toolResultArchive: harness.getToolResultArchive(conversationId),
+          }, { shouldRebuildCanonical: true });
         });
       } else {
         await updateConversation((c) => {
-          if (shouldRebuildCanonical && !c._harnessMessages?.length) {
-            c._harnessMessages = c.messages;
-          }
-          c._toolResultArchive = harness.getToolResultArchive(conversationId);
-          c.runStatus = "idle";
+          applyTurnMetadata(c, {
+            latestRunId: "",
+            contextTokens: 0,
+            contextWindow: 0,
+            toolResultArchive: harness.getToolResultArchive(conversationId),
+          }, {
+            clearContinuation: false,
+            clearApprovals: false,
+            shouldRebuildCanonical: shouldRebuildCanonical && !c._harnessMessages?.length,
+          });
         });
       }
       finishConversationStream(conversationId);
@@ -3734,9 +3738,10 @@ export const createRequestHandler = async (options?: {
   // ── Unified continuation ──────────────────────────────────────────────
   const MAX_CONTINUATION_COUNT = 20;
 
-  async function* runContinuation(
+  async function runContinuation(
     conversationId: string,
-  ): AsyncGenerator<AgentEvent> {
+    onYield?: (event: AgentEvent) => void | Promise<void>,
+  ): Promise<void> {
     const conversation = await conversationStore.get(conversationId);
     if (!conversation) return;
     if (Array.isArray(conversation.pendingApprovals) && conversation.pendingApprovals.length > 0) return;
@@ -3779,9 +3784,11 @@ export const createRequestHandler = async (options?: {
 
     try {
       if (conversation.parentConversationId) {
-        yield* runSubagentContinuation(conversationId, conversation, continuationMessages);
+        for await (const event of runSubagentContinuation(conversationId, conversation, continuationMessages)) {
+          if (onYield) await onYield(event);
+        }
       } else {
-        yield* runChatContinuation(conversationId, conversation, continuationMessages);
+        await runChatContinuation(conversationId, conversation, continuationMessages, onYield);
       }
     } finally {
       activeConversationRuns.delete(conversationId);
@@ -3789,136 +3796,66 @@ export const createRequestHandler = async (options?: {
     }
   }
 
-  async function* runChatContinuation(
+  async function runChatContinuation(
     conversationId: string,
     conversation: Conversation,
     continuationMessages: Message[],
-  ): AsyncGenerator<AgentEvent> {
-    let assistantResponse = "";
-    let latestRunId = conversation.runtimeRunId ?? "";
-    const toolTimeline: string[] = [];
-    const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
-    let currentTools: string[] = [];
-    let currentText = "";
-    let runContextTokens = conversation.contextTokens ?? 0;
-    let runContextWindow = conversation.contextWindow ?? 0;
-    let nextContinuationMessages: Message[] | undefined;
-    let nextHarnessMessages: Message[] | undefined;
-
-    for await (const event of harness.runWithTelemetry({
-      conversationId,
-      parameters: withToolResultArchiveParam({
-        __activeConversationId: conversationId,
-        __ownerId: conversation.ownerId,
-      }, conversation),
-      messages: continuationMessages,
-      abortSignal: activeConversationRuns.get(conversationId)?.abortController.signal,
-    })) {
-      if (event.type === "run:started") {
-        latestRunId = event.runId;
-        runOwners.set(event.runId, conversation.ownerId);
-        runConversations.set(event.runId, conversationId);
-        const active = activeConversationRuns.get(conversationId);
-        if (active) active.runId = event.runId;
-      }
-      if (event.type === "model:chunk") {
-        if (currentTools.length > 0) {
-          sections.push({ type: "tools", content: currentTools });
-          currentTools = [];
-          if (assistantResponse.length > 0 && !/\s$/.test(assistantResponse)) {
-            assistantResponse += " ";
-          }
+    onYield?: (event: AgentEvent) => void | Promise<void>,
+  ): Promise<void> {
+    const execution = await executeConversationTurn({
+      harness,
+      runInput: {
+        conversationId,
+        parameters: withToolResultArchiveParam({
+          __activeConversationId: conversationId,
+          __ownerId: conversation.ownerId,
+        }, conversation),
+        messages: continuationMessages,
+        abortSignal: activeConversationRuns.get(conversationId)?.abortController.signal,
+      },
+      initialContextTokens: conversation.contextTokens ?? 0,
+      initialContextWindow: conversation.contextWindow ?? 0,
+      onEvent: async (event) => {
+        if (event.type === "run:started") {
+          runOwners.set(event.runId, conversation.ownerId);
+          runConversations.set(event.runId, conversationId);
+          const active = activeConversationRuns.get(conversationId);
+          if (active) active.runId = event.runId;
         }
-        assistantResponse += event.content;
-        currentText += event.content;
-      }
-      if (event.type === "tool:started") {
-        if (currentText.length > 0) {
-          sections.push({ type: "text", content: currentText });
-          currentText = "";
-        }
-        const toolText = `- start \`${event.tool}\``;
-        toolTimeline.push(toolText);
-        currentTools.push(toolText);
-      }
-      if (event.type === "tool:completed") {
-        const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
-        toolTimeline.push(toolText);
-        currentTools.push(toolText);
-      }
-      if (event.type === "tool:error") {
-        const toolText = `- error \`${event.tool}\`: ${event.error}`;
-        toolTimeline.push(toolText);
-        currentTools.push(toolText);
-      }
-      if (event.type === "run:completed") {
-        runContextTokens = event.result.contextTokens ?? runContextTokens;
-        runContextWindow = event.result.contextWindow ?? runContextWindow;
-        if (event.result.continuation && event.result.continuationMessages) {
-          nextContinuationMessages = event.result.continuationMessages;
-        }
-        if (event.result.continuationMessages) {
-          nextHarnessMessages = event.result.continuationMessages;
-        }
-        if (!assistantResponse && event.result.response) {
-          assistantResponse = event.result.response;
-        }
-      }
-      if (event.type === "run:error") {
-        assistantResponse = assistantResponse || `[Error: ${event.error.message}]`;
-      }
-      await telemetry.emit(event);
-      broadcastEvent(conversationId, event);
-      yield event;
-    }
-
-    if (currentTools.length > 0) sections.push({ type: "tools", content: currentTools });
-    if (currentText.length > 0) sections.push({ type: "text", content: currentText });
+        await telemetry.emit(event);
+        broadcastEvent(conversationId, event);
+        if (onYield) await onYield(event);
+      },
+    });
+    flushTurnDraft(execution.draft);
 
     const freshConv = await conversationStore.get(conversationId);
     if (!freshConv) return;
 
-    const hasContent = assistantResponse.length > 0 || toolTimeline.length > 0;
-    const assistantMetadata =
-      toolTimeline.length > 0 || sections.length > 0
-        ? ({
-            toolActivity: [...toolTimeline],
-            sections: sections.length > 0 ? sections : undefined,
-          } as Message["metadata"])
-        : undefined;
+    const hasContent = execution.draft.assistantResponse.length > 0 || execution.draft.toolTimeline.length > 0;
+    if (hasContent) {
+      freshConv.messages = [
+        ...freshConv.messages,
+        {
+          role: "assistant" as const,
+          content: execution.draft.assistantResponse,
+          metadata: buildAssistantMetadata(execution.draft),
+        },
+      ];
+    }
 
-    if (nextContinuationMessages) {
-      if (hasContent) {
-        freshConv.messages = [
-          ...freshConv.messages,
-          { role: "assistant", content: assistantResponse, metadata: assistantMetadata },
-        ];
-      }
-      freshConv._continuationMessages = nextContinuationMessages;
+    applyTurnMetadata(freshConv, {
+      latestRunId: execution.latestRunId,
+      contextTokens: execution.runContextTokens,
+      contextWindow: execution.runContextWindow,
+      continuation: execution.runContinuation,
+      continuationMessages: execution.runContinuationMessages,
+      harnessMessages: execution.runHarnessMessages,
+      toolResultArchive: harness.getToolResultArchive(conversationId),
+    }, { shouldRebuildCanonical: true });
+    if (execution.runContinuation) {
       freshConv._continuationCount = conversation._continuationCount;
-    } else {
-      if (hasContent) {
-        freshConv.messages = [
-          ...freshConv.messages,
-          { role: "assistant", content: assistantResponse, metadata: assistantMetadata },
-        ];
-      }
-      freshConv._continuationMessages = undefined;
-      freshConv._continuationCount = undefined;
     }
-
-    if (nextHarnessMessages) {
-      freshConv._harnessMessages = nextHarnessMessages;
-    } else {
-      freshConv._harnessMessages = freshConv.messages;
-    }
-    freshConv._toolResultArchive = harness.getToolResultArchive(conversationId);
-    freshConv.runtimeRunId = latestRunId || freshConv.runtimeRunId;
-    freshConv.pendingApprovals = [];
-    if (runContextTokens > 0) freshConv.contextTokens = runContextTokens;
-    if (runContextWindow > 0) freshConv.contextWindow = runContextWindow;
-    freshConv.runStatus = "idle";
-    freshConv.updatedAt = Date.now();
     await conversationStore.update(freshConv);
   }
 
@@ -4557,9 +4494,7 @@ export const createRequestHandler = async (options?: {
         writeJson(response, 202, { ok: true });
         const work = (async () => {
           try {
-            for await (const _event of runContinuation(conversationId)) {
-              // Events are already broadcast inside runContinuation
-            }
+            await runContinuation(conversationId);
             // Chain: if another continuation is needed, fire next self-fetch
             const conv = await conversationStore.get(conversationId);
             if (conv?._continuationMessages?.length) {
@@ -5492,7 +5427,7 @@ export const createRequestHandler = async (options?: {
 
       let eventCount = 0;
       try {
-        for await (const event of runContinuation(conversationId)) {
+        await runContinuation(conversationId, async (event) => {
           eventCount++;
           let sseEvent: AgentEvent = event;
           if (sseEvent.type === "run:completed") {
@@ -5506,7 +5441,7 @@ export const createRequestHandler = async (options?: {
             // Client disconnected — continue processing so the run completes
           }
           emitBrowserStatusIfActive(conversationId, event, response);
-        }
+        });
       } catch (err) {
         const errorEvent: AgentEvent = {
           type: "run:error",
@@ -5632,18 +5567,6 @@ export const createRequestHandler = async (options?: {
         `[poncho] conversation="${conversationId}" history_source=${canonicalHistory.source}`,
       );
       let latestRunId = conversation.runtimeRunId ?? "";
-      let assistantResponse = "";
-      const toolTimeline: string[] = [];
-      const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
-      let currentText = "";
-      let currentTools: string[] = [];
-      let runCancelled = false;
-      let checkpointedRun = false;
-      let didCompact = false;
-      let runContextTokens = conversation.contextTokens ?? 0;
-      let runContextWindow = conversation.contextWindow ?? 0;
-      let runContinuationMessages: Message[] | undefined;
-      let runHarnessMessages: Message[] | undefined;
       let userContent: Message["content"] | undefined = messageText;
       if (files.length > 0) {
         try {
@@ -5679,13 +5602,50 @@ export const createRequestHandler = async (options?: {
           return;
         }
       }
-      // Forward subagent lifecycle events to the response so the client can update the sidebar.
-      // These events are broadcast via broadcastEvent but not emitted by the harness run loop.
       const unsubSubagentEvents = onConversationEvent(conversationId, (evt) => {
         if (evt.type.startsWith("subagent:")) {
           try { response.write(formatSseEvent(evt)); } catch {}
         }
       });
+
+      const draft = createTurnDraftState();
+      let checkpointedRun = false;
+      let runCancelled = false;
+      let runContinuationMessages: Message[] | undefined;
+
+      const buildMessages = (): Message[] => {
+        const draftSections = cloneSections(draft.sections);
+        if (draft.currentTools.length > 0) {
+          draftSections.push({ type: "tools", content: [...draft.currentTools] });
+        }
+        if (draft.currentText.length > 0) {
+          draftSections.push({ type: "text", content: draft.currentText });
+        }
+        const userTurn: Message[] = userContent != null
+          ? [{ role: "user" as const, content: userContent }]
+          : [];
+        const hasDraftContent =
+          draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0 || draftSections.length > 0;
+        if (!hasDraftContent) {
+          return [...historyMessages, ...userTurn];
+        }
+        return [
+          ...historyMessages,
+          ...userTurn,
+          {
+            role: "assistant" as const,
+            content: draft.assistantResponse,
+            metadata: buildAssistantMetadata(draft, draftSections),
+          },
+        ];
+      };
+
+      const persistDraftAssistantTurn = async (): Promise<void> => {
+        if (draft.assistantResponse.length === 0 && draft.toolTimeline.length === 0) return;
+        conversation.messages = buildMessages();
+        conversation.updatedAt = Date.now();
+        await conversationStore.update(conversation);
+      };
 
       try {
         {
@@ -5697,43 +5657,6 @@ export const createRequestHandler = async (options?: {
             console.error("[poncho] Failed to persist user turn:", err);
           });
         }
-
-        const persistDraftAssistantTurn = async (): Promise<void> => {
-          const draftSections: Array<{ type: "text" | "tools"; content: string | string[] }> = [
-            ...sections.map((section) => ({
-              type: section.type,
-              content: Array.isArray(section.content) ? [...section.content] : section.content,
-            })),
-          ];
-          if (currentTools.length > 0) {
-            draftSections.push({ type: "tools", content: [...currentTools] });
-          }
-          if (currentText.length > 0) {
-            draftSections.push({ type: "text", content: currentText });
-          }
-          const hasDraftContent =
-            assistantResponse.length > 0 || toolTimeline.length > 0 || draftSections.length > 0;
-          if (!hasDraftContent) {
-            return;
-          }
-          conversation.messages = [
-            ...historyMessages,
-            ...(userContent != null ? [{ role: "user" as const, content: userContent }] : []),
-            {
-              role: "assistant",
-              content: assistantResponse,
-              metadata:
-                toolTimeline.length > 0 || draftSections.length > 0
-                  ? ({
-                      toolActivity: [...toolTimeline],
-                      sections: draftSections.length > 0 ? draftSections : undefined,
-                    } as Message["metadata"])
-                  : undefined,
-            },
-          ];
-          conversation.updatedAt = Date.now();
-          await conversationStore.update(conversation);
-        };
 
         let cachedRecallCorpus: unknown[] | undefined;
         const lazyRecallCorpus = async () => {
@@ -5768,281 +5691,168 @@ export const createRequestHandler = async (options?: {
           return cachedRecallCorpus;
         };
 
-        for await (const event of harness.runWithTelemetry({
-          task: messageText,
-          conversationId,
-          parameters: withToolResultArchiveParam({
-            ...(bodyParameters ?? {}),
-            __conversationRecallCorpus: lazyRecallCorpus,
-            __activeConversationId: conversationId,
-            __ownerId: ownerId,
-          }, conversation),
-          messages: harnessMessages,
-          files: files.length > 0 ? files : undefined,
-          abortSignal: abortController.signal,
-        })) {
-          if (event.type === "run:started") {
-            latestRunId = event.runId;
-            runOwners.set(event.runId, ownerId);
-            runConversations.set(event.runId, conversationId);
-            const active = activeConversationRuns.get(conversationId);
-            if (active && active.abortController === abortController) {
-              active.runId = event.runId;
-            }
-          }
-          if (event.type === "run:cancelled") {
-            runCancelled = true;
-          }
-          if (event.type === "model:chunk") {
-            if (currentTools.length > 0) {
-              sections.push({ type: "tools", content: currentTools });
-              currentTools = [];
-              if (assistantResponse.length > 0 && !/\s$/.test(assistantResponse)) {
-                assistantResponse += " ";
+        const execution = await executeConversationTurn({
+          harness,
+          runInput: {
+            task: messageText,
+            conversationId,
+            parameters: withToolResultArchiveParam({
+              ...(bodyParameters ?? {}),
+              __conversationRecallCorpus: lazyRecallCorpus,
+              __activeConversationId: conversationId,
+              __ownerId: ownerId,
+            }, conversation),
+            messages: harnessMessages,
+            files: files.length > 0 ? files : undefined,
+            abortSignal: abortController.signal,
+          },
+          initialContextTokens: conversation.contextTokens ?? 0,
+          initialContextWindow: conversation.contextWindow ?? 0,
+          onEvent: async (event, eventDraft) => {
+            draft.assistantResponse = eventDraft.assistantResponse;
+            draft.toolTimeline = eventDraft.toolTimeline;
+            draft.sections = eventDraft.sections;
+            draft.currentTools = eventDraft.currentTools;
+            draft.currentText = eventDraft.currentText;
+
+            if (event.type === "run:started") {
+              latestRunId = event.runId;
+              runOwners.set(event.runId, ownerId);
+              runConversations.set(event.runId, conversationId);
+              const active = activeConversationRuns.get(conversationId);
+              if (active && active.abortController === abortController) {
+                active.runId = event.runId;
               }
             }
-            assistantResponse += event.content;
-            currentText += event.content;
-          }
-          if (event.type === "tool:started") {
-            // If we have text accumulated, push it as a text section
-            if (currentText.length > 0) {
-              sections.push({ type: "text", content: currentText });
-              currentText = "";
+            if (event.type === "run:cancelled") {
+              runCancelled = true;
             }
-            const toolText = `- start \`${event.tool}\``;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-          }
-          if (event.type === "tool:completed") {
-            const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-          }
-          if (event.type === "tool:error") {
-            const toolText = `- error \`${event.tool}\`: ${event.error}`;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-          }
-          if (event.type === "compaction:completed") {
-            didCompact = true;
-            if (event.compactedMessages) {
-              historyMessages.length = 0;
-              historyMessages.push(...event.compactedMessages);
+            if (event.type === "compaction:completed") {
+              if (event.compactedMessages) {
+                historyMessages.length = 0;
+                historyMessages.push(...event.compactedMessages);
 
-              const preservedFromHistory = historyMessages.length - 1; // exclude summary
-              const removedCount = preRunMessages.length - Math.max(0, preservedFromHistory);
-              const existingHistory = conversation.compactedHistory ?? [];
-              conversation.compactedHistory = [
-                ...existingHistory,
-                ...preRunMessages.slice(0, removedCount),
-              ];
+                const preservedFromHistory = historyMessages.length - 1;
+                const removedCount = preRunMessages.length - Math.max(0, preservedFromHistory);
+                const existingHistory = conversation.compactedHistory ?? [];
+                conversation.compactedHistory = [
+                  ...existingHistory,
+                  ...preRunMessages.slice(0, removedCount),
+                ];
+              }
             }
-          }
-          if (event.type === "step:completed") {
-            await persistDraftAssistantTurn();
-          }
-          if (event.type === "tool:approval:required") {
-            const toolText = `- approval required \`${event.tool}\``;
-            toolTimeline.push(toolText);
-            currentTools.push(toolText);
-            const existingApprovals = Array.isArray(conversation.pendingApprovals)
-              ? conversation.pendingApprovals
-              : [];
-            if (!existingApprovals.some((approval) => approval.approvalId === event.approvalId)) {
-              conversation.pendingApprovals = [
-                ...existingApprovals,
-                {
-                  approvalId: event.approvalId,
-                  runId: latestRunId || conversation.runtimeRunId || "",
-                  tool: event.tool,
-                  toolCallId: undefined,
-                  input: (event.input ?? {}) as Record<string, unknown>,
-                  checkpointMessages: undefined,
-                  baseMessageCount: historyMessages.length,
-                  pendingToolCalls: [],
-                },
-              ];
-              conversation.updatedAt = Date.now();
-              await conversationStore.update(conversation);
+            if (event.type === "step:completed") {
+              await persistDraftAssistantTurn();
             }
-            await persistDraftAssistantTurn();
-          }
-          if (event.type === "tool:approval:checkpoint") {
-            const checkpointSections = [...sections];
-            if (currentTools.length > 0) {
-              checkpointSections.push({ type: "tools", content: [...currentTools] });
+            if (event.type === "tool:approval:required") {
+              const toolText = `- approval required \`${event.tool}\``;
+              draft.toolTimeline.push(toolText);
+              draft.currentTools.push(toolText);
+              const existingApprovals = Array.isArray(conversation.pendingApprovals)
+                ? conversation.pendingApprovals
+                : [];
+              if (!existingApprovals.some((approval) => approval.approvalId === event.approvalId)) {
+                conversation.pendingApprovals = [
+                  ...existingApprovals,
+                  {
+                    approvalId: event.approvalId,
+                    runId: latestRunId || conversation.runtimeRunId || "",
+                    tool: event.tool,
+                    toolCallId: undefined,
+                    input: (event.input ?? {}) as Record<string, unknown>,
+                    checkpointMessages: undefined,
+                    baseMessageCount: historyMessages.length,
+                    pendingToolCalls: [],
+                  },
+                ];
+                conversation.updatedAt = Date.now();
+                await conversationStore.update(conversation);
+              }
+              await persistDraftAssistantTurn();
             }
-            if (currentText.length > 0) {
-              checkpointSections.push({ type: "text", content: currentText });
-            }
-            conversation.messages = [
-              ...historyMessages,
-              ...(userContent != null ? [{ role: "user" as const, content: userContent }] : []),
-              ...(assistantResponse.length > 0 || toolTimeline.length > 0 || checkpointSections.length > 0
-                ? [{
-                    role: "assistant" as const,
-                    content: assistantResponse,
-                    metadata: (toolTimeline.length > 0 || checkpointSections.length > 0
-                      ? { toolActivity: [...toolTimeline], sections: checkpointSections.length > 0 ? checkpointSections : undefined }
-                      : undefined) as Message["metadata"],
-                  }]
-                : []),
-            ];
-            conversation.pendingApprovals = buildApprovalCheckpoints({
-              approvals: event.approvals,
-              runId: latestRunId,
-              checkpointMessages: event.checkpointMessages,
-              baseMessageCount: historyMessages.length,
-              pendingToolCalls: event.pendingToolCalls,
-            });
-            conversation._toolResultArchive = harness.getToolResultArchive(conversationId);
-            conversation.updatedAt = Date.now();
-            await conversationStore.update(conversation);
-            checkpointedRun = true;
-          }
-          if (event.type === "run:completed") {
-            if (assistantResponse.length === 0 && event.result.response) {
-              assistantResponse = event.result.response;
-            }
-            runContextTokens = event.result.contextTokens ?? runContextTokens;
-            runContextWindow = event.result.contextWindow ?? runContextWindow;
-            if (event.result.continuationMessages) {
-              runHarnessMessages = event.result.continuationMessages;
-            }
-            if (event.result.continuation && event.result.continuationMessages) {
-              runContinuationMessages = event.result.continuationMessages;
-
-              // Persist intermediate messages so clients connecting later
-              // see progress, plus _continuationMessages for the next step.
-              const intSections = [...sections];
-              if (currentTools.length > 0) intSections.push({ type: "tools", content: [...currentTools] });
-              if (currentText.length > 0) intSections.push({ type: "text", content: currentText });
-              const hasContent = assistantResponse.length > 0 || toolTimeline.length > 0 || intSections.length > 0;
-              const intMetadata = toolTimeline.length > 0 || intSections.length > 0
-                ? ({ toolActivity: [...toolTimeline], sections: intSections.length > 0 ? intSections : undefined } as Message["metadata"])
-                : undefined;
-              conversation.messages = [
-                ...historyMessages,
-                ...(userContent != null ? [{ role: "user" as const, content: userContent }] : []),
-                ...(hasContent ? [{ role: "assistant" as const, content: assistantResponse, metadata: intMetadata }] : []),
-              ];
-              conversation._continuationMessages = runContinuationMessages;
-              conversation._harnessMessages = runContinuationMessages;
+            if (event.type === "tool:approval:checkpoint") {
+              conversation.messages = buildMessages();
+              conversation.pendingApprovals = buildApprovalCheckpoints({
+                approvals: event.approvals,
+                runId: latestRunId,
+                checkpointMessages: event.checkpointMessages,
+                baseMessageCount: historyMessages.length,
+                pendingToolCalls: event.pendingToolCalls,
+              });
               conversation._toolResultArchive = harness.getToolResultArchive(conversationId);
-              conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
-              if (!checkpointedRun) {
-                conversation.pendingApprovals = [];
-              }
-              if (runContextTokens > 0) conversation.contextTokens = runContextTokens;
-              if (runContextWindow > 0) conversation.contextWindow = runContextWindow;
               conversation.updatedAt = Date.now();
               await conversationStore.update(conversation);
+              checkpointedRun = true;
+            }
+            if (event.type === "run:completed") {
+              if (event.result.continuation && event.result.continuationMessages) {
+                runContinuationMessages = event.result.continuationMessages;
 
-              // Delayed safety net: if the client doesn't POST to /continue
-              // within 3 seconds (e.g. browser closed), the server picks it up.
-              if (!checkpointedRun) {
-                doWaitUntil(
-                  new Promise(r => setTimeout(r, 3000)).then(() =>
-                    selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(conversationId)}`),
-                  ),
-                );
+                conversation.messages = buildMessages();
+                conversation._continuationMessages = runContinuationMessages;
+                conversation._harnessMessages = runContinuationMessages;
+                conversation._toolResultArchive = harness.getToolResultArchive(conversationId);
+                conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
+                if (!checkpointedRun) {
+                  conversation.pendingApprovals = [];
+                }
+                if ((event.result.contextTokens ?? 0) > 0) conversation.contextTokens = event.result.contextTokens!;
+                if ((event.result.contextWindow ?? 0) > 0) conversation.contextWindow = event.result.contextWindow!;
+                conversation.updatedAt = Date.now();
+                await conversationStore.update(conversation);
+
+                if (!checkpointedRun) {
+                  doWaitUntil(
+                    new Promise(r => setTimeout(r, 3000)).then(() =>
+                      selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(conversationId)}`),
+                    ),
+                  );
+                }
               }
             }
-          }
-          await telemetry.emit(event);
-          let sseEvent: AgentEvent = event.type === "compaction:completed" && event.compactedMessages
-            ? { ...event, compactedMessages: undefined }
-            : event;
-          if (sseEvent.type === "run:completed") {
-            const hasPendingSubagents = await hasPendingSubagentWorkForParent(conversationId, ownerId);
-            const stripped = { ...sseEvent, result: { ...sseEvent.result, continuationMessages: undefined } };
-            if (hasPendingSubagents) {
-              sseEvent = { ...stripped, pendingSubagents: true };
-            } else {
-              sseEvent = stripped;
+
+            await telemetry.emit(event);
+            let sseEvent: AgentEvent = event.type === "compaction:completed" && event.compactedMessages
+              ? { ...event, compactedMessages: undefined }
+              : event;
+            if (sseEvent.type === "run:completed") {
+              const hasPendingSubagents = await hasPendingSubagentWorkForParent(conversationId, ownerId);
+              const stripped = { ...sseEvent, result: { ...sseEvent.result, continuationMessages: undefined } };
+              if (hasPendingSubagents) {
+                sseEvent = { ...stripped, pendingSubagents: true };
+              } else {
+                sseEvent = stripped;
+              }
             }
-          }
-          broadcastEvent(conversationId, sseEvent);
-          try {
-            response.write(formatSseEvent(sseEvent));
-          } catch {
-            // Client disconnected (e.g. browser refresh). Continue processing
-            // so the run completes and conversation is persisted.
-          }
-          emitBrowserStatusIfActive(conversationId, event, response);
-        }
-        // Finalize sections
-        if (currentTools.length > 0) {
-          sections.push({ type: "tools", content: currentTools });
-        }
-        if (currentText.length > 0) {
-          sections.push({ type: "text", content: currentText });
-        }
+            broadcastEvent(conversationId, sseEvent);
+            try {
+              response.write(formatSseEvent(sseEvent));
+            } catch {
+              // Client disconnected — continue processing so the run completes.
+            }
+            emitBrowserStatusIfActive(conversationId, event, response);
+          },
+        });
+
+        flushTurnDraft(draft);
+        latestRunId = execution.latestRunId || latestRunId;
+
         if (!checkpointedRun && !runContinuationMessages) {
-          const hasAssistantContent =
-            assistantResponse.length > 0 || toolTimeline.length > 0 || sections.length > 0;
-          const userTurn: Message[] = userContent != null
-            ? [{ role: "user", content: userContent }]
-            : [];
-          conversation.messages = hasAssistantContent
-            ? [
-                ...historyMessages,
-                ...userTurn,
-                {
-                  role: "assistant",
-                  content: assistantResponse,
-                  metadata:
-                    toolTimeline.length > 0 || sections.length > 0
-                      ? ({
-                          toolActivity: toolTimeline,
-                          sections: sections.length > 0 ? sections : undefined,
-                        } as Message["metadata"])
-                      : undefined,
-                },
-              ]
-            : [...historyMessages, ...userTurn];
-          conversation._continuationMessages = undefined;
-          if (runHarnessMessages) {
-            conversation._harnessMessages = runHarnessMessages;
-          } else if (shouldRebuildCanonical) {
-            conversation._harnessMessages = conversation.messages;
-          } else {
-            conversation._harnessMessages = conversation.messages;
-          }
-          conversation._toolResultArchive = harness.getToolResultArchive(conversationId);
-          conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
-          conversation.pendingApprovals = [];
-          if (runContextTokens > 0) conversation.contextTokens = runContextTokens;
-          if (runContextWindow > 0) conversation.contextWindow = runContextWindow;
-          conversation.updatedAt = Date.now();
+          conversation.messages = buildMessages();
+          applyTurnMetadata(conversation, {
+            latestRunId,
+            contextTokens: execution.runContextTokens,
+            contextWindow: execution.runContextWindow,
+            harnessMessages: execution.runHarnessMessages,
+            toolResultArchive: harness.getToolResultArchive(conversationId),
+          }, { shouldRebuildCanonical });
           await conversationStore.update(conversation);
         }
       } catch (error) {
+        flushTurnDraft(draft);
         if (abortController.signal.aborted || runCancelled) {
-          const fallbackSections = [...sections];
-          if (currentTools.length > 0) {
-            fallbackSections.push({ type: "tools", content: [...currentTools] });
-          }
-          if (currentText.length > 0) {
-            fallbackSections.push({ type: "text", content: currentText });
-          }
-          if (assistantResponse.length > 0 || toolTimeline.length > 0 || fallbackSections.length > 0) {
-            conversation.messages = [
-              ...historyMessages,
-              ...(userContent != null ? [{ role: "user" as const, content: userContent }] : []),
-              {
-                role: "assistant",
-                content: assistantResponse,
-                metadata:
-                  toolTimeline.length > 0 || fallbackSections.length > 0
-                    ? ({
-                        toolActivity: [...toolTimeline],
-                        sections: fallbackSections.length > 0 ? fallbackSections : undefined,
-                      } as Message["metadata"])
-                    : undefined,
-              },
-            ];
+          if (draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0 || draft.sections.length > 0) {
+            conversation.messages = buildMessages();
             conversation.updatedAt = Date.now();
             await conversationStore.update(conversation);
           }
@@ -6063,29 +5873,8 @@ export const createRequestHandler = async (options?: {
             }),
           );
         } catch {
-          const fallbackSections = [...sections];
-          if (currentTools.length > 0) {
-            fallbackSections.push({ type: "tools", content: [...currentTools] });
-          }
-          if (currentText.length > 0) {
-            fallbackSections.push({ type: "text", content: currentText });
-          }
-          if (assistantResponse.length > 0 || toolTimeline.length > 0 || fallbackSections.length > 0) {
-            conversation.messages = [
-              ...historyMessages,
-              ...(userContent != null ? [{ role: "user" as const, content: userContent }] : []),
-              {
-                role: "assistant",
-                content: assistantResponse,
-                metadata:
-                  toolTimeline.length > 0 || fallbackSections.length > 0
-                    ? ({
-                        toolActivity: [...toolTimeline],
-                        sections: fallbackSections.length > 0 ? fallbackSections : undefined,
-                      } as Message["metadata"])
-                    : undefined,
-              },
-            ];
+          if (draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0 || draft.sections.length > 0) {
+            conversation.messages = buildMessages();
             conversation.updatedAt = Date.now();
             await conversationStore.update(conversation);
           }
@@ -6101,10 +5890,6 @@ export const createRequestHandler = async (options?: {
           runConversations.delete(latestRunId);
         }
 
-        // Determine if subagent work is pending before deciding to close the
-        // event stream.  When a callback is about to run, the stream stays open
-        // so clients that subscribe to /events receive callback-run events in
-        // real-time — the same delivery path used for every other run.
         const hadDeferred = pendingCallbackNeeded.delete(conversationId);
         const freshConv = await conversationStore.get(conversationId);
         const needsCallback = hadDeferred || !!freshConv?.pendingSubagentResults?.length;
@@ -6200,17 +5985,12 @@ export const createRequestHandler = async (options?: {
               const freshConv = await conversationStore.get(conv.conversationId);
               if (freshConv) {
                 appendCronTurn(freshConv, task, result);
-                if (result.harnessMessages) {
-                  freshConv._harnessMessages = result.harnessMessages;
-                } else if (historySelection.shouldRebuildCanonical) {
-                  freshConv._harnessMessages = freshConv.messages;
-                }
-                if (result.toolResultArchive) {
-                  freshConv._toolResultArchive = result.toolResultArchive;
-                }
-                if (result.contextTokens > 0) freshConv.contextTokens = result.contextTokens;
-                if (result.contextWindow > 0) freshConv.contextWindow = result.contextWindow;
-                freshConv.updatedAt = Date.now();
+                applyTurnMetadata(freshConv, result, {
+                  clearContinuation: false,
+                  clearApprovals: false,
+                  setIdle: false,
+                  shouldRebuildCanonical: historySelection.shouldRebuildCanonical,
+                });
                 await conversationStore.update(freshConv);
               }
 
@@ -6276,22 +6056,10 @@ export const createRequestHandler = async (options?: {
           const freshConv = await conversationStore.get(convId);
           if (freshConv) {
             freshConv.messages = buildCronMessages(cronJob.task, [], result);
-            if (result.continuation && result.continuationMessages) {
-              freshConv._continuationMessages = result.continuationMessages;
-            } else {
-              freshConv._continuationMessages = undefined;
-              freshConv._continuationCount = undefined;
-            }
-            if (result.harnessMessages) {
-              freshConv._harnessMessages = result.harnessMessages;
-            }
-            if (result.toolResultArchive) {
-              freshConv._toolResultArchive = result.toolResultArchive;
-            }
-            freshConv.runtimeRunId = result.latestRunId || freshConv.runtimeRunId;
-            if (result.contextTokens > 0) freshConv.contextTokens = result.contextTokens;
-            if (result.contextWindow > 0) freshConv.contextWindow = result.contextWindow;
-            freshConv.updatedAt = Date.now();
+            applyTurnMetadata(freshConv, result, {
+              clearApprovals: false,
+              setIdle: false,
+            });
             await conversationStore.update(freshConv);
           }
 
@@ -6417,13 +6185,11 @@ export const createRequestHandler = async (options?: {
               const freshConv = await conversationStore.get(originConv.conversationId);
               if (freshConv) {
                 appendCronTurn(freshConv, framedMessage, result);
-                if (result.harnessMessages) {
-                  freshConv._harnessMessages = result.harnessMessages;
-                }
-                if (result.toolResultArchive) {
-                  freshConv._toolResultArchive = result.toolResultArchive;
-                }
-                freshConv.updatedAt = Date.now();
+                applyTurnMetadata(freshConv, result, {
+                  clearContinuation: false,
+                  clearApprovals: false,
+                  setIdle: false,
+                });
                 await conversationStore.update(freshConv);
               }
             }
@@ -6438,13 +6204,11 @@ export const createRequestHandler = async (options?: {
             const freshConv = await conversationStore.get(convId);
             if (freshConv) {
               freshConv.messages = buildCronMessages(framedMessage, [], result);
-              if (result.harnessMessages) {
-                freshConv._harnessMessages = result.harnessMessages;
-              }
-              if (result.toolResultArchive) {
-                freshConv._toolResultArchive = result.toolResultArchive;
-              }
-              freshConv.updatedAt = Date.now();
+              applyTurnMetadata(freshConv, result, {
+                clearContinuation: false,
+                clearApprovals: false,
+                setIdle: false,
+              });
               await conversationStore.update(freshConv);
             }
           }
@@ -6613,17 +6377,12 @@ export const startDevServer = async (
                   const freshConv = await store.get(convId);
                   if (freshConv) {
                     appendCronTurn(freshConv, task, result);
-                    if (result.harnessMessages) {
-                      freshConv._harnessMessages = result.harnessMessages;
-                    } else if (historySelection.shouldRebuildCanonical) {
-                      freshConv._harnessMessages = freshConv.messages;
-                    }
-                    if (result.toolResultArchive) {
-                      freshConv._toolResultArchive = result.toolResultArchive;
-                    }
-                    if (result.contextTokens > 0) freshConv.contextTokens = result.contextTokens;
-                    if (result.contextWindow > 0) freshConv.contextWindow = result.contextWindow;
-                    freshConv.updatedAt = Date.now();
+                    applyTurnMetadata(freshConv, result, {
+                      clearContinuation: false,
+                      clearApprovals: false,
+                      setIdle: false,
+                      shouldRebuildCanonical: historySelection.shouldRebuildCanonical,
+                    });
                     await store.update(freshConv);
 
                     if (result.response) {
@@ -6688,15 +6447,11 @@ export const startDevServer = async (
             const freshConv = await store.get(cronConvId);
             if (freshConv) {
               freshConv.messages = buildCronMessages(config.task, [], result);
-              if (result.harnessMessages) {
-                freshConv._harnessMessages = result.harnessMessages;
-              }
-              if (result.toolResultArchive) {
-                freshConv._toolResultArchive = result.toolResultArchive;
-              }
-              if (result.contextTokens > 0) freshConv.contextTokens = result.contextTokens;
-              if (result.contextWindow > 0) freshConv.contextWindow = result.contextWindow;
-              freshConv.updatedAt = Date.now();
+              applyTurnMetadata(freshConv, result, {
+                clearContinuation: false,
+                clearApprovals: false,
+                setIdle: false,
+              });
               await store.update(freshConv);
             }
             const elapsed = ((Date.now() - start) / 1000).toFixed(1);
