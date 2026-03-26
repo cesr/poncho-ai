@@ -28,6 +28,7 @@ export interface CronJobConfig {
   task: string;
   timezone?: string;
   channel?: string;
+  maxRuns?: number;
 }
 
 export interface AgentFrontmatter {
@@ -144,11 +145,17 @@ const parseCronJobs = (
         ? jobValue.channel.trim()
         : undefined;
 
+    const maxRuns =
+      typeof jobValue.maxRuns === "number" && jobValue.maxRuns > 0
+        ? Math.max(1, Math.floor(jobValue.maxRuns))
+        : undefined;
+
     jobs[jobName] = {
       schedule: jobValue.schedule.trim(),
       task: jobValue.task,
       timezone,
       channel,
+      maxRuns,
     };
   }
   return jobs;

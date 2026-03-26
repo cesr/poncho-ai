@@ -165,6 +165,80 @@ cron:
 `);
       expect(parsed.frontmatter.cron!["job"]!.timezone).toBe("Europe/London");
     });
+
+    it("parses maxRuns when present", () => {
+      const parsed = parseAgentMarkdown(`---
+name: test-agent
+cron:
+  job:
+    schedule: "0 9 * * *"
+    task: "Do something"
+    maxRuns: 10
+---
+
+# Agent
+`);
+      expect(parsed.frontmatter.cron!["job"]!.maxRuns).toBe(10);
+    });
+
+    it("leaves maxRuns undefined when not specified", () => {
+      const parsed = parseAgentMarkdown(`---
+name: test-agent
+cron:
+  job:
+    schedule: "0 9 * * *"
+    task: "Do something"
+---
+
+# Agent
+`);
+      expect(parsed.frontmatter.cron!["job"]!.maxRuns).toBeUndefined();
+    });
+
+    it("floors maxRuns: 0 to 1", () => {
+      const parsed = parseAgentMarkdown(`---
+name: test-agent
+cron:
+  job:
+    schedule: "0 9 * * *"
+    task: "Do something"
+    maxRuns: 0
+---
+
+# Agent
+`);
+      expect(parsed.frontmatter.cron!["job"]!.maxRuns).toBeUndefined();
+    });
+
+    it("ignores negative maxRuns", () => {
+      const parsed = parseAgentMarkdown(`---
+name: test-agent
+cron:
+  job:
+    schedule: "0 9 * * *"
+    task: "Do something"
+    maxRuns: -5
+---
+
+# Agent
+`);
+      expect(parsed.frontmatter.cron!["job"]!.maxRuns).toBeUndefined();
+    });
+
+    it("floors non-integer maxRuns to integer", () => {
+      const parsed = parseAgentMarkdown(`---
+name: test-agent
+cron:
+  job:
+    schedule: "0 9 * * *"
+    task: "Do something"
+    maxRuns: 3.7
+---
+
+# Agent
+`);
+      expect(parsed.frontmatter.cron!["job"]!.maxRuns).toBe(3);
+    });
   });
 
   it("parses approval-required with relative script paths", () => {
