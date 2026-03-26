@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.33.0
+
+### Minor Changes
+
+- [#75](https://github.com/cesr/poncho-ai/pull/75) [`d447d0a`](https://github.com/cesr/poncho-ai/commit/d447d0a3cb77f3d097276b524b5f870dddf1899e) Thanks [@cesr](https://github.com/cesr)! - Add `maxRuns` option to cron jobs for automatic pruning of old conversations, preventing unbounded storage growth on hosted stores.
+
 ## 0.32.1
 
 ### Patch Changes
