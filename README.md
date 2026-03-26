@@ -831,6 +831,7 @@ Each key under `cron` is the job name. Fields per job:
 | `task` | Yes | The prompt sent to the agent as the initial message |
 | `timezone` | No | IANA timezone string (default: `"UTC"`) |
 | `channel` | No | Messaging platform to deliver to (e.g. `telegram`). See below. |
+| `maxRuns` | No | Maximum conversations to keep per job (default: `5`). Older runs are pruned automatically. |
 
 ### Proactive messaging via channels
 
@@ -866,6 +867,10 @@ When `channel` is set, the cron job:
 - **Lambda**: Use AWS EventBridge (CloudWatch Events) to trigger `GET /api/cron/<jobName>` on schedule. Include the `Authorization: Bearer <token>` header.
 
 Standard cron jobs (without `channel`) create a **fresh conversation** each run (no accumulated history). To carry context between runs, enable [memory](docs/features.md#persistent-memory). Channel-targeted cron jobs reuse the existing messaging conversation, so history carries over automatically.
+
+To prevent unbounded storage growth, Poncho automatically prunes old cron conversations after each run, keeping only the most recent `maxRuns` entries (default: `5`). Pruning is capped at 25 deletions per run to avoid API storms on hosted stores.
+
+**Storage tip:** Set `storage.ttl` in `poncho.config.js` (e.g. `storage: { ttl: 86400 }`) to auto-expire all data (conversations, run state, memory) after a period. This complements `maxRuns` by also cleaning up ephemeral run-state entries that cron pruning does not cover.
 
 ### Manual triggers
 

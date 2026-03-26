@@ -779,6 +779,33 @@ const appendCronTurn = (conv: Conversation, task: string, result: CronRunResult)
   );
 };
 
+const MAX_PRUNE_PER_RUN = 25;
+
+/** Delete old cron conversations beyond `maxRuns`, capped to avoid API storms on catch-up. */
+const pruneCronConversations = async (
+  store: ConversationStore,
+  ownerId: string,
+  jobName: string,
+  maxRuns: number,
+): Promise<number> => {
+  const summaries = await store.listSummaries(ownerId);
+  const cronPrefix = `[cron] ${jobName} `;
+  const cronSummaries = summaries
+    .filter((s) => s.title?.startsWith(cronPrefix))
+    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+
+  if (cronSummaries.length <= maxRuns) return 0;
+
+  const toDelete = cronSummaries.slice(maxRuns, maxRuns + MAX_PRUNE_PER_RUN);
+  let deleted = 0;
+  for (const s of toDelete) {
+    try {
+      if (await store.delete(s.conversationId)) deleted++;
+    } catch { /* best-effort per entry */ }
+  }
+  return deleted;
+};
+
 const AGENT_TEMPLATE = (
   name: string,
   id: string,
@@ -6083,6 +6110,15 @@ export const createRequestHandler = async (options?: {
             await conversationStore.update(freshConv);
           }
 
+          const pruneWork = pruneCronConversations(
+            conversationStore, cronOwnerId, jobName, cronJob.maxRuns ?? 5,
+          ).then(n => {
+            if (n > 0) process.stdout.write(`[cron] ${jobName}: pruned ${n} old conversation${n === 1 ? "" : "s"}\n`);
+          }).catch(err =>
+            console.error(`[cron] ${jobName}: prune failed:`, err instanceof Error ? err.message : err),
+          );
+          doWaitUntil(pruneWork);
+
           if (result.continuation) {
             const work = selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(convId)}`).catch(err =>
               console.error(`[poncho][cron] Continuation self-fetch failed:`, err instanceof Error ? err.message : err),
@@ -6474,6 +6510,11 @@ export const startDevServer = async (
               });
               await store.update(freshConv);
             }
+            pruneCronConversations(store, "local-owner", jobName, config.maxRuns ?? 5).then(n => {
+              if (n > 0) process.stdout.write(`[cron] ${jobName}: pruned ${n} old conversation${n === 1 ? "" : "s"}\n`);
+            }).catch(err =>
+              console.error(`[cron] ${jobName}: prune failed:`, err instanceof Error ? err.message : err),
+            );
             const elapsed = ((Date.now() - start) / 1000).toFixed(1);
             process.stdout.write(
               `[cron] ${jobName} completed in ${elapsed}s (${result.steps} steps)\n`,
