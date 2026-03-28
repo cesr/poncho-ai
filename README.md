@@ -4,6 +4,16 @@ Poncho is an agent harness built for teams.
 
 You develop agents by chatting with them locally, version-control everything in git, and deploy to production with guardrails. Your team uses the agent through a web UI, Slack, Telegram, email, or API.
 
+No sandbox, no extra infrastructure. Poncho is a Node.js server you deploy like any other web app. Agents are secure by default, with auth and human-in-the-loop approval for risky actions.
+
+Some examples:
+
+**Marketing agent**: equipped with skills for writing blog posts, generating ad copy, and analyzing campaign performance. Connects to Google Analytics and HubSpot via MCP. Requires approval before publishing content.
+
+**Support agent**: receives customer emails via Resend, looks up order history through a Shopify MCP server, drafts responses. Requires approval before sending replies.
+
+**Product agent**: your PMs talk to it through Slack. Has skills for writing PRDs, prioritizing backlogs, and summarizing user feedback. Connects to Linear via MCP. Browses competitor sites with built-in browser automation.
+
 > **Beta**: Poncho is under active development. Expect breaking changes, and please open an issue if you hit anything confusing or sharp.
 
 [Issues](https://github.com/cesr/poncho-ai/issues) · [Discord](https://discord.gg/92QanAxYcf) · [Marketing Agent Demo](https://github.com/cesr/marketing-agent) · [Product Agent Demo](https://github.com/cesr/product-agent)
@@ -109,7 +119,7 @@ Poncho uses the same conventions as Claude Code and OpenClaw (`AGENT.md` + `skil
    Chat with your agent via `poncho dev` (web UI + API) or `poncho run --interactive` (terminal). What you build locally is what you deploy.
 
 4. ### Deploy anywhere
-   Same agent code runs on Vercel, Docker, Lambda, Fly.io, and more, with OpenTelemetry traces and `poncho test` workflows.
+   No sandbox, no control plane, no infrastructure to manage. Poncho is just a Node.js server. Same agent code runs on Vercel, Lambda, Fly.io, and more, with OpenTelemetry traces and `poncho test` workflows.
 
 ## Quick Start
 
@@ -409,7 +419,7 @@ Three access levels per tool:
 - `'approval'`: available, but triggers a human approval prompt before each call
 - `false`: disabled, tool is not registered and the agent never sees it
 
-This works for any tool — built-in harness tools (`list_directory`, `read_file`, `write_file`, `edit_file`, `delete_file`, `delete_directory`), adapter tools (`send_email`), MCP tools, and skill tools. Per-environment overrides in `byEnvironment` take priority over the top-level defaults.
+This works for any tool:built-in harness tools (`list_directory`, `read_file`, `write_file`, `edit_file`, `delete_file`, `delete_directory`), adapter tools (`send_email`), MCP tools, and skill tools. Per-environment overrides in `byEnvironment` take priority over the top-level defaults.
 
 ### How skill discovery works
 
@@ -506,7 +516,7 @@ export default async function run(input) {
 }
 ```
 
-This works the same way in local development (`poncho dev`) and deployed environments — just make sure the variables are set on your deployment platform.
+This works the same way in local development (`poncho dev`) and deployed environments:just make sure the variables are set on your deployment platform.
 
 ## Using MCP Servers
 
@@ -742,7 +752,7 @@ The build command scaffolds deployment files directly in your project root and e
 
 ### Choosing a deployment model
 
-Poncho is deployment-agnostic — the same agent code runs on any platform. Pick the model that fits your workload:
+Poncho is deployment-agnostic:the same agent code runs on any platform. Pick the model that fits your workload:
 
 | | Serverless (Vercel, Lambda) | Long-lived server (Docker, Fly.io) |
 |---|---|---|
@@ -775,7 +785,7 @@ For serverless deployments with subagents or background callbacks, use a shared 
 
 Serverless platforms impose function timeouts (e.g. 60s on Vercel Pro, 15 min on Lambda).
 When an agent run needs more time than the platform allows, Poncho can automatically
-checkpoint and resume across request cycles. This is a serverless-specific feature — on
+checkpoint and resume across request cycles. This is a serverless-specific feature:on
 long-lived servers, agents simply run to completion without interruption.
 
 Set `PONCHO_MAX_DURATION` to your platform's timeout (in seconds) to enable it:
@@ -786,7 +796,7 @@ Set `PONCHO_MAX_DURATION` to your platform's timeout (in seconds) to enable it:
    conversation, resuming from the full history.
 4. This repeats transparently until the task finishes.
 
-The conversation history is the state — no external job queue or infrastructure is needed.
+The conversation history is the state:no external job queue or infrastructure is needed.
 
 For example, on Vercel Pro (60s max):
 
@@ -795,7 +805,7 @@ PONCHO_MAX_DURATION=55   # Leave headroom for persistence
 ```
 
 On a long-lived server (Docker, Fly.io), you typically don't need `PONCHO_MAX_DURATION` at
-all — the agent runs uninterrupted within the limits you set in `AGENT.md` (`limits.timeout`,
+all:the agent runs uninterrupted within the limits you set in `AGENT.md` (`limits.timeout`,
 `limits.maxSteps`).
 
 The `run:completed` SSE event includes `continuation: true` when the agent exited early,
@@ -906,7 +916,7 @@ Vercel Hobby allows 1 cron job with daily minimum granularity. Vercel Pro allows
 
 ## Reminders
 
-Poncho agents can set one-off reminders that fire at a specific time. Unlike cron jobs (recurring, defined in `AGENT.md`), reminders are dynamic — created by the agent during conversations (e.g. when a user says "remind me tomorrow at 9am").
+Poncho agents can set one-off reminders that fire at a specific time. Unlike cron jobs (recurring, defined in `AGENT.md`), reminders are dynamic:created by the agent during conversations (e.g. when a user says "remind me tomorrow at 9am").
 
 ### Enabling reminders
 
@@ -927,9 +937,9 @@ New projects created with `poncho init` have reminders enabled by default.
 
 When enabled, the agent gets three built-in tools:
 
-- **`set_reminder`** — Create a reminder with a task and ISO 8601 datetime.
-- **`list_reminders`** — List reminders (pending or recently cancelled).
-- **`cancel_reminder`** — Cancel a pending reminder by ID.
+- **`set_reminder`**:Create a reminder with a task and ISO 8601 datetime.
+- **`list_reminders`**:List reminders (pending or recently cancelled).
+- **`cancel_reminder`**:Cancel a pending reminder by ID.
 
 The current UTC time is injected into the system prompt so the agent can convert natural language times ("tomorrow at 9am") into precise datetimes.
 
@@ -1046,10 +1056,10 @@ You are a helpful customer support agent for Acme Corp.
 
 ## Further Documentation
 
-- **[HTTP API & Client SDK](docs/api.md)** — REST endpoints, SSE streaming, TypeScript client, file attachments, custom UIs
-- **[Platform Features](docs/features.md)** — Web UI, Slack/Telegram/email messaging, browser automation, persistent memory
-- **[Configuration & Security](docs/configuration.md)** — `poncho.config.js` reference, environment variables, observability, auth
-- **[Error Handling & Troubleshooting](docs/troubleshooting.md)** — Error codes, recovery, common issues
+- **[HTTP API & Client SDK](docs/api.md)**:REST endpoints, SSE streaming, TypeScript client, file attachments, custom UIs
+- **[Platform Features](docs/features.md)**:Web UI, Slack/Telegram/email messaging, browser automation, persistent memory
+- **[Configuration & Security](docs/configuration.md)**:`poncho.config.js` reference, environment variables, observability, auth
+- **[Error Handling & Troubleshooting](docs/troubleshooting.md)**:Error codes, recovery, common issues
 
 ## Getting Help
 

@@ -18,10 +18,26 @@ export interface OtlpConfig {
 
 export type OtlpOption = string | OtlpConfig;
 
+const TRACES_PATH = "/v1/traces";
+
+/**
+ * Ensures the OTLP URL points to the trace-ingest endpoint.
+ *
+ * Users typically configure the *base* OTLP endpoint (e.g.
+ * `https://gateway.example.com/api/v1/otlp`) but `OTLPTraceExporter` uses
+ * the `url` constructor option as-is — it only appends `/v1/traces`
+ * automatically when reading from the `OTEL_EXPORTER_OTLP_ENDPOINT` env var.
+ * Without this fixup traces are POSTed to the wrong path and silently lost.
+ */
+function ensureTracesPath(url: string): string {
+  if (url.endsWith(TRACES_PATH)) return url;
+  return url.replace(/\/+$/, "") + TRACES_PATH;
+}
+
 export function normalizeOtlp(opt: OtlpOption | undefined): OtlpConfig | undefined {
   if (!opt) return undefined;
-  if (typeof opt === "string") return opt ? { url: opt } : undefined;
-  return opt.url ? opt : undefined;
+  if (typeof opt === "string") return opt ? { url: ensureTracesPath(opt) } : undefined;
+  return opt.url ? { ...opt, url: ensureTracesPath(opt.url) } : undefined;
 }
 
 export interface TelemetryConfig {
@@ -87,8 +103,12 @@ export class TelemetryEmitter {
           ],
         }),
       });
-    } catch {
-      // Ignore telemetry delivery failures.
+    } catch (err) {
+      console.warn(
+        `[poncho][telemetry] OTLP log delivery failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
   }
 

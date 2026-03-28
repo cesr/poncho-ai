@@ -37,10 +37,22 @@ import { createSkillTools, normalizeScriptPolicyPath } from "./skill-tools.js";
 import { createSearchTools } from "./search-tools.js";
 import { createSubagentTools } from "./subagent-tools.js";
 import type { SubagentManager } from "./subagent-manager.js";
-import { trace, context as otelContext, SpanStatusCode, SpanKind } from "@opentelemetry/api";
+import { trace, context as otelContext, SpanStatusCode, SpanKind, diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api";
 import { NodeTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-node";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { normalizeOtlp } from "./telemetry.js";
+
+/** Extract useful details from OTLPExporterError (has .code + .data) or plain Error. */
+function formatOtlpError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const parts: string[] = [];
+  const code = (err as { code?: number }).code;
+  if (code != null) parts.push(`HTTP ${code}`);
+  if (err.message) parts.push(err.message);
+  const data = (err as { data?: string }).data;
+  if (data) parts.push(data);
+  return parts.join(" — ") || "unknown error";
+}
 import {
   isSiblingScriptsPattern,
   matchesRelativeScriptPattern,
@@ -1346,6 +1358,7 @@ export class AgentHarness {
     const telemetryEnabled = config?.telemetry?.enabled !== false;
     const otlpConfig = telemetryEnabled ? normalizeOtlp(config?.telemetry?.otlp) : undefined;
     if (otlpConfig) {
+      diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.WARN);
       const exporter = new OTLPTraceExporter({
         url: otlpConfig.url,
         headers: otlpConfig.headers,
@@ -1358,7 +1371,7 @@ export class AgentHarness {
       provider.register();
       this.otlpTracerProvider = provider;
       this.hasOtlpExporter = true;
-      console.info(`[poncho][telemetry] OTLP exporter active → ${otlpConfig.url}`);
+      console.info(`[poncho][telemetry] OTLP trace exporter active → ${otlpConfig.url}`);
     }
   }
 
@@ -1523,21 +1536,13 @@ export class AgentHarness {
     await this.mcpBridge?.stopLocalServers();
     if (this.otlpSpanProcessor) {
       await this.otlpSpanProcessor.shutdown().catch((err) => {
-        console.warn(
-          `[poncho][telemetry] OTLP span processor shutdown error: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
+        console.warn(`[poncho][telemetry] OTLP span processor shutdown error: ${formatOtlpError(err)}`);
       });
       this.otlpSpanProcessor = undefined;
     }
     if (this.otlpTracerProvider) {
       await this.otlpTracerProvider.shutdown().catch((err) => {
-        console.warn(
-          `[poncho][telemetry] OTLP tracer provider shutdown error: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
+        console.warn(`[poncho][telemetry] OTLP tracer provider shutdown error: ${formatOtlpError(err)}`);
       });
       this.otlpTracerProvider = undefined;
     }
@@ -1553,8 +1558,8 @@ export class AgentHarness {
    * child spans (LLM calls via AI SDK, tool execution) group under one trace.
    */
   async *runWithTelemetry(input: RunInput): AsyncGenerator<AgentEvent> {
-    if (this.hasOtlpExporter) {
-      const tracer = trace.getTracer("gen_ai");
+    if (this.hasOtlpExporter && this.otlpTracerProvider) {
+      const tracer = this.otlpTracerProvider.getTracer("gen_ai");
       const agentName = this.parsedAgent?.frontmatter.name ?? "agent";
 
       const rootSpan = tracer.startSpan(`invoke_agent ${agentName}`, {
@@ -1586,7 +1591,10 @@ export class AgentHarness {
         rootSpan.end();
         try {
           await this.otlpSpanProcessor?.forceFlush();
-        } catch { /* best-effort */ }
+        } catch (err: unknown) {
+          const detail = formatOtlpError(err);
+          console.warn(`[poncho][telemetry] OTLP span flush failed: ${detail}`);
+        }
       }
     } else {
       yield* this.run(input);
@@ -2642,8 +2650,8 @@ ${boundedMainMemory.trim()}`
       // OTel GenAI execute_tool spans for tool call visibility in traces
       type OtelSpan = ReturnType<ReturnType<typeof trace.getTracer>["startSpan"]>;
       const toolSpans = new Map<string, OtelSpan>();
-      if (this.hasOtlpExporter) {
-        const tracer = trace.getTracer("gen_ai");
+      if (this.hasOtlpExporter && this.otlpTracerProvider) {
+        const tracer = this.otlpTracerProvider.getTracer("gen_ai");
         for (const call of approvedCalls) {
           const toolDef = this.dispatcher.get(call.name);
           toolSpans.set(call.id, tracer.startSpan(`execute_tool ${call.name}`, {

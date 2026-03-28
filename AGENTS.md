@@ -105,6 +105,19 @@ Changesets handles dependency ordering automatically. Manual order if needed:
 3. `@poncho-ai/client` (depends on sdk)
 4. `@poncho-ai/cli` (depends on sdk + harness)
 
+## Personal Preferences
+
+- After each change, run a local build to validate before handoff:
+  - CLI-only changes: `pnpm --filter poncho build`
+  - Cross-package/runtime changes: `pnpm --filter @poncho/sdk build && pnpm --filter @poncho/harness build && pnpm --filter poncho build`
+- Changesets changelog generation uses `@changesets/changelog-github` with repo `cesr/poncho-ai`.
+- Changeset lifecycle guardrail:
+  - Keep `.changeset/*.md` files in feature PRs.
+  - After merging the `chore: release packages` PR, run `git pull --ff-only origin main`; consumed changeset files should disappear.
+  - If old untracked `.changeset/*.md` files remain, treat them as stale release artifacts and ask before deleting.
+- Always ask for confirmation before deleting any file or folder.
+- Never delete files or folders outside this repository under any circumstances.
+
 ## Local development with linked packages
 
 To use your local build of the CLI globally:
