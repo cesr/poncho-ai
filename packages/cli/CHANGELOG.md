@@ -1,5 +1,14 @@
 # @poncho-ai/cli
 
+## 0.34.4
+
+### Patch Changes
+
+- [`8d7dadd`](https://github.com/cesr/poncho-ai/commit/8d7dadd868511b7157bcf3ee14301d7abe86bb50) Thanks [@cesr](https://github.com/cesr)! - fix: make `poncho build` target argument optional so it no-ops when called without a target (e.g. from Vercel build scripts)
+
+- Updated dependencies [[`3f096f2`](https://github.com/cesr/poncho-ai/commit/3f096f28b9ab797b52f1b725778976929156cce9)]:
+  - @poncho-ai/harness@0.34.0
+
 ## 0.34.3
 
 ### Patch Changes
