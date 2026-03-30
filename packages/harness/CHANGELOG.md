@@ -1,5 +1,13 @@
 # @poncho-ai/harness
 
+## 0.34.0
+
+### Minor Changes
+
+- [`3f096f2`](https://github.com/cesr/poncho-ai/commit/3f096f28b9ab797b52f1b725778976929156cce9) Thanks [@cesr](https://github.com/cesr)! - fix: scope MCP tools to skills via server-level claiming
+
+  MCP tools from configured servers are now globally available by default. When a skill claims any tool from a server via `allowed-tools`, the entire server becomes skill-managed — its tools are only available when the claiming skill is active (or declared in AGENT.md `allowed-tools`).
+
 ## 0.33.1
 
 ### Patch Changes
