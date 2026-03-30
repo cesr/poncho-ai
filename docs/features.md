@@ -28,6 +28,7 @@ Connect your Poncho agent to messaging platforms so it responds to @mentions.
 1. Go to [api.slack.com/apps](https://api.slack.com/apps) and create a new app "From scratch"
 2. Under **OAuth & Permissions**, add these Bot Token Scopes:
    - `app_mentions:read`
+   - `channels:history` (needed to fetch thread context when mentioned in a reply)
    - `chat:write`
    - `reactions:write`
 3. Under **Event Subscriptions**, enable events:

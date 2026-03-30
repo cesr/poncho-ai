@@ -112,8 +112,8 @@ export const fetchThreadMessages = async (
   };
 
   if (!result.ok) {
-    console.warn(
-      `[slack-adapter] conversations.replies failed: ${result.error}`,
+    console.error(
+      `[slack-adapter] conversations.replies failed: ${result.error} — ensure the bot has the "channels:history" scope`,
     );
     return [];
   }
