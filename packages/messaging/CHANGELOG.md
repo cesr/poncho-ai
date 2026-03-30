@@ -1,5 +1,13 @@
 # @poncho-ai/messaging
 
+## 0.8.0
+
+### Minor Changes
+
+- [`fb7ee97`](https://github.com/cesr/poncho-ai/commit/fb7ee97f7df0dda7318a7e59565e0b53285f10c4) Thanks [@cesr](https://github.com/cesr)! - feat: include thread context when Slack bot is @mentioned in a thread reply
+
+  When the bot is @mentioned in a thread (not the parent message), the adapter now fetches prior thread messages via `conversations.replies` and prepends them as context, so the agent understands what the conversation is about.
+
 ## 0.7.10
 
 ### Patch Changes
