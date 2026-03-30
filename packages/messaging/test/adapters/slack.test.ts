@@ -238,4 +238,96 @@ describe("SlackAdapter", () => {
     expect(received).toHaveLength(0);
     expect(resStatus()).toBe(200);
   });
+
+  it("includes thread context when mention is in a thread reply", async () => {
+    const adapter = new SlackAdapter();
+    await adapter.initialize();
+    const received: PonchoIncomingMessage[] = [];
+    adapter.onMessage(async (msg) => { received.push(msg); });
+
+    // Mock fetch to intercept conversations.replies
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("conversations.replies")) {
+        return {
+          json: async () => ({
+            ok: true,
+            messages: [
+              { user: "U_PARENT", text: "What are the limitations of self-hosted?", ts: "100.0" },
+              { user: "U2", text: "<@U1> can you help?", ts: "100.1" },
+            ],
+          }),
+        };
+      }
+      // Pass through for other Slack API calls (reactions)
+      return { json: async () => ({ ok: true }) };
+    }));
+
+    let handler: any;
+    adapter.registerRoutes((_m, _p, h) => { handler = h; });
+
+    const body = JSON.stringify({
+      type: "event_callback",
+      event: {
+        type: "app_mention",
+        text: "<@U1> can you help?",
+        ts: "100.1",
+        thread_ts: "100.0",
+        channel: "C1",
+        user: "U2",
+      },
+    });
+    const { req, res } = makeReqRes(body);
+    await handler(req, res);
+
+    // Wait for async handler
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(received).toHaveLength(1);
+    expect(received[0]!.text).toContain("[Thread context]");
+    expect(received[0]!.text).toContain("What are the limitations of self-hosted?");
+    expect(received[0]!.text).toContain("[New message]");
+    expect(received[0]!.text).toContain("can you help?");
+
+    vi.stubGlobal("fetch", originalFetch);
+  });
+
+  it("does not fetch thread context for top-level mentions", async () => {
+    const adapter = new SlackAdapter();
+    await adapter.initialize();
+    const received: PonchoIncomingMessage[] = [];
+    adapter.onMessage(async (msg) => { received.push(msg); });
+
+    const fetchSpy = vi.fn(async () => ({ json: async () => ({ ok: true }) }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    let handler: any;
+    adapter.registerRoutes((_m, _p, h) => { handler = h; });
+
+    // No thread_ts → top-level message
+    const body = JSON.stringify({
+      type: "event_callback",
+      event: {
+        type: "app_mention",
+        text: "<@U1> hello",
+        ts: "200.0",
+        channel: "C1",
+        user: "U2",
+      },
+    });
+    const { req, res } = makeReqRes(body);
+    await handler(req, res);
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(received).toHaveLength(1);
+    expect(received[0]!.text).toBe("hello");
+    // conversations.replies should NOT have been called
+    const repliesCalls = fetchSpy.mock.calls.filter(
+      ([url]: any) => typeof url === "string" && url.includes("conversations.replies"),
+    );
+    expect(repliesCalls).toHaveLength(0);
+
+    vi.restoreAllMocks();
+  });
 });

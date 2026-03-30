@@ -9,6 +9,7 @@ import type {
 import { verifySlackSignature } from "./verify.js";
 import {
   addReaction,
+  fetchThreadMessages,
   postMessage,
   removeReaction,
   splitMessage,
@@ -189,8 +190,27 @@ export class SlackAdapter implements MessagingAdapter {
         const channel = String(event.channel ?? "");
         const userId = String(event.user ?? "");
 
+        // When the mention is inside a thread (thread_ts differs from ts),
+        // fetch prior thread messages so the agent has context.
+        let contextPrefix = "";
+        if (event.thread_ts && event.thread_ts !== event.ts) {
+          const threadMessages = await fetchThreadMessages(
+            this.botToken,
+            channel,
+            threadTs,
+            messageTs, // exclude the triggering message itself
+          );
+
+          if (threadMessages.length > 0) {
+            const formatted = threadMessages
+              .map((m) => `<${m.user ?? "unknown"}>: ${m.text ?? ""}`)
+              .join("\n");
+            contextPrefix = `[Thread context]\n${formatted}\n\n[New message]\n`;
+          }
+        }
+
         const message: PonchoIncomingMessage = {
-          text,
+          text: contextPrefix + text,
           threadRef: {
             platformThreadId: threadTs,
             channelId: channel,

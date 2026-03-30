@@ -90,6 +90,38 @@ export const addReaction = async (
   }
 };
 
+/**
+ * Fetch thread replies using `conversations.replies`.
+ * Returns messages sorted chronologically (oldest first), excluding the
+ * message identified by `excludeTs` (typically the triggering mention).
+ */
+export const fetchThreadMessages = async (
+  token: string,
+  channel: string,
+  threadTs: string,
+  excludeTs?: string,
+): Promise<Array<{ user?: string; text?: string; ts: string }>> => {
+  const result = (await slackFetch("conversations.replies", token, {
+    channel,
+    ts: threadTs,
+    limit: 50,
+  })) as {
+    ok: boolean;
+    error?: string;
+    messages?: Array<{ user?: string; text?: string; ts: string }>;
+  };
+
+  if (!result.ok) {
+    console.warn(
+      `[slack-adapter] conversations.replies failed: ${result.error}`,
+    );
+    return [];
+  }
+
+  const messages = result.messages ?? [];
+  return excludeTs ? messages.filter((m) => m.ts !== excludeTs) : messages;
+};
+
 export const removeReaction = async (
   token: string,
   channel: string,
