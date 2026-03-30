@@ -1037,6 +1037,360 @@ allowed-tools:
     await new Promise<void>((resolveClose) => mcpServer.close(() => resolveClose()));
   });
 
+  it("unclaimed MCP tools are globally available without allowed-tools declaration", async () => {
+    process.env.LINEAR_TOKEN = "token-123";
+    const mcpServer = createServer(async (req, res) => {
+      if (req.method === "DELETE") {
+        res.statusCode = 200;
+        res.end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = Buffer.concat(chunks).toString("utf8");
+      const payload = body.trim().length > 0 ? (JSON.parse(body) as any) : {};
+      if (payload.method === "initialize") {
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Mcp-Session-Id", "sess");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              protocolVersion: "2025-03-26",
+              capabilities: { tools: { listChanged: true } },
+              serverInfo: { name: "remote", version: "1.0.0" },
+            },
+          }),
+        );
+        return;
+      }
+      if (payload.method === "notifications/initialized") {
+        res.statusCode = 202;
+        res.end();
+        return;
+      }
+      if (payload.method === "tools/list") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [
+                { name: "list_issues", inputSchema: { type: "object", properties: {} } },
+                { name: "save_issue", inputSchema: { type: "object", properties: {} } },
+              ],
+            },
+          }),
+        );
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+    await new Promise<void>((resolveOpen) => mcpServer.listen(0, () => resolveOpen()));
+    const address = mcpServer.address();
+    if (!address || typeof address === "string") throw new Error("Unexpected address");
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-unclaimed-mcp-"));
+    // AGENT.md with no allowed-tools and no skills — MCP tools should be globally available
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: unclaimed-mcp-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Agent with unclaimed MCP tools
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "poncho.config.js"),
+      `export default {
+  mcp: [
+    {
+      name: "linear",
+      url: "http://127.0.0.1:${address.port}/mcp",
+      auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" }
+    }
+  ]
+};
+`,
+      "utf8",
+    );
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    const toolNames = () => harness.listTools().map((t) => t.name);
+    // Unclaimed tools should be globally available
+    expect(toolNames()).toContain("linear/list_issues");
+    expect(toolNames()).toContain("linear/save_issue");
+    await harness.shutdown();
+    await new Promise<void>((resolveClose) => mcpServer.close(() => resolveClose()));
+  });
+
+  it("claiming any tool from a server scopes the entire server", async () => {
+    process.env.LINEAR_TOKEN = "token-123";
+    const mcpServer = createServer(async (req, res) => {
+      if (req.method === "DELETE") {
+        res.statusCode = 200;
+        res.end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = Buffer.concat(chunks).toString("utf8");
+      const payload = body.trim().length > 0 ? (JSON.parse(body) as any) : {};
+      if (payload.method === "initialize") {
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Mcp-Session-Id", "sess");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              protocolVersion: "2025-03-26",
+              capabilities: { tools: { listChanged: true } },
+              serverInfo: { name: "remote", version: "1.0.0" },
+            },
+          }),
+        );
+        return;
+      }
+      if (payload.method === "notifications/initialized") {
+        res.statusCode = 202;
+        res.end();
+        return;
+      }
+      if (payload.method === "tools/list") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [
+                { name: "list_issues", inputSchema: { type: "object", properties: {} } },
+                { name: "save_issue", inputSchema: { type: "object", properties: {} } },
+                { name: "other_tool", inputSchema: { type: "object", properties: {} } },
+              ],
+            },
+          }),
+        );
+        return;
+      }
+      if (payload.method === "tools/call") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: { result: { ok: true } },
+          }),
+        );
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+    await new Promise<void>((resolveOpen) => mcpServer.listen(0, () => resolveOpen()));
+    const address = mcpServer.address();
+    if (!address || typeof address === "string") throw new Error("Unexpected address");
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-server-scoped-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: server-scoped-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Server Scoped Agent
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "poncho.config.js"),
+      `export default {
+  mcp: [
+    {
+      name: "remote",
+      url: "http://127.0.0.1:${address.port}/mcp",
+      auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" }
+    }
+  ]
+};
+`,
+      "utf8",
+    );
+    // Skill claims only 2 of the 3 tools from "remote" server
+    await mkdir(join(dir, "skills", "linear"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "linear", "SKILL.md"),
+      `---
+name: linear
+description: Linear issue tracking
+allowed-tools:
+  - mcp:remote/list_issues
+  - mcp:remote/save_issue
+---
+# Linear Skill
+`,
+      "utf8",
+    );
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    const toolNames = () => harness.listTools().map((t) => t.name);
+
+    // Before activation: entire server is skill-managed, so ALL tools are hidden
+    // (even other_tool which the skill didn't explicitly claim)
+    expect(toolNames()).not.toContain("remote/list_issues");
+    expect(toolNames()).not.toContain("remote/save_issue");
+    expect(toolNames()).not.toContain("remote/other_tool");
+
+    // Activate the linear skill — only its declared tools appear
+    const activate = harness.listTools().find((t) => t.name === "activate_skill")!;
+    const deactivate = harness.listTools().find((t) => t.name === "deactivate_skill")!;
+    await activate.handler({ name: "linear" }, {} as any);
+
+    expect(toolNames()).toContain("remote/list_issues");
+    expect(toolNames()).toContain("remote/save_issue");
+    // other_tool is NOT claimed by any active skill, and the server is managed
+    expect(toolNames()).not.toContain("remote/other_tool");
+
+    // Deactivate — all tools from the managed server hidden again
+    await deactivate.handler({ name: "linear" }, {} as any);
+    expect(toolNames()).not.toContain("remote/list_issues");
+    expect(toolNames()).not.toContain("remote/save_issue");
+    expect(toolNames()).not.toContain("remote/other_tool");
+
+    await harness.shutdown();
+    await new Promise<void>((resolveClose) => mcpServer.close(() => resolveClose()));
+  });
+
+  it("wildcard skill claim scopes all tools from that server", async () => {
+    process.env.LINEAR_TOKEN = "token-123";
+    const mcpServer = createServer(async (req, res) => {
+      if (req.method === "DELETE") {
+        res.statusCode = 200;
+        res.end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = Buffer.concat(chunks).toString("utf8");
+      const payload = body.trim().length > 0 ? (JSON.parse(body) as any) : {};
+      if (payload.method === "initialize") {
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Mcp-Session-Id", "sess");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              protocolVersion: "2025-03-26",
+              capabilities: { tools: { listChanged: true } },
+              serverInfo: { name: "linear", version: "1.0.0" },
+            },
+          }),
+        );
+        return;
+      }
+      if (payload.method === "notifications/initialized") {
+        res.statusCode = 202;
+        res.end();
+        return;
+      }
+      if (payload.method === "tools/list") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [
+                { name: "list_issues", inputSchema: { type: "object", properties: {} } },
+                { name: "save_issue", inputSchema: { type: "object", properties: {} } },
+                { name: "save_comment", inputSchema: { type: "object", properties: {} } },
+              ],
+            },
+          }),
+        );
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+    await new Promise<void>((resolveOpen) => mcpServer.listen(0, () => resolveOpen()));
+    const address = mcpServer.address();
+    if (!address || typeof address === "string") throw new Error("Unexpected address");
+    const dir = await mkdtemp(join(tmpdir(), "poncho-harness-wildcard-claim-"));
+    await writeFile(
+      join(dir, "AGENT.md"),
+      `---
+name: wildcard-agent
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+---
+
+# Wildcard Agent
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(dir, "poncho.config.js"),
+      `export default {
+  mcp: [
+    {
+      name: "linear",
+      url: "http://127.0.0.1:${address.port}/mcp",
+      auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" }
+    }
+  ]
+};
+`,
+      "utf8",
+    );
+    // Skill claims all linear tools with wildcard
+    await mkdir(join(dir, "skills", "linear"), { recursive: true });
+    await writeFile(
+      join(dir, "skills", "linear", "SKILL.md"),
+      `---
+name: linear
+description: Linear integration
+allowed-tools:
+  - mcp:linear/*
+---
+# Linear Skill
+`,
+      "utf8",
+    );
+    const harness = new AgentHarness({ workingDir: dir });
+    await harness.initialize();
+    const toolNames = () => harness.listTools().map((t) => t.name);
+
+    // None of the linear tools should be available (all claimed by wildcard)
+    expect(toolNames()).not.toContain("linear/list_issues");
+    expect(toolNames()).not.toContain("linear/save_issue");
+    expect(toolNames()).not.toContain("linear/save_comment");
+
+    // Activate the skill
+    const activate = harness.listTools().find((t) => t.name === "activate_skill")!;
+    await activate.handler({ name: "linear" }, {} as any);
+
+    // All linear tools now available
+    expect(toolNames()).toContain("linear/list_issues");
+    expect(toolNames()).toContain("linear/save_issue");
+    expect(toolNames()).toContain("linear/save_comment");
+
+    await harness.shutdown();
+    await new Promise<void>((resolveClose) => mcpServer.close(() => resolveClose()));
+  });
+
   it("supports flat tool access config format", async () => {
     const dir = await mkdtemp(join(tmpdir(), "poncho-harness-flat-tool-access-"));
     await writeFile(

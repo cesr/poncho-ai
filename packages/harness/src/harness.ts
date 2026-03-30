@@ -995,8 +995,30 @@ export class AgentHarness {
     return this.parsedAgent?.frontmatter.approvalRequired?.scripts ?? [];
   }
 
+  /**
+   * Return the set of MCP server names that have at least one tool claimed by
+   * any loaded skill's `allowedTools.mcp`.  When ANY skill claims tools from a
+   * server, the entire server is considered "skill-managed" — none of its tools
+   * are auto-exposed globally; only explicitly declared tools become available
+   * (via agent-level allowed-tools or active skill allowed-tools).
+   */
+  private getSkillManagedMcpServers(): Set<string> {
+    const servers = new Set<string>();
+    for (const skill of this.loadedSkills) {
+      for (const pattern of skill.allowedTools.mcp) {
+        const slash = pattern.indexOf("/");
+        if (slash > 0) {
+          servers.add(pattern.slice(0, slash));
+        }
+      }
+    }
+    return servers;
+  }
+
   private getRequestedMcpPatterns(): string[] {
     const patterns = new Set<string>(this.getAgentMcpIntent());
+
+    // Add patterns from active skills.
     for (const skillName of this.activeSkillNames) {
       const skill = this.loadedSkills.find((entry) => entry.name === skillName);
       if (!skill) {
@@ -1006,6 +1028,26 @@ export class AgentHarness {
         patterns.add(pattern);
       }
     }
+
+    // MCP servers whose tools are NOT claimed by any skill are "unmanaged" —
+    // all their discovered tools are globally available so that configuring a
+    // server in poncho.config.js makes its tools accessible by default.
+    //
+    // Once ANY skill claims tools from a server (even a single tool), that
+    // server becomes "skill-managed" and ALL of its tools require explicit
+    // declaration (agent-level or active-skill) to be available.
+    if (this.mcpBridge) {
+      const managedServers = this.getSkillManagedMcpServers();
+      const discoveredTools = this.mcpBridge.listDiscoveredTools();
+      for (const toolName of discoveredTools) {
+        const slash = toolName.indexOf("/");
+        const serverName = slash > 0 ? toolName.slice(0, slash) : toolName;
+        if (!managedServers.has(serverName)) {
+          patterns.add(toolName);
+        }
+      }
+    }
+
     return [...patterns];
   }
 
