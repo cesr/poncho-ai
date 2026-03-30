@@ -101,11 +101,20 @@ export const fetchThreadMessages = async (
   threadTs: string,
   excludeTs?: string,
 ): Promise<Array<{ user?: string; text?: string; ts: string }>> => {
-  const result = (await slackFetch("conversations.replies", token, {
+  const params = new URLSearchParams({
     channel,
     ts: threadTs,
-    limit: 50,
-  })) as {
+    limit: "50",
+  });
+
+  const res = await fetch(
+    `${SLACK_API}/conversations.replies?${params.toString()}`,
+    {
+      method: "GET",
+      headers: { authorization: `Bearer ${token}` },
+    },
+  );
+  const result = (await res.json()) as {
     ok: boolean;
     error?: string;
     messages?: Array<{ user?: string; text?: string; ts: string }>;
