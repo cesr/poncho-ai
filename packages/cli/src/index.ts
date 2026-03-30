@@ -878,7 +878,6 @@ const PACKAGE_TEMPLATE = async (name: string, projectDir: string): Promise<strin
         dev: "poncho dev",
         start: "poncho dev",
         test: "poncho test",
-        build: "poncho build",
       },
       dependencies: {
         "@poncho-ai/cli": cliDep,
@@ -7637,10 +7636,15 @@ export const buildCli = (): Command => {
 
   program
     .command("build")
-    .argument("<target>", "vercel|docker|lambda|fly")
+    .argument("[target]", "vercel|docker|lambda|fly")
     .option("--force", "overwrite existing deployment files")
     .description("Scaffold deployment files for a target")
-    .action(async (target: string, options: { force?: boolean }) => {
+    .action(async (target: string | undefined, options: { force?: boolean }) => {
+      if (!target) {
+        // No-op when called without a target (e.g. from Vercel build scripts).
+        // Scaffolding is done locally via `poncho build <target>`.
+        return;
+      }
       await buildTarget(process.cwd(), target, { force: options.force });
     });
 
