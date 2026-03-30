@@ -1,5 +1,11 @@
 # @poncho-ai/messaging
 
+## 0.8.1
+
+### Patch Changes
+
+- [`69dd20a`](https://github.com/cesr/poncho-ai/commit/69dd20ae31ada0edaf281cf451729ffe37f4df71) Thanks [@cesr](https://github.com/cesr)! - fix: use GET for Slack conversations.replies API call so thread context is fetched correctly
+
 ## 0.8.0
 
 ### Minor Changes
