@@ -49,6 +49,11 @@ export const estimateTokens = (text: string): number =>
 
 /**
  * Estimate the total token count of a system prompt + messages + tool defs.
+ *
+ * Tool definitions are structured JSON (property names, braces, enum values)
+ * which tokenizes more efficiently than natural language — roughly 5-6
+ * chars/token vs ~4 chars/token for prose.  We estimate them separately to
+ * avoid inflating the count when there are many MCP tools (100+).
  */
 export const estimateTotalTokens = (
   systemPrompt: string,
@@ -64,10 +69,13 @@ export const estimateTotalTokens = (
           return sum + 200; // rough estimate for file/image references
         }, 0);
   }
+  let tokens = Math.ceil((chars / 4) * OVERHEAD_MULTIPLIER);
   if (toolDefinitionsJson) {
-    chars += toolDefinitionsJson.length;
+    // JSON-specific ratio — no overhead multiplier (structural tokens are
+    // already accounted for by the higher chars-per-token ratio).
+    tokens += Math.ceil(toolDefinitionsJson.length / 6);
   }
-  return Math.ceil((chars / 4) * OVERHEAD_MULTIPLIER);
+  return tokens;
 };
 
 /**

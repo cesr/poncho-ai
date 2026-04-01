@@ -1,18 +1,8 @@
 # Poncho
 
-Poncho is an agent harness built for teams.
+Build agents you can share.
 
-You develop agents by chatting with them locally, version-control everything in git, and deploy to production with guardrails. Your team uses the agent through a web UI, Slack, Telegram, email, or API.
-
-No sandbox, no extra infrastructure. Poncho is a Node.js server you deploy like any other web app. Agents are secure by default, with auth and human-in-the-loop approval for risky actions.
-
-Some examples:
-
-**Marketing agent**: equipped with skills for writing blog posts, generating ad copy, and analyzing campaign performance. Connects to Google Analytics and HubSpot via MCP. Requires approval before publishing content.
-
-**Support agent**: receives customer emails via Resend, looks up order history through a Shopify MCP server, drafts responses. Requires approval before sending replies.
-
-**Product agent**: your PMs talk to it through Slack. Has skills for writing PRDs, prioritizing backlogs, and summarizing user feedback. Connects to Linear via MCP. Browses competitor sites with built-in browser automation.
+Define behavior in markdown, add skills and tools, develop by chatting locally, and deploy as a web app your team can use through a chat UI, Slack, Telegram, email, or API.
 
 > **Beta**: Poncho is under active development. Expect breaking changes, and please open an issue if you hit anything confusing or sharp.
 
@@ -45,7 +35,8 @@ Poncho uses the same conventions as Claude Code and OpenClaw (`AGENT.md` + `skil
 
 - **Web UI + API**: built-in chat interface and REST API with SSE streaming, conversation management, and file attachments.
 - **Messaging integrations**: connect to Slack, Telegram, and email (Resend) so your team can talk to the agent where they already work.
-- **Skills and MCP**: add capabilities via `SKILL.md` files with TypeScript/JavaScript scripts, or connect remote MCP tool servers.
+- **Skills**: add capabilities via `SKILL.md` files with TypeScript/JavaScript scripts.
+- **MCP**: connect any MCP server to give your agent access to external tools and data sources. Tools can be scoped to specific skill activations.
 - **Guardrails**: control which tools the agent can use in production, and require human approval for risky actions.
 - **Auth**: protect your endpoint with token-based authentication.
 - **Browser automation**: headless Chromium with live viewport streaming, snapshot/ref interaction, and session persistence.

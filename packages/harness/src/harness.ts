@@ -2154,19 +2154,24 @@ ${boundedMainMemory.trim()}`
                 // Always resolve to base64 so the model doesn't need to
                 // fetch URLs itself (which fails for private blob stores).
                 let resolvedData: string;
-                if (part.data.startsWith(PONCHO_UPLOAD_SCHEME) && this.uploadStore) {
-                  const buf = await this.uploadStore.get(part.data);
-                  resolvedData = buf.toString("base64");
-                } else if (part.data.startsWith("https://") || part.data.startsWith("http://")) {
-                  if (this.uploadStore) {
+                try {
+                  if (part.data.startsWith(PONCHO_UPLOAD_SCHEME) && this.uploadStore) {
                     const buf = await this.uploadStore.get(part.data);
                     resolvedData = buf.toString("base64");
+                  } else if (part.data.startsWith("https://") || part.data.startsWith("http://")) {
+                    if (this.uploadStore) {
+                      const buf = await this.uploadStore.get(part.data);
+                      resolvedData = buf.toString("base64");
+                    } else {
+                      const resp = await fetch(part.data);
+                      resolvedData = Buffer.from(await resp.arrayBuffer()).toString("base64");
+                    }
                   } else {
-                    const resp = await fetch(part.data);
-                    resolvedData = Buffer.from(await resp.arrayBuffer()).toString("base64");
+                    resolvedData = part.data;
                   }
-                } else {
-                  resolvedData = part.data;
+                } catch {
+                  const label = part.filename ?? part.mediaType;
+                  return { type: "text" as const, text: `[Attached file: ${label} — file is no longer available]` };
                 }
                 if (isSupportedImage) {
                   return {
@@ -2200,8 +2205,13 @@ ${boundedMainMemory.trim()}`
         const compactionConfig = resolveCompactionConfig(agent.frontmatter.compaction);
         if (compactionConfig.enabled && (step === 1 || step % COMPACTION_CHECK_INTERVAL_STEPS === 0)) {
           const estimated = estimateTotalTokens(systemPrompt, messages, toolDefsJsonForEstimate);
-          const lastReportedInput = totalInputTokens > 0 ? totalInputTokens : 0;
-          const effectiveTokens = Math.max(estimated, lastReportedInput);
+          // Use the actual context size from the last model response (input tokens
+          // + tool output accumulated since), not totalInputTokens which is a
+          // cumulative sum across all steps and would wildly overcount.
+          const lastReportedContext = latestContextTokens > 0
+            ? latestContextTokens + toolOutputEstimateSinceModel
+            : 0;
+          const effectiveTokens = Math.max(estimated, lastReportedContext);
 
           if (effectiveTokens > compactionConfig.trigger * contextWindow) {
             yield pushEvent({ type: "compaction:started", estimatedTokens: effectiveTokens });
