@@ -1,5 +1,14 @@
 # @poncho-ai/harness
 
+## 0.34.1
+
+### Patch Changes
+
+- [`59a88cc`](https://github.com/cesr/poncho-ai/commit/59a88cc52b5c3aa7432b820424bb8067174233e5) Thanks [@cesr](https://github.com/cesr)! - fix: improve token estimation accuracy and handle missing attachments
+  - Use a JSON-specific token ratio for tool definitions to avoid inflating counts with many MCP tools.
+  - Track actual context size from model responses for compaction triggers instead of cumulative input tokens.
+  - Gracefully degrade when file attachments are missing or expired instead of crashing.
+
 ## 0.34.0
 
 ### Minor Changes
