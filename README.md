@@ -1,8 +1,10 @@
 # Poncho
 
-Build agents you can share.
+Poncho is a harness for building agents you can share.
 
 Define behavior in markdown, add skills and tools, develop by chatting locally, and deploy as a web app your team can use through a chat UI, Slack, Telegram, email, or API.
+
+No sandbox, no extra infrastructure. Poncho is a Node.js server you deploy like any other web app. Agents are secure by default, with auth and human-in-the-loop approval for risky actions.
 
 > **Beta**: Poncho is under active development. Expect breaking changes, and please open an issue if you hit anything confusing or sharp.
 
@@ -23,7 +25,7 @@ poncho dev
 
 ## What is Poncho?
 
-Poncho is a framework for building AI agents that other people can use. You define behavior in a single `AGENT.md` file, add skills and tools, develop locally by chatting with the agent, and deploy it as a web endpoint your team can access.
+Poncho is a harness framework for building AI agents that other people can use. You define behavior in a single `AGENT.md` file, add skills and tools, develop locally by chatting with the agent, and deploy it as a web endpoint your team can access.
 
 **For your team**, the agent is a web app they can talk to through the built-in chat UI, Slack, Telegram, email, or your own frontend via the API. They don't need to know how it works.
 
