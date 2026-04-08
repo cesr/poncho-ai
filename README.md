@@ -41,6 +41,7 @@ Poncho uses the same conventions as Claude Code and OpenClaw (`AGENT.md` + `skil
 - **MCP**: connect any MCP server to give your agent access to external tools and data sources. Tools can be scoped to specific skill activations.
 - **Guardrails**: control which tools the agent can use in production, and require human approval for risky actions.
 - **Auth**: protect your endpoint with token-based authentication.
+- **Multi-tenancy**: deploy one agent, serve many users. JWT-based tenant scoping with isolated conversations, memory, and per-tenant secrets for MCP auth.
 - **Browser automation**: headless Chromium with live viewport streaming, snapshot/ref interaction, and session persistence.
 - **Subagents**: agents can spawn background tasks for parallel work, with independent conversations and approval tunneling.
 - **Persistent memory**: the agent remembers context across conversations with semantic recall.
@@ -83,6 +84,7 @@ Poncho uses the same conventions as Claude Code and OpenClaw (`AGENT.md` + `skil
 - [Subagents](docs/features.md#subagents)
 - [Context Compaction](docs/features.md#context-compaction)
 - [Persistent Memory](docs/features.md#persistent-memory)
+- [Multi-Tenancy](docs/features.md#multi-tenancy)
 
 ### Reference
 - Configuration

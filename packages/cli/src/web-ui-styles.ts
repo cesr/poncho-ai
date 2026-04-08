@@ -440,11 +440,16 @@ export const WEB_UI_STYLES = `
       margin-top: auto;
       padding-top: 8px;
     }
+    .sidebar-footer-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
     .logout-btn {
       background: transparent;
       border: 0;
       color: var(--fg-6);
-      width: 100%;
+      flex: 1;
       padding: 8px 10px;
       text-align: left;
       border-radius: 6px;
@@ -453,6 +458,97 @@ export const WEB_UI_STYLES = `
       transition: color 0.15s, background 0.15s;
     }
     .logout-btn:hover { color: var(--fg-2); }
+    .settings-btn {
+      background: transparent;
+      border: 0;
+      color: var(--fg-6);
+      padding: 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.15s;
+      flex-shrink: 0;
+    }
+    .settings-btn:hover { color: var(--fg-2); }
+    .settings-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 2000;
+      background: rgba(0,0,0,0.5);
+      align-items: center;
+      justify-content: center;
+    }
+    .settings-panel {
+      background: var(--bg);
+      border: 1px solid var(--border-3);
+      border-radius: 12px;
+      padding: 24px;
+      max-width: 420px;
+      width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+    .settings-panel h3 {
+      margin: 0 0 16px;
+      font-size: 16px;
+      color: var(--fg);
+    }
+    .settings-field { margin-bottom: 14px; }
+    .settings-field label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 4px;
+      color: var(--fg);
+    }
+    .settings-field-row { display: flex; gap: 8px; }
+    .settings-field input {
+      flex: 1;
+      padding: 6px 10px;
+      border: 1px solid var(--border-3);
+      border-radius: 6px;
+      font-size: 13px;
+      background: var(--surface-2);
+      color: var(--fg);
+    }
+    .settings-field input::placeholder { color: var(--fg-6); }
+    .settings-field input:focus { outline: none; border-color: var(--border-focus); }
+    .settings-save-btn {
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border-3);
+      background: var(--surface-3);
+      color: var(--fg);
+      cursor: pointer;
+      font-size: 12px;
+      transition: background 0.15s;
+    }
+    .settings-save-btn:hover { background: var(--surface-5); }
+    .settings-clear-btn {
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border-3);
+      color: var(--fg-3);
+      background: none;
+      cursor: pointer;
+      font-size: 12px;
+      transition: color 0.15s;
+    }
+    .settings-clear-btn:hover { color: var(--fg); }
+    .settings-close-btn {
+      margin-top: 8px;
+      padding: 6px 16px;
+      border-radius: 6px;
+      border: 1px solid var(--border-3);
+      background: var(--surface-3);
+      color: var(--fg);
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .settings-close-btn:hover { background: var(--surface-5); }
 
     /* Main */
     .main { flex: 1; display: flex; flex-direction: column; min-width: 0; max-width: 100%; background: var(--bg); overflow: hidden; }

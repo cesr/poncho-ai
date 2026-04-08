@@ -19,8 +19,19 @@ export const buildOpenApiSpec = (options: { agentName: string }): Record<string,
         type: "http",
         scheme: "bearer",
         description:
-          "Pass the PONCHO_AUTH_TOKEN value as a Bearer token. " +
+          "Pass the PONCHO_AUTH_TOKEN value as a Bearer token for builder/admin access. " +
           "Required only when `auth.required: true` in poncho.config.js.",
+      },
+      tenantJwt: {
+        type: "http",
+        scheme: "bearer",
+        bearerFormat: "JWT",
+        description:
+          "Tenant-scoped JWT (HS256) signed with PONCHO_AUTH_TOKEN. " +
+          "Standard claims: `sub` = tenantId, `exp` = expiration (optional), `iat` = issued at. " +
+          "Optional custom `meta` claim for metadata. " +
+          "Create tokens using `createTenantToken()` from @poncho-ai/client, " +
+          "the `poncho auth create-token` CLI command, or any HS256 JWT library.",
       },
     },
     schemas: {
@@ -144,7 +155,7 @@ export const buildOpenApiSpec = (options: { agentName: string }): Record<string,
       },
     },
   },
-  security: [{ bearerAuth: [] }],
+  security: [{ bearerAuth: [] }, { tenantJwt: [] }],
   paths: {
     "/health": {
       get: {
@@ -252,6 +263,90 @@ export const buildOpenApiSpec = (options: { agentName: string }): Record<string,
               },
             },
           },
+        },
+      },
+    },
+
+    "/api/secrets": {
+      get: {
+        tags: ["Secrets"],
+        summary: "List tenant secrets",
+        description:
+          "Tenant auth: returns `tenantSecrets` entries with set/unset status. " +
+          "Builder auth: returns all secrets for a given tenant (?tenant= required).",
+        parameters: [
+          {
+            name: "tenant",
+            in: "query",
+            description: "Tenant ID (required for builder auth)",
+            schema: { type: "string" },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Secret list",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    secrets: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          name: { type: "string", description: "Env var name" },
+                          label: { type: "string", description: "Human-readable label" },
+                          isSet: { type: "boolean", description: "Whether the tenant has set a value" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/api/secrets/{envName}": {
+      put: {
+        tags: ["Secrets"],
+        summary: "Set a tenant secret",
+        description:
+          "Tenant auth: can only set keys listed in `tenantSecrets` config. " +
+          "Builder auth: can set any key (?tenant= required).",
+        parameters: [
+          { name: "envName", in: "path", required: true, schema: { type: "string" } },
+          { name: "tenant", in: "query", description: "Tenant ID (required for builder auth)", schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: { value: { type: "string" } },
+                required: ["value"],
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Secret set", content: { "application/json": { schema: { type: "object", properties: { ok: { type: "boolean" } } } } } },
+          "403": { description: "Not allowed", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
+        },
+      },
+      delete: {
+        tags: ["Secrets"],
+        summary: "Delete a tenant secret override",
+        parameters: [
+          { name: "envName", in: "path", required: true, schema: { type: "string" } },
+          { name: "tenant", in: "query", description: "Tenant ID (required for builder auth)", schema: { type: "string" } },
+        ],
+        responses: {
+          "200": { description: "Secret deleted", content: { "application/json": { schema: { type: "object", properties: { ok: { type: "boolean" } } } } } },
+          "403": { description: "Not allowed", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
         },
       },
     },

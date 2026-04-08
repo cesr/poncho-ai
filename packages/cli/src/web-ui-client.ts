@@ -8,8 +8,26 @@ export const getWebUiClientScript = (markedSource: string): string => `
         breaks: true
       });
 
+      // --- Tenant token handling ---
+      // Extract ?token= from URL on first load, strip from address bar, persist in sessionStorage
+      const _extractTenantToken = () => {
+        const params = new URLSearchParams(window.location.search);
+        const urlToken = params.get("token");
+        if (urlToken) {
+          sessionStorage.setItem("poncho_tenant_token", urlToken);
+          params.delete("token");
+          const qs = params.toString();
+          const cleanUrl = window.location.pathname + (qs ? "?" + qs : "") + window.location.hash;
+          history.replaceState(null, "", cleanUrl);
+          return urlToken;
+        }
+        return sessionStorage.getItem("poncho_tenant_token") || null;
+      };
+      const _tenantToken = _extractTenantToken();
+
       const state = {
         csrfToken: "",
+        tenantToken: _tenantToken,
         conversations: [],
         activeConversationId: null,
         activeMessages: [],
@@ -127,14 +145,24 @@ export const getWebUiClientScript = (markedSource: string): string => `
       const api = async (path, options = {}) => {
         const method = (options.method || "GET").toUpperCase();
         const headers = { ...(options.headers || {}) };
-        if (mutatingMethods.has(method) && state.csrfToken) {
+        // Tenant token auth: send Bearer header instead of relying on cookies
+        if (state.tenantToken) {
+          headers["Authorization"] = "Bearer " + state.tenantToken;
+        } else if (mutatingMethods.has(method) && state.csrfToken) {
           headers["x-csrf-token"] = state.csrfToken;
         }
         if (options.body && !headers["Content-Type"]) {
           headers["Content-Type"] = "application/json";
         }
-        const response = await fetch(path, { credentials: "include", ...options, method, headers });
+        const response = await fetch(path, { credentials: state.tenantToken ? "omit" : "include", ...options, method, headers });
         if (!response.ok) {
+          if (response.status === 401 && state.tenantToken) {
+            // Token expired — clear and show message
+            state.tenantToken = null;
+            sessionStorage.removeItem("poncho_tenant_token");
+            document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui;color:#666"><p>Session expired. Please reload with a new token.</p></div>';
+            throw new Error("Session expired");
+          }
           let payload = {};
           try { payload = await response.json(); } catch {}
           const error = new Error(payload.message || ("Request failed: " + response.status));
@@ -1377,12 +1405,15 @@ export const getWebUiClientScript = (markedSource: string): string => `
               state._activeStreamMessages = localMsgs;
               renderMessages(localMsgs, true);
 
+              var _contHeaders2 = state.tenantToken
+                ? { "Content-Type": "application/json", "Authorization": "Bearer " + state.tenantToken }
+                : { "Content-Type": "application/json", "x-csrf-token": state.csrfToken };
               var contResp = await fetch(
                 "/api/conversations/" + encodeURIComponent(conversationId) + "/continue",
                 {
                   method: "POST",
-                  credentials: "include",
-                  headers: { "Content-Type": "application/json", "x-csrf-token": state.csrfToken },
+                  credentials: state.tenantToken ? "omit" : "include",
+                  headers: _contHeaders2,
                 },
               );
               if (!contResp.ok || !contResp.body) {
@@ -2899,18 +2930,24 @@ export const getWebUiClientScript = (markedSource: string): string => `
             for (const f of filesToSend) {
               formData.append("files", f, f.name);
             }
+            const _streamHeaders = state.tenantToken
+              ? { "Authorization": "Bearer " + state.tenantToken }
+              : { "x-csrf-token": state.csrfToken };
             fetchOpts = {
               method: "POST",
-              credentials: "include",
-              headers: { "x-csrf-token": state.csrfToken },
+              credentials: state.tenantToken ? "omit" : "include",
+              headers: _streamHeaders,
               body: formData,
               signal: streamAbortController.signal,
             };
           } else {
+            const _streamHeaders = state.tenantToken
+              ? { "Content-Type": "application/json", "Authorization": "Bearer " + state.tenantToken }
+              : { "Content-Type": "application/json", "x-csrf-token": state.csrfToken };
             fetchOpts = {
               method: "POST",
-              credentials: "include",
-              headers: { "Content-Type": "application/json", "x-csrf-token": state.csrfToken },
+              credentials: state.tenantToken ? "omit" : "include",
+              headers: _streamHeaders,
               body: JSON.stringify({ message: messageText }),
               signal: streamAbortController.signal,
             };
@@ -2928,12 +2965,15 @@ export const getWebUiClientScript = (markedSource: string): string => `
           while (_shouldContinue) {
             _shouldContinue = false;
             _receivedTerminalEvent = false;
+            const _contHeaders = state.tenantToken
+              ? { "Content-Type": "application/json", "Authorization": "Bearer " + state.tenantToken }
+              : { "Content-Type": "application/json", "x-csrf-token": state.csrfToken };
             const contResponse = await fetch(
               "/api/conversations/" + encodeURIComponent(conversationId) + "/continue",
               {
                 method: "POST",
-                credentials: "include",
-                headers: { "Content-Type": "application/json", "x-csrf-token": state.csrfToken },
+                credentials: state.tenantToken ? "omit" : "include",
+                headers: _contHeaders,
                 signal: streamAbortController.signal,
               },
             );
@@ -3012,7 +3052,123 @@ export const getWebUiClientScript = (markedSource: string): string => `
         }
       };
 
+      // --- Tenant settings panel ---
+      const _showSettingsPanel = async (tenantSecrets) => {
+        if (!tenantSecrets || tenantSecrets.length === 0) return;
+
+        // Fetch current secret status
+        let secrets = [];
+        try {
+          const data = await api("/api/secrets");
+          secrets = data.secrets || [];
+        } catch { return; }
+
+        // Show cog button in sidebar
+        const settingsBtn = $("settings-btn");
+        if (settingsBtn) settingsBtn.classList.remove("hidden");
+
+        // Create overlay
+        let overlay = $("settings-overlay");
+        if (!overlay) {
+          overlay = document.createElement("div");
+          overlay.id = "settings-overlay";
+          overlay.className = "settings-overlay";
+          overlay.innerHTML = '<div id="settings-panel" class="settings-panel"></div>';
+          document.body.appendChild(overlay);
+          overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.style.display = "none"; });
+        }
+
+        const renderPanel = (items) => {
+          const panel = $("settings-panel");
+          if (!panel) return;
+          panel.innerHTML = '<h3>Settings</h3>' +
+            items.map((s) =>
+              '<div class="settings-field">' +
+                '<label>' + escapeHtml(s.label || s.name) + '</label>' +
+                '<div class="settings-field-row">' +
+                  '<input type="password" data-env="' + escapeHtml(s.name) + '" placeholder="' + (s.isSet ? '(set - enter new value to change)' : 'Enter value') + '" />' +
+                  '<button class="settings-save-btn" data-save="' + escapeHtml(s.name) + '">Save</button>' +
+                  (s.isSet ? '<button class="settings-clear-btn" data-clear="' + escapeHtml(s.name) + '">Clear</button>' : '') +
+                '</div>' +
+              '</div>'
+            ).join("") +
+            '<button class="settings-close-btn" id="settings-close">Close</button>';
+
+          panel.querySelectorAll("[data-save]").forEach((btn) => {
+            btn.addEventListener("click", async () => {
+              const envName = btn.getAttribute("data-save");
+              const input = panel.querySelector('input[data-env="' + envName + '"]');
+              const val = input ? input.value.trim() : "";
+              if (!val) return;
+              try {
+                await api("/api/secrets/" + encodeURIComponent(envName), { method: "PUT", body: JSON.stringify({ value: val }) });
+                input.value = "";
+                input.placeholder = "(set - enter new value to change)";
+                const parent = btn.parentElement;
+                if (parent && !parent.querySelector("[data-clear]")) {
+                  const clrBtn = document.createElement("button");
+                  clrBtn.className = "settings-clear-btn";
+                  clrBtn.setAttribute("data-clear", envName);
+                  clrBtn.textContent = "Clear";
+                  clrBtn.addEventListener("click", async () => {
+                    await api("/api/secrets/" + encodeURIComponent(envName), { method: "DELETE" });
+                    clrBtn.remove();
+                    input.placeholder = "Enter value";
+                  });
+                  parent.appendChild(clrBtn);
+                }
+              } catch (err) {
+                alert("Failed to save: " + (err.message || "unknown error"));
+              }
+            });
+          });
+
+          panel.querySelectorAll("[data-clear]").forEach((btn) => {
+            btn.addEventListener("click", async () => {
+              const envName = btn.getAttribute("data-clear");
+              try {
+                await api("/api/secrets/" + encodeURIComponent(envName), { method: "DELETE" });
+                btn.remove();
+                const input = panel.querySelector('input[data-env="' + envName + '"]');
+                if (input) input.placeholder = "Enter value";
+              } catch (err) {
+                alert("Failed to clear: " + (err.message || "unknown error"));
+              }
+            });
+          });
+
+          const closeBtn = $("settings-close");
+          if (closeBtn) closeBtn.addEventListener("click", () => { overlay.style.display = "none"; });
+        };
+
+        renderPanel(secrets);
+        if (settingsBtn) {
+          settingsBtn.addEventListener("click", async () => {
+            try {
+              const data = await api("/api/secrets");
+              renderPanel(data.secrets || []);
+            } catch {}
+            overlay.style.display = "flex";
+          });
+        }
+      };
+
       const requireAuth = async () => {
+        // Tenant token auth — skip login, go straight to app
+        if (state.tenantToken) {
+          // Fetch session to get tenantSecrets config
+          try {
+            const session = await api("/api/auth/session");
+            if (session.tenantSecrets) {
+              _showSettingsPanel(
+                Object.entries(session.tenantSecrets).map(([name, label]) => ({ name, label }))
+              );
+            }
+          } catch {}
+          elements.auth.classList.add("hidden");
+          elements.app.classList.remove("hidden");
+          return true;
+        }
         try {
           const session = await api("/api/auth/session");
           if (!session.authenticated) {
@@ -3111,7 +3267,12 @@ export const getWebUiClientScript = (markedSource: string): string => `
       elements.sidebarBackdrop.addEventListener("click", () => setSidebarOpen(false));
 
       elements.logout.addEventListener("click", async () => {
-        await api("/api/auth/logout", { method: "POST" });
+        try { await api("/api/auth/logout", { method: "POST" }); } catch {}
+        // Clear tenant token if present
+        if (state.tenantToken) {
+          state.tenantToken = null;
+          sessionStorage.removeItem("poncho_tenant_token");
+        }
         state.activeConversationId = null;
         state.activeMessages = [];
         state.confirmDeleteId = null;
@@ -3120,7 +3281,14 @@ export const getWebUiClientScript = (markedSource: string): string => `
         state.contextTokens = 0;
         state.contextWindow = 0;
         updateContextRing();
-        await requireAuth();
+        renderMessages([]);
+        renderConversationList();
+        elements.chatTitle.textContent = "";
+        const authenticated = await requireAuth();
+        if (authenticated) {
+          // Auth not required — force reload to reset UI state
+          window.location.reload();
+        }
       });
 
       elements.composer.addEventListener("submit", async (event) => {

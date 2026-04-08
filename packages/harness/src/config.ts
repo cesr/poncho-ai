@@ -134,6 +134,12 @@ export interface PonchoConfig extends McpConfig {
     /** Cron expression controlling how often the reminder poll runs (local and serverless). Default: every 10 minutes. */
     pollSchedule?: string;
   };
+  /**
+   * Declare env var names that tenants can self-manage via the web UI or API.
+   * Key = env var name, value = human-readable label shown in the settings panel.
+   * Example: { LINEAR_API_KEY: "Linear API Key", STRIPE_KEY: "Stripe Secret Key" }
+   */
+  tenantSecrets?: Record<string, string>;
   /** Set to `false` to disable the built-in web UI (headless / API-only mode). */
   webUi?: false;
   /** Enable browser automation tools. Set `true` for defaults, or provide config. */

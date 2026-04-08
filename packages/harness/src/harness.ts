@@ -21,10 +21,12 @@ import { createDefaultTools, createDeleteDirectoryTool, createDeleteTool, create
 import {
   createMemoryStore,
   createMemoryTools,
+  type MemoryConfig,
   type MemoryStore,
 } from "./memory.js";
 import { createTodoStore, createTodoTools, type TodoItem, type TodoStore } from "./todo-tools.js";
 import { createReminderStore, type ReminderStore } from "./reminder-store.js";
+import { createSecretsStore, resolveEnv, type SecretsStore } from "./secrets-store.js";
 import { createReminderTools } from "./reminder-tools.js";
 import { LocalMcpBridge } from "./mcp.js";
 import { createModelProvider, getModelContextWindow, type ModelProviderFactory, type ProviderConfig } from "./model-factory.js";
@@ -639,8 +641,11 @@ export class AgentHarness {
   readonly uploadStore?: UploadStore;
   private skillContextWindow = "";
   private memoryStore?: MemoryStore;
+  private readonly tenantMemoryStores = new Map<string, MemoryStore>();
+  private memoryConfig?: MemoryConfig;
   private todoStore?: TodoStore;
   reminderStore?: ReminderStore;
+  secretsStore?: SecretsStore;
   private loadedConfig?: PonchoConfig;
   private loadedSkills: SkillMetadata[] = [];
   private skillFingerprint = "";
@@ -975,6 +980,31 @@ export class AgentHarness {
     return this.todoStore.get(conversationId);
   }
 
+  /**
+   * Get a memory store, optionally scoped to a tenant.
+   * Returns the default (agent-wide) store when tenantId is null/undefined.
+   */
+  private getMemoryStore(tenantId?: string): MemoryStore | undefined {
+    if (!this.memoryConfig?.enabled) return undefined;
+    if (!tenantId) return this.memoryStore;
+
+    let store = this.tenantMemoryStores.get(tenantId);
+    if (!store) {
+      const agentId = this.parsedAgent?.frontmatter.id ?? this.parsedAgent?.frontmatter.name ?? "unknown";
+      store = createMemoryStore(agentId, this.memoryConfig, {
+        workingDir: this.workingDir,
+        tenantId,
+      });
+      this.tenantMemoryStores.set(tenantId, store);
+      // Evict oldest entries if cache grows too large
+      if (this.tenantMemoryStores.size > 100) {
+        const oldest = this.tenantMemoryStores.keys().next().value;
+        if (oldest) this.tenantMemoryStores.delete(oldest);
+      }
+    }
+    return store;
+  }
+
   private listActiveSkills(): string[] {
     return [...this.activeSkillNames].sort();
   }
@@ -1164,6 +1194,7 @@ export class AgentHarness {
     if (!this.mcpBridge) {
       return;
     }
+
     const requestedPatterns = this.getRequestedMcpPatterns();
     this.dispatcher.unregisterMany(this.registeredMcpToolNames);
     this.registeredMcpToolNames.clear();
@@ -1354,6 +1385,7 @@ export class AgentHarness {
     this.registerSkillTools(skillMetadata);
     const agentId = this.parsedAgent.frontmatter.id ?? this.parsedAgent.frontmatter.name;
 
+    this.memoryConfig = memoryConfig ?? undefined;
     if (memoryConfig?.enabled) {
       this.memoryStore = createMemoryStore(
         agentId,
@@ -1361,9 +1393,10 @@ export class AgentHarness {
         { workingDir: this.workingDir },
       );
       this.dispatcher.registerMany(
-        createMemoryTools(this.memoryStore, {
-          maxRecallConversations: memoryConfig.maxRecallConversations,
-        }),
+        createMemoryTools(
+          (ctx) => this.getMemoryStore(ctx.tenantId) ?? this.memoryStore!,
+          { maxRecallConversations: memoryConfig.maxRecallConversations },
+        ),
       );
     }
 
@@ -1391,6 +1424,16 @@ export class AgentHarness {
             `[poncho][browser] Failed to load browser tools: ${e instanceof Error ? e.message : String(e)}`,
           );
         });
+    }
+
+    // Secrets store for per-tenant env var overrides
+    const authTokenEnv = config?.auth?.tokenEnv ?? "PONCHO_AUTH_TOKEN";
+    const authToken = process.env[authTokenEnv];
+    if (authToken) {
+      this.secretsStore = createSecretsStore(agentId, authToken, stateConfig, { workingDir: this.workingDir });
+      bridge.setEnvResolver(async (tenantId, envName) => {
+        return resolveEnv(this.secretsStore, tenantId, envName);
+      });
     }
 
     await bridge.startLocalServers();
@@ -1609,6 +1652,7 @@ export class AgentHarness {
         attributes: {
           "gen_ai.operation.name": "invoke_agent",
           ...(input.conversationId ? { "gen_ai.conversation.id": input.conversationId } : {}),
+          ...(input.tenantId ? { "tenant.id": input.tenantId } : {}),
         },
       });
 
@@ -1662,14 +1706,25 @@ export class AgentHarness {
       await this.initialize();
     }
     // Start memory + todo fetches early so they overlap with refresh I/O
-    const memoryPromise = this.memoryStore
-      ? this.memoryStore.getMainMemory()
+    const activeMemoryStore = this.getMemoryStore(input.tenantId);
+    const memoryPromise = activeMemoryStore
+      ? activeMemoryStore.getMainMemory()
       : undefined;
     const todosPromise = this.todoStore
       ? this.todoStore.get(input.conversationId ?? "__default__")
       : undefined;
     await this.refreshAgentIfChanged();
     await this.refreshSkillsIfChanged();
+
+    // Deferred MCP discovery: servers that couldn't discover at startup because the
+    // env var was missing (tenant secrets provide the token instead).
+    if (input.tenantId && this.mcpBridge?.hasDeferredServers()) {
+      const newTools = await this.mcpBridge.discoverAndLoadDeferred(input.tenantId);
+      for (const tool of newTools) {
+        this.dispatcher.register(tool);
+        this.registeredMcpToolNames.add(tool.name);
+      }
+    }
 
     let agent = this.parsedAgent as ParsedAgent;
     const runId = `run_${randomUUID()}`;
@@ -2593,6 +2648,7 @@ ${boundedMainMemory.trim()}`
         parameters: input.parameters ?? {},
         abortSignal: input.abortSignal,
         conversationId: input.conversationId,
+        tenantId: input.tenantId,
       };
 
       const toolResultsForModel: Array<{

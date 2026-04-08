@@ -595,3 +595,109 @@ Available memory tools:
 - `memory_main_write` — overwrite the entire memory document
 - `memory_main_edit` — edit memory via exact string replacement (`old_str` / `new_str`)
 - `conversation_recall` — search past conversations
+
+## Multi-Tenancy
+
+Deploy one agent and let many users (tenants) use it, each with fully isolated data. Multi-tenancy is opt-in — it activates automatically when a valid tenant JWT is received. Existing single-user deployments work unchanged.
+
+### How it works
+
+1. **Builder creates a JWT** for each tenant, signed with `PONCHO_AUTH_TOKEN` (HS256).
+2. **Tenant accesses the agent** using `?token=<jwt>` in the web UI URL, or `Authorization: Bearer <jwt>` for API calls.
+3. **All data is scoped** — conversations, memory, reminders, and todos are isolated per tenant.
+
+### Creating tenant tokens
+
+Using the CLI (for development/testing):
+
+```bash
+poncho auth create-token --tenant acme-corp --ttl 24h
+```
+
+Using the client SDK (for your backend):
+
+```typescript
+import { createTenantToken } from "@poncho-ai/client";
+
+const token = await createTenantToken({
+  signingKey: process.env.PONCHO_AUTH_TOKEN,
+  tenantId: "acme-corp",
+  expiresIn: "1h",
+  metadata: { plan: "pro" },  // optional, stored in JWT `meta` claim
+});
+
+// Give this URL to the tenant:
+const url = `https://my-agent.example.com/?token=${token}`;
+```
+
+Or use any HS256 JWT library in any language — set `sub` to the tenant ID.
+
+### Tenant-scoped API access
+
+```typescript
+import { AgentClient, createTenantToken } from "@poncho-ai/client";
+
+const token = await createTenantToken({
+  signingKey: process.env.PONCHO_AUTH_TOKEN,
+  tenantId: "acme-corp",
+  expiresIn: "1h",
+});
+
+const client = new AgentClient({
+  url: "https://my-agent.example.com",
+  token,  // tenant-scoped access
+});
+
+const conversations = await client.listConversations(); // only acme-corp's
+```
+
+### Per-tenant secrets
+
+Tenants can provide their own API keys for MCP integrations. Declare which env vars are tenant-managed in `poncho.config.js`:
+
+```javascript
+export default {
+  tenantSecrets: {
+    LINEAR_API_KEY: "Linear API Key",
+    GITHUB_TOKEN: "GitHub Token",
+  },
+  mcp: [
+    { url: "https://mcp.linear.app/sse", auth: { type: "bearer", tokenEnv: "LINEAR_API_KEY" } },
+  ],
+};
+```
+
+When a tenant sets their `LINEAR_API_KEY` through the web UI settings panel (or API), MCP tool calls for that tenant use their key. If the tenant hasn't set it, the agent falls back to `process.env.LINEAR_API_KEY`.
+
+Builders can also set secrets for tenants via CLI:
+
+```bash
+poncho secrets set --tenant acme-corp LINEAR_API_KEY lk_acme_123
+poncho secrets list --tenant acme-corp
+poncho secrets delete --tenant acme-corp LINEAR_API_KEY
+```
+
+Secrets are encrypted at rest (AES-256-GCM) using a key derived from `PONCHO_AUTH_TOKEN`.
+
+### Auth model
+
+| Access type | Token | Scope |
+|---|---|---|
+| **Builder** | `Authorization: Bearer <PONCHO_AUTH_TOKEN>` | Full admin access |
+| **Tenant** | `Authorization: Bearer <JWT>` or `?token=<JWT>` | Scoped to one tenant |
+| **Anonymous** | No token (when `auth.required` is false) | Legacy single-user mode |
+
+### What's isolated per tenant
+
+- Conversations and message history
+- Persistent memory
+- Reminders
+- Todos
+- Secrets (MCP auth tokens)
+- Subagent conversations
+
+### Limitations
+
+- **No tenant registry**: builders can't enumerate all tenants. Cron jobs and reminders run in agent scope, not per-tenant.
+- **No token revocation**: use short TTLs (1h recommended). Stateless JWTs can't be individually revoked.
+- **`PONCHO_AUTH_TOKEN` is immutable**: rotating it invalidates all tenant JWTs and encrypted secrets.

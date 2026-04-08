@@ -44,6 +44,7 @@ export const createSubagentTools = (
         task: task.trim(),
         parentConversationId: conversationId,
         ownerId,
+        tenantId: context.tenantId,
       });
       return { subagentId, status: "running" };
     },

@@ -84,6 +84,7 @@ export const createReminderTools = (store: ReminderStore): ToolDefinition[] => [
         scheduledAt,
         timezone,
         conversationId,
+        tenantId: context.tenantId,
       });
 
       return {
@@ -116,8 +117,12 @@ export const createReminderTools = (store: ReminderStore): ToolDefinition[] => [
       },
       additionalProperties: false,
     },
-    handler: async (input) => {
+    handler: async (input, context) => {
       let reminders = await store.list();
+      // Tenant-scoped: only show reminders belonging to the current tenant
+      if (context.tenantId) {
+        reminders = reminders.filter((r) => r.tenantId === context.tenantId);
+      }
       const status = typeof input.status === "string" ? input.status : undefined;
       if (status && VALID_STATUSES.includes(status as ReminderStatus)) {
         reminders = reminders.filter((r) => r.status === status);
@@ -150,9 +155,17 @@ export const createReminderTools = (store: ReminderStore): ToolDefinition[] => [
       required: ["id"],
       additionalProperties: false,
     },
-    handler: async (input) => {
+    handler: async (input, context) => {
       const id = typeof input.id === "string" ? input.id.trim() : "";
       if (!id) throw new Error("id is required");
+      // Validate tenant ownership before cancelling
+      if (context.tenantId) {
+        const all = await store.list();
+        const target = all.find((r) => r.id === id);
+        if (target && target.tenantId !== context.tenantId) {
+          throw new Error("Reminder not found");
+        }
+      }
       const cancelled = await store.cancel(id);
       return {
         ok: true,

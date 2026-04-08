@@ -58,6 +58,8 @@ export interface ToolContext {
   parameters: Record<string, unknown>;
   abortSignal?: AbortSignal;
   conversationId?: string;
+  /** The tenant ID when running in multi-tenant mode. */
+  tenantId?: string;
 }
 
 export type ToolHandler<TInput extends Record<string, unknown>, TOutput> = (
@@ -105,6 +107,8 @@ export interface RunInput {
   conversationId?: string;
   /** When true, ignores PONCHO_MAX_DURATION soft deadline (used for background subagent runs). */
   disableSoftDeadline?: boolean;
+  /** Scope this run to a specific tenant. */
+  tenantId?: string;
 }
 
 export interface TokenUsage {

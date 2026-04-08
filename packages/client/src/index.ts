@@ -1,8 +1,47 @@
 import type { AgentEvent, ContentPart, RunInput, RunResult } from "@poncho-ai/sdk";
+import { SignJWT } from "jose";
+
+export interface CreateTenantTokenOptions {
+  /** The signing key (typically PONCHO_AUTH_TOKEN). */
+  signingKey: string;
+  /** Unique identifier for the tenant (becomes JWT `sub` claim). */
+  tenantId: string;
+  /** Expiration: string like "1h", "7d" or number of seconds. Omit for no expiration. */
+  expiresIn?: string | number;
+  /** Optional metadata stored in the JWT `meta` claim. */
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Create a tenant-scoped JWT (HS256) for use with a poncho agent.
+ * Builders can also use any JWT library in any language — this is a convenience.
+ */
+export async function createTenantToken(options: CreateTenantTokenOptions): Promise<string> {
+  const secret = new TextEncoder().encode(options.signingKey);
+  let builder = new SignJWT(
+    options.metadata ? { meta: options.metadata } : {},
+  )
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(options.tenantId)
+    .setIssuedAt();
+
+  if (options.expiresIn) {
+    if (typeof options.expiresIn === "number") {
+      builder = builder.setExpirationTime(Math.floor(Date.now() / 1000) + options.expiresIn);
+    } else {
+      builder = builder.setExpirationTime(options.expiresIn);
+    }
+  }
+
+  return await builder.sign(secret);
+}
 
 export interface AgentClientOptions {
   url: string;
+  /** Raw API key (PONCHO_AUTH_TOKEN) for builder/admin access. Mutually exclusive with `token`. */
   apiKey?: string;
+  /** Tenant JWT for scoped access. Mutually exclusive with `apiKey`. */
+  token?: string;
   fetchImpl?: typeof fetch;
 }
 
@@ -45,12 +84,15 @@ const trimTrailingSlash = (value: string): string => value.replace(/\/+$/, "");
 
 export class AgentClient {
   private readonly baseUrl: string;
-  private readonly apiKey?: string;
+  private readonly bearerToken?: string;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: AgentClientOptions) {
+    if (options.apiKey && options.token) {
+      throw new Error("AgentClientOptions: apiKey and token are mutually exclusive");
+    }
     this.baseUrl = trimTrailingSlash(options.url);
-    this.apiKey = options.apiKey;
+    this.bearerToken = options.apiKey ?? options.token;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -58,8 +100,8 @@ export class AgentClient {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
-    if (this.apiKey) {
-      headers.Authorization = `Bearer ${this.apiKey}`;
+    if (this.bearerToken) {
+      headers.Authorization = `Bearer ${this.bearerToken}`;
     }
     return headers;
   }

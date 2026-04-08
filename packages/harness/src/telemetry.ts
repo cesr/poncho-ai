@@ -1,9 +1,13 @@
 import type { AgentEvent } from "@poncho-ai/sdk";
 
 const MAX_FIELD_LENGTH = 200;
+const OMIT_FROM_LOG = new Set(["continuationMessages", "_harnessMessages", "messages", "compactedHistory"]);
 
 function sanitizeEventForLog(event: AgentEvent): string {
-  return JSON.stringify(event, (_key, value) => {
+  return JSON.stringify(event, (key, value) => {
+    if (OMIT_FROM_LOG.has(key) && Array.isArray(value)) {
+      return `[${value.length} messages]`;
+    }
     if (typeof value === "string" && value.length > MAX_FIELD_LENGTH) {
       return `${value.slice(0, 80)}...[${value.length} chars]`;
     }

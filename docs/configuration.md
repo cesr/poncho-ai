@@ -79,6 +79,14 @@ export default {
   // When auth.required is true:
   // - Web UI: users enter the passphrase (value of PONCHO_AUTH_TOKEN env var)
   // - API: clients include Authorization: Bearer <token> header
+  // - Tenants: use JWT tokens (see Multi-Tenancy in docs/features.md)
+
+  // Per-tenant secrets (optional). Tenants can set their own values for these
+  // env vars via the web UI settings panel or API. Used for MCP auth tokens.
+  // tenantSecrets: {
+  //   LINEAR_API_KEY: 'Linear API Key',
+  //   GITHUB_TOKEN: 'GitHub Token',
+  // },
 
   // Model provider API key env var overrides (optional)
   providers: {

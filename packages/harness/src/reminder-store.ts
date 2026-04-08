@@ -24,6 +24,7 @@ export interface Reminder {
   createdAt: number;
   conversationId: string;
   ownerId?: string;
+  tenantId?: string | null;
 }
 
 export interface ReminderStore {
@@ -34,6 +35,7 @@ export interface ReminderStore {
     timezone?: string;
     conversationId: string;
     ownerId?: string;
+    tenantId?: string | null;
   }): Promise<Reminder>;
   cancel(id: string): Promise<Reminder>;
   delete(id: string): Promise<void>;
@@ -97,6 +99,7 @@ class InMemoryReminderStore implements ReminderStore {
     timezone?: string;
     conversationId: string;
     ownerId?: string;
+    tenantId?: string | null;
   }): Promise<Reminder> {
     const reminder: Reminder = {
       id: generateId(),
@@ -107,6 +110,7 @@ class InMemoryReminderStore implements ReminderStore {
       createdAt: Date.now(),
       conversationId: input.conversationId,
       ownerId: input.ownerId,
+      tenantId: input.tenantId,
     };
     this.reminders = pruneStale(this.reminders);
     this.reminders.push(reminder);
@@ -175,6 +179,7 @@ class FileReminderStore implements ReminderStore {
     timezone?: string;
     conversationId: string;
     ownerId?: string;
+    tenantId?: string | null;
   }): Promise<Reminder> {
     const reminder: Reminder = {
       id: generateId(),
@@ -185,6 +190,7 @@ class FileReminderStore implements ReminderStore {
       createdAt: Date.now(),
       conversationId: input.conversationId,
       ownerId: input.ownerId,
+      tenantId: input.tenantId,
     };
     let reminders = await this.readAll();
     reminders = pruneStale(reminders);

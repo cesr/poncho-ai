@@ -17,6 +17,8 @@ export * from "./reminder-tools.js";
 export * from "./state.js";
 export * from "./upload-store.js";
 export * from "./telemetry.js";
+export * from "./secrets-store.js";
+export * from "./tenant-token.js";
 export * from "./tool-dispatcher.js";
 export * from "./subagent-manager.js";
 export * from "./subagent-tools.js";

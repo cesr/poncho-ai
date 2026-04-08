@@ -32,6 +32,8 @@ import {
   type SubagentResult,
   type SubagentSpawnResult,
   type UploadStore,
+  verifyTenantToken,
+  createSecretsStore,
 } from "@poncho-ai/harness";
 import type { AgentEvent, FileInput, Message, RunInput } from "@poncho-ai/sdk";
 import { getTextContent } from "@poncho-ai/sdk";
@@ -956,6 +958,14 @@ poncho auth export --provider openai-codex --format env
 
 # Remove deprecated guidance from AGENT.md after upgrading
 poncho update-agent
+
+# Multi-tenancy: create a tenant token
+poncho auth create-token --tenant acme-corp --ttl 24h
+
+# Manage per-tenant secrets
+poncho secrets set --tenant acme-corp LINEAR_API_KEY lk_123
+poncho secrets list --tenant acme-corp
+poncho secrets delete --tenant acme-corp LINEAR_API_KEY
 \`\`\`
 
 ## Add Skills
@@ -2408,6 +2418,7 @@ export const createRequestHandler = async (options?: {
       for await (const event of childHarness.runWithTelemetry({
         task,
         conversationId: childConversationId,
+        tenantId: conversation.tenantId ?? undefined,
         parameters: withToolResultArchiveParam({
           __activeConversationId: childConversationId,
           __ownerId: ownerId,
@@ -2846,6 +2857,7 @@ export const createRequestHandler = async (options?: {
         runInput: {
           task: undefined,
           conversationId,
+          tenantId: conversation.tenantId ?? undefined,
           parameters: withToolResultArchiveParam({
             __activeConversationId: conversationId,
             __ownerId: conversation.ownerId,
@@ -2993,7 +3005,7 @@ export const createRequestHandler = async (options?: {
         throw new Error(`Maximum concurrent subagents (${MAX_CONCURRENT_SUBAGENTS}) per parent reached. Wait for running subagents to complete or stop some first.`);
       }
 
-      const conversation = await conversationStore.create(opts.ownerId, opts.task.slice(0, 80));
+      const conversation = await conversationStore.create(opts.ownerId, opts.task.slice(0, 80), opts.tenantId ?? null);
       conversation.parentConversationId = opts.parentConversationId;
       conversation.subagentMeta = { task: opts.task, status: "running" };
       conversation.messages = [{ role: "user", content: opts.task }];
@@ -3846,6 +3858,7 @@ export const createRequestHandler = async (options?: {
       harness,
       runInput: {
         conversationId,
+        tenantId: conversation.tenantId ?? undefined,
         parameters: withToolResultArchiveParam({
           __activeConversationId: conversationId,
           __ownerId: conversation.ownerId,
@@ -3930,6 +3943,7 @@ export const createRequestHandler = async (options?: {
     try {
       for await (const event of childHarness.runWithTelemetry({
         conversationId,
+        tenantId: conversation.tenantId ?? undefined,
         parameters: withToolResultArchiveParam({
           __activeConversationId: conversationId,
           __ownerId: ownerId,
@@ -4400,21 +4414,6 @@ export const createRequestHandler = async (options?: {
   const isProduction = resolveHarnessEnvironment() === "production";
   const secureCookies = isProduction;
 
-  // Helper to extract and validate Bearer token from Authorization header
-  const validateBearerToken = (authHeader: string | string[] | undefined): boolean => {
-    if (!requireAuth || !authToken) {
-      return true; // No auth required
-    }
-    if (!authHeader || typeof authHeader !== "string") {
-      return false;
-    }
-    const match = authHeader.match(/^Bearer\s+(.+)$/i);
-    if (!match || !match[1]) {
-      return false;
-    }
-    return verifyPassphrase(match[1], authToken);
-  };
-
   const handler: RequestHandler = async (request: IncomingMessage, response: ServerResponse) => {
     if (!request.url || !request.method) {
       writeJson(response, 404, { error: "Not found" });
@@ -4559,18 +4558,94 @@ export const createRequestHandler = async (options?: {
       return;
     }
 
-    const cookies = parseCookies(request);
-    const cookieValue = cookies.poncho_session;
-    const session = cookieValue
-      ? (sessionStore.get(cookieValue) ?? sessionStore.restoreFromSigned(cookieValue))
-      : undefined;
-    const ownerId = session?.ownerId ?? "local-owner";
+    // --- Resolve request context (auth type, tenant scope, owner) ---
+    type RequestContext = {
+      authType: "builder" | "tenant" | "anonymous";
+      ownerId: string;
+      /**
+       * undefined = builder/admin (no tenant filter, sees everything)
+       * null = legacy single-user mode
+       * string = tenant-scoped
+       */
+      tenantId: string | undefined | null;
+      session?: ReturnType<typeof sessionStore.get>;
+    };
+
+    const resolveRequestContext = async (req: IncomingMessage): Promise<RequestContext> => {
+      const authHeader = req.headers.authorization;
+      const bearer = typeof authHeader === "string"
+        ? authHeader.match(/^Bearer\s+(.+)$/i)?.[1]
+        : undefined;
+
+      // 1. Builder Bearer token (exact match against PONCHO_AUTH_TOKEN)
+      if (bearer && authToken && verifyPassphrase(bearer, authToken)) {
+        return { authType: "builder", ownerId: "local-owner", tenantId: undefined };
+      }
+
+      // 2. Tenant JWT (HS256 signed with PONCHO_AUTH_TOKEN)
+      if (bearer && authToken) {
+        const tenantPayload = await verifyTenantToken(authToken, bearer);
+        if (tenantPayload) {
+          return {
+            authType: "tenant",
+            ownerId: tenantPayload.tenantId,
+            tenantId: tenantPayload.tenantId,
+          };
+        }
+      }
+
+      // 3. Session cookie (passphrase login — builder auth)
+      const cookies = parseCookies(req);
+      const cookieValue = cookies.poncho_session;
+      const sess = cookieValue
+        ? (sessionStore.get(cookieValue) ?? sessionStore.restoreFromSigned(cookieValue))
+        : undefined;
+      if (sess) {
+        return {
+          authType: "builder",
+          ownerId: sess.ownerId ?? "local-owner",
+          tenantId: undefined,
+          session: sess,
+        };
+      }
+
+      // 4. Anonymous / legacy
+      return { authType: "anonymous", ownerId: "local-owner", tenantId: null };
+    };
+
+    const ctx = await resolveRequestContext(request);
+    const ownerId = ctx.ownerId;
+    const session = ctx.session;
     const requiresCsrfValidation =
       request.method !== "GET" && request.method !== "HEAD" && request.method !== "OPTIONS";
+
+    /** Check if ctx has access to a conversation. Builder (tenantId=undefined) sees everything. */
+    const canAccessConversation = (conv: { ownerId: string; tenantId?: string | null }): boolean => {
+      if (ctx.tenantId === undefined) return true; // builder/admin
+      return conv.ownerId === ownerId && (conv.tenantId ?? null) === (ctx.tenantId ?? null);
+    };
 
     if (pathname === "/api/auth/session" && request.method === "GET") {
       if (!requireAuth) {
         writeJson(response, 200, { authenticated: true, csrfToken: "" });
+        return;
+      }
+      // Tenant JWT auth — already authenticated, no session needed
+      if (ctx.authType === "tenant") {
+        const tenantSecrets = config?.tenantSecrets;
+        writeJson(response, 200, {
+          authenticated: true,
+          authType: "tenant",
+          tenantId: ctx.tenantId,
+          ...(tenantSecrets && Object.keys(tenantSecrets).length > 0
+            ? { tenantSecrets }
+            : {}),
+        });
+        return;
+      }
+      // Builder Bearer auth
+      if (ctx.authType === "builder" && !session) {
+        writeJson(response, 200, { authenticated: true, authType: "builder" });
         return;
       }
       if (!session) {
@@ -4579,6 +4654,7 @@ export const createRequestHandler = async (options?: {
       }
       writeJson(response, 200, {
         authenticated: true,
+        authType: "builder",
         sessionId: session.sessionId,
         ownerId: session.ownerId,
         csrfToken: session.csrfToken,
@@ -4649,9 +4725,9 @@ export const createRequestHandler = async (options?: {
       const isInternalPath = pathname.startsWith("/api/internal/") || pathname.startsWith("/api/cron/") || pathname === "/api/reminders/check";
       const isInternal = isInternalPath && request.method === "POST" && isValidInternalRequest(request.headers);
 
-      // Check authentication: either valid session (Web UI), valid Bearer token (API), or valid internal request
+      // Check authentication: either valid session (Web UI), valid Bearer token (API), tenant JWT, or valid internal request
       const hasBearerToken = request.headers.authorization?.startsWith("Bearer ");
-      const isAuthenticated = isInternal || !requireAuth || session || validateBearerToken(request.headers.authorization);
+      const isAuthenticated = isInternal || !requireAuth || ctx.authType !== "anonymous";
 
       if (!isAuthenticated) {
         writeJson(response, 401, {
@@ -4668,6 +4744,7 @@ export const createRequestHandler = async (options?: {
         !hasBearerToken &&
         requiresCsrfValidation &&
         pathname !== "/api/auth/login" &&
+        pathname !== "/api/auth/logout" &&
         request.headers["x-csrf-token"] !== session?.csrfToken
       ) {
         console.warn(
@@ -4677,6 +4754,108 @@ export const createRequestHandler = async (options?: {
           code: "CSRF_ERROR",
           message: "Invalid CSRF token",
         });
+        return;
+      }
+    }
+
+    // --- Secrets API endpoints ---
+    const secretsMatch = pathname.match(/^\/api\/secrets(?:\/([^/]+))?$/);
+    if (secretsMatch) {
+      const envName = secretsMatch[1] ? decodeURIComponent(secretsMatch[1]) : undefined;
+      const tenantSecrets = config?.tenantSecrets;
+
+      if (request.method === "GET" && !envName) {
+        // GET /api/secrets — list secrets
+        if (ctx.authType === "tenant" && ctx.tenantId) {
+          // Tenant: return tenantSecrets entries with set/unset status
+          if (!tenantSecrets || Object.keys(tenantSecrets).length === 0) {
+            writeJson(response, 200, { secrets: [] });
+            return;
+          }
+          const setNames = harness.secretsStore
+            ? new Set(await harness.secretsStore.list(ctx.tenantId))
+            : new Set<string>();
+          const secrets = Object.entries(tenantSecrets).map(([name, label]) => ({
+            name,
+            label,
+            isSet: setNames.has(name),
+          }));
+          writeJson(response, 200, { secrets });
+          return;
+        }
+        if (ctx.authType === "builder") {
+          // Builder: list all secrets for a specific tenant
+          const tenantParam = requestUrl.searchParams.get("tenant");
+          if (!tenantParam) {
+            writeJson(response, 400, { code: "BAD_REQUEST", message: "?tenant= query parameter required for builder access" });
+            return;
+          }
+          const names = harness.secretsStore
+            ? await harness.secretsStore.list(tenantParam)
+            : [];
+          writeJson(response, 200, { tenant: tenantParam, secrets: names.map((n) => ({ name: n, isSet: true })) });
+          return;
+        }
+        writeJson(response, 403, { code: "FORBIDDEN", message: "Not authorized" });
+        return;
+      }
+
+      if (request.method === "PUT" && envName) {
+        // PUT /api/secrets/:envName — set a secret value
+        const body = (await readRequestBody(request)) as { value?: string };
+        const value = typeof body.value === "string" ? body.value : "";
+        if (!value) {
+          writeJson(response, 400, { code: "BAD_REQUEST", message: "value is required" });
+          return;
+        }
+        let targetTenant: string | undefined;
+        if (ctx.authType === "tenant" && ctx.tenantId) {
+          // Tenants can only set keys listed in tenantSecrets
+          if (!tenantSecrets || !(envName in tenantSecrets)) {
+            writeJson(response, 403, { code: "FORBIDDEN", message: "Not allowed to set this secret" });
+            return;
+          }
+          targetTenant = ctx.tenantId;
+        } else if (ctx.authType === "builder") {
+          const tenantParam = requestUrl.searchParams.get("tenant");
+          if (!tenantParam) {
+            writeJson(response, 400, { code: "BAD_REQUEST", message: "?tenant= required" });
+            return;
+          }
+          targetTenant = tenantParam;
+        }
+        if (!targetTenant || !harness.secretsStore) {
+          writeJson(response, 400, { code: "BAD_REQUEST", message: "Secrets store not available" });
+          return;
+        }
+        await harness.secretsStore.set(targetTenant, envName, value);
+        writeJson(response, 200, { ok: true });
+        return;
+      }
+
+      if (request.method === "DELETE" && envName) {
+        // DELETE /api/secrets/:envName — remove a secret override
+        let targetTenant: string | undefined;
+        if (ctx.authType === "tenant" && ctx.tenantId) {
+          if (!tenantSecrets || !(envName in tenantSecrets)) {
+            writeJson(response, 403, { code: "FORBIDDEN", message: "Not allowed to delete this secret" });
+            return;
+          }
+          targetTenant = ctx.tenantId;
+        } else if (ctx.authType === "builder") {
+          const tenantParam = requestUrl.searchParams.get("tenant");
+          if (!tenantParam) {
+            writeJson(response, 400, { code: "BAD_REQUEST", message: "?tenant= required" });
+            return;
+          }
+          targetTenant = tenantParam;
+        }
+        if (!targetTenant || !harness.secretsStore) {
+          writeJson(response, 400, { code: "BAD_REQUEST", message: "Secrets store not available" });
+          return;
+        }
+        await harness.secretsStore.delete(targetTenant, envName);
+        writeJson(response, 200, { ok: true });
         return;
       }
     }
@@ -4854,7 +5033,7 @@ export const createRequestHandler = async (options?: {
     }
 
     if (pathname === "/api/conversations" && request.method === "GET") {
-      const allSummaries = await conversationStore.listSummaries(ownerId);
+      const allSummaries = await conversationStore.listSummaries(ownerId, ctx.tenantId);
       const conversations = allSummaries.filter((c) => !c.parentConversationId);
       // Derive parent-has-subagent-approvals from the in-memory map (no disk I/O)
       const parentHasSubagentApprovals = new Set<string>();
@@ -4878,7 +5057,7 @@ export const createRequestHandler = async (options?: {
 
     if (pathname === "/api/conversations" && request.method === "POST") {
       const body = (await readRequestBody(request)) as { title?: string };
-      const conversation = await conversationStore.create(ownerId, body.title);
+      const conversation = await conversationStore.create(ownerId, body.title, ctx.tenantId ?? null);
       const introMessage = await consumeFirstRunIntro(workingDir, {
         agentName,
         provider: agentModelProvider,
@@ -5142,7 +5321,7 @@ export const createRequestHandler = async (options?: {
     if (conversationEventsMatch && request.method === "GET") {
       const conversationId = decodeURIComponent(conversationEventsMatch[1] ?? "");
       const conversation = await conversationStore.get(conversationId);
-      if (!conversation || conversation.ownerId !== ownerId) {
+      if (!conversation || !canAccessConversation(conversation)) {
         writeJson(response, 404, {
           code: "CONVERSATION_NOT_FOUND",
           message: "Conversation not found",
@@ -5188,7 +5367,7 @@ export const createRequestHandler = async (options?: {
     if (subagentsMatch && request.method === "GET") {
       const parentId = decodeURIComponent(subagentsMatch[1] ?? "");
       // Use summaries to find child IDs, then only load those child files
-      const allSummaries = await conversationStore.listSummaries(ownerId);
+      const allSummaries = await conversationStore.listSummaries(ownerId, ctx.tenantId);
       const childSummaries = allSummaries.filter((s) => s.parentConversationId === parentId);
       const subagents: Array<Record<string, unknown>> = [];
       for (const s of childSummaries) {
@@ -5213,6 +5392,11 @@ export const createRequestHandler = async (options?: {
     const todosMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/todos$/);
     if (todosMatch && request.method === "GET") {
       const conversationId = decodeURIComponent(todosMatch[1] ?? "");
+      const conversation = await conversationStore.get(conversationId);
+      if (!conversation || !canAccessConversation(conversation)) {
+        writeJson(response, 404, { code: "CONVERSATION_NOT_FOUND", message: "Conversation not found" });
+        return;
+      }
       const todos = await harness.getTodos(conversationId);
       writeJson(response, 200, { todos });
       return;
@@ -5222,7 +5406,7 @@ export const createRequestHandler = async (options?: {
     if (conversationPathMatch) {
       const conversationId = decodeURIComponent(conversationPathMatch[1] ?? "");
       const conversation = await conversationStore.get(conversationId);
-      if (!conversation || conversation.ownerId !== ownerId) {
+      if (!conversation || !canAccessConversation(conversation)) {
         writeJson(response, 404, {
           code: "CONVERSATION_NOT_FOUND",
           message: "Conversation not found",
@@ -5296,7 +5480,7 @@ export const createRequestHandler = async (options?: {
       }
       if (request.method === "DELETE") {
         // Cascade: stop and delete all child subagent conversations
-        const allSummaries = await conversationStore.listSummaries(ownerId);
+        const allSummaries = await conversationStore.listSummaries(ownerId, ctx.tenantId);
         const childIds = allSummaries
           .filter((s) => s.parentConversationId === conversationId)
           .map((s) => s.conversationId);
@@ -5319,7 +5503,7 @@ export const createRequestHandler = async (options?: {
       const body = (await readRequestBody(request)) as { runId?: string };
       const requestedRunId = typeof body.runId === "string" ? body.runId.trim() : "";
       const conversation = await conversationStore.get(conversationId);
-      if (!conversation || conversation.ownerId !== ownerId) {
+      if (!conversation || !canAccessConversation(conversation)) {
         writeJson(response, 404, {
           code: "CONVERSATION_NOT_FOUND",
           message: "Conversation not found",
@@ -5327,7 +5511,7 @@ export const createRequestHandler = async (options?: {
         return;
       }
       const activeRun = activeConversationRuns.get(conversationId);
-      if (!activeRun || activeRun.ownerId !== ownerId) {
+      if (!activeRun || (ctx.tenantId !== undefined && activeRun.ownerId !== ownerId)) {
         writeJson(response, 200, {
           ok: true,
           stopped: false,
@@ -5397,7 +5581,7 @@ export const createRequestHandler = async (options?: {
     if (conversationCompactMatch && request.method === "POST") {
       const conversationId = decodeURIComponent(conversationCompactMatch[1] ?? "");
       const conversation = await conversationStore.get(conversationId);
-      if (!conversation || conversation.ownerId !== ownerId) {
+      if (!conversation || !canAccessConversation(conversation)) {
         writeJson(response, 404, {
           code: "CONVERSATION_NOT_FOUND",
           message: "Conversation not found",
@@ -5443,7 +5627,7 @@ export const createRequestHandler = async (options?: {
     if (conversationContinueMatch && request.method === "POST") {
       const conversationId = decodeURIComponent(conversationContinueMatch[1] ?? "");
       const conversation = await conversationStore.get(conversationId);
-      if (!conversation || conversation.ownerId !== ownerId) {
+      if (!conversation || !canAccessConversation(conversation)) {
         writeJson(response, 404, {
           code: "CONVERSATION_NOT_FOUND",
           message: "Conversation not found",
@@ -5525,7 +5709,7 @@ export const createRequestHandler = async (options?: {
     if (conversationMessageMatch && request.method === "POST") {
       const conversationId = decodeURIComponent(conversationMessageMatch[1] ?? "");
       const conversation = await conversationStore.get(conversationId);
-      if (!conversation || conversation.ownerId !== ownerId) {
+      if (!conversation || !canAccessConversation(conversation)) {
         writeJson(response, 404, {
           code: "CONVERSATION_NOT_FOUND",
           message: "Conversation not found",
@@ -5710,14 +5894,14 @@ export const createRequestHandler = async (options?: {
           const _rc0 = performance.now();
           let recallConversations: Conversation[];
           if (typeof conversationStore.listSummaries === "function") {
-            const recallSummaries = (await conversationStore.listSummaries(ownerId))
+            const recallSummaries = (await conversationStore.listSummaries(ownerId, ctx.tenantId))
               .filter((s) => s.conversationId !== conversationId && !s.parentConversationId)
               .slice(0, 20);
             recallConversations = (
               await Promise.all(recallSummaries.map((s) => conversationStore.get(s.conversationId)))
             ).filter((c): c is NonNullable<typeof c> => c != null);
           } else {
-            recallConversations = (await conversationStore.list(ownerId))
+            recallConversations = (await conversationStore.list(ownerId, ctx.tenantId))
               .filter((item) => item.conversationId !== conversationId && !item.parentConversationId)
               .slice(0, 20);
           }
@@ -5742,6 +5926,7 @@ export const createRequestHandler = async (options?: {
           runInput: {
             task: messageText,
             conversationId,
+            tenantId: ctx.tenantId ?? undefined,
             parameters: withToolResultArchiveParam({
               ...(bodyParameters ?? {}),
               __conversationRecallCorpus: lazyRecallCorpus,
@@ -7568,6 +7753,110 @@ export const buildCli = (): Command => {
         throw new Error(`Unsupported export format "${options.format}". Use env or json.`);
       }
       await exportOpenAICodex(options.format);
+    });
+
+  authCommand
+    .command("create-token")
+    .description("Create a tenant-scoped JWT for development/testing")
+    .requiredOption("--tenant <tenantId>", "tenant identifier (becomes JWT sub claim)")
+    .option("--ttl <duration>", "token lifetime, e.g. 1h, 7d (default: no expiration)")
+    .option("--meta <json>", "JSON metadata to embed in the token")
+    .action(async (options: { tenant: string; ttl?: string; meta?: string }) => {
+      dotenv.config();
+      const tokenEnv = "PONCHO_AUTH_TOKEN";
+      const signingKey = process.env[tokenEnv];
+      if (!signingKey) {
+        console.error(`Error: ${tokenEnv} is not set. Set it in .env or environment.`);
+        process.exit(1);
+      }
+      const { SignJWT } = await import("jose");
+      const secret = new TextEncoder().encode(signingKey);
+      let metaObj: Record<string, unknown> | undefined;
+      if (options.meta) {
+        try {
+          metaObj = JSON.parse(options.meta) as Record<string, unknown>;
+        } catch {
+          console.error("Error: --meta must be valid JSON");
+          process.exit(1);
+        }
+      }
+      let builder = new SignJWT(metaObj ? { meta: metaObj } : {})
+        .setProtectedHeader({ alg: "HS256" })
+        .setSubject(options.tenant)
+        .setIssuedAt();
+      if (options.ttl) {
+        builder = builder.setExpirationTime(options.ttl);
+      }
+      const token = await builder.sign(secret);
+      console.log(token);
+    });
+
+  const secretsCommand = program.command("secrets").description("Manage per-tenant secrets");
+
+  secretsCommand
+    .command("set")
+    .description("Set a secret for a tenant")
+    .requiredOption("--tenant <tenantId>", "tenant identifier")
+    .argument("<envName>", "environment variable name")
+    .argument("<value>", "secret value")
+    .action(async (envName: string, value: string, options: { tenant: string }) => {
+      dotenv.config();
+      const authToken = process.env.PONCHO_AUTH_TOKEN;
+      if (!authToken) {
+        console.error("Error: PONCHO_AUTH_TOKEN is not set");
+        process.exit(1);
+      }
+      const config = await loadPonchoConfig(process.cwd());
+      const stateConfig = resolveStateConfig(config);
+      const agentId = (await ensureAgentIdentity(process.cwd())).id;
+      const store = createSecretsStore(agentId, authToken, stateConfig, { workingDir: process.cwd() });
+      await store.set(options.tenant, envName, value);
+      console.log(`Secret ${envName} set for tenant ${options.tenant}`);
+    });
+
+  secretsCommand
+    .command("list")
+    .description("List secrets for a tenant (names only)")
+    .requiredOption("--tenant <tenantId>", "tenant identifier")
+    .action(async (options: { tenant: string }) => {
+      dotenv.config();
+      const authToken = process.env.PONCHO_AUTH_TOKEN;
+      if (!authToken) {
+        console.error("Error: PONCHO_AUTH_TOKEN is not set");
+        process.exit(1);
+      }
+      const config = await loadPonchoConfig(process.cwd());
+      const stateConfig = resolveStateConfig(config);
+      const agentId = (await ensureAgentIdentity(process.cwd())).id;
+      const store = createSecretsStore(agentId, authToken, stateConfig, { workingDir: process.cwd() });
+      const names = await store.list(options.tenant);
+      if (names.length === 0) {
+        console.log("No secrets set for this tenant.");
+      } else {
+        for (const name of names) {
+          console.log(`${name} (set)`);
+        }
+      }
+    });
+
+  secretsCommand
+    .command("delete")
+    .description("Delete a tenant secret override")
+    .requiredOption("--tenant <tenantId>", "tenant identifier")
+    .argument("<envName>", "environment variable name to remove")
+    .action(async (envName: string, options: { tenant: string }) => {
+      dotenv.config();
+      const authToken = process.env.PONCHO_AUTH_TOKEN;
+      if (!authToken) {
+        console.error("Error: PONCHO_AUTH_TOKEN is not set");
+        process.exit(1);
+      }
+      const config = await loadPonchoConfig(process.cwd());
+      const stateConfig = resolveStateConfig(config);
+      const agentId = (await ensureAgentIdentity(process.cwd())).id;
+      const store = createSecretsStore(agentId, authToken, stateConfig, { workingDir: process.cwd() });
+      await store.delete(options.tenant, envName);
+      console.log(`Secret ${envName} deleted for tenant ${options.tenant}`);
     });
 
   const skillsCommand = program.command("skills").description("Manage installed skills");

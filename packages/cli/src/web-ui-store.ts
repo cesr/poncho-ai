@@ -90,10 +90,11 @@ export class FileConversationStore {
     await this.writing;
   }
 
-  async list(ownerId = DEFAULT_OWNER): Promise<WebUiConversation[]> {
+  async list(ownerId = DEFAULT_OWNER, tenantId?: string | null): Promise<WebUiConversation[]> {
     await this.ensureLoaded();
     return Array.from(this.conversations.values())
       .filter((conversation) => conversation.ownerId === ownerId)
+      .filter((c) => tenantId === undefined || c.tenantId === tenantId)
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
@@ -102,7 +103,7 @@ export class FileConversationStore {
     return this.conversations.get(conversationId);
   }
 
-  async create(ownerId = DEFAULT_OWNER, title?: string): Promise<WebUiConversation> {
+  async create(ownerId = DEFAULT_OWNER, title?: string, tenantId: string | null = null): Promise<WebUiConversation> {
     await this.ensureLoaded();
     const now = Date.now();
     const conversation: WebUiConversation = {
@@ -110,7 +111,7 @@ export class FileConversationStore {
       title: title && title.trim().length > 0 ? title.trim() : "New conversation",
       messages: [],
       ownerId,
-      tenantId: null,
+      tenantId,
       createdAt: now,
       updatedAt: now,
     };

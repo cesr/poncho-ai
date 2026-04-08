@@ -24,6 +24,7 @@ export interface SubagentManager {
     task: string;
     parentConversationId: string;
     ownerId: string;
+    tenantId?: string | null;
   }): Promise<SubagentSpawnResult>;
 
   sendMessage(subagentId: string, message: string): Promise<SubagentSpawnResult>;

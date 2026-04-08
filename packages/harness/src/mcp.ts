@@ -273,6 +273,15 @@ export class LocalMcpBridge {
   private readonly toolCatalog = new Map<string, McpToolDescriptor[]>();
   private readonly unavailableServers = new Map<string, string>();
   private readonly authFailedServers = new Set<string>();
+  private envResolver?: (tenantId: string | undefined, envName: string) => Promise<string | undefined>;
+
+  /**
+   * Set a resolver for per-tenant env vars (e.g. MCP auth tokens).
+   * Called by the harness after creating the secrets store.
+   */
+  setEnvResolver(resolver: (tenantId: string | undefined, envName: string) => Promise<string | undefined>): void {
+    this.envResolver = resolver;
+  }
 
   constructor(config: McpConfig | undefined) {
     this.remoteServers = (config?.mcp ?? []).filter((entry): entry is RemoteMcpServerConfig =>
@@ -316,8 +325,12 @@ export class LocalMcpBridge {
     console.info(`[poncho][mcp] ${line}`);
   }
 
+  /** Set of servers where discovery was deferred (no default token, has env resolver). */
+  private readonly deferredDiscoveryServers = new Set<string>();
+
   async discoverTools(): Promise<void> {
     this.toolCatalog.clear();
+    this.deferredDiscoveryServers.clear();
     for (const remoteServer of this.remoteServers) {
       const name = this.getServerName(remoteServer);
       if (this.unavailableServers.has(name)) {
@@ -338,6 +351,13 @@ export class LocalMcpBridge {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (error instanceof McpHttpError && error.status === 401) {
+          if (this.envResolver && remoteServer.auth?.tokenEnv) {
+            // Discovery failed without token but tenant secrets may provide one —
+            // defer discovery to first loadTools() call with a tenant context
+            this.deferredDiscoveryServers.add(name);
+            this.log("info", "catalog.deferred", { server: name, reason: "auth_deferred_to_tenant" });
+            continue;
+          }
           this.authFailedServers.add(name);
           this.log("warn", "auth.failed", {
             server: name,
@@ -351,6 +371,64 @@ export class LocalMcpBridge {
     }
   }
 
+  /**
+   * Run deferred discovery and return ToolDefinitions for all newly discovered tools.
+   * Call this during run() so the tools are available to the model immediately.
+   */
+  async discoverAndLoadDeferred(tenantId: string): Promise<ToolDefinition[]> {
+    if (this.deferredDiscoveryServers.size === 0) return [];
+    for (const server of this.remoteServers) {
+      await this.tryDeferredDiscovery(server, tenantId);
+    }
+    // Build tool definitions only for servers that were deferred and now have tools
+    const tools: ToolDefinition[] = [];
+    for (const server of this.remoteServers) {
+      const name = this.getServerName(server);
+      // Only include servers that WERE deferred (whether discovery succeeded or not)
+      if (!server.auth?.tokenEnv) continue;
+      const discovered = this.toolCatalog.get(name);
+      if (!discovered || discovered.length === 0) continue;
+      const client = this.rpcClients.get(name);
+      if (!client) continue;
+      tools.push(...this.toToolDefinitions(name, discovered, client, server));
+    }
+    return tools;
+  }
+
+  private async tryDeferredDiscovery(server: RemoteMcpServerConfig, tenantId: string): Promise<void> {
+    const name = this.getServerName(server);
+    if (!this.deferredDiscoveryServers.has(name)) return;
+    if (this.toolCatalog.has(name)) return; // already discovered
+
+    const tokenEnv = server.auth?.tokenEnv;
+    if (!tokenEnv || !this.envResolver) return;
+
+    const token = await this.envResolver(tenantId, tokenEnv);
+    if (!token) return;
+
+    try {
+      const probeClient = new StreamableHttpMcpRpcClient(
+        server.url,
+        server.timeoutMs ?? 10_000,
+        token,
+        server.headers,
+      );
+      const discovered = await probeClient.listTools();
+      this.toolCatalog.set(name, discovered);
+      this.deferredDiscoveryServers.delete(name);
+      this.log("info", "catalog.loaded", {
+        server: name,
+        discoveredCount: discovered.length,
+        via: "deferred_tenant_discovery",
+      });
+    } catch (error) {
+      this.log("warn", "catalog.deferred_failed", {
+        server: name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   async startLocalServers(): Promise<void> {
     this.unavailableServers.clear();
     for (const server of this.remoteServers) {
@@ -359,15 +437,24 @@ export class LocalMcpBridge {
       if (tokenEnv) {
         const token = process.env[tokenEnv];
         if (!token || token.trim().length === 0) {
-          this.unavailableServers.set(
-            name,
-            `Missing bearer token value from env var ${tokenEnv}`,
-          );
-          this.log("warn", "auth.token_missing", {
+          if (!this.envResolver) {
+            // No tenant secrets resolver — server is genuinely unavailable
+            this.unavailableServers.set(
+              name,
+              `Missing bearer token value from env var ${tokenEnv}`,
+            );
+            this.log("warn", "auth.token_missing", {
+              server: name,
+              tokenEnv,
+            });
+            continue;
+          }
+          // Tenant secrets resolver available — create client without a default token;
+          // per-tenant tokens will be resolved at call time in toToolDefinitions
+          this.log("info", "auth.token_deferred", {
             server: name,
             tokenEnv,
           });
-          continue;
         }
       }
       this.rpcClients.set(
@@ -441,6 +528,31 @@ export class LocalMcpBridge {
     return output.sort();
   }
 
+  hasDeferredServers(): boolean {
+    return this.deferredDiscoveryServers.size > 0;
+  }
+
+  /**
+   * Return ToolDefinitions for catalog tools not already registered in the dispatcher.
+   */
+  getUnregisteredTools(registeredNames: Set<string>): ToolDefinition[] {
+    const tools: ToolDefinition[] = [];
+    for (const server of this.remoteServers) {
+      const name = this.getServerName(server);
+      const discovered = this.toolCatalog.get(name);
+      if (!discovered || discovered.length === 0) continue;
+      const client = this.rpcClients.get(name);
+      if (!client) continue;
+      const unregistered = discovered.filter(
+        (d) => !registeredNames.has(`${name}/${d.name}`),
+      );
+      if (unregistered.length > 0) {
+        tools.push(...this.toToolDefinitions(name, unregistered, client, server));
+      }
+    }
+    return tools;
+  }
+
   async loadTools(
     requestedPatterns: string[],
   ): Promise<ToolDefinition[]> {
@@ -474,7 +586,7 @@ export class LocalMcpBridge {
       const selectedDescriptors = discovered.filter((descriptor) =>
         selectedRawNames.has(descriptor.name),
       );
-      tools.push(...this.toToolDefinitions(serverName, selectedDescriptors, client));
+      tools.push(...this.toToolDefinitions(serverName, selectedDescriptors, client, server));
     }
     this.log("info", "tools.selected", {
       requestedPatternCount: requestedPatterns.length,
@@ -489,6 +601,7 @@ export class LocalMcpBridge {
     serverName: string,
     tools: McpToolDescriptor[],
     client: McpRpcClient,
+    server?: RemoteMcpServerConfig,
   ): ToolDefinition[] {
     return tools.map((tool) => ({
       name: `${serverName}/${tool.name}`,
@@ -498,9 +611,27 @@ export class LocalMcpBridge {
           type: "object",
           properties: {},
         },
-      handler: async (input) => {
+      handler: async (input, context) => {
         try {
-          return await client.callTool(tool.name, input);
+          // Per-tenant token resolution: if we have a resolver and the server uses tokenEnv,
+          // create a per-request client with the tenant-specific token
+          const tokenEnv = server?.auth?.tokenEnv;
+          let callClient = client;
+          if (tokenEnv && this.envResolver && context?.tenantId) {
+            const tenantToken = await this.envResolver(context.tenantId, tokenEnv);
+            const defaultToken = process.env[tokenEnv];
+            // Only create a per-request client when the tenant has a different token.
+            // Using the original client preserves the established MCP session.
+            if (tenantToken && tenantToken !== defaultToken) {
+              callClient = new StreamableHttpMcpRpcClient(
+                server.url,
+                server.timeoutMs ?? 10_000,
+                tenantToken,
+                server.headers,
+              );
+            }
+          }
+          return await callClient.callTool(tool.name, input);
         } catch (error) {
           if (error instanceof McpHttpError && error.status === 401) {
             this.authFailedServers.add(serverName);

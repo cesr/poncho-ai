@@ -97,10 +97,16 @@ export interface Conversation {
 }
 
 export interface ConversationStore {
-  list(ownerId?: string): Promise<Conversation[]>;
-  listSummaries(ownerId?: string): Promise<ConversationSummary[]>;
+  /**
+   * List conversations. tenantId semantics:
+   *   undefined = no filter (builder/admin sees everything)
+   *   null      = legacy single-user only
+   *   string    = tenant-scoped
+   */
+  list(ownerId?: string, tenantId?: string | null): Promise<Conversation[]>;
+  listSummaries(ownerId?: string, tenantId?: string | null): Promise<ConversationSummary[]>;
   get(conversationId: string): Promise<Conversation | undefined>;
-  create(ownerId?: string, title?: string): Promise<Conversation>;
+  create(ownerId?: string, title?: string, tenantId?: string | null): Promise<Conversation>;
   update(conversation: Conversation): Promise<void>;
   rename(conversationId: string, title: string): Promise<Conversation | undefined>;
   delete(conversationId: string): Promise<boolean>;
@@ -275,17 +281,19 @@ export class InMemoryConversationStore implements ConversationStore {
     }
   }
 
-  async list(ownerId?: string): Promise<Conversation[]> {
+  async list(ownerId?: string, tenantId?: string | null): Promise<Conversation[]> {
     this.purgeExpired();
     return Array.from(this.conversations.values())
       .filter((conversation) => !ownerId || conversation.ownerId === ownerId)
+      .filter((c) => tenantId === undefined || c.tenantId === tenantId)
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
-  async listSummaries(ownerId?: string): Promise<ConversationSummary[]> {
+  async listSummaries(ownerId?: string, tenantId?: string | null): Promise<ConversationSummary[]> {
     this.purgeExpired();
     return Array.from(this.conversations.values())
       .filter((c) => !ownerId || c.ownerId === ownerId)
+      .filter((c) => tenantId === undefined || c.tenantId === tenantId)
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .map((c) => ({
         conversationId: c.conversationId,
@@ -293,6 +301,7 @@ export class InMemoryConversationStore implements ConversationStore {
         updatedAt: c.updatedAt,
         createdAt: c.createdAt,
         ownerId: c.ownerId,
+        tenantId: c.tenantId,
         parentConversationId: c.parentConversationId,
         messageCount: c.messages.length,
         hasPendingApprovals: Array.isArray(c.pendingApprovals) && c.pendingApprovals.length > 0,
@@ -305,14 +314,14 @@ export class InMemoryConversationStore implements ConversationStore {
     return this.conversations.get(conversationId);
   }
 
-  async create(ownerId = DEFAULT_OWNER, title?: string): Promise<Conversation> {
+  async create(ownerId = DEFAULT_OWNER, title?: string, tenantId: string | null = null): Promise<Conversation> {
     const now = Date.now();
     const conversation: Conversation = {
       conversationId: globalThis.crypto?.randomUUID?.() ?? `${now}-${Math.random()}`,
       title: normalizeTitle(title),
       messages: [],
       ownerId,
-      tenantId: null,
+      tenantId,
       createdAt: now,
       updatedAt: now,
     };
@@ -368,6 +377,7 @@ export type ConversationSummary = {
   updatedAt: number;
   createdAt?: number;
   ownerId: string;
+  tenantId?: string | null;
   parentConversationId?: string;
   messageCount?: number;
   hasPendingApprovals?: boolean;
@@ -386,6 +396,7 @@ type ConversationStoreFile = {
     updatedAt: number;
     createdAt?: number;
     ownerId: string;
+    tenantId?: string | null;
     fileName: string;
     parentConversationId?: string;
     messageCount?: number;
@@ -465,6 +476,7 @@ class FileConversationStore implements ConversationStore {
           updatedAt: conversation.updatedAt,
           createdAt: conversation.createdAt,
           ownerId: conversation.ownerId,
+          tenantId: conversation.tenantId,
           fileName: entry.name,
           parentConversationId: conversation.parentConversationId,
           messageCount: conversation.messages.length,
@@ -523,6 +535,7 @@ class FileConversationStore implements ConversationStore {
         updatedAt: conversation.updatedAt,
         createdAt: conversation.createdAt,
         ownerId: conversation.ownerId,
+        tenantId: conversation.tenantId,
         fileName,
         parentConversationId: conversation.parentConversationId,
         messageCount: conversation.messages.length,
@@ -534,10 +547,11 @@ class FileConversationStore implements ConversationStore {
     await this.writing;
   }
 
-  async list(ownerId?: string): Promise<Conversation[]> {
+  async list(ownerId?: string, tenantId?: string | null): Promise<Conversation[]> {
     await this.ensureLoaded();
     const summaries = Array.from(this.conversations.values())
       .filter((conversation) => !ownerId || conversation.ownerId === ownerId)
+      .filter((c) => tenantId === undefined || (c.tenantId ?? null) === tenantId)
       .sort((a, b) => b.updatedAt - a.updatedAt);
     const conversations: Conversation[] = [];
     for (const summary of summaries) {
@@ -549,10 +563,11 @@ class FileConversationStore implements ConversationStore {
     return conversations;
   }
 
-  async listSummaries(ownerId?: string): Promise<ConversationSummary[]> {
+  async listSummaries(ownerId?: string, tenantId?: string | null): Promise<ConversationSummary[]> {
     await this.ensureLoaded();
     return Array.from(this.conversations.values())
       .filter((c) => !ownerId || c.ownerId === ownerId)
+      .filter((c) => tenantId === undefined || (c.tenantId ?? null) === tenantId)
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .map((c) => ({
         conversationId: c.conversationId,
@@ -560,6 +575,7 @@ class FileConversationStore implements ConversationStore {
         updatedAt: c.updatedAt,
         createdAt: c.createdAt,
         ownerId: c.ownerId,
+        tenantId: c.tenantId,
         parentConversationId: c.parentConversationId,
         messageCount: c.messageCount,
         hasPendingApprovals: c.hasPendingApprovals,
@@ -576,7 +592,7 @@ class FileConversationStore implements ConversationStore {
     return await this.readConversationFile(summary.fileName);
   }
 
-  async create(ownerId = DEFAULT_OWNER, title?: string): Promise<Conversation> {
+  async create(ownerId = DEFAULT_OWNER, title?: string, tenantId: string | null = null): Promise<Conversation> {
     await this.ensureLoaded();
     const now = Date.now();
     const conversation: Conversation = {
@@ -584,7 +600,7 @@ class FileConversationStore implements ConversationStore {
       title: normalizeTitle(title),
       messages: [],
       ownerId,
-      tenantId: null,
+      tenantId,
       createdAt: now,
       updatedAt: now,
     };
@@ -770,6 +786,7 @@ type ConversationMeta = {
   updatedAt: number;
   createdAt?: number;
   ownerId: string;
+  tenantId?: string | null;
   parentConversationId?: string;
   messageCount?: number;
   hasPendingApprovals?: boolean;
@@ -887,10 +904,10 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
     }
   }
 
-  async list(ownerId?: string): Promise<Conversation[]> {
+  async list(ownerId?: string, tenantId?: string | null): Promise<Conversation[]> {
     const kv = await this.client();
     if (!kv) {
-      return await this.memoryFallback.list(ownerId);
+      return await this.memoryFallback.list(ownerId, tenantId);
     }
     if (!ownerId) {
       return [];
@@ -903,16 +920,19 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
     for (const raw of rawValues) {
       if (!raw) continue;
       try {
-        conversations.push(JSON.parse(raw) as Conversation);
+        const conv = JSON.parse(raw) as Conversation;
+        if (tenantId === undefined || conv.tenantId === tenantId) {
+          conversations.push(conv);
+        }
       } catch { /* skip invalid records */ }
     }
     return conversations.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
-  async listSummaries(ownerId?: string): Promise<ConversationSummary[]> {
+  async listSummaries(ownerId?: string, tenantId?: string | null): Promise<ConversationSummary[]> {
     const kv = await this.client();
     if (!kv) {
-      return await this.memoryFallback.listSummaries(ownerId);
+      return await this.memoryFallback.listSummaries(ownerId, tenantId);
     }
     if (!ownerId) {
       return [];
@@ -926,13 +946,14 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
       if (!raw) continue;
       try {
         const meta = JSON.parse(raw) as ConversationMeta;
-        if (meta.ownerId === ownerId) {
+        if (meta.ownerId === ownerId && (tenantId === undefined || (meta.tenantId ?? null) === tenantId)) {
           summaries.push({
             conversationId: meta.conversationId,
             title: meta.title,
             updatedAt: meta.updatedAt,
             createdAt: meta.createdAt,
             ownerId: meta.ownerId,
+            tenantId: meta.tenantId,
             parentConversationId: meta.parentConversationId,
             messageCount: meta.messageCount,
             hasPendingApprovals: meta.hasPendingApprovals,
@@ -960,14 +981,14 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
     }
   }
 
-  async create(ownerId = DEFAULT_OWNER, title?: string): Promise<Conversation> {
+  async create(ownerId = DEFAULT_OWNER, title?: string, tenantId: string | null = null): Promise<Conversation> {
     const now = Date.now();
     const conversation: Conversation = {
       conversationId: globalThis.crypto?.randomUUID?.() ?? `${now}-${Math.random()}`,
       title: normalizeTitle(title),
       messages: [],
       ownerId,
-      tenantId: null,
+      tenantId,
       createdAt: now,
       updatedAt: now,
     };
@@ -997,6 +1018,7 @@ abstract class KeyValueConversationStoreBase implements ConversationStore {
         updatedAt: nextConversation.updatedAt,
         createdAt: nextConversation.createdAt,
         ownerId: nextConversation.ownerId,
+        tenantId: nextConversation.tenantId,
         parentConversationId: nextConversation.parentConversationId,
         messageCount: nextConversation.messages.length,
         hasPendingApprovals: Array.isArray(nextConversation.pendingApprovals) && nextConversation.pendingApprovals.length > 0,

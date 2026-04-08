@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { defineTool, type ToolDefinition } from "@poncho-ai/sdk";
+import { defineTool, type ToolContext, type ToolDefinition } from "@poncho-ai/sdk";
 import type { StateProviderName } from "./state.js";
 import {
   ensureAgentIdentity,
@@ -102,14 +102,16 @@ class InMemoryMemoryStore implements MemoryStore {
 class FileMainMemoryStore implements MemoryStore {
   private readonly workingDir: string;
   private filePath = "";
+  private readonly customRelPath?: string;
   private readonly ttlMs?: number;
   private loaded = false;
   private writing = Promise.resolve();
   private mainMemory: MainMemory = { ...DEFAULT_MAIN_MEMORY };
 
-  constructor(workingDir: string, ttlSeconds?: number) {
+  constructor(workingDir: string, ttlSeconds?: number, customRelPath?: string) {
     this.workingDir = workingDir;
     this.ttlMs = typeof ttlSeconds === "number" ? ttlSeconds * 1000 : undefined;
+    this.customRelPath = customRelPath;
   }
 
   private async ensureFilePath(): Promise<void> {
@@ -117,7 +119,10 @@ class FileMainMemoryStore implements MemoryStore {
       return;
     }
     const identity = await ensureAgentIdentity(this.workingDir);
-    this.filePath = resolve(getAgentStoreDirectory(identity), LOCAL_MEMORY_FILE);
+    this.filePath = resolve(
+      getAgentStoreDirectory(identity),
+      this.customRelPath ?? LOCAL_MEMORY_FILE,
+    );
   }
 
   private isExpired(updatedAt: number): boolean {
@@ -225,13 +230,22 @@ class KVBackedMemoryStore implements MemoryStore {
 export const createMemoryStore = (
   agentId: string,
   config?: MemoryConfig,
-  options?: { workingDir?: string },
+  options?: { workingDir?: string; tenantId?: string },
 ): MemoryStore => {
   const provider = config?.provider ?? "local";
   const ttl = config?.ttl;
   const workingDir = options?.workingDir ?? process.cwd();
+  const tenantId = options?.tenantId;
 
   if (provider === "local") {
+    if (tenantId) {
+      // Tenant-scoped memory: store under tenants/{tenantId}/memory.json
+      return new FileMainMemoryStore(
+        workingDir,
+        ttl,
+        `tenants/${slugifyStorageComponent(tenantId)}/${LOCAL_MEMORY_FILE}`,
+      );
+    }
     return new FileMainMemoryStore(workingDir, ttl);
   }
   if (provider === "memory") {
@@ -240,7 +254,10 @@ export const createMemoryStore = (
 
   const kv = createRawKVStore(config);
   if (kv) {
-    const storageKey = `poncho:${STORAGE_SCHEMA_VERSION}:${slugifyStorageComponent(agentId)}:memory:main`;
+    const base = `poncho:${STORAGE_SCHEMA_VERSION}:${slugifyStorageComponent(agentId)}`;
+    const storageKey = tenantId
+      ? `${base}:t:${slugifyStorageComponent(tenantId)}:memory:main`
+      : `${base}:memory:main`;
     return new KVBackedMemoryStore(kv, storageKey, ttl);
   }
   return new InMemoryMemoryStore(ttl);
@@ -281,9 +298,12 @@ const buildRecallSnippet = (content: string, query: string, maxChars = 360): str
 };
 
 export const createMemoryTools = (
-  store: MemoryStore,
+  store: MemoryStore | ((context: ToolContext) => MemoryStore),
   options?: { maxRecallConversations?: number },
 ): ToolDefinition[] => {
+  const resolveStore = typeof store === "function"
+    ? store
+    : () => store;
   const maxRecallConversations = Math.max(1, options?.maxRecallConversations ?? 20);
   return [
     defineTool({
@@ -294,8 +314,8 @@ export const createMemoryTools = (
         properties: {},
         additionalProperties: false,
       },
-      handler: async () => {
-        const memory = await store.getMainMemory();
+      handler: async (_input, context) => {
+        const memory = await resolveStore(context).getMainMemory();
         return { memory };
       },
     }),
@@ -316,12 +336,12 @@ export const createMemoryTools = (
         required: ["content"],
         additionalProperties: false,
       },
-      handler: async (input) => {
+      handler: async (input, context) => {
         const content = typeof input.content === "string" ? input.content.trim() : "";
         if (!content) {
           throw new Error("content is required");
         }
-        const memory = await store.updateMainMemory({ content });
+        const memory = await resolveStore(context).updateMainMemory({ content });
         return { ok: true, memory };
       },
     }),
@@ -349,13 +369,13 @@ export const createMemoryTools = (
         required: ["old_str", "new_str"],
         additionalProperties: false,
       },
-      handler: async (input) => {
+      handler: async (input, context) => {
         const oldStr = typeof input.old_str === "string" ? input.old_str : "";
         const newStr = typeof input.new_str === "string" ? input.new_str : "";
         if (!oldStr) {
           throw new Error("old_str must not be empty.");
         }
-        const current = await store.getMainMemory();
+        const current = await resolveStore(context).getMainMemory();
         const content = current.content;
         const first = content.indexOf(oldStr);
         if (first === -1) {
@@ -370,7 +390,7 @@ export const createMemoryTools = (
           );
         }
         const newContent = content.slice(0, first) + newStr + content.slice(first + oldStr.length);
-        const memory = await store.updateMainMemory({ content: newContent });
+        const memory = await resolveStore(context).updateMainMemory({ content: newContent });
         return { ok: true, memory };
       },
     }),
