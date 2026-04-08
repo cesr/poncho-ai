@@ -1,5 +1,26 @@
 # @poncho-ai/cli
 
+## 0.35.0
+
+### Minor Changes
+
+- [`83d3c5f`](https://github.com/cesr/poncho-ai/commit/83d3c5f841fe84965d1f9fec6dfc5d8832e4489a) Thanks [@cesr](https://github.com/cesr)! - feat: add multi-tenancy with JWT-based tenant scoping
+
+  Deploy one agent, serve many tenants with fully isolated conversations, memory, reminders, and secrets. Tenancy activates automatically when a valid JWT is received — no config changes needed.
+  - **Auth**: `createTenantToken()` in client SDK, `poncho auth create-token` CLI, or any HS256 JWT library.
+  - **Isolation**: conversations, memory, reminders, and todos scoped per tenant.
+  - **Per-tenant secrets**: encrypted secret overrides for MCP auth tokens, manageable via CLI (`poncho secrets`), API, and web UI settings panel.
+  - **MCP**: per-tenant token resolution with deferred discovery for servers without a default env var.
+  - **Web UI**: `?token=` tenant access, settings cog for secret management, dark mode support.
+  - **Backward compatible**: existing single-user deployments work unchanged.
+
+### Patch Changes
+
+- Updated dependencies [[`83d3c5f`](https://github.com/cesr/poncho-ai/commit/83d3c5f841fe84965d1f9fec6dfc5d8832e4489a)]:
+  - @poncho-ai/sdk@1.8.0
+  - @poncho-ai/harness@0.35.0
+  - @poncho-ai/messaging@0.8.2
+
 ## 0.34.5
 
 ### Patch Changes
