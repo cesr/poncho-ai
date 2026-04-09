@@ -1,6 +1,6 @@
 # Poncho
 
-Poncho is a harness for building agents you can share.
+Poncho is a multi-tenant harness for building agents you can share.
 
 Define behavior in markdown, add skills and tools, develop by chatting locally, and deploy as a web app your team can use through a chat UI, Slack, Telegram, email, or API.
 
