@@ -193,12 +193,37 @@ export abstract class SqlStorageEngine implements StorageEngine {
     },
 
     get: async (conversationId: string): Promise<Conversation | undefined> => {
-      const row = await this.executor.get(
-        rewrite("SELECT data FROM conversations WHERE id = $1 AND agent_id = $2", this.dialect),
+      const row = await this.executor.get<{
+        data: unknown;
+        tool_result_archive: unknown;
+        harness_messages: unknown;
+        continuation_messages: unknown;
+      }>(
+        rewrite("SELECT data, tool_result_archive, harness_messages, continuation_messages FROM conversations WHERE id = $1 AND agent_id = $2", this.dialect),
         [conversationId, this.agentId],
       );
       if (!row) return undefined;
-      return this.parseConversation(row.data);
+      const conv = this.parseConversation(row.data);
+      // Rehydrate heavy fields from separate columns
+      if (row.tool_result_archive) {
+        conv._toolResultArchive =
+          typeof row.tool_result_archive === "string"
+            ? JSON.parse(row.tool_result_archive)
+            : row.tool_result_archive;
+      }
+      if (row.harness_messages) {
+        conv._harnessMessages =
+          typeof row.harness_messages === "string"
+            ? JSON.parse(row.harness_messages)
+            : row.harness_messages;
+      }
+      if (row.continuation_messages) {
+        conv._continuationMessages =
+          typeof row.continuation_messages === "string"
+            ? JSON.parse(row.continuation_messages)
+            : row.continuation_messages;
+      }
+      return conv;
     },
 
     create: async (
@@ -241,13 +266,25 @@ export abstract class SqlStorageEngine implements StorageEngine {
 
     update: async (conversation: Conversation): Promise<void> => {
       conversation.updatedAt = Date.now();
-      const data = JSON.stringify(conversation);
+      // Strip heavy internal fields from the data blob — stored in separate columns
+      const archive = conversation._toolResultArchive;
+      const harnessMessages = conversation._harnessMessages;
+      const continuationMessages = conversation._continuationMessages;
+      const stripped = { ...conversation };
+      delete stripped._toolResultArchive;
+      delete stripped._harnessMessages;
+      delete stripped._continuationMessages;
+      const data = JSON.stringify(stripped);
+      const archiveJson = archive ? JSON.stringify(archive) : null;
+      const harnessJson = harnessMessages ? JSON.stringify(harnessMessages) : null;
+      const continuationJson = continuationMessages ? JSON.stringify(continuationMessages) : null;
       const msgCount = conversation.messages?.length ?? 0;
       await this.executor.run(
         rewrite(
           `UPDATE conversations
-           SET data = $1, title = $2, message_count = $3, updated_at = $4, tenant_id = $5, owner_id = $6
-           WHERE id = $7 AND agent_id = $8`,
+           SET data = $1, title = $2, message_count = $3, updated_at = $4, tenant_id = $5, owner_id = $6,
+               tool_result_archive = $7, harness_messages = $8, continuation_messages = $9
+           WHERE id = $10 AND agent_id = $11`,
           this.dialect,
         ),
         [
@@ -257,6 +294,9 @@ export abstract class SqlStorageEngine implements StorageEngine {
           new Date(conversation.updatedAt).toISOString(),
           normalizeTenant(conversation.tenantId),
           conversation.ownerId,
+          archiveJson,
+          harnessJson,
+          continuationJson,
           conversation.conversationId,
           this.agentId,
         ],

@@ -102,4 +102,44 @@ export const migrations: Migration[] = [
       ];
     },
   },
+  {
+    version: 2,
+    name: "separate_tool_result_archive",
+    up: (d) => {
+      const jsonType = d === "sqlite" ? "TEXT" : "JSONB";
+      return [
+        `ALTER TABLE conversations ADD COLUMN tool_result_archive ${jsonType}`,
+      ];
+    },
+  },
+  {
+    version: 3,
+    name: "extract_heavy_fields_from_data_blob",
+    up: (d) => {
+      const jsonType = d === "sqlite" ? "TEXT" : "JSONB";
+      return [
+        `ALTER TABLE conversations ADD COLUMN harness_messages ${jsonType}`,
+        `ALTER TABLE conversations ADD COLUMN continuation_messages ${jsonType}`,
+        ...(d === "sqlite"
+          ? [
+              `UPDATE conversations SET
+                tool_result_archive = json_extract(data, '$._toolResultArchive'),
+                harness_messages = json_extract(data, '$._harnessMessages'),
+                continuation_messages = json_extract(data, '$._continuationMessages')
+              WHERE json_extract(data, '$._toolResultArchive') IS NOT NULL
+                 OR json_extract(data, '$._harnessMessages') IS NOT NULL`,
+              `UPDATE conversations SET data = json_remove(data, '$._toolResultArchive', '$._harnessMessages', '$._continuationMessages')`,
+            ]
+          : [
+              `UPDATE conversations SET
+                tool_result_archive = data->'_toolResultArchive',
+                harness_messages = data->'_harnessMessages',
+                continuation_messages = data->'_continuationMessages'
+              WHERE data->'_toolResultArchive' IS NOT NULL
+                 OR data->'_harnessMessages' IS NOT NULL`,
+              `UPDATE conversations SET data = data - '_toolResultArchive' - '_harnessMessages' - '_continuationMessages'`,
+            ]),
+      ];
+    },
+  },
 ];
