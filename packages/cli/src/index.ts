@@ -6479,32 +6479,39 @@ export const createRequestHandler = async (options?: {
 
   // Recover stale subagent runs that were "running" when the server last stopped
   // or that have been inactive longer than the staleness threshold.
+  // Run this async so it doesn't block startup.
   const STALE_SUBAGENT_THRESHOLD_MS = 5 * 60 * 1000;
-  try {
+  (async () => { try {
     const allSummaries = await conversationStore.listSummaries();
     const subagentSummaries = allSummaries.filter((s) => s.parentConversationId);
+    if (subagentSummaries.length === 0) return;
     const parentsToCallback = new Set<string>();
-    for (const s of subagentSummaries) {
-      const conv = await conversationStore.get(s.conversationId);
-      if (conv?.subagentMeta?.status === "running" && conv.parentConversationId) {
-        const lastActivity = conv.lastActivityAt ?? conv.updatedAt;
-        const elapsed = Date.now() - lastActivity;
-        if (elapsed < STALE_SUBAGENT_THRESHOLD_MS) continue;
+    // Fetch subagent conversations concurrently (bounded)
+    const CONCURRENCY = 10;
+    for (let i = 0; i < subagentSummaries.length; i += CONCURRENCY) {
+      const batch = subagentSummaries.slice(i, i + CONCURRENCY);
+      const convs = await Promise.all(batch.map((s) => conversationStore.get(s.conversationId)));
+      for (const conv of convs) {
+        if (conv?.subagentMeta?.status === "running" && conv.parentConversationId) {
+          const lastActivity = conv.lastActivityAt ?? conv.updatedAt;
+          const elapsed = Date.now() - lastActivity;
+          if (elapsed < STALE_SUBAGENT_THRESHOLD_MS) continue;
 
-        conv.subagentMeta.status = "error";
-        conv.subagentMeta.error = { code: "STALE_SUBAGENT", message: `Subagent inactive for ${Math.round(elapsed / 1000)}s (threshold: ${STALE_SUBAGENT_THRESHOLD_MS / 1000}s)` };
-        conv.updatedAt = Date.now();
-        await conversationStore.update(conv);
+          conv.subagentMeta.status = "error";
+          conv.subagentMeta.error = { code: "STALE_SUBAGENT", message: `Subagent inactive for ${Math.round(elapsed / 1000)}s (threshold: ${STALE_SUBAGENT_THRESHOLD_MS / 1000}s)` };
+          conv.updatedAt = Date.now();
+          await conversationStore.update(conv);
 
-        const pendingResult: PendingSubagentResult = {
-          subagentId: conv.conversationId,
-          task: conv.subagentMeta.task,
-          status: "error",
-          error: conv.subagentMeta.error,
-          timestamp: Date.now(),
-        };
-        await conversationStore.appendSubagentResult(conv.parentConversationId, pendingResult);
-        parentsToCallback.add(conv.parentConversationId);
+          const pendingResult: PendingSubagentResult = {
+            subagentId: conv.conversationId,
+            task: conv.subagentMeta.task,
+            status: "error",
+            error: conv.subagentMeta.error,
+            timestamp: Date.now(),
+          };
+          await conversationStore.appendSubagentResult(conv.parentConversationId, pendingResult);
+          parentsToCallback.add(conv.parentConversationId);
+        }
       }
     }
     for (const parentId of parentsToCallback) {
@@ -6514,7 +6521,7 @@ export const createRequestHandler = async (options?: {
     }
   } catch (err) {
     console.warn("[poncho][subagent] Failed to recover stale subagent runs:", err);
-  }
+  } })();
 
   return handler;
 };
