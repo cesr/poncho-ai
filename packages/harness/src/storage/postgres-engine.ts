@@ -54,7 +54,9 @@ export class PostgresEngine extends SqlStorageEngine {
       );
     }
     const postgres = (await import("postgres")).default;
-    this.sql = postgres(url);
+    this.sql = postgres(url, {
+      onnotice: () => {}, // suppress CREATE TABLE IF NOT EXISTS notices
+    });
   }
 
   override async initialize(): Promise<void> {
