@@ -28,21 +28,30 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.44",
     "@ai-sdk/openai": "^3.0.29",
-    "@aws-sdk/client-dynamodb": "^3.988.0",
     "@opentelemetry/api": "1.9.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.213.0",
     "@opentelemetry/sdk-trace-node": "^2.6.0",
     "@poncho-ai/sdk": "workspace:*",
     "ai": "^6.0.86",
+    "better-sqlite3": "^11.0.0",
     "cheerio": "^1.2.0",
     "jiti": "^2.6.1",
     "jose": "^6.2.2",
+    "just-bash": "^2.14.0",
     "mustache": "^4.2.0",
-    "redis": "^5.10.0",
     "yaml": "^2.4.0",
     "zod": "^3.22.0"
   },
+  "peerDependencies": {
+    "postgres": ">=3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "postgres": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
     "@types/mustache": "^4.2.6",
     "tsup": "^8.0.0",
     "vitest": "^1.4.0"

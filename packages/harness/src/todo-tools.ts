@@ -1,14 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
 import { defineTool, type ToolDefinition } from "@poncho-ai/sdk";
-import type { StateConfig } from "./state.js";
-import {
-  ensureAgentIdentity,
-  getAgentStoreDirectory,
-  slugifyStorageComponent,
-  STORAGE_SCHEMA_VERSION,
-} from "./agent-identity.js";
-import { createRawKVStore, type RawKVStore } from "./kv-store.js";
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -37,25 +27,6 @@ export interface TodoStore {
 
 const VALID_STATUSES: TodoStatus[] = ["pending", "in_progress", "completed"];
 const VALID_PRIORITIES: TodoPriority[] = ["high", "medium", "low"];
-const TODOS_DIRECTORY = "todos";
-
-const writeJsonAtomic = async (filePath: string, payload: unknown): Promise<void> => {
-  await mkdir(dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.tmp`;
-  await writeFile(tmpPath, JSON.stringify(payload, null, 2), "utf8");
-  await rename(tmpPath, filePath);
-};
-
-const parseTodoList = (raw: unknown): TodoItem[] => {
-  if (!Array.isArray(raw)) return [];
-  return raw.filter(
-    (item): item is TodoItem =>
-      typeof item === "object" &&
-      item !== null &&
-      typeof (item as Record<string, unknown>).id === "string" &&
-      typeof (item as Record<string, unknown>).content === "string",
-  );
-};
 
 const generateId = (): string =>
   (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`).slice(0, 8);
@@ -77,116 +48,10 @@ class InMemoryTodoStore implements TodoStore {
 }
 
 // ---------------------------------------------------------------------------
-// FileTodoStore — one JSON file per conversation
-// ---------------------------------------------------------------------------
-
-class FileTodoStore implements TodoStore {
-  private readonly workingDir: string;
-  private todosDir = "";
-
-  constructor(workingDir: string) {
-    this.workingDir = workingDir;
-  }
-
-  private async ensureTodosDir(): Promise<string> {
-    if (this.todosDir) return this.todosDir;
-    const identity = await ensureAgentIdentity(this.workingDir);
-    this.todosDir = resolve(getAgentStoreDirectory(identity), TODOS_DIRECTORY);
-    await mkdir(this.todosDir, { recursive: true });
-    return this.todosDir;
-  }
-
-  private async filePath(conversationId: string): Promise<string> {
-    const dir = await this.ensureTodosDir();
-    return resolve(dir, `${slugifyStorageComponent(conversationId)}.json`);
-  }
-
-  async get(conversationId: string): Promise<TodoItem[]> {
-    try {
-      const fp = await this.filePath(conversationId);
-      const raw = await readFile(fp, "utf8");
-      return parseTodoList(JSON.parse(raw));
-    } catch {
-      return [];
-    }
-  }
-
-  async set(conversationId: string, todos: TodoItem[]): Promise<void> {
-    const fp = await this.filePath(conversationId);
-    await writeJsonAtomic(fp, todos);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// KVBackedTodoStore — wraps any RawKVStore (Upstash, Redis, DynamoDB)
-// ---------------------------------------------------------------------------
-
-class KVBackedTodoStore implements TodoStore {
-  private readonly kv: RawKVStore;
-  private readonly baseKey: string;
-  private readonly ttl?: number;
-  private readonly memoryFallback = new InMemoryTodoStore();
-
-  constructor(kv: RawKVStore, baseKey: string, ttl?: number) {
-    this.kv = kv;
-    this.baseKey = baseKey;
-    this.ttl = ttl;
-  }
-
-  private keyFor(conversationId: string): string {
-    return `${this.baseKey}:${slugifyStorageComponent(conversationId)}`;
-  }
-
-  async get(conversationId: string): Promise<TodoItem[]> {
-    try {
-      const raw = await this.kv.get(this.keyFor(conversationId));
-      if (!raw) return [];
-      return parseTodoList(JSON.parse(raw));
-    } catch {
-      return this.memoryFallback.get(conversationId);
-    }
-  }
-
-  async set(conversationId: string, todos: TodoItem[]): Promise<void> {
-    try {
-      const serialized = JSON.stringify(todos);
-      const key = this.keyFor(conversationId);
-      if (typeof this.ttl === "number") {
-        await this.kv.setWithTtl(key, serialized, Math.max(1, this.ttl));
-      } else {
-        await this.kv.set(key, serialized);
-      }
-    } catch {
-      await this.memoryFallback.set(conversationId, todos);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
-export const createTodoStore = (
-  agentId: string,
-  config?: StateConfig,
-  options?: { workingDir?: string },
-): TodoStore => {
-  const provider = config?.provider ?? "local";
-  const ttl = config?.ttl;
-  const workingDir = options?.workingDir ?? process.cwd();
-
-  if (provider === "local") {
-    return new FileTodoStore(workingDir);
-  }
-  if (provider === "memory") {
-    return new InMemoryTodoStore();
-  }
-
-  const kv = createRawKVStore(config);
-  if (kv) {
-    const baseKey = `poncho:${STORAGE_SCHEMA_VERSION}:${slugifyStorageComponent(agentId)}:todos`;
-    return new KVBackedTodoStore(kv, baseKey, ttl);
-  }
+export const createTodoStore = (): TodoStore => {
   return new InMemoryTodoStore();
 };
 

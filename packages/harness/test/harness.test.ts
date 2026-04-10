@@ -37,10 +37,9 @@ model:
     await harness.initialize();
     const names = harness.listTools().map((tool) => tool.name);
 
-    expect(names).toContain("list_directory");
-    expect(names).toContain("read_file");
-    expect(names).toContain("write_file");
-    expect(names).toContain("edit_file");
+    expect(names).toContain("bash");
+    expect(names).toContain("web_search");
+    expect(names).toContain("todo_list");
   });
 
   it("disables write_file by default in production environment", async () => {
@@ -63,10 +62,9 @@ model:
     await harness.initialize();
     const names = harness.listTools().map((tool) => tool.name);
 
-    expect(names).toContain("list_directory");
-    expect(names).toContain("read_file");
-    expect(names).not.toContain("write_file");
-    expect(names).not.toContain("edit_file");
+    // In production, bash is registered but poncho_docs is not
+    expect(names).toContain("bash");
+    expect(names).not.toContain("poncho_docs");
   });
 
   it("allows disabling built-in tools via poncho.config.js", async () => {
@@ -88,9 +86,7 @@ model:
       join(dir, "poncho.config.js"),
       `export default {
   tools: {
-    defaults: {
-      read_file: false
-    }
+    web_search: false
   }
 };
 `,
@@ -100,8 +96,8 @@ model:
     const harness = new AgentHarness({ workingDir: dir, environment: "production" });
     await harness.initialize();
     const names = harness.listTools().map((tool) => tool.name);
-    expect(names).toContain("list_directory");
-    expect(names).not.toContain("read_file");
+    expect(names).toContain("bash");
+    expect(names).not.toContain("web_search");
   });
 
   it("supports per-environment tool overrides", async () => {
@@ -123,15 +119,13 @@ model:
       join(dir, "poncho.config.js"),
       `export default {
   tools: {
-    defaults: {
-      read_file: false
-    },
+    web_search: false,
     byEnvironment: {
       development: {
-        read_file: true
+        web_search: true
       },
       production: {
-        write_file: false
+        web_fetch: false
       }
     }
   }
@@ -143,14 +137,14 @@ model:
     const developmentHarness = new AgentHarness({ workingDir: dir, environment: "development" });
     await developmentHarness.initialize();
     const developmentTools = developmentHarness.listTools().map((tool) => tool.name);
-    expect(developmentTools).toContain("read_file");
-    expect(developmentTools).toContain("write_file");
+    expect(developmentTools).toContain("web_search");
+    expect(developmentTools).toContain("bash");
 
     const productionHarness = new AgentHarness({ workingDir: dir, environment: "production" });
     await productionHarness.initialize();
     const productionTools = productionHarness.listTools().map((tool) => tool.name);
-    expect(productionTools).not.toContain("read_file");
-    expect(productionTools).not.toContain("write_file");
+    expect(productionTools).not.toContain("web_search");
+    expect(productionTools).not.toContain("web_fetch");
   });
 
   it("does not auto-register exported tool objects from skill scripts", async () => {
@@ -1410,8 +1404,8 @@ model:
       join(dir, "poncho.config.js"),
       `export default {
   tools: {
-    read_file: false,
-    list_directory: true,
+    web_search: false,
+    web_fetch: true,
   }
 };
 `,
@@ -1421,8 +1415,8 @@ model:
     const harness = new AgentHarness({ workingDir: dir });
     await harness.initialize();
     const names = harness.listTools().map((tool) => tool.name);
-    expect(names).toContain("list_directory");
-    expect(names).not.toContain("read_file");
+    expect(names).toContain("web_fetch");
+    expect(names).not.toContain("web_search");
   });
 
   it("flat tool access takes priority over legacy defaults", async () => {
@@ -1444,9 +1438,9 @@ model:
       join(dir, "poncho.config.js"),
       `export default {
   tools: {
-    read_file: true,
+    web_search: true,
     defaults: {
-      read_file: false,
+      web_search: false,
     },
   }
 };
@@ -1457,7 +1451,7 @@ model:
     const harness = new AgentHarness({ workingDir: dir });
     await harness.initialize();
     const names = harness.listTools().map((tool) => tool.name);
-    expect(names).toContain("read_file");
+    expect(names).toContain("web_search");
   });
 
   it("byEnvironment overrides flat tool access", async () => {
@@ -1479,10 +1473,10 @@ model:
       join(dir, "poncho.config.js"),
       `export default {
   tools: {
-    read_file: false,
+    web_search: false,
     byEnvironment: {
       development: {
-        read_file: true,
+        web_search: true,
       },
     },
   }
@@ -1494,7 +1488,7 @@ model:
     const harness = new AgentHarness({ workingDir: dir, environment: "development" });
     await harness.initialize();
     const names = harness.listTools().map((tool) => tool.name);
-    expect(names).toContain("read_file");
+    expect(names).toContain("web_search");
   });
 
   it("registerTools skips tools disabled via config", async () => {
@@ -1563,7 +1557,7 @@ model:
       join(dir, "poncho.config.js"),
       `export default {
   tools: {
-    write_file: 'approval',
+    web_search: 'approval',
   }
 };
 `,
@@ -1573,9 +1567,9 @@ model:
     const harness = new AgentHarness({ workingDir: dir });
     await harness.initialize();
     const names = harness.listTools().map((tool) => tool.name);
-    expect(names).toContain("write_file");
+    expect(names).toContain("web_search");
 
-    const requiresApproval = (harness as any).requiresApprovalForToolCall("write_file", {});
+    const requiresApproval = (harness as any).requiresApprovalForToolCall("web_search", {});
     expect(requiresApproval).toBe(true);
   });
 
@@ -1597,7 +1591,7 @@ model:
 
     const harness = new AgentHarness({ workingDir: dir });
     await harness.initialize();
-    const requiresApproval = (harness as any).requiresApprovalForToolCall("write_file", {});
+    const requiresApproval = (harness as any).requiresApprovalForToolCall("web_search", {});
     expect(requiresApproval).toBe(false);
   });
 

@@ -50,6 +50,24 @@ export const getTextContent = (message: Message): string => {
     .join("");
 };
 
+/** Virtual filesystem scoped to the current tenant. Available when VFS is enabled. */
+export interface VfsAccess {
+  readFile(path: string): Promise<Uint8Array>;
+  readText(path: string): Promise<string>;
+  writeFile(path: string, content: Uint8Array, mimeType?: string): Promise<void>;
+  writeText(path: string, content: string): Promise<void>;
+  exists(path: string): Promise<boolean>;
+  stat(path: string): Promise<{
+    size: number;
+    isDirectory: boolean;
+    mimeType?: string;
+    updatedAt: number;
+  }>;
+  readdir(path: string): Promise<string[]>;
+  mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
+  rm(path: string, options?: { recursive?: boolean }): Promise<void>;
+}
+
 export interface ToolContext {
   runId: string;
   agentId: string;
@@ -60,6 +78,8 @@ export interface ToolContext {
   conversationId?: string;
   /** The tenant ID when running in multi-tenant mode. */
   tenantId?: string;
+  /** Virtual filesystem scoped to the current tenant. Available when VFS is enabled. */
+  vfs?: VfsAccess;
 }
 
 export type ToolHandler<TInput extends Record<string, unknown>, TOutput> = (

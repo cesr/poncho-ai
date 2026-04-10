@@ -6,7 +6,7 @@ import type { McpConfig } from "./mcp.js";
 import type { StateConfig } from "./state.js";
 
 export interface StorageConfig {
-  provider?: "local" | "memory" | "redis" | "upstash" | "dynamodb";
+  provider?: "local" | "memory" | "sqlite" | "postgresql" | "redis" | "upstash" | "dynamodb";
   urlEnv?: string;
   tokenEnv?: string;
   table?: string;
@@ -20,6 +20,10 @@ export interface StorageConfig {
   memory?: {
     enabled?: boolean;
     maxRecallConversations?: number;
+  };
+  limits?: {
+    maxFileSize?: number;
+    maxTotalStorage?: number;
   };
 }
 

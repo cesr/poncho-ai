@@ -1,14 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
 import { defineTool, type ToolContext, type ToolDefinition } from "@poncho-ai/sdk";
 import type { StateProviderName } from "./state.js";
-import {
-  ensureAgentIdentity,
-  getAgentStoreDirectory,
-  slugifyStorageComponent,
-  STORAGE_SCHEMA_VERSION,
-} from "./agent-identity.js";
-import { createRawKVStore, type RawKVStore } from "./kv-store.js";
 
 export interface MainMemory {
   content: string;
@@ -31,10 +22,6 @@ export interface MemoryStore {
   updateMainMemory(input: { content: string }): Promise<MainMemory>;
 }
 
-type MainMemoryPayload = {
-  main: MainMemory;
-};
-
 type RecallItem = {
   conversationId: string;
   title: string;
@@ -45,14 +32,6 @@ type RecallItem = {
 const DEFAULT_MAIN_MEMORY: MainMemory = {
   content: "",
   updatedAt: 0,
-};
-const LOCAL_MEMORY_FILE = "memory.json";
-
-const writeJsonAtomic = async (filePath: string, payload: unknown): Promise<void> => {
-  await mkdir(dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.tmp`;
-  await writeFile(tmpPath, JSON.stringify(payload, null, 2), "utf8");
-  await rename(tmpPath, filePath);
 };
 
 const scoreText = (text: string, query: string): number => {
@@ -99,167 +78,12 @@ class InMemoryMemoryStore implements MemoryStore {
   }
 }
 
-class FileMainMemoryStore implements MemoryStore {
-  private readonly workingDir: string;
-  private filePath = "";
-  private readonly customRelPath?: string;
-  private readonly ttlMs?: number;
-  private loaded = false;
-  private writing = Promise.resolve();
-  private mainMemory: MainMemory = { ...DEFAULT_MAIN_MEMORY };
-
-  constructor(workingDir: string, ttlSeconds?: number, customRelPath?: string) {
-    this.workingDir = workingDir;
-    this.ttlMs = typeof ttlSeconds === "number" ? ttlSeconds * 1000 : undefined;
-    this.customRelPath = customRelPath;
-  }
-
-  private async ensureFilePath(): Promise<void> {
-    if (this.filePath) {
-      return;
-    }
-    const identity = await ensureAgentIdentity(this.workingDir);
-    this.filePath = resolve(
-      getAgentStoreDirectory(identity),
-      this.customRelPath ?? LOCAL_MEMORY_FILE,
-    );
-  }
-
-  private isExpired(updatedAt: number): boolean {
-    return typeof this.ttlMs === "number" && Date.now() - updatedAt > this.ttlMs;
-  }
-
-  private async ensureLoaded(): Promise<void> {
-    await this.ensureFilePath();
-    if (this.loaded) {
-      return;
-    }
-    this.loaded = true;
-    try {
-      const raw = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as MainMemoryPayload;
-      const content = typeof parsed.main?.content === "string" ? parsed.main.content : "";
-      const updatedAt = typeof parsed.main?.updatedAt === "number" ? parsed.main.updatedAt : 0;
-      this.mainMemory = { content, updatedAt };
-    } catch {
-      // Missing or invalid file should not crash local mode.
-    }
-  }
-
-  private async persist(): Promise<void> {
-    const payload: MainMemoryPayload = { main: this.mainMemory };
-    this.writing = this.writing.then(async () => {
-      await writeJsonAtomic(this.filePath, payload);
-    });
-    await this.writing;
-  }
-
-  async getMainMemory(): Promise<MainMemory> {
-    await this.ensureLoaded();
-    if (this.mainMemory.updatedAt > 0 && this.isExpired(this.mainMemory.updatedAt)) {
-      this.mainMemory = { ...DEFAULT_MAIN_MEMORY };
-      await this.persist();
-    }
-    return this.mainMemory;
-  }
-
-  async updateMainMemory(input: { content: string }): Promise<MainMemory> {
-    await this.ensureLoaded();
-    this.mainMemory = {
-      content: input.content.trim(),
-      updatedAt: Date.now(),
-    };
-    await this.persist();
-    return this.mainMemory;
-  }
-}
-
-class KVBackedMemoryStore implements MemoryStore {
-  private readonly kv: RawKVStore;
-  private readonly storageKey: string;
-  private readonly ttl?: number;
-  private readonly memoryFallback: InMemoryMemoryStore;
-
-  constructor(kv: RawKVStore, storageKey: string, ttl?: number) {
-    this.kv = kv;
-    this.storageKey = storageKey;
-    this.ttl = ttl;
-    this.memoryFallback = new InMemoryMemoryStore(ttl);
-  }
-
-  private async readPayload(): Promise<MainMemoryPayload> {
-    try {
-      const raw = await this.kv.get(this.storageKey);
-      if (!raw) return { main: { ...DEFAULT_MAIN_MEMORY } };
-      const parsed = JSON.parse(raw) as MainMemoryPayload;
-      const content = typeof parsed.main?.content === "string" ? parsed.main.content : "";
-      const updatedAt = typeof parsed.main?.updatedAt === "number" ? parsed.main.updatedAt : 0;
-      return { main: { content, updatedAt } };
-    } catch {
-      const main = await this.memoryFallback.getMainMemory();
-      return { main };
-    }
-  }
-
-  private async writePayload(payload: MainMemoryPayload): Promise<void> {
-    try {
-      const serialized = JSON.stringify(payload);
-      if (typeof this.ttl === "number") {
-        await this.kv.setWithTtl(this.storageKey, serialized, Math.max(1, this.ttl));
-      } else {
-        await this.kv.set(this.storageKey, serialized);
-      }
-    } catch {
-      await this.memoryFallback.updateMainMemory({ content: payload.main.content });
-    }
-  }
-
-  async getMainMemory(): Promise<MainMemory> {
-    const payload = await this.readPayload();
-    return payload.main;
-  }
-
-  async updateMainMemory(input: { content: string }): Promise<MainMemory> {
-    const payload = await this.readPayload();
-    payload.main = { content: input.content.trim(), updatedAt: Date.now() };
-    await this.writePayload(payload);
-    return payload.main;
-  }
-}
-
 export const createMemoryStore = (
   agentId: string,
   config?: MemoryConfig,
   options?: { workingDir?: string; tenantId?: string },
 ): MemoryStore => {
-  const provider = config?.provider ?? "local";
   const ttl = config?.ttl;
-  const workingDir = options?.workingDir ?? process.cwd();
-  const tenantId = options?.tenantId;
-
-  if (provider === "local") {
-    if (tenantId) {
-      // Tenant-scoped memory: store under tenants/{tenantId}/memory.json
-      return new FileMainMemoryStore(
-        workingDir,
-        ttl,
-        `tenants/${slugifyStorageComponent(tenantId)}/${LOCAL_MEMORY_FILE}`,
-      );
-    }
-    return new FileMainMemoryStore(workingDir, ttl);
-  }
-  if (provider === "memory") {
-    return new InMemoryMemoryStore(ttl);
-  }
-
-  const kv = createRawKVStore(config);
-  if (kv) {
-    const base = `poncho:${STORAGE_SCHEMA_VERSION}:${slugifyStorageComponent(agentId)}`;
-    const storageKey = tenantId
-      ? `${base}:t:${slugifyStorageComponent(tenantId)}:memory:main`
-      : `${base}:memory:main`;
-    return new KVBackedMemoryStore(kv, storageKey, ttl);
-  }
   return new InMemoryMemoryStore(ttl);
 };
 

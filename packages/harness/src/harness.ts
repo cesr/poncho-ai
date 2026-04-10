@@ -15,9 +15,20 @@ import type {
 import { defineTool, getTextContent } from "@poncho-ai/sdk";
 import type { UploadStore } from "./upload-store.js";
 import { PONCHO_UPLOAD_SCHEME, deriveUploadKey } from "./upload-store.js";
+import type { StorageEngine } from "./storage/engine.js";
+import { createStorageEngine, type StorageProvider } from "./storage/index.js";
+import {
+  createConversationStoreFromEngine,
+  createMemoryStoreFromEngine,
+  createTodoStoreFromEngine,
+  createReminderStoreFromEngine,
+} from "./storage/store-adapters.js";
+import { BashEnvironmentManager } from "./vfs/bash-manager.js";
+import { createBashTool } from "./vfs/bash-tool.js";
+import { PonchoFsAdapter } from "./vfs/poncho-fs-adapter.js";
 import { parseAgentFile, parseAgentMarkdown, renderAgentPrompt, type ParsedAgent, type AgentFrontmatter } from "./agent-parser.js";
 import { loadPonchoConfig, resolveMemoryConfig, resolveStateConfig, type PonchoConfig, type ToolAccess, type BuiltInToolToggles } from "./config.js";
-import { createDefaultTools, createDeleteDirectoryTool, createDeleteTool, createEditTool, createWriteTool, ponchoDocsTool } from "./default-tools.js";
+import { ponchoDocsTool } from "./default-tools.js";
 import {
   createMemoryStore,
   createMemoryTools,
@@ -667,6 +678,11 @@ export class AgentHarness {
   private subagentManager?: SubagentManager;
   private readonly archivedToolResultsByConversation = new Map<string, Record<string, ArchivedToolResult>>();
 
+  /** Unified storage engine (replaces individual KV-backed stores). */
+  storageEngine?: StorageEngine;
+  /** Bash environment manager (creates per-tenant bash instances). */
+  private bashManager?: BashEnvironmentManager;
+
   private resolveToolAccess(toolName: string): ToolAccess {
     const tools = this.loadedConfig?.tools;
     if (!tools) return true;
@@ -723,23 +739,8 @@ export class AgentHarness {
   }
 
   private registerConfiguredBuiltInTools(config: PonchoConfig | undefined): void {
-    for (const tool of createDefaultTools(this.workingDir)) {
-      if (this.isToolEnabled(tool.name)) {
-        this.registerIfMissing(tool);
-      }
-    }
-    if (this.isToolEnabled("write_file")) {
-      this.registerIfMissing(createWriteTool(this.workingDir));
-    }
-    if (this.isToolEnabled("edit_file")) {
-      this.registerIfMissing(createEditTool(this.workingDir));
-    }
-    if (this.isToolEnabled("delete_file")) {
-      this.registerIfMissing(createDeleteTool(this.workingDir));
-    }
-    if (this.isToolEnabled("delete_directory")) {
-      this.registerIfMissing(createDeleteDirectoryTool(this.workingDir));
-    }
+    // Old file tools (read_file, write_file, etc.) are replaced by the bash tool.
+    // Only register search tools, poncho_docs, and get_tool_result_by_id.
     for (const tool of createSearchTools()) {
       if (this.isToolEnabled(tool.name)) {
         this.registerIfMissing(tool);
@@ -802,6 +803,33 @@ export class AgentHarness {
         };
       },
     });
+  }
+
+  private createVfsAccess(tenantId: string): NonNullable<ToolContext["vfs"]> {
+    const adapter = this.bashManager!.getAdapter(tenantId);
+    return {
+      readFile: (path: string) => adapter.readFileBuffer(path),
+      readText: (path: string) => adapter.readFile(path),
+      writeFile: (path: string, content: Uint8Array, mimeType?: string) =>
+        adapter.writeFile(path, content),
+      writeText: (path: string, content: string) =>
+        adapter.writeFile(path, content),
+      exists: (path: string) => adapter.exists(path),
+      stat: async (path: string) => {
+        const s = await adapter.stat(path);
+        return {
+          size: s.size,
+          isDirectory: s.isDirectory,
+          mimeType: undefined,
+          updatedAt: s.mtime.getTime(),
+        };
+      },
+      readdir: (path: string) => adapter.readdir(path),
+      mkdir: (path: string, options?: { recursive?: boolean }) =>
+        adapter.mkdir(path, options),
+      rm: (path: string, options?: { recursive?: boolean }) =>
+        adapter.rm(path, options),
+    };
   }
 
   private shouldEnableWriteTool(): boolean {
@@ -990,11 +1018,15 @@ export class AgentHarness {
 
     let store = this.tenantMemoryStores.get(tenantId);
     if (!store) {
-      const agentId = this.parsedAgent?.frontmatter.id ?? this.parsedAgent?.frontmatter.name ?? "unknown";
-      store = createMemoryStore(agentId, this.memoryConfig, {
-        workingDir: this.workingDir,
-        tenantId,
-      });
+      if (this.storageEngine) {
+        store = createMemoryStoreFromEngine(this.storageEngine, tenantId);
+      } else {
+        const agentId = this.parsedAgent?.frontmatter.id ?? this.parsedAgent?.frontmatter.name ?? "unknown";
+        store = createMemoryStore(agentId, this.memoryConfig, {
+          workingDir: this.workingDir,
+          tenantId,
+        });
+      }
       this.tenantMemoryStores.set(tenantId, store);
       // Evict oldest entries if cache grows too large
       if (this.tenantMemoryStores.size > 100) {
@@ -1385,13 +1417,33 @@ export class AgentHarness {
     this.registerSkillTools(skillMetadata);
     const agentId = this.parsedAgent.frontmatter.id ?? this.parsedAgent.frontmatter.name;
 
+    // --- Unified Storage Engine ---
+    const storageProvider = (config?.storage?.provider ?? "sqlite") as StorageProvider;
+    const engine = createStorageEngine({
+      provider: storageProvider,
+      workingDir: this.workingDir,
+      agentId,
+      urlEnv: config?.storage?.urlEnv,
+    });
+    await engine.initialize();
+    this.storageEngine = engine;
+
+    // --- Bash Environment Manager ---
+    const maxFileSize = config?.storage?.limits?.maxFileSize ?? 100 * 1024 * 1024; // 100MB
+    const maxTotalStorage = config?.storage?.limits?.maxTotalStorage ?? 1024 * 1024 * 1024; // 1GB
+    const bashWorkingDir = this.environment === "production" ? null : this.workingDir;
+    this.bashManager = new BashEnvironmentManager(
+      engine,
+      { maxFileSize, maxTotalStorage },
+      bashWorkingDir,
+    );
+    // Register bash tool
+    this.registerIfMissing(createBashTool(this.bashManager));
+
+    // --- Memory (engine-backed or legacy fallback) ---
     this.memoryConfig = memoryConfig ?? undefined;
     if (memoryConfig?.enabled) {
-      this.memoryStore = createMemoryStore(
-        agentId,
-        memoryConfig,
-        { workingDir: this.workingDir },
-      );
+      this.memoryStore = createMemoryStoreFromEngine(engine);
       this.dispatcher.registerMany(
         createMemoryTools(
           (ctx) => this.getMemoryStore(ctx.tenantId) ?? this.memoryStore!,
@@ -1400,16 +1452,17 @@ export class AgentHarness {
       );
     }
 
-    const stateConfig = resolveStateConfig(config);
-    this.todoStore = createTodoStore(agentId, stateConfig, { workingDir: this.workingDir });
+    // --- Todos (engine-backed) ---
+    this.todoStore = createTodoStoreFromEngine(engine);
     for (const tool of createTodoTools(this.todoStore)) {
       if (this.isToolEnabled(tool.name)) {
         this.registerIfMissing(tool);
       }
     }
 
+    // --- Reminders (engine-backed) ---
     if (config?.reminders?.enabled) {
-      this.reminderStore = createReminderStore(agentId, stateConfig, { workingDir: this.workingDir });
+      this.reminderStore = createReminderStoreFromEngine(engine);
       for (const tool of createReminderTools(this.reminderStore)) {
         if (this.isToolEnabled(tool.name)) {
           this.registerIfMissing(tool);
@@ -1427,6 +1480,7 @@ export class AgentHarness {
     }
 
     // Secrets store for per-tenant env var overrides
+    const stateConfig = resolveStateConfig(config);
     const authTokenEnv = config?.auth?.tokenEnv ?? "PONCHO_AUTH_TOKEN";
     const authToken = process.env[authTokenEnv];
     if (authToken) {
@@ -1487,60 +1541,22 @@ export class AgentHarness {
       };
     }
 
-    if (provider === "upstash") {
-      const urlEnv = config.storage?.urlEnv ?? (process.env.UPSTASH_REDIS_REST_URL ? "UPSTASH_REDIS_REST_URL" : "KV_REST_API_URL");
-      const tokenEnv = config.storage?.tokenEnv ?? (process.env.UPSTASH_REDIS_REST_TOKEN ? "UPSTASH_REDIS_REST_TOKEN" : "KV_REST_API_TOKEN");
-      const baseUrl = (process.env[urlEnv] ?? "").replace(/\/+$/, "");
-      const token = process.env[tokenEnv] ?? "";
-      if (!baseUrl || !token) return undefined;
-      const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+    // For sqlite, postgresql, and all other providers: use local file persistence
+    // (same as "local" above). The old upstash/redis branches have been removed.
+    if (provider === "sqlite" || provider === "postgresql") {
+      const { resolve: pathResolve } = await import("node:path");
+      const { homedir: home } = await import("node:os");
+      const stateDir = pathResolve(home(), ".poncho", "browser-state");
+      const filePath = pathResolve(stateDir, `${sessionId}.json`);
       return {
         async save(json: string) {
-          await fetch(`${baseUrl}/set/${encodeURIComponent(stateKey)}/${encodeURIComponent(json)}`, { method: "POST", headers });
+          const { mkdir, writeFile } = await import("node:fs/promises");
+          await mkdir(stateDir, { recursive: true });
+          await writeFile(filePath, json, "utf8");
         },
         async load() {
-          const res = await fetch(`${baseUrl}/get/${encodeURIComponent(stateKey)}`, { headers });
-          if (!res.ok) return undefined;
-          const body = await res.json() as { result?: string | null };
-          return body.result ?? undefined;
-        },
-      };
-    }
-
-    if (provider === "redis") {
-      const urlEnv = config.storage?.urlEnv ?? "REDIS_URL";
-      const url = process.env[urlEnv] ?? "";
-      if (!url) return undefined;
-      let clientPromise: Promise<{ get(k: string): Promise<string | null>; set(k: string, v: string): Promise<unknown> } | undefined> | undefined;
-      const getClient = () => {
-        if (!clientPromise) {
-          clientPromise = (async () => {
-            try {
-              const mod = (await import("redis")) as unknown as {
-                createClient: (opts: { url: string }) => {
-                  connect(): Promise<unknown>;
-                  get(k: string): Promise<string | null>;
-                  set(k: string, v: string): Promise<unknown>;
-                };
-              };
-              const c = mod.createClient({ url });
-              await c.connect();
-              return c;
-            } catch { return undefined; }
-          })();
-        }
-        return clientPromise;
-      };
-      return {
-        async save(json: string) {
-          const c = await getClient();
-          if (c) await c.set(stateKey, json);
-        },
-        async load() {
-          const c = await getClient();
-          if (!c) return undefined;
-          const val = await c.get(stateKey);
-          return val ?? undefined;
+          const { readFile } = await import("node:fs/promises");
+          try { return await readFile(filePath, "utf8"); } catch { return undefined; }
         },
       };
     }
@@ -1632,6 +1648,10 @@ export class AgentHarness {
       this.otlpTracerProvider = undefined;
     }
     this.hasOtlpExporter = false;
+
+    // Cleanup bash environments and storage engine
+    this.bashManager?.destroyAll();
+    await this.storageEngine?.close();
   }
 
   listTools(): ToolDefinition[] {
@@ -1818,11 +1838,33 @@ ${boundedMainMemory.trim()}`
         ? `\n\n## Open Tasks\n\n${openTodos.map((t) => `- [${t.status === "in_progress" ? "IN PROGRESS" : "PENDING"}] ${t.content} (id: ${t.id})`).join("\n")}`
         : "";
 
+    const fsContext = this.bashManager
+      ? `\n\n## Filesystem
+
+You have a persistent virtual filesystem at \`/\`. Files you create are durable across conversations.
+Use the \`bash\` tool for all file operations (cat, echo, grep, awk, jq, sed, find, etc.).
+
+Filesystem layout:
+- \`/\` — your working directory (persistent, database-backed)${
+          this.environment !== "production"
+            ? `\n- \`/project/\` — the project source code (read-write in dev; protected paths like .env, .git/ are blocked)`
+            : ""
+        }
+
+Examples:${
+          this.environment !== "production"
+            ? `\n- Read a project file: \`cat /project/src/index.ts\``
+            : ""
+        }
+- Write a working file: \`echo "data" > /notes.txt\`
+- Process data: \`cat /data.csv | awk -F, '{print $2}' | sort | uniq -c\``
+      : "";
+
     const buildSystemPrompt = (): string => {
       const agentPrompt = renderCurrentAgentPrompt();
       const promptWithSkills = this.skillContextWindow
-        ? `${agentPrompt}${developmentContext}\n\n${this.skillContextWindow}${browserContext}`
-        : `${agentPrompt}${developmentContext}${browserContext}`;
+        ? `${agentPrompt}${developmentContext}\n\n${this.skillContextWindow}${browserContext}${fsContext}`
+        : `${agentPrompt}${developmentContext}${browserContext}${fsContext}`;
       const timeContext = this.reminderStore
         ? `\n\nCurrent UTC time: ${new Date().toISOString()}`
         : "";
@@ -2649,6 +2691,9 @@ ${boundedMainMemory.trim()}`
         abortSignal: input.abortSignal,
         conversationId: input.conversationId,
         tenantId: input.tenantId,
+        vfs: this.bashManager
+          ? this.createVfsAccess(input.tenantId ?? "__default__")
+          : undefined,
       };
 
       const toolResultsForModel: Array<{

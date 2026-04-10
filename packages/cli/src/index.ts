@@ -15,6 +15,7 @@ import {
   LocalMcpBridge,
   TelemetryEmitter,
   createConversationStore,
+  createConversationStoreFromEngine,
   createUploadStore,
   deriveUploadKey,
   ensureAgentIdentity,
@@ -2164,10 +2165,9 @@ export const createRequestHandler = async (options?: {
   const telemetry = new TelemetryEmitter(config?.telemetry);
   const identity = await ensureAgentIdentity(workingDir);
   const stateConfig = resolveStateConfig(config);
-  const conversationStore = createConversationStore(stateConfig, {
-    workingDir,
-    agentId: identity.id,
-  });
+  const conversationStore = harness.storageEngine
+    ? createConversationStoreFromEngine(harness.storageEngine)
+    : createConversationStore(stateConfig, { workingDir, agentId: identity.id });
 
   // ---------------------------------------------------------------------------
   // Subagent manager -- allows the agent to spawn child agent conversations.
@@ -6881,10 +6881,9 @@ export const runInteractive = async (
       params,
       workingDir,
       config,
-      conversationStore: createConversationStore(resolveStateConfig(config), {
-        workingDir,
-        agentId: identity.id,
-      }),
+      conversationStore: harness.storageEngine
+        ? createConversationStoreFromEngine(harness.storageEngine)
+        : createConversationStore(resolveStateConfig(config), { workingDir, agentId: identity.id }),
     });
   } finally {
     await harness.shutdown();
