@@ -449,6 +449,53 @@ const flushTurnDraft = (draft: TurnDraftState): void => {
   }
 };
 
+/** Build enriched tool:completed text with input details (bash command, URL, etc.) */
+const buildToolCompletedText = (event: AgentEvent & { type: "tool:completed" }): string => {
+  const input = event.input as Record<string, unknown> | undefined;
+  const output = event.output as Record<string, unknown> | undefined;
+
+  const meta: string[] = [`${event.duration}ms`];
+  let detail = "";
+
+  if (event.tool === "bash" && input && typeof input.command === "string") {
+    detail = input.command;
+  } else if (event.tool === "web_search") {
+    const q = (input?.query as string) || (output?.query as string) || "";
+    if (q) detail = `"${q.length > 60 ? q.slice(0, 57) + "..." : q}"`;
+  } else if (event.tool === "web_fetch") {
+    const u = (input?.url as string) || (output?.url as string) || "";
+    if (u) detail = u;
+  } else if (event.tool === "spawn_subagent") {
+    if (input && typeof input.task === "string") detail = input.task;
+  } else if (input) {
+    // Generic: pick the first short string value from input
+    for (const [, v] of Object.entries(input)) {
+      if (typeof v === "string" && v.length > 0) {
+        detail = v.length > 80 ? v.slice(0, 77) + "..." : v;
+        break;
+      }
+    }
+  }
+  if (detail) {
+    detail = detail.replace(/\n/g, " ");
+    meta.push(detail);
+  }
+
+  let text = `- done \`${event.tool}\`` + (meta.length > 0 ? ` (${meta.join(", ")})` : "");
+
+  if (event.tool === "spawn_subagent" && output?.subagentId) {
+    text += ` [subagent:${output.subagentId}]`;
+  }
+  if (event.tool === "bash" && typeof output?.exitCode === "number" && output.exitCode !== 0) {
+    text += ` \u2014 exit ${output.exitCode}`;
+  }
+  if (event.tool === "web_search" && Array.isArray(output?.results)) {
+    text += ` \u2014 ${(output.results as unknown[]).length} result${(output.results as unknown[]).length !== 1 ? "s" : ""}`;
+  }
+
+  return text;
+};
+
 const recordStandardTurnEvent = (draft: TurnDraftState, event: AgentEvent): void => {
   if (event.type === "model:chunk") {
     if (draft.currentTools.length > 0) {
@@ -467,13 +514,30 @@ const recordStandardTurnEvent = (draft: TurnDraftState, event: AgentEvent): void
       draft.sections.push({ type: "text", content: draft.currentText });
       draft.currentText = "";
     }
-    const toolText = `- start \`${event.tool}\``;
+    const input = event.input as Record<string, unknown> | undefined;
+    let startDetail = "";
+    if (event.tool === "bash" && input && typeof input.command === "string") {
+      startDetail = input.command;
+    } else if (event.tool === "web_fetch" && input && typeof input.url === "string") {
+      startDetail = input.url;
+    } else if (event.tool === "web_search" && input && typeof input.query === "string") {
+      startDetail = `"${input.query}"`;
+    } else if (input) {
+      for (const [, v] of Object.entries(input)) {
+        if (typeof v === "string" && v.length > 0) {
+          startDetail = v.length > 80 ? v.slice(0, 77) + "..." : v;
+          break;
+        }
+      }
+    }
+    if (startDetail) startDetail = startDetail.replace(/\n/g, " ");
+    const toolText = `- start \`${event.tool}\`` + (startDetail ? ` (${startDetail})` : "");
     draft.toolTimeline.push(toolText);
     draft.currentTools.push(toolText);
     return;
   }
   if (event.type === "tool:completed") {
-    const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
+    const toolText = buildToolCompletedText(event);
     draft.toolTimeline.push(toolText);
     draft.currentTools.push(toolText);
     return;
@@ -2222,32 +2286,22 @@ export const createRequestHandler = async (options?: {
     return undefined;
   };
 
-  const hasRunningSubagentsForParent = async (
+  const hasRunningSubagentsForParent = (
     parentConversationId: string,
-    owner: string,
-  ): Promise<boolean> => {
-    let hasRunning = Array.from(activeSubagentRuns.values()).some(
+    _owner: string,
+  ): boolean => {
+    // Use in-memory map only — it's authoritative for running subagents.
+    // The startup recovery code repopulates it after restarts.
+    return Array.from(activeSubagentRuns.values()).some(
       (run) => run.parentConversationId === parentConversationId,
     );
-    if (hasRunning) return true;
-
-    const summaries = await conversationStore.listSummaries(owner);
-    for (const summary of summaries) {
-      if (summary.parentConversationId !== parentConversationId) continue;
-      const childConversation = await conversationStore.get(summary.conversationId);
-      if (childConversation?.subagentMeta?.status === "running") {
-        hasRunning = true;
-        break;
-      }
-    }
-    return hasRunning;
   };
 
   const hasPendingSubagentWorkForParent = async (
     parentConversationId: string,
     owner: string,
   ): Promise<boolean> => {
-    if (await hasRunningSubagentsForParent(parentConversationId, owner)) {
+    if (hasRunningSubagentsForParent(parentConversationId, owner)) {
       return true;
     }
     if (pendingCallbackNeeded.has(parentConversationId)) {
@@ -2392,13 +2446,9 @@ export const createRequestHandler = async (options?: {
 
     childHarness.unregisterTools(["memory_main_write", "memory_main_edit"]);
 
-    let assistantResponse = "";
+    const draft = createTurnDraftState();
     let latestRunId = "";
     let runResult: { status: "completed" | "error" | "cancelled"; response?: string; steps: number; duration: number; continuation?: boolean; continuationMessages?: Message[] } | undefined;
-    const toolTimeline: string[] = [];
-    const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
-    let currentTools: string[] = [];
-    let currentText = "";
 
     try {
       const conversation = await conversationStore.get(childConversationId);
@@ -2431,40 +2481,11 @@ export const createRequestHandler = async (options?: {
           const active = activeConversationRuns.get(childConversationId);
           if (active) active.runId = event.runId;
         }
-        if (event.type === "model:chunk") {
-          if (currentTools.length > 0) {
-            sections.push({ type: "tools", content: currentTools });
-            currentTools = [];
-            if (assistantResponse.length > 0 && !/\s$/.test(assistantResponse)) {
-              assistantResponse += " ";
-            }
-          }
-          assistantResponse += event.content;
-          currentText += event.content;
-        }
-        if (event.type === "tool:started") {
-          if (currentText.length > 0) {
-            sections.push({ type: "text", content: currentText });
-            currentText = "";
-          }
-          const toolText = `- start \`${event.tool}\``;
-          toolTimeline.push(toolText);
-          currentTools.push(toolText);
-        }
-        if (event.type === "tool:completed") {
-          const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
-          toolTimeline.push(toolText);
-          currentTools.push(toolText);
-        }
-        if (event.type === "tool:error") {
-          const toolText = `- error \`${event.tool}\`: ${event.error}`;
-          toolTimeline.push(toolText);
-          currentTools.push(toolText);
-        }
+        recordStandardTurnEvent(draft, event);
         if (event.type === "tool:approval:required") {
           const toolText = `- approval required \`${event.tool}\``;
-          toolTimeline.push(toolText);
-          currentTools.push(toolText);
+          draft.toolTimeline.push(toolText);
+          draft.currentTools.push(toolText);
           broadcastEvent(parentConversationId, {
             type: "subagent:approval_needed",
             subagentId: childConversationId,
@@ -2518,13 +2539,13 @@ export const createRequestHandler = async (options?: {
               if (a.decision === "approved" && a.toolCallId) {
                 callsToExecute.push({ id: a.toolCallId, name: a.tool, input: a.input });
                 const toolText = `- done \`${a.tool}\``;
-                toolTimeline.push(toolText);
-                currentTools.push(toolText);
+                draft.toolTimeline.push(toolText);
+                draft.currentTools.push(toolText);
               } else if (a.toolCallId) {
                 deniedResults.push({ callId: a.toolCallId, toolName: a.tool, error: "Tool execution denied by user" });
                 const toolText = `- denied \`${a.tool}\``;
-                toolTimeline.push(toolText);
-                currentTools.push(toolText);
+                draft.toolTimeline.push(toolText);
+                draft.currentTools.push(toolText);
               }
             }
 
@@ -2553,44 +2574,15 @@ export const createRequestHandler = async (options?: {
               conversationId: childConversationId,
               abortSignal: childAbortController.signal,
             })) {
-              if (resumeEvent.type === "model:chunk") {
-                if (currentTools.length > 0) {
-                  sections.push({ type: "tools", content: currentTools });
-                  currentTools = [];
-                  if (assistantResponse.length > 0 && !/\s$/.test(assistantResponse)) {
-                    assistantResponse += " ";
-                  }
-                }
-                assistantResponse += resumeEvent.content;
-                currentText += resumeEvent.content;
-              }
-              if (resumeEvent.type === "tool:started") {
-                if (currentText.length > 0) {
-                  sections.push({ type: "text", content: currentText });
-                  currentText = "";
-                }
-                const tText = `- start \`${resumeEvent.tool}\``;
-                toolTimeline.push(tText);
-                currentTools.push(tText);
-              }
-              if (resumeEvent.type === "tool:completed") {
-                const tText = `- done \`${resumeEvent.tool}\` (${resumeEvent.duration}ms)`;
-                toolTimeline.push(tText);
-                currentTools.push(tText);
-              }
-              if (resumeEvent.type === "tool:error") {
-                const tText = `- error \`${resumeEvent.tool}\`: ${resumeEvent.error}`;
-                toolTimeline.push(tText);
-                currentTools.push(tText);
-              }
+              recordStandardTurnEvent(draft, resumeEvent);
               if (resumeEvent.type === "run:completed") {
                 runResult = { status: resumeEvent.result.status, response: resumeEvent.result.response, steps: resumeEvent.result.steps, duration: resumeEvent.result.duration };
-                if (assistantResponse.length === 0 && resumeEvent.result.response) {
-                  assistantResponse = resumeEvent.result.response;
+                if (draft.assistantResponse.length === 0 && resumeEvent.result.response) {
+                  draft.assistantResponse = resumeEvent.result.response;
                 }
               }
               if (resumeEvent.type === "run:error") {
-                assistantResponse = assistantResponse || `[Error: ${resumeEvent.error.message}]`;
+                draft.assistantResponse = draft.assistantResponse || `[Error: ${resumeEvent.error.message}]`;
               }
               broadcastEvent(childConversationId, resumeEvent);
             }
@@ -2598,31 +2590,28 @@ export const createRequestHandler = async (options?: {
         }
         if (event.type === "run:completed") {
           runResult = { status: event.result.status, response: event.result.response, steps: event.result.steps, duration: event.result.duration, continuation: event.result.continuation, continuationMessages: event.result.continuationMessages };
-          if (assistantResponse.length === 0 && event.result.response) {
-            assistantResponse = event.result.response;
+          if (draft.assistantResponse.length === 0 && event.result.response) {
+            draft.assistantResponse = event.result.response;
           }
         }
         if (event.type === "run:error") {
-          assistantResponse = assistantResponse || `[Error: ${event.error.message}]`;
+          draft.assistantResponse = draft.assistantResponse || `[Error: ${event.error.message}]`;
         }
         broadcastEvent(childConversationId, event);
       }
 
       // Persist assistant turn
-      if (currentTools.length > 0) sections.push({ type: "tools", content: currentTools });
-      if (currentText.length > 0) sections.push({ type: "text", content: currentText });
+      flushTurnDraft(draft);
 
       const conv = await conversationStore.get(childConversationId);
       if (conv) {
-        const hasContent = assistantResponse.length > 0 || toolTimeline.length > 0;
+        const hasContent = draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0;
         // Always persist intermediate messages so progress is visible
         if (hasContent) {
           conv.messages.push({
             role: "assistant",
-            content: assistantResponse,
-            metadata: toolTimeline.length > 0 || sections.length > 0
-              ? { toolActivity: toolTimeline, sections: sections.length > 0 ? sections : undefined } as Message["metadata"]
-              : undefined,
+            content: draft.assistantResponse,
+            metadata: buildAssistantMetadata(draft),
           });
         }
         if (runResult?.continuation && runResult.continuationMessages) {
@@ -2668,7 +2657,7 @@ export const createRequestHandler = async (options?: {
 
       // Extract the full response from conversation messages — runResult.response
       // only has text from the final continuation run, which may be empty.
-      let subagentResponse = runResult?.response ?? assistantResponse;
+      let subagentResponse = runResult?.response ?? draft.assistantResponse;
       if (!subagentResponse) {
         const freshSubConv = await conversationStore.get(childConversationId);
         if (freshSubConv) {
@@ -3932,13 +3921,8 @@ export const createRequestHandler = async (options?: {
     const childAbortController = activeConversationRuns.get(conversationId)?.abortController ?? new AbortController();
     activeSubagentRuns.set(conversationId, { abortController: childAbortController, harness: childHarness, parentConversationId });
 
-    let assistantResponse = "";
-    let latestRunId = "";
+    const draft = createTurnDraftState();
     let runResult: { status: string; response?: string; steps: number; duration: number; continuation?: boolean; continuationMessages?: Message[] } | undefined;
-    const toolTimeline: string[] = [];
-    const sections: Array<{ type: "text" | "tools"; content: string | string[] }> = [];
-    let currentTools: string[] = [];
-    let currentText = "";
 
     try {
       for await (const event of childHarness.runWithTelemetry({
@@ -3952,40 +3936,10 @@ export const createRequestHandler = async (options?: {
         abortSignal: childAbortController.signal,
       })) {
         if (event.type === "run:started") {
-          latestRunId = event.runId;
           const active = activeConversationRuns.get(conversationId);
           if (active) active.runId = event.runId;
         }
-        if (event.type === "model:chunk") {
-          if (currentTools.length > 0) {
-            sections.push({ type: "tools", content: currentTools });
-            currentTools = [];
-            if (assistantResponse.length > 0 && !/\s$/.test(assistantResponse)) {
-              assistantResponse += " ";
-            }
-          }
-          assistantResponse += event.content;
-          currentText += event.content;
-        }
-        if (event.type === "tool:started") {
-          if (currentText.length > 0) {
-            sections.push({ type: "text", content: currentText });
-            currentText = "";
-          }
-          const toolText = `- start \`${event.tool}\``;
-          toolTimeline.push(toolText);
-          currentTools.push(toolText);
-        }
-        if (event.type === "tool:completed") {
-          const toolText = `- done \`${event.tool}\` (${event.duration}ms)`;
-          toolTimeline.push(toolText);
-          currentTools.push(toolText);
-        }
-        if (event.type === "tool:error") {
-          const toolText = `- error \`${event.tool}\`: ${event.error}`;
-          toolTimeline.push(toolText);
-          currentTools.push(toolText);
-        }
+        recordStandardTurnEvent(draft, event);
         if (event.type === "run:completed") {
           runResult = {
             status: event.result.status,
@@ -3995,31 +3949,28 @@ export const createRequestHandler = async (options?: {
             continuation: event.result.continuation,
             continuationMessages: event.result.continuationMessages,
           };
-          if (!assistantResponse && event.result.response) {
-            assistantResponse = event.result.response;
+          if (!draft.assistantResponse && event.result.response) {
+            draft.assistantResponse = event.result.response;
           }
         }
         if (event.type === "run:error") {
-          assistantResponse = assistantResponse || `[Error: ${event.error.message}]`;
+          draft.assistantResponse = draft.assistantResponse || `[Error: ${event.error.message}]`;
         }
         broadcastEvent(conversationId, event);
         yield event;
       }
 
-      if (currentTools.length > 0) sections.push({ type: "tools", content: currentTools });
-      if (currentText.length > 0) sections.push({ type: "text", content: currentText });
+      flushTurnDraft(draft);
 
       const conv = await conversationStore.get(conversationId);
       if (conv) {
-        const hasContent = assistantResponse.length > 0 || toolTimeline.length > 0;
+        const hasContent = draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0;
         if (runResult?.continuation && runResult.continuationMessages) {
           if (hasContent) {
             conv.messages.push({
               role: "assistant",
-              content: assistantResponse,
-              metadata: toolTimeline.length > 0 || sections.length > 0
-                ? { toolActivity: toolTimeline, sections: sections.length > 0 ? sections : undefined } as Message["metadata"]
-                : undefined,
+              content: draft.assistantResponse,
+              metadata: buildAssistantMetadata(draft),
             });
           }
           conv._continuationMessages = runResult.continuationMessages;
@@ -4030,10 +3981,8 @@ export const createRequestHandler = async (options?: {
           if (hasContent) {
             conv.messages.push({
               role: "assistant",
-              content: assistantResponse,
-              metadata: toolTimeline.length > 0 || sections.length > 0
-                ? { toolActivity: toolTimeline, sections: sections.length > 0 ? sections : undefined } as Message["metadata"]
-                : undefined,
+              content: draft.assistantResponse,
+              metadata: buildAssistantMetadata(draft),
             });
           }
         }
@@ -4065,7 +4014,7 @@ export const createRequestHandler = async (options?: {
         conversationId,
       });
 
-      let subagentResponse = runResult?.response ?? assistantResponse;
+      let subagentResponse = runResult?.response ?? draft.assistantResponse;
       if (!subagentResponse) {
         const freshSubConv = await conversationStore.get(conversationId);
         if (freshSubConv) {
@@ -5440,7 +5389,7 @@ export const createRequestHandler = async (options?: {
         const activeStream = conversationEventStreams.get(conversationId);
         const hasActiveRun = (!!activeStream && !activeStream.finished) || conversation.runStatus === "running";
         const hasRunningSubagents = !conversation.parentConversationId
-          ? await hasRunningSubagentsForParent(conversationId, conversation.ownerId)
+          ? hasRunningSubagentsForParent(conversationId, conversation.ownerId)
           : false;
         const hasPendingCallbackResults = Array.isArray(conversation.pendingSubagentResults)
           && conversation.pendingSubagentResults.length > 0;

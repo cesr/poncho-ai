@@ -174,7 +174,7 @@ export type AgentEvent =
   | { type: "model:response"; usage: TokenUsage }
   | { type: "tool:generating"; tool: string; toolCallId: string }
   | { type: "tool:started"; tool: string; input: unknown }
-  | { type: "tool:completed"; tool: string; output: unknown; duration: number; outputTokenEstimate?: number }
+  | { type: "tool:completed"; tool: string; input?: unknown; output: unknown; duration: number; outputTokenEstimate?: number }
   | { type: "tool:error"; tool: string; error: string; recoverable: boolean }
   | {
       type: "tool:approval:required";

@@ -185,6 +185,55 @@ export const getWebUiClientScript = (markedSource: string): string => `
           .replace(/"/g, "&quot;")
           .replace(/'/g, "&#39;");
 
+      // Backtick character — defined once via charCode to avoid any escaping ambiguity
+      // across the TypeScript template literal → browser JavaScript boundary.
+      const _TK = String.fromCharCode(96);
+
+      // Shared tool-text builder — single source of truth for tool:completed formatting.
+      // Used by main SSE handler, continuation handler, and subagent handler.
+      const buildToolDoneText = (payload) => {
+        const toolName = payload.tool || "tool";
+        const duration = typeof payload.duration === "number" ? payload.duration : null;
+        const inp = payload.input && typeof payload.input === "object" ? payload.input : {};
+        const out = payload.output && typeof payload.output === "object" ? payload.output : {};
+        var detail = "";
+        if (toolName === "bash" && typeof inp.command === "string") {
+          detail = inp.command;
+        } else if (toolName === "web_search") {
+          const q = typeof inp.query === "string" ? inp.query : (typeof out.query === "string" ? out.query : "");
+          if (q) detail = "\\x22" + (q.length > 60 ? q.slice(0, 57) + "..." : q) + "\\x22";
+        } else if (toolName === "web_fetch") {
+          const u = typeof inp.url === "string" ? inp.url : (typeof out.url === "string" ? out.url : "");
+          if (u) detail = u;
+        } else if (toolName === "spawn_subagent") {
+          detail = typeof inp.task === "string" ? inp.task : "";
+        } else {
+          // Generic: pick the first short string value from input
+          for (var k in inp) {
+            var v = inp[k];
+            if (typeof v === "string" && v.length > 0) {
+              detail = v.length > 80 ? v.slice(0, 77) + "..." : v;
+              break;
+            }
+          }
+        }
+        if (detail) detail = detail.replace(/\\n/g, " ");
+        const meta = [];
+        if (duration !== null) meta.push(duration + "ms");
+        if (detail) meta.push(detail);
+        var text = "- done " + _TK + toolName + _TK + (meta.length > 0 ? " (" + meta.join(", ") + ")" : "");
+        if (toolName === "spawn_subagent" && out.subagentId) {
+          text += " [subagent:" + out.subagentId + "]";
+        }
+        if (toolName === "bash" && typeof out.exitCode === "number" && out.exitCode !== 0) {
+          text += " \\u2014 exit " + out.exitCode;
+        }
+        if (toolName === "web_search" && Array.isArray(out.results)) {
+          text += " \\u2014 " + out.results.length + " result" + (out.results.length !== 1 ? "s" : "");
+        }
+        return text;
+      };
+
       const _mdCache = new Map();
       const renderAssistantMarkdown = (value) => {
         const source = String(value || "").trim();
@@ -211,7 +260,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
       // helper detects unclosed fences and inline code delimiters and
       // appends the missing closing so marked can render partial text.
       const closeStreamingMarkdown = (text) => {
-        const BT = "\\x60";
+        const BT = "\x60";
         let result = text;
 
         // 1. Unclosed fenced code blocks (lines starting with 3+ backticks)
@@ -293,31 +342,34 @@ export const getWebUiClientScript = (markedSource: string): string => `
             const tool = typeof req.tool === "string" ? req.tool : "tool";
             const input = req.input != null ? req.input : {};
             const subagentLabel = req._subagentLabel
-              ? ' <span style="color: var(--text-3); font-size: 11px;">(from ' + escapeHtml(req._subagentLabel) + ')</span>'
+              ? ' <span class="ta-detail">(from ' + escapeHtml(req._subagentLabel) + ')</span>'
               : "";
             if (req.state === "resolved") {
               const isApproved = req.resolvedDecision === "approve";
-              const label = isApproved ? "Approved" : "Denied";
-              const cls = isApproved ? "approve" : "deny";
               return (
-                '<div class="approval-request-item resolved">' +
-                '<div class="approval-resolved-status ' + cls + '">' + label + ': <code>' +
-                escapeHtml(tool) + "</code>" + subagentLabel + "</div>" +
-                "</div>"
+                '<div class="tool-activity-item">' +
+                '<div class="ta-row">' +
+                (isApproved ? '<span class="ta-icon ta-ok">✓</span>' : '<span class="ta-icon ta-fail">✕</span>') +
+                '<span class="ta-tool">' + escapeHtml(tool) + '</span>' +
+                '<span class="ta-detail">' + (isApproved ? "Approved" : "Denied") + '</span>' +
+                subagentLabel +
+                '</div></div>'
               );
             }
             const submitting = req.state === "submitting";
             const approveLabel = submitting && req.pendingDecision === "approve" ? "Approving..." : "Approve";
             const denyLabel = submitting && req.pendingDecision === "deny" ? "Denying..." : "Deny";
             const errorHtml = req._error
-              ? '<div style="color: var(--deny); font-size: 11px; margin-top: 4px;">Submit failed: ' + escapeHtml(req._error) + "</div>"
+              ? '<div class="approval-error">Submit failed: ' + escapeHtml(req._error) + "</div>"
               : "";
+            var inputSummary = renderInputTable(input);
             return (
               '<div class="approval-request-item">' +
-              '<div class="approval-requests-label">Approval required: <code>' +
-              escapeHtml(tool) +
-              "</code>" + subagentLabel + "</div>" +
-              renderInputTable(input) +
+              '<div class="ta-row">' +
+              '<span class="ta-tool">' + escapeHtml(tool) + '</span>' +
+              subagentLabel +
+              '</div>' +
+              inputSummary +
               errorHtml +
               '<div class="approval-request-actions">' +
               '<button class="approval-action-btn approve" data-approval-id="' +
@@ -348,8 +400,9 @@ export const getWebUiClientScript = (markedSource: string): string => `
           : "";
         return (
           '<div class="approval-requests">' +
-          batchButtons +
+          '<div class="approval-requests-title"><span class="ta-icon ta-warn">⚠</span> Approval required</div>' +
           rows +
+          batchButtons +
           "</div>"
         );
       };
@@ -374,27 +427,120 @@ export const getWebUiClientScript = (markedSource: string): string => `
         }
         const subagentLinkRe = /\\s*\\[subagent:([^\\]]+)\\]$/;
         const toolLinkRe = /\\s*\\[link:(https?:\\/\\/[^\\]]+)\\]$/;
+        // Parse status and tool name from activity lines like "- start \`bash\` (detail)"
+        const activityRe = new RegExp("^- (preparing|start|done|error|approval required) " + _TK + "([^" + _TK + "]+)" + _TK + "(.*)$");
+        const durationRe = /\\(([\\d,]+ms)/;
+        const exitCodeRe = /\\u2014 exit (\\d+)/;
+        const resultCountRe = /\\u2014 (\\d+ results?)$/;
         const renderActivityItem = (item) => {
-          const subMatch = item.match(subagentLinkRe);
-          if (subMatch) {
-            const cleaned = escapeHtml(item.replace(subagentLinkRe, ""));
-            const subId = escapeHtml(subMatch[1]);
-            return '<div class="tool-activity-item">' + cleaned +
-              ' <a class="subagent-link" href="javascript:void(0)" data-subagent-id="' + subId + '">View subagent</a></div>';
+          const flat = item.replace(/\\n/g, " ");
+          const subMatch = flat.match(subagentLinkRe);
+          const linkMatch = flat.match(toolLinkRe);
+          const cleanItem = flat.replace(subagentLinkRe, "").replace(toolLinkRe, "");
+          const m = cleanItem.match(activityRe);
+
+          if (m) {
+            const status = m[1];
+            const toolName = m[2];
+            const rest = m[3].trim();
+
+            // Extract detail (in parens), duration, exit code, result count
+            const detailMatch = rest.match(/^\\((.+?)\\)(.*)$/);
+            const durMatch = rest.match(durationRe);
+            const exitMatch = rest.match(exitCodeRe);
+            const countMatch = rest.match(resultCountRe);
+
+            let detail = "";
+            if (status === "error") {
+              // Error format: (input_detail): error_message — or just : error_message
+              const colonIdx = rest.indexOf(":");
+              detail = colonIdx >= 0 ? rest.slice(colonIdx + 1).trim() : rest.trim();
+            } else if (detailMatch) {
+              const parts = detailMatch[1].split(", ");
+              detail = durMatch ? parts.slice(1).join(", ") : parts.join(", ");
+            }
+
+            // Status icon
+            const isApproved = status === "done" && detail === "approved";
+            const icon = status === "done"
+              ? (exitMatch ? '<span class="ta-icon ta-fail">✕</span>' : (isApproved ? '<span class="ta-icon ta-ok">✓</span>' : ''))
+              : status === "error"
+                ? '<span class="ta-icon ta-fail">✕</span>'
+                : status === "preparing" || status === "start"
+                  ? '<span class="ta-icon ta-spin">⟳</span>'
+                  : status === "approval required"
+                    ? '<span class="ta-icon ta-warn">⚠</span>'
+                    : "";
+
+            // Duration badge
+            const durBadge = durMatch
+              ? '<span class="ta-dur">' + escapeHtml(durMatch[1]) + '</span>'
+              : "";
+
+            // Exit code badge
+            const exitBadge = exitMatch
+              ? '<span class="ta-exit">exit ' + escapeHtml(exitMatch[1]) + '</span>'
+              : "";
+
+            // Result count badge
+            const countBadge = countMatch
+              ? '<span class="ta-count">' + escapeHtml(countMatch[1]) + '</span>'
+              : "";
+
+            // Tool name display
+            const toolDisplay = '<span class="ta-tool">' + escapeHtml(toolName) + '</span>';
+
+            // Detail — for bash, render as terminal command; for web_fetch, render as clickable link
+            let detailHtml = "";
+            if (detail) {
+              if (toolName === "bash") {
+                detailHtml = '<div class="ta-cmd"><span class="ta-prompt">$</span> ' + escapeHtml(detail) + '</div>';
+              } else if ((toolName === "web_fetch") && /^https?:\\/\\//.test(detail)) {
+                var displayUrl = detail.replace(/^https?:\\/\\//, "");
+                if (displayUrl.length > 60) displayUrl = displayUrl.slice(0, 57) + "...";
+                detailHtml = '<a class="ta-detail tool-link" href="' + escapeHtml(detail) + '" target="_blank" rel="noopener">' + escapeHtml(displayUrl) + '</a>';
+              } else {
+                detailHtml = '<span class="ta-detail">' + escapeHtml(detail) + '</span>';
+              }
+            }
+
+            // Links
+            let linkHtml = "";
+            if (subMatch) {
+              const subId = escapeHtml(subMatch[1]);
+              linkHtml = ' <a class="subagent-link" href="javascript:void(0)" data-subagent-id="' + subId + '">View subagent</a>';
+            }
+            if (linkMatch) {
+              const href = escapeHtml(linkMatch[1]);
+              var displayUrl = linkMatch[1].replace(/^https?:\\/\\//, "");
+              if (displayUrl.length > 55) displayUrl = displayUrl.slice(0, 52) + "...";
+              linkHtml = ' <a class="tool-link" href="' + href + '" target="_blank" rel="noopener">' + escapeHtml(displayUrl) + '</a>';
+            }
+
+            return '<div class="tool-activity-item ta-' + status.replace(/ /g, "-") + '">' +
+              '<div class="ta-row">' + icon + toolDisplay + (detailHtml ? detailHtml : '') + exitBadge + countBadge + linkHtml + durBadge + '</div>' +
+              '</div>';
           }
-          const linkMatch = item.match(toolLinkRe);
-          if (linkMatch) {
-            const cleaned = escapeHtml(item.replace(toolLinkRe, ""));
-            const href = escapeHtml(linkMatch[1]);
-            var displayUrl = linkMatch[1].replace(/^https?:\\/\\//, "");
-            if (displayUrl.length > 55) displayUrl = displayUrl.slice(0, 52) + "...";
-            return '<div class="tool-activity-item">' + cleaned +
-              ' <a class="tool-link" href="' + href + '" target="_blank" rel="noopener">' + escapeHtml(displayUrl) + '</a></div>';
-          }
+
+          // Fallback: plain text
           return '<div class="tool-activity-item">' + escapeHtml(item) + "</div>";
         };
-        const chips = hasItems
-          ? items.map(renderActivityItem).join("")
+        // Deduplicate: if a "done" entry exists for a tool, remove its "start"/"preparing" entries
+        const dedupedItems = hasItems ? items.filter((item) => {
+          const m2 = item.match(activityRe);
+          if (!m2) return true;
+          const status = m2[1];
+          const tool = m2[2];
+          if (status === "preparing" || status === "start") {
+            return !items.some((other) => {
+              const m3 = other.match(activityRe);
+              return m3 && (m3[1] === "done" || m3[1] === "approval required") && m3[2] === tool;
+            });
+          }
+          return true;
+        }) : [];
+        const chips = dedupedItems.length > 0
+          ? dedupedItems.map(renderActivityItem).join("")
           : "";
         const disclosure = hasItems
           ? (
@@ -545,7 +691,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
         if (pending.length === 0) {
           return nextMessages;
         }
-        const toolLines = pending.map((request) => "- approval required \\x60" + request.tool + "\\x60");
+        const toolLines = pending.map((request) => "- approval required " + _TK + request.tool + _TK);
         for (let idx = nextMessages.length - 1; idx >= 0; idx -= 1) {
           const message = nextMessages[idx];
           if (!message || message.role !== "assistant") {
@@ -1071,6 +1217,23 @@ export const getWebUiClientScript = (markedSource: string): string => `
           return status;
         };
 
+        // Preserve open state of tool-activity disclosures across re-renders.
+        // Track by message row index + disclosure index within the row.
+        const openDisclosures = new Map();
+        const prevCol = elements.messages.querySelector(".messages-column");
+        if (prevCol) {
+          prevCol.querySelectorAll(".tool-activity-disclosure[open]").forEach((el) => {
+            const row = el.closest(".message-row");
+            if (row) {
+              const rowIdx = Array.from(prevCol.children).indexOf(row);
+              const allInRow = row.querySelectorAll(".tool-activity-disclosure");
+              const dIdx = Array.from(allInRow).indexOf(el);
+              if (!openDisclosures.has(rowIdx)) openDisclosures.set(rowIdx, new Set());
+              openDisclosures.get(rowIdx).add(dIdx);
+            }
+          });
+        }
+
         elements.messages.innerHTML = "";
         if (!messages || !messages.length) {
           elements.messages.innerHTML = '<div class="empty-state"><div class="assistant-avatar">' + agentInitial + '</div><div>How can I help you today?</div></div>';
@@ -1131,74 +1294,55 @@ export const getWebUiClientScript = (markedSource: string): string => `
                 : liveSections.length > 0 ? liveSections : (storedSections.length > 0 ? storedSections : null);
               const pendingApprovals = Array.isArray(m._pendingApprovals) ? m._pendingApprovals : [];
 
+              // Render persisted sections (interleaved text + tool blocks)
               if (sections && sections.length > 0) {
-                let lastToolsSectionIndex = -1;
-                for (let sectionIdx = sections.length - 1; sectionIdx >= 0; sectionIdx -= 1) {
-                  if (sections[sectionIdx] && sections[sectionIdx].type === "tools") {
-                    lastToolsSectionIndex = sectionIdx;
-                    break;
-                  }
-                }
-                // Render sections interleaved
-                sections.forEach((section, sectionIdx) => {
+                sections.forEach((section) => {
                   if (section.type === "text") {
                     const textDiv = document.createElement("div");
                     textDiv.innerHTML = renderAssistantMarkdown(section.content);
                     content.appendChild(textDiv);
                   } else if (section.type === "tools") {
-                    const sectionApprovals =
-                      !isStreaming &&
-                      pendingApprovals.length > 0 &&
-                      sectionIdx === lastToolsSectionIndex
-                        ? pendingApprovals
-                        : [];
-                    const sectionImages =
-                      sectionIdx === lastToolsSectionIndex
-                        ? (m._toolImages || [])
-                        : [];
                     content.insertAdjacentHTML(
                       "beforeend",
-                      renderToolActivity(section.content, sectionApprovals, sectionImages),
+                      renderToolActivity(section.content, [], []),
                     );
                   }
                 });
-                // While streaming, show current tools and/or pending approvals
-                if (isStreaming && i === messages.length - 1) {
-                  const hasCurrentTools = m._currentTools && m._currentTools.length > 0;
-                  const hasStreamApprovals = Array.isArray(m._pendingApprovals) && m._pendingApprovals.length > 0;
-                  if (hasCurrentTools || hasStreamApprovals) {
-                    content.insertAdjacentHTML(
-                      "beforeend",
-                      renderToolActivity(m._currentTools || [], m._pendingApprovals || [], m._toolImages || []),
-                    );
-                  }
-                }
-                // When reloading with unresolved approvals, show them even when not streaming
-                if (!isStreaming && pendingApprovals.length > 0 && lastToolsSectionIndex < 0) {
-                  content.insertAdjacentHTML("beforeend", renderToolActivity([], m._pendingApprovals));
-                }
-                // Show current text being typed
-                if (isStreaming && i === messages.length - 1 && m._currentText) {
-                  const textDiv = document.createElement("div");
-                  textDiv.innerHTML = renderAssistantMarkdown(closeStreamingMarkdown(m._currentText));
-                  content.appendChild(textDiv);
-                }
-              } else {
-                // Fallback: render text and tools the old way (for old messages without sections)
-                if (text) {
-                  const parsed = extractToolActivity(text);
-                  content.innerHTML = renderAssistantMarkdown(parsed.content);
-                }
+              } else if (text) {
+                // Fallback for old messages without sections
+                const parsed = extractToolActivity(text);
+                content.innerHTML = renderAssistantMarkdown(parsed.content);
                 const metadataToolActivity =
                   m.metadata && Array.isArray(m.metadata.toolActivity)
                     ? m.metadata.toolActivity
                     : [];
-                if (metadataToolActivity.length > 0 || pendingApprovals.length > 0) {
+                if (metadataToolActivity.length > 0) {
                   content.insertAdjacentHTML(
                     "beforeend",
-                    renderToolActivity(metadataToolActivity, pendingApprovals),
+                    renderToolActivity(metadataToolActivity, [], []),
                   );
                 }
+              }
+              // Streaming: always render current tools + text (regardless of sections)
+              if (isStreaming && i === messages.length - 1) {
+                if (m._currentTools && m._currentTools.length > 0) {
+                  content.insertAdjacentHTML(
+                    "beforeend",
+                    renderToolActivity(m._currentTools, [], m._toolImages || []),
+                  );
+                }
+                if (m._currentText) {
+                  const textDiv = document.createElement("div");
+                  textDiv.innerHTML = renderAssistantMarkdown(closeStreamingMarkdown(m._currentText));
+                  content.appendChild(textDiv);
+                }
+              }
+              // Render pending approvals ONCE at the end (single source of truth)
+              if (pendingApprovals.length > 0) {
+                content.insertAdjacentHTML(
+                  "beforeend",
+                  renderToolActivity([], pendingApprovals, m._toolImages || []),
+                );
               }
               if (isStreaming && isLastAssistant && !hasPendingApprovals) {
                 const waitIndicator = document.createElement("div");
@@ -1286,6 +1430,21 @@ export const getWebUiClientScript = (markedSource: string): string => `
           col.appendChild(row);
         });
         elements.messages.appendChild(col);
+
+        // Restore open state of tool-activity disclosures
+        if (openDisclosures.size > 0) {
+          const rows = col.children;
+          openDisclosures.forEach((dIdxSet, rowIdx) => {
+            const row = rows[rowIdx];
+            if (row) {
+              const allD = row.querySelectorAll(".tool-activity-disclosure");
+              dIdxSet.forEach((dIdx) => {
+                if (allD[dIdx]) allD[dIdx].setAttribute("open", "");
+              });
+            }
+          });
+        }
+
         if (shouldStickToBottom) {
           elements.messages.scrollTop = elements.messages.scrollHeight;
           state.isMessagesPinnedToBottom = true;
@@ -1446,13 +1605,13 @@ export const getWebUiClientScript = (markedSource: string): string => `
                       contAssistant._sections.push({ type: "text", content: contAssistant._currentText });
                       contAssistant._currentText = "";
                     }
-                    contAssistant._currentTools.push("- start \`" + evtPayload.tool + "\`");
+                    contAssistant._currentTools.push("- start " + _TK + evtPayload.tool + _TK);
                   }
                   if (evtName === "tool:completed") {
-                    contAssistant._currentTools.push("- done \`" + evtPayload.tool + "\` (" + evtPayload.duration + "ms)");
+                    contAssistant._currentTools.push(buildToolDoneText(evtPayload));
                   }
                   if (evtName === "tool:error") {
-                    contAssistant._currentTools.push("- error \`" + evtPayload.tool + "\`: " + evtPayload.error);
+                    contAssistant._currentTools.push("- error " + _TK + evtPayload.tool + _TK + ": " + evtPayload.error);
                   }
                   if (evtName === "run:completed" || evtName === "run:error" || evtName === "run:cancelled") {
                     if (contAssistant._currentTools.length > 0) {
@@ -1791,9 +1950,8 @@ export const getWebUiClientScript = (markedSource: string): string => `
                         assistantMessage._currentText = "";
                       }
                       const prepText =
-                        "- preparing \\x60" + toolName + "\\x60";
+                        "- preparing " + _TK + toolName + _TK;
                       assistantMessage._currentTools.push(prepText);
-                      assistantMessage.metadata.toolActivity.push(prepText);
                       renderIfActiveConversation(true);
                     }
                     if (eventName === "tool:started") {
@@ -1811,65 +1969,33 @@ export const getWebUiClientScript = (markedSource: string): string => `
                         });
                         assistantMessage._currentText = "";
                       }
-                      const tick = "\\x60";
-                      const prepPrefix = "- preparing " + tick + toolName + tick;
+                      const prepPrefix = "- preparing " + _TK + toolName + _TK;
                       const prepToolIdx = assistantMessage._currentTools.indexOf(prepPrefix);
                       if (prepToolIdx >= 0) {
                         assistantMessage._currentTools.splice(prepToolIdx, 1);
-                      }
-                      const prepMetaIdx = assistantMessage.metadata.toolActivity.indexOf(prepPrefix);
-                      if (prepMetaIdx >= 0) {
-                        assistantMessage.metadata.toolActivity.splice(prepMetaIdx, 1);
                       }
                       const detail =
                         startedActivity && typeof startedActivity.detail === "string"
                           ? startedActivity.detail.trim()
                           : "";
                       const toolText =
-                        "- start " + tick +
+                        "- start " + _TK +
                         toolName +
-                        tick +
+                        _TK +
                         (detail ? " (" + detail + ")" : "");
                       assistantMessage._currentTools.push(toolText);
-                      assistantMessage.metadata.toolActivity.push(toolText);
+                      // Don't persist "start" to metadata — only "done" gets persisted
                       renderIfActiveConversation(true);
                     }
                     if (eventName === "tool:completed") {
                       const toolName = payload.tool || "tool";
-                      const activeActivity = removeActiveActivityForTool(
-                        assistantMessage,
-                        toolName,
-                      );
-                      const duration =
-                        typeof payload.duration === "number" ? payload.duration : null;
-                      var detail =
-                        activeActivity && typeof activeActivity.detail === "string"
-                          ? activeActivity.detail.trim()
-                          : "";
-                      const out = payload.output && typeof payload.output === "object" ? payload.output : {};
-                      if (!detail && toolName === "web_search" && typeof out.query === "string") {
-                        detail = "\\x22" + (out.query.length > 60 ? out.query.slice(0, 57) + "..." : out.query) + "\\x22";
-                      }
-                      if (!detail && toolName === "web_fetch" && typeof out.url === "string") {
-                        detail = out.url;
-                      }
-                      const meta = [];
-                      if (duration !== null) meta.push(duration + "ms");
-                      if (detail) meta.push(detail);
-                      let toolText =
-                        "- done \\x60" +
-                        toolName +
-                        "\\x60" +
-                        (meta.length > 0 ? " (" + meta.join(", ") + ")" : "");
-                      if (toolName === "spawn_subagent" && payload.output && typeof payload.output === "object" && payload.output.subagentId) {
-                        toolText += " [subagent:" + payload.output.subagentId + "]";
-                      }
-                      if (toolName === "web_fetch" && typeof out.url === "string") {
-                        toolText += " [link:" + out.url + "]";
-                      }
-                      if (toolName === "web_search" && Array.isArray(out.results)) {
-                        toolText += " \\u2014 " + out.results.length + " result" + (out.results.length !== 1 ? "s" : "");
-                      }
+                      removeActiveActivityForTool(assistantMessage, toolName);
+                      // Remove the "start" entry from _currentTools — completed replaces it
+                      const startPrefix = "- start " + _TK + toolName + _TK;
+                      const startToolIdx = assistantMessage._currentTools.findIndex((t) => t.startsWith(startPrefix));
+                      if (startToolIdx >= 0) assistantMessage._currentTools.splice(startToolIdx, 1);
+
+                      const toolText = buildToolDoneText(payload);
                       assistantMessage._currentTools.push(toolText);
                       assistantMessage.metadata.toolActivity.push(toolText);
                       if (typeof payload.outputTokenEstimate === "number" && payload.outputTokenEstimate > 0 && state.contextWindow > 0) {
@@ -1895,9 +2021,9 @@ export const getWebUiClientScript = (markedSource: string): string => `
                           ? activeActivity.detail.trim()
                           : "";
                       const toolText =
-                        "- error \\x60" +
+                        "- error " + _TK +
                         toolName +
-                        "\\x60" +
+                        _TK +
                         (detail ? " (" + detail + ")" : "") +
                         ": " +
                         errorMsg;
@@ -1940,9 +2066,9 @@ export const getWebUiClientScript = (markedSource: string): string => `
                           ? detailFromPayload.detail.trim()
                           : "");
                       const toolText =
-                        "- approval required \\x60" +
+                        "- approval required " + _TK +
                         toolName +
-                        "\\x60" +
+                        _TK +
                         (detail ? " (" + detail + ")" : "");
                       assistantMessage._currentTools.push(toolText);
                       assistantMessage.metadata.toolActivity.push(toolText);
@@ -1967,29 +2093,35 @@ export const getWebUiClientScript = (markedSource: string): string => `
                       renderIfActiveConversation(true);
                     }
                     if (eventName === "tool:approval:granted") {
-                      const toolText = "- approval granted";
-                      assistantMessage._currentTools.push(toolText);
-                      assistantMessage.metadata.toolActivity.push(toolText);
                       const approvalId =
                         typeof payload.approvalId === "string" ? payload.approvalId : "";
+                      var grantedTool = "tool";
                       if (approvalId && Array.isArray(assistantMessage._pendingApprovals)) {
+                        var match = assistantMessage._pendingApprovals.find((r) => r.approvalId === approvalId);
+                        if (match && match.tool) grantedTool = match.tool;
                         assistantMessage._pendingApprovals = assistantMessage._pendingApprovals.filter(
                           (req) => req.approvalId !== approvalId || req.state === "resolved",
                         );
                       }
+                      const toolText = "- done " + _TK + grantedTool + _TK + " (approved)";
+                      assistantMessage._currentTools.push(toolText);
+                      assistantMessage.metadata.toolActivity.push(toolText);
                       renderIfActiveConversation(true);
                     }
                     if (eventName === "tool:approval:denied") {
-                      const toolText = "- approval denied";
-                      assistantMessage._currentTools.push(toolText);
-                      assistantMessage.metadata.toolActivity.push(toolText);
                       const approvalId =
                         typeof payload.approvalId === "string" ? payload.approvalId : "";
+                      var deniedTool = "tool";
                       if (approvalId && Array.isArray(assistantMessage._pendingApprovals)) {
+                        var match2 = assistantMessage._pendingApprovals.find((r) => r.approvalId === approvalId);
+                        if (match2 && match2.tool) deniedTool = match2.tool;
                         assistantMessage._pendingApprovals = assistantMessage._pendingApprovals.filter(
                           (req) => req.approvalId !== approvalId || req.state === "resolved",
                         );
                       }
+                      const toolText = "- error " + _TK + deniedTool + _TK + ": denied";
+                      assistantMessage._currentTools.push(toolText);
+                      assistantMessage.metadata.toolActivity.push(toolText);
                       renderIfActiveConversation(true);
                     }
                     if (eventName === "subagent:spawned" || eventName === "subagent:completed" || eventName === "subagent:error" || eventName === "subagent:stopped" || eventName === "subagent:approval_needed") {
@@ -2309,6 +2441,17 @@ export const getWebUiClientScript = (markedSource: string): string => `
           };
         }
 
+        if (toolName === "bash") {
+          const cmd = getStringInputField(input, "command");
+          const short = cmd && cmd.length > 80 ? cmd.slice(0, 77) + "..." : cmd;
+          return {
+            kind: "tool",
+            tool: toolName,
+            label: short ? "$ " + short : "Running bash",
+            detail: short || "",
+          };
+        }
+
         if (toolName === "web_search") {
           const query = getStringInputField(input, "query");
           const short = query && query.length > 60 ? query.slice(0, 57) + "..." : query;
@@ -2331,11 +2474,21 @@ export const getWebUiClientScript = (markedSource: string): string => `
           };
         }
 
+        // Generic: pick the first short string value from input
+        var genericDetail = "";
+        for (var gk in input) {
+          var gv = input[gk];
+          if (typeof gv === "string" && gv.length > 0) {
+            genericDetail = gv.length > 80 ? gv.slice(0, 77) + "..." : gv;
+            break;
+          }
+        }
+        if (genericDetail) genericDetail = genericDetail.replace(/\\n/g, " ");
         return {
           kind: "tool",
           tool: toolName,
-          label: "Running " + toolName + " tool",
-          detail: "",
+          label: "Running " + toolName + (genericDetail ? ": " + genericDetail : ""),
+          detail: genericDetail,
         };
       };
 
@@ -2384,13 +2537,12 @@ export const getWebUiClientScript = (markedSource: string): string => `
         }
 
         if (Array.isArray(assistantMessage?._currentTools)) {
-          const tick = String.fromCharCode(96);
-          const startPrefix = "- start " + tick;
+          const startPrefix = "- start " + _TK;
           for (let idx = assistantMessage._currentTools.length - 1; idx >= 0; idx -= 1) {
             const item = String(assistantMessage._currentTools[idx] || "");
             if (item.startsWith(startPrefix)) {
               const rest = item.slice(startPrefix.length);
-              const endIdx = rest.indexOf(tick);
+              const endIdx = rest.indexOf(_TK);
               const toolName = (endIdx >= 0 ? rest.slice(0, endIdx) : rest).trim();
               if (toolName) {
                 return "Running " + toolName + " tool";
@@ -2645,7 +2797,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
                   }
                   if (!assistantMessage.metadata) assistantMessage.metadata = {};
                   if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
-                  const prepText = "- preparing \\x60" + toolName + "\\x60";
+                  const prepText = "- preparing " + _TK + toolName + _TK;
                   assistantMessage._currentTools.push(prepText);
                   assistantMessage.metadata.toolActivity.push(prepText);
                   renderIfActiveConversation(true);
@@ -2664,8 +2816,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
                   }
                   if (!assistantMessage.metadata) assistantMessage.metadata = {};
                   if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
-                  const tick = "\\x60";
-                  const prepPrefix = "- preparing " + tick + toolName + tick;
+                  const prepPrefix = "- preparing " + _TK + toolName + _TK;
                   const prepToolIdx = assistantMessage._currentTools.indexOf(prepPrefix);
                   if (prepToolIdx >= 0) {
                     assistantMessage._currentTools.splice(prepToolIdx, 1);
@@ -2679,43 +2830,15 @@ export const getWebUiClientScript = (markedSource: string): string => `
                       ? startedActivity.detail.trim()
                       : "";
                   const toolText =
-                    "- start " + tick + toolName + tick + (detail ? " (" + detail + ")" : "");
+                    "- start " + _TK + toolName + _TK + (detail ? " (" + detail + ")" : "");
                   assistantMessage._currentTools.push(toolText);
                   assistantMessage.metadata.toolActivity.push(toolText);
                   renderIfActiveConversation(true);
                 }
                 if (eventName === "tool:completed") {
                   const toolName = payload.tool || "tool";
-                  const activeActivity = removeActiveActivityForTool(
-                    assistantMessage,
-                    toolName,
-                  );
-                  const duration = typeof payload.duration === "number" ? payload.duration : null;
-                  var detail =
-                    activeActivity && typeof activeActivity.detail === "string"
-                      ? activeActivity.detail.trim()
-                      : "";
-                  const out = payload.output && typeof payload.output === "object" ? payload.output : {};
-                  if (!detail && toolName === "web_search" && typeof out.query === "string") {
-                    detail = "\\x22" + (out.query.length > 60 ? out.query.slice(0, 57) + "..." : out.query) + "\\x22";
-                  }
-                  if (!detail && toolName === "web_fetch" && typeof out.url === "string") {
-                    detail = out.url;
-                  }
-                  const meta = [];
-                  if (duration !== null) meta.push(duration + "ms");
-                  if (detail) meta.push(detail);
-                  let toolText =
-                    "- done \\x60" + toolName + "\\x60" + (meta.length > 0 ? " (" + meta.join(", ") + ")" : "");
-                  if (toolName === "spawn_subagent" && payload.output && typeof payload.output === "object" && payload.output.subagentId) {
-                    toolText += " [subagent:" + payload.output.subagentId + "]";
-                  }
-                  if (toolName === "web_fetch" && typeof out.url === "string") {
-                    toolText += " [link:" + out.url + "]";
-                  }
-                  if (toolName === "web_search" && Array.isArray(out.results)) {
-                    toolText += " \\u2014 " + out.results.length + " result" + (out.results.length !== 1 ? "s" : "");
-                  }
+                  removeActiveActivityForTool(assistantMessage, toolName);
+                  const toolText = buildToolDoneText(payload);
                   assistantMessage._currentTools.push(toolText);
                   if (!assistantMessage.metadata) assistantMessage.metadata = {};
                   if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
@@ -2743,9 +2866,9 @@ export const getWebUiClientScript = (markedSource: string): string => `
                       ? activeActivity.detail.trim()
                       : "";
                   const toolText =
-                    "- error \\x60" +
+                    "- error " + _TK +
                     toolName +
-                    "\\x60" +
+                    _TK +
                     (detail ? " (" + detail + ")" : "") +
                     ": " +
                     errorMsg;
@@ -2790,9 +2913,9 @@ export const getWebUiClientScript = (markedSource: string): string => `
                       ? detailFromPayload.detail.trim()
                       : "");
                   const toolText =
-                    "- approval required \\x60" +
+                    "- approval required " + _TK +
                     toolName +
-                    "\\x60" +
+                    _TK +
                     (detail ? " (" + detail + ")" : "");
                   assistantMessage._currentTools.push(toolText);
                   if (!assistantMessage.metadata) assistantMessage.metadata = {};
@@ -2819,33 +2942,39 @@ export const getWebUiClientScript = (markedSource: string): string => `
                   renderIfActiveConversation(true);
                 }
                 if (eventName === "tool:approval:granted") {
-                  const toolText = "- approval granted";
-                  assistantMessage._currentTools.push(toolText);
-                  if (!assistantMessage.metadata) assistantMessage.metadata = {};
-                  if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
-                  assistantMessage.metadata.toolActivity.push(toolText);
                   const approvalId =
                     typeof payload.approvalId === "string" ? payload.approvalId : "";
+                  var grantedTool = "tool";
                   if (approvalId && Array.isArray(assistantMessage._pendingApprovals)) {
+                    var match = assistantMessage._pendingApprovals.find((r) => r.approvalId === approvalId);
+                    if (match && match.tool) grantedTool = match.tool;
                     assistantMessage._pendingApprovals = assistantMessage._pendingApprovals.filter(
                       (req) => req.approvalId !== approvalId || req.state === "resolved",
                     );
                   }
+                  const toolText = "- done " + _TK + grantedTool + _TK + " (approved)";
+                  assistantMessage._currentTools.push(toolText);
+                  if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                  if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                  assistantMessage.metadata.toolActivity.push(toolText);
                   renderIfActiveConversation(true);
                 }
                 if (eventName === "tool:approval:denied") {
-                  const toolText = "- approval denied";
-                  assistantMessage._currentTools.push(toolText);
-                  if (!assistantMessage.metadata) assistantMessage.metadata = {};
-                  if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
-                  assistantMessage.metadata.toolActivity.push(toolText);
                   const approvalId =
                     typeof payload.approvalId === "string" ? payload.approvalId : "";
+                  var deniedTool = "tool";
                   if (approvalId && Array.isArray(assistantMessage._pendingApprovals)) {
+                    var match2 = assistantMessage._pendingApprovals.find((r) => r.approvalId === approvalId);
+                    if (match2 && match2.tool) deniedTool = match2.tool;
                     assistantMessage._pendingApprovals = assistantMessage._pendingApprovals.filter(
                       (req) => req.approvalId !== approvalId || req.state === "resolved",
                     );
                   }
+                  const toolText = "- error " + _TK + deniedTool + _TK + ": denied";
+                  assistantMessage._currentTools.push(toolText);
+                  if (!assistantMessage.metadata) assistantMessage.metadata = {};
+                  if (!assistantMessage.metadata.toolActivity) assistantMessage.metadata.toolActivity = [];
+                  assistantMessage.metadata.toolActivity.push(toolText);
                   renderIfActiveConversation(true);
                 }
                 if (eventName === "subagent:spawned" || eventName === "subagent:completed" || eventName === "subagent:error" || eventName === "subagent:stopped" || eventName === "subagent:approval_needed") {

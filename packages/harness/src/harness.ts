@@ -2886,6 +2886,7 @@ Examples:${
         return;
       }
 
+      const callInputMap = new Map(approvedCalls.map((c) => [c.id, c.input]));
       for (const result of batchResults) {
         const span = toolSpans.get(result.callId);
         if (result.error) {
@@ -2939,6 +2940,7 @@ Examples:${
           yield pushEvent({
             type: "tool:completed",
             tool: result.tool,
+            input: callInputMap.get(result.callId),
             output: result.output,
             duration: now() - batchStart,
             outputTokenEstimate,
