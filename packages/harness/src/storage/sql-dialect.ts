@@ -134,6 +134,19 @@ export abstract class SqlStorageEngine implements StorageEngine {
 
   private async runMigrations(): Promise<void> {
     const e = this.executor;
+
+    // Fast path: if we know the latest migration version, just check
+    // with a single lightweight query instead of CREATE TABLE + SELECT.
+    const latestVersion = migrations[migrations.length - 1]?.version ?? 0;
+    try {
+      const row = await e.get<{ max_v: number | null }>(
+        "SELECT MAX(version) as max_v FROM _migrations",
+      );
+      if (row && (row.max_v ?? 0) >= latestVersion) return; // all up to date
+    } catch {
+      // _migrations table doesn't exist yet — fall through to create it
+    }
+
     await e.exec(
       `CREATE TABLE IF NOT EXISTS _migrations (
         version INTEGER PRIMARY KEY,
