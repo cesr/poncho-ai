@@ -460,17 +460,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
               detail = durMatch ? parts.slice(1).join(", ") : parts.join(", ");
             }
 
-            // Status icon
-            const isApproved = status === "done" && detail === "approved";
-            const icon = status === "done"
-              ? (exitMatch ? '<span class="ta-icon ta-fail">✕</span>' : (isApproved ? '<span class="ta-icon ta-ok">✓</span>' : ''))
-              : status === "error"
-                ? '<span class="ta-icon ta-fail">✕</span>'
-                : status === "preparing" || status === "start"
-                  ? '<span class="ta-icon ta-spin">⟳</span>'
-                  : status === "approval required"
-                    ? '<span class="ta-icon ta-warn">⚠</span>'
-                    : "";
+            const icon = "";
 
             // Duration badge
             const durBadge = durMatch
@@ -525,15 +515,19 @@ export const getWebUiClientScript = (markedSource: string): string => `
           // Fallback: plain text
           return '<div class="tool-activity-item">' + escapeHtml(item) + "</div>";
         };
-        // Deduplicate: if a "done" entry exists for a tool, remove its "start"/"preparing" entries
+        // Deduplicate:
+        // - Remove "start"/"preparing" when "done" or "approval required" exists for the same tool
+        // - Remove "approval required" when a "done (approved)" exists for the same tool
         const dedupedItems = hasItems ? items.filter((item) => {
-          const m2 = item.match(activityRe);
+          var flat2 = item.replace(/\\n/g, " ");
+          const m2 = flat2.match(activityRe);
           if (!m2) return true;
           const status = m2[1];
           const tool = m2[2];
           if (status === "preparing" || status === "start") {
             return !items.some((other) => {
-              const m3 = other.match(activityRe);
+              var flatOther = other.replace(/\\n/g, " ");
+              const m3 = flatOther.match(activityRe);
               return m3 && (m3[1] === "done" || m3[1] === "approval required") && m3[2] === tool;
             });
           }

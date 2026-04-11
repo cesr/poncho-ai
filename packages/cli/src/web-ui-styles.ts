@@ -869,13 +869,6 @@ export const WEB_UI_STYLES = `
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .tool-activity-item:hover .ta-cmd {
-      white-space: pre-wrap;
-      word-break: break-all;
-      overflow-y: auto;
-      max-height: 120px;
-      text-overflow: unset;
-    }
     .ta-prompt {
       color: #34d399;
       user-select: none;
@@ -886,13 +879,6 @@ export const WEB_UI_STYLES = `
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-    }
-    .tool-activity-item:hover .ta-detail {
-      white-space: pre-wrap;
-      word-break: break-all;
-      overflow-y: auto;
-      max-height: 120px;
-      text-overflow: unset;
     }
     .ta-dur {
       font-size: 10px;
