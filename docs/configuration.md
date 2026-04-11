@@ -160,6 +160,19 @@ export default {
   //   cdpUrl: 'wss://...',     // Or connect via CDP URL (alternative to provider)
   // },
 
+  // V8 isolate code execution (requires isolated-vm + esbuild)
+  // isolate: {
+  //   memoryLimit: 128,       // MB
+  //   timeLimit: 10000,       // ms
+  //   outputLimit: 65536,     // bytes (stdout+stderr cap)
+  //   codeLimit: 102400,      // bytes (max code input)
+  //   libraries: ['lodash', 'csv-parse'],  // npm packages to bundle
+  //   apis: {
+  //     fetch: { allowedDomains: ['api.stripe.com'] },
+  //   },
+  //   bindings: { ... },      // custom async functions injected into the sandbox
+  // },
+
   // One-off reminders (enabled by default in new projects)
   reminders: {
     enabled: true,
