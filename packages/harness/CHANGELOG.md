@@ -1,5 +1,23 @@
 # @poncho-ai/harness
 
+## 0.36.0
+
+### Minor Changes
+
+- feat: unified conversation_recall tool, subagent recall access, fix subagent streaming
+  - Consolidate `conversation_recall` into a single tool with three modes: keyword search, date-range listing, and full conversation fetch by ID.
+  - Give subagents access to conversation recall via shared `buildRecallParams` helper.
+  - Fix subagent streaming: variable scoping bug preventing poll start, race condition in `processSubagentCallback` losing concurrent results, and spawn detection race causing `pendingSubagents` flag to be missed.
+  - Simplify subagent result polling to avoid duplicate messages from polling-to-SSE handoff.
+
+- feat: VFS file tools and vfs:// lazy resolution
+  - Add `read_file`, `edit_file`, and `write_file` tools for the virtual filesystem, registered alongside `bash`.
+  - `read_file` returns images and PDFs as lightweight `vfs://` references resolved to actual bytes only at model-request time, keeping conversation history small.
+  - `edit_file` uses targeted `old_str`/`new_str` replacement for efficient edits to large files.
+  - `write_file` creates or overwrites files with automatic parent directory creation.
+  - Add `vfs://` scheme resolution in `convertMessage` for user messages, tool results, and rich media items.
+  - Extend `extractMediaFromToolOutput` to handle PDFs alongside images.
+
 ## 0.35.0
 
 ### Minor Changes

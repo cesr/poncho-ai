@@ -1,5 +1,20 @@
 # @poncho-ai/cli
 
+## 0.36.0
+
+### Minor Changes
+
+- feat: unified conversation_recall tool, subagent recall access, fix subagent streaming
+  - Consolidate `conversation_recall` into a single tool with three modes: keyword search, date-range listing, and full conversation fetch by ID.
+  - Give subagents access to conversation recall via shared `buildRecallParams` helper.
+  - Fix subagent streaming: variable scoping bug preventing poll start, race condition in `processSubagentCallback` losing concurrent results, and spawn detection race causing `pendingSubagents` flag to be missed.
+  - Simplify subagent result polling to avoid duplicate messages from polling-to-SSE handoff.
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @poncho-ai/harness@0.36.0
+
 ## 0.35.0
 
 ### Minor Changes
