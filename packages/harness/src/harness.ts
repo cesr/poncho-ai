@@ -1674,6 +1674,10 @@ export class AgentHarness {
     return this.dispatcher.list();
   }
 
+  listSkills(): Array<{ name: string; description: string }> {
+    return this.loadedSkills.map((s) => ({ name: s.name, description: s.description }));
+  }
+
   /**
    * Wraps the run() generator with an OTel root span (invoke_agent) so all
    * child spans (LLM calls via AI SDK, tool execution) group under one trace.

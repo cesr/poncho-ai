@@ -1107,6 +1107,51 @@ export const WEB_UI_STYLES = `
     .compaction-summary p { margin: 4px 0; }
     .compaction-summary ul, .compaction-summary ol { margin: 4px 0; padding-left: 20px; }
     .compaction-summary code { font-size: 12px; }
+    .slash-menu {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-3);
+      border-radius: 12px;
+      padding: 4px;
+      max-height: 240px;
+      overflow-y: auto;
+      margin-bottom: 6px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+    }
+    .slash-menu.hidden { display: none; }
+    .slash-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .slash-menu-item:hover, .slash-menu-item-active {
+      background: var(--bg-alt);
+    }
+    .slash-menu-cmd {
+      font-weight: 600;
+      color: var(--fg);
+      white-space: nowrap;
+    }
+    .slash-menu-badge {
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: var(--border-3);
+      color: var(--fg-muted);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      white-space: nowrap;
+    }
+    .slash-menu-desc {
+      color: var(--fg-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .empty-state {
       display: flex;
       flex-direction: column;
@@ -1208,6 +1253,10 @@ export const WEB_UI_STYLES = `
       margin-top: -4px;
     }
     .composer-input::placeholder { color: var(--fg-7); }
+    @keyframes compacting-pulse {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
+    }
     .send-btn {
       width: 32px;
       height: 32px;

@@ -4,11 +4,11 @@ Poncho is a multi-tenant harness for building agents you can share.
 
 Define behavior in markdown, add skills and tools, develop by chatting locally, and deploy as a web app your team can use through a chat UI, Slack, Telegram, email, or API.
 
-No sandbox, no extra infrastructure. Poncho is a Node.js server you deploy like any other web app. Agents are secure by default, with auth and human-in-the-loop approval for risky actions.
+No sandbox, no extra infrastructure. Poncho is a Node.js server you deploy like any other web app. Agents get bash, a virtual filesystem, and V8 isolates for code execution, without running inside a sandbox themselves. Secure by default, with auth and human-in-the-loop approval for risky actions.
 
 > **Beta**: Poncho is under active development. Expect breaking changes, and please open an issue if you hit anything confusing or sharp.
 
-[Issues](https://github.com/cesr/poncho-ai/issues) · [Discord](https://discord.gg/92QanAxYcf) · [Marketing Agent Demo](https://github.com/cesr/marketing-agent) · [Product Agent Demo](https://github.com/cesr/product-agent)
+[Issues](https://github.com/cesr/poncho-ai/issues) · [Discord](https://discord.gg/92QanAxYcf)
 
 ![Poncho CLI and Web UI](assets/poncho.png)
 
@@ -43,10 +43,13 @@ Poncho uses the same conventions as Claude Code and OpenClaw (`AGENT.md` + `skil
 - **Auth**: protect your endpoint with token-based authentication.
 - **Multi-tenancy**: deploy one agent, serve many users. JWT-based tenant scoping with isolated conversations, memory, and per-tenant secrets for MCP auth.
 - **Browser automation**: headless Chromium with live viewport streaming, snapshot/ref interaction, and session persistence.
+- **Code execution**: sandboxed V8 isolates with VFS access, npm library support, domain-restricted fetch, and custom bindings.
+- **Bash tool**: shell command execution for agents, scoped to the tenant's virtual filesystem.
+- **Virtual filesystem**: tenant-scoped file storage for reading, writing, and managing files across conversations.
 - **Subagents**: agents can spawn background tasks for parallel work, with independent conversations and approval tunneling.
 - **Persistent memory**: the agent remembers context across conversations with semantic recall.
 - **Context compaction**: automatic summarization of older messages when the context window fills up, keeping conversations going indefinitely.
-- **Storage**: local files for dev, or hosted stores (Redis, Upstash, DynamoDB) for production.
+- **Storage**: SQLite for local dev, PostgreSQL for production, or in-memory for testing. Unified storage engine with automatic migrations.
 - **Testing + observability**: `poncho test` workflows and OpenTelemetry traces.
 
 ### Getting Started

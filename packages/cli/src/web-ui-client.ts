@@ -51,6 +51,8 @@ export const getWebUiClientScript = (markedSource: string): string => `
         cronSectionCollapsed: true,
         cronShowAll: false,
         subagentPollInFlight: {},
+        slashCommands: null,
+        slashMenuIndex: 0,
       };
 
       const agentInitial = document.body.dataset.agentInitial || "A";
@@ -2619,9 +2621,19 @@ export const getWebUiClientScript = (markedSource: string): string => `
       };
 
       const sendMessage = async (text) => {
-        const messageText = (text || "").trim();
+        var messageText = (text || "").trim();
         if (!messageText || state.isStreaming) {
           return;
+        }
+        // Check if it's a skill slash command
+        if (state.slashCommands && messageText.startsWith("/")) {
+          var cmdParts = messageText.split(/\s+/);
+          var cmdName = cmdParts[0].toLowerCase();
+          var matchedSkill = state.slashCommands.find(function(c) { return c.command === cmdName && c.type === "skill"; });
+          if (matchedSkill) {
+            var skillArgs = messageText.slice(cmdParts[0].length).trim();
+            messageText = "Activate the " + matchedSkill.command.slice(1) + " skill" + (skillArgs ? " and " + skillArgs : "");
+          }
         }
         if (messageText.toLowerCase().startsWith("/compact")) {
           const focusHint = messageText.slice("/compact".length).trim() || undefined;
@@ -2630,6 +2642,11 @@ export const getWebUiClientScript = (markedSource: string): string => `
             alert("No active conversation to compact.");
             return;
           }
+          const input = elements.prompt;
+          input.disabled = true;
+          input.value = "Compacting context\u2026";
+          input.style.color = "var(--accent)";
+          input.style.animation = "compacting-pulse 1.5s ease-in-out infinite";
           try {
             const data = await api(
               "/api/conversations/" + encodeURIComponent(conversationId) + "/compact",
@@ -2645,6 +2662,12 @@ export const getWebUiClientScript = (markedSource: string): string => `
             }
           } catch (e) {
             alert("Compact failed: " + (e.message || e));
+          } finally {
+            input.style.color = "";
+            input.style.animation = "";
+            input.disabled = false;
+            input.value = "";
+            input.focus();
           }
           return;
         }
@@ -3367,20 +3390,117 @@ export const getWebUiClientScript = (markedSource: string): string => `
         }
       };
 
+      // ── Slash command menu ──
+      var slashMenuEl = document.createElement("div");
+      slashMenuEl.className = "slash-menu hidden";
+      var composerShell = elements.composer.querySelector(".composer-shell");
+      composerShell.parentNode.insertBefore(slashMenuEl, composerShell);
+
+      const fetchSlashCommands = async () => {
+        if (state.slashCommands) return state.slashCommands;
+        try {
+          const data = await api("/api/slash-commands");
+          state.slashCommands = data.commands || [];
+        } catch {
+          state.slashCommands = [{ command: "/compact", description: "Compact conversation context", type: "command" }];
+        }
+        return state.slashCommands;
+      };
+
+      const renderSlashMenu = (commands, filter) => {
+        var query = filter.toLowerCase();
+        var filtered = query === "/"
+          ? commands
+          : commands.filter(function(c) { return c.command.toLowerCase().startsWith(query); });
+        if (filtered.length === 0) {
+          slashMenuEl.classList.add("hidden");
+          return;
+        }
+        if (state.slashMenuIndex >= filtered.length) state.slashMenuIndex = 0;
+        slashMenuEl.innerHTML = filtered.map(function(c, i) {
+          var active = i === state.slashMenuIndex ? " slash-menu-item-active" : "";
+          var badge = c.type === "skill" ? '<span class="slash-menu-badge">skill</span>' : "";
+          return '<div class="slash-menu-item' + active + '" data-index="' + i + '">'
+            + '<span class="slash-menu-cmd">' + escapeHtml(c.command) + '</span>'
+            + badge
+            + '<span class="slash-menu-desc">' + escapeHtml(c.description) + '</span>'
+            + '</div>';
+        }).join("");
+        slashMenuEl.classList.remove("hidden");
+        slashMenuEl._filtered = filtered;
+        var activeItem = slashMenuEl.querySelector(".slash-menu-item-active");
+        if (activeItem) activeItem.scrollIntoView({ block: "nearest" });
+      };
+
+      const selectSlashItem = (item) => {
+        if (!item) return;
+        elements.prompt.value = item.command + " ";
+        slashMenuEl.classList.add("hidden");
+        elements.prompt.focus();
+        autoResizePrompt();
+      };
+
+      slashMenuEl.addEventListener("mousedown", function(e) {
+        e.preventDefault(); // don't blur prompt
+        var target = e.target.closest(".slash-menu-item");
+        if (target && slashMenuEl._filtered) {
+          var idx = parseInt(target.dataset.index, 10);
+          selectSlashItem(slashMenuEl._filtered[idx]);
+        }
+      });
+
       elements.newChat.addEventListener("click", startNewChat);
       elements.topbarNewChat.addEventListener("click", startNewChat);
 
       elements.chatTitle.addEventListener("dblclick", beginTitleEdit);
 
-      elements.prompt.addEventListener("input", () => {
+      elements.prompt.addEventListener("input", async () => {
         autoResizePrompt();
+        var val = elements.prompt.value;
+        if (val.startsWith("/") && !val.includes("\\n")) {
+          var commands = await fetchSlashCommands();
+          state.slashMenuIndex = 0;
+          renderSlashMenu(commands, val);
+        } else {
+          slashMenuEl.classList.add("hidden");
+        }
       });
 
       elements.prompt.addEventListener("keydown", (event) => {
+        if (!slashMenuEl.classList.contains("hidden")) {
+          var filtered = slashMenuEl._filtered || [];
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            state.slashMenuIndex = (state.slashMenuIndex + 1) % filtered.length;
+            renderSlashMenu(state.slashCommands || [], elements.prompt.value);
+            return;
+          }
+          if (event.key === "ArrowUp") {
+            event.preventDefault();
+            state.slashMenuIndex = (state.slashMenuIndex - 1 + filtered.length) % filtered.length;
+            renderSlashMenu(state.slashCommands || [], elements.prompt.value);
+            return;
+          }
+          if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
+            if (filtered.length > 0) {
+              event.preventDefault();
+              selectSlashItem(filtered[state.slashMenuIndex]);
+              return;
+            }
+          }
+          if (event.key === "Escape") {
+            slashMenuEl.classList.add("hidden");
+            return;
+          }
+        }
         if (event.key === "Enter" && !event.shiftKey) {
           event.preventDefault();
           elements.composer.requestSubmit();
         }
+      });
+
+      elements.prompt.addEventListener("blur", () => {
+        setTimeout(function() { slashMenuEl.classList.add("hidden"); }, 150);
       });
 
       elements.sidebarToggle.addEventListener("click", () => {

@@ -5526,6 +5526,19 @@ export const createRequestHandler = async (options?: {
       return;
     }
 
+    if (pathname === "/api/slash-commands" && request.method === "GET") {
+      const skills = harness.listSkills().map((s) => ({
+        command: "/" + s.name,
+        description: s.description,
+        type: "skill" as const,
+      }));
+      const builtIn = [
+        { command: "/compact", description: "Compact conversation context", type: "command" as const },
+      ];
+      writeJson(response, 200, { commands: [...builtIn, ...skills] });
+      return;
+    }
+
     const conversationCompactMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/compact$/);
     if (conversationCompactMatch && request.method === "POST") {
       const conversationId = decodeURIComponent(conversationCompactMatch[1] ?? "");
@@ -5560,6 +5573,7 @@ export const createRequestHandler = async (options?: {
           ...conversation.messages.slice(0, removedCount),
         ];
         conversation.messages = result.messages;
+        conversation._harnessMessages = undefined;
         await conversationStore.update(conversation);
       }
       writeJson(response, 200, {
