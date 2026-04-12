@@ -1,5 +1,11 @@
 # @poncho-ai/sdk
 
+## 1.8.1
+
+### Patch Changes
+
+- Add VfsAccess interface and expand ToolContext with optional `vfs` field for tenant-scoped virtual filesystem access in tool handlers.
+
 ## 1.8.0
 
 ### Minor Changes

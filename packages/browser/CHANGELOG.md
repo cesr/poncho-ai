@@ -1,5 +1,14 @@
 # @poncho-ai/browser
 
+## 0.6.12
+
+### Patch Changes
+
+- Support network configuration passthrough for browser tool initialization.
+
+- Updated dependencies []:
+  - @poncho-ai/sdk@1.8.1
+
 ## 0.6.11
 
 ### Patch Changes
