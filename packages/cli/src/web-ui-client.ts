@@ -1302,7 +1302,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
                     );
                   }
                 });
-              } else if (text) {
+              } else if (text && !(isStreaming && isLastAssistant)) {
                 // Fallback for old messages without sections
                 const parsed = extractToolActivity(text);
                 content.innerHTML = renderAssistantMarkdown(parsed.content);

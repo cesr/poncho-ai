@@ -81,6 +81,7 @@ Poncho uses the same conventions as Claude Code and OpenClaw (`AGENT.md` + `skil
   - [Email (Resend)](docs/features.md#email-resend)
   - [Custom Adapters](docs/features.md#custom-messaging-adapters)
 - [Browser Automation](docs/features.md#browser-automation-experimental)
+- [Code Execution (V8 Isolates)](docs/features.md#code-execution-v8-isolates)
 - [Subagents](docs/features.md#subagents)
 - [Context Compaction](docs/features.md#context-compaction)
 - [Persistent Memory](docs/features.md#persistent-memory)

@@ -43,9 +43,17 @@
     "zod": "^3.22.0"
   },
   "peerDependencies": {
+    "esbuild": ">=0.17.0",
+    "isolated-vm": ">=5.0.0",
     "postgres": ">=3.0.0"
   },
   "peerDependenciesMeta": {
+    "esbuild": {
+      "optional": true
+    },
+    "isolated-vm": {
+      "optional": true
+    },
     "postgres": {
       "optional": true
     }
@@ -53,6 +61,8 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
     "@types/mustache": "^4.2.6",
+    "esbuild": "^0.28.0",
+    "isolated-vm": "^6.1.2",
     "tsup": "^8.0.0",
     "vitest": "^1.4.0"
   },

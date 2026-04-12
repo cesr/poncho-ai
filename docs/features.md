@@ -456,6 +456,75 @@ pnpm add @sparticuz/chromium
 
 When `@sparticuz/chromium` is installed and a serverless environment is detected (Vercel, AWS Lambda), the browser package automatically resolves the executable path and uses `/tmp` for the ephemeral profile directory. No config changes needed beyond `browser: true`.
 
+## Code Execution (V8 Isolates)
+
+Poncho agents can execute JavaScript/TypeScript code in a **sandboxed V8 isolate** via the `run_code` tool. Code runs in a fully isolated environment with no ambient APIs — no `fs`, `fetch`, `process`, or `require` unless explicitly configured.
+
+### When to use
+
+- **Complex data processing**: structured data, multi-step logic, binary file generation
+- **npm libraries**: use pre-bundled packages like `lodash`, `csv-parse`, `pdf-lib`
+- **Programmatic file manipulation**: read/write files in the VFS from within code
+
+For simple text processing and shell pipelines, `bash` is usually more appropriate.
+
+### Configuration
+
+Add `isolate` to `poncho.config.js`:
+
+```javascript
+export default {
+  isolate: {
+    memoryLimit: 128,       // MB (default: 128)
+    timeLimit: 10000,       // ms (default: 10000)
+    outputLimit: 65536,     // bytes for stdout+stderr (default: 64KB)
+    codeLimit: 102400,      // max code input size (default: 100KB)
+    libraries: ["lodash", "csv-parse", "pdf-lib"],
+    apis: {
+      fetch: { allowedDomains: ["api.stripe.com", "api.intercom.io"] },
+    },
+    bindings: {
+      lookupCustomer: {
+        description: "Look up a customer by email",
+        inputSchema: { type: "object", properties: { email: { type: "string" } }, required: ["email"] },
+        handler: async ({ email }) => {
+          return await db.query("SELECT * FROM customers WHERE email = ?", [email]);
+        },
+      },
+    },
+  },
+};
+```
+
+Requires `isolated-vm` and `esbuild` as peer dependencies:
+
+```bash
+pnpm add isolated-vm esbuild
+```
+
+### Available APIs inside the isolate
+
+- **VFS**: `fs_read`, `fs_write`, `fs_read_binary`, `fs_write_binary`, `fs_list`, `fs_exists`, `fs_delete`, `fs_mkdir`, `fs_stat`
+- **Console**: `console.log`, `console.error` — output captured and returned in the tool result
+- **Libraries**: `require("lodash")` etc. for configured packages
+- **Fetch**: domain-restricted HTTP requests (when configured)
+- **Custom bindings**: builder-defined async functions injected into the sandbox
+
+### How it works
+
+1. The agent writes inline code or a VFS file path
+2. TypeScript annotations are stripped via esbuild
+3. Code is wrapped in an async IIFE and executed in a fresh V8 isolate
+4. The isolate is disposed after execution (fresh isolate per call, no pooling)
+5. Files written during execution persist even if the code throws
+
+### Security
+
+- The isolate has **zero ambient APIs** — only explicitly injected bindings
+- Memory and CPU limits enforced by V8
+- Fetch is restricted to a configurable domain allowlist
+- The `run_code` tool follows standard tool access policy (`allowed`, `approval-required`, `disabled`)
+
 ## Subagents
 
 Poncho agents can spawn **subagents** — independent background tasks that run in their own conversations. Each subagent has full access to the agent's tools and skills. Subagents run asynchronously and their results are delivered back to the parent automatically.

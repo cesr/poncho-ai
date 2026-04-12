@@ -1440,6 +1440,22 @@ export class AgentHarness {
     // Register bash tool
     this.registerIfMissing(createBashTool(this.bashManager));
 
+    // --- Isolate (V8 sandboxed code execution) ---
+    if (config?.isolate) {
+      const { createRunCodeTool, buildRunCodeDescription, bundleLibraries } = await import("./isolate/index.js");
+      let libraryPreamble: string | null = null;
+      if (config.isolate.libraries?.length) {
+        libraryPreamble = await bundleLibraries(config.isolate.libraries, this.workingDir);
+      }
+      const runCodeTool = createRunCodeTool({
+        config: config.isolate,
+        bashManager: this.bashManager,
+        libraryPreamble,
+        description: buildRunCodeDescription(config.isolate),
+      });
+      this.registerIfMissing(runCodeTool);
+    }
+
     // --- Memory (engine-backed or legacy fallback) ---
     this.memoryConfig = memoryConfig ?? undefined;
     if (memoryConfig?.enabled) {
@@ -1860,11 +1876,32 @@ Examples:${
 - Process data: \`cat /data.csv | awk -F, '{print $2}' | sort | uniq -c\``
       : "";
 
+    // Isolate context (code execution guidance + type stubs)
+    let isolateContext = "";
+    if (this.loadedConfig?.isolate && this.dispatcher.get("run_code")) {
+      const { generateIsolateTypeStubs } = await import("./isolate/index.js");
+      const typeStubs = generateIsolateTypeStubs(this.loadedConfig.isolate);
+      isolateContext = `\n\n## Code Execution
+
+You have a \`run_code\` tool for executing JavaScript/TypeScript in a sandboxed V8 isolate.
+
+**When to use \`run_code\` vs \`bash\`:**
+- \`bash\`: file manipulation, text processing with unix tools, shell pipelines
+- \`run_code\`: complex data processing, structured data, npm libraries, multi-step logic, binary file generation
+
+**API reference (available inside the isolate):**
+\`\`\`typescript
+${typeStubs}
+\`\`\`
+
+Code is wrapped in an async IIFE — use \`return\` to return a value to the tool result.`;
+    }
+
     const buildSystemPrompt = (): string => {
       const agentPrompt = renderCurrentAgentPrompt();
       const promptWithSkills = this.skillContextWindow
-        ? `${agentPrompt}${developmentContext}\n\n${this.skillContextWindow}${browserContext}${fsContext}`
-        : `${agentPrompt}${developmentContext}${browserContext}${fsContext}`;
+        ? `${agentPrompt}${developmentContext}\n\n${this.skillContextWindow}${browserContext}${fsContext}${isolateContext}`
+        : `${agentPrompt}${developmentContext}${browserContext}${fsContext}${isolateContext}`;
       const timeContext = this.reminderStore
         ? `\n\nCurrent UTC time: ${new Date().toISOString()}`
         : "";

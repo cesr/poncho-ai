@@ -1,6 +1,7 @@
 import { access } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createJiti } from "jiti";
+import type { JsonSchema } from "@poncho-ai/sdk";
 import type { MemoryConfig } from "./memory.js";
 import type { McpConfig } from "./mcp.js";
 import type { StateConfig } from "./state.js";
@@ -70,6 +71,31 @@ export interface MessagingChannelConfig {
   maxSendsPerRun?: number;
   // Telegram
   allowedUserIds?: number[];
+}
+
+export interface IsolateBinding {
+  description: string;
+  inputSchema: JsonSchema;
+  handler: (input: Record<string, unknown>) => Promise<unknown> | unknown;
+}
+
+export interface IsolateConfig {
+  /** V8 isolate memory limit in MB. Default: 128 */
+  memoryLimit?: number;
+  /** Execution timeout in ms. Default: 10000 */
+  timeLimit?: number;
+  /** Max combined stdout+stderr in bytes. Default: 65536 */
+  outputLimit?: number;
+  /** Max code input size in bytes. Default: 102400 (100KB) */
+  codeLimit?: number;
+  /** npm packages to bundle and make available via require() */
+  libraries?: string[];
+  /** External API access */
+  apis?: {
+    fetch?: { allowedDomains: string[] };
+  };
+  /** Builder-defined custom bindings injected into the isolate */
+  bindings?: Record<string, IsolateBinding>;
 }
 
 export interface PonchoConfig extends McpConfig {
@@ -146,6 +172,8 @@ export interface PonchoConfig extends McpConfig {
   tenantSecrets?: Record<string, string>;
   /** Set to `false` to disable the built-in web UI (headless / API-only mode). */
   webUi?: false;
+  /** Enable sandboxed V8 isolate code execution. */
+  isolate?: IsolateConfig;
   /** Enable browser automation tools. Set `true` for defaults, or provide config. */
   browser?:
     | boolean
