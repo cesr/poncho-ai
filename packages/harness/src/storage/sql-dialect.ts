@@ -279,6 +279,7 @@ export abstract class SqlStorageEngine implements StorageEngine {
 
     update: async (conversation: Conversation): Promise<void> => {
       conversation.updatedAt = Date.now();
+      if (!conversation.createdAt) conversation.createdAt = conversation.updatedAt;
       // Strip heavy internal fields from the data blob — stored in separate columns
       const archive = conversation._toolResultArchive;
       const harnessMessages = conversation._harnessMessages;
@@ -292,26 +293,34 @@ export abstract class SqlStorageEngine implements StorageEngine {
       const harnessJson = harnessMessages ? JSON.stringify(harnessMessages) : null;
       const continuationJson = continuationMessages ? JSON.stringify(continuationMessages) : null;
       const msgCount = conversation.messages?.length ?? 0;
+      const tid = normalizeTenant(conversation.tenantId);
+      const now = new Date(conversation.updatedAt).toISOString();
+      const created = new Date(conversation.createdAt).toISOString();
       await this.executor.run(
         rewrite(
-          `UPDATE conversations
-           SET data = $1, title = $2, message_count = $3, updated_at = $4, tenant_id = $5, owner_id = $6,
-               tool_result_archive = $7, harness_messages = $8, continuation_messages = $9
-           WHERE id = $10 AND agent_id = $11`,
+          `INSERT INTO conversations (id, agent_id, tenant_id, owner_id, title, data, message_count, created_at, updated_at,
+               tool_result_archive, harness_messages, continuation_messages)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           ${this.dialect.upsert(["id", "agent_id"])}
+           data = excluded.data, title = excluded.title, message_count = excluded.message_count,
+           updated_at = excluded.updated_at, tenant_id = excluded.tenant_id, owner_id = excluded.owner_id,
+           tool_result_archive = excluded.tool_result_archive, harness_messages = excluded.harness_messages,
+           continuation_messages = excluded.continuation_messages`,
           this.dialect,
         ),
         [
-          data,
-          conversation.title,
-          msgCount,
-          new Date(conversation.updatedAt).toISOString(),
-          normalizeTenant(conversation.tenantId),
+          conversation.conversationId,
+          this.agentId,
+          tid,
           conversation.ownerId,
+          conversation.title,
+          data,
+          msgCount,
+          created,
+          now,
           archiveJson,
           harnessJson,
           continuationJson,
-          conversation.conversationId,
-          this.agentId,
         ],
       );
     },
