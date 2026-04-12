@@ -1,5 +1,17 @@
 # @poncho-ai/harness
 
+## 0.36.3
+
+### Patch Changes
+
+- [`abb7ec3`](https://github.com/cesr/poncho-ai/commit/abb7ec3c65503f6feaf133f5d2488dc25152a1a8) Thanks [@cesr](https://github.com/cesr)! - fix: messaging conversations not persisting in SQL storage engines
+
+  The messaging runner creates conversations with a deterministic ID and calls
+  `update()` to persist them. But `update()` was a plain UPDATE that silently
+  matched zero rows for new conversations, so messages were never saved.
+  Changed `update()` to an upsert (INSERT ... ON CONFLICT DO UPDATE) so
+  conversations are created on first write and updated on subsequent ones.
+
 ## 0.36.2
 
 ### Patch Changes
