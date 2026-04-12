@@ -110,7 +110,7 @@ export default {
     },
     memory: {
       enabled: true,
-      maxRecallConversations: 20, // Bounds conversation_recall scan size
+      maxRecallConversations: 20, // Bounds conversation_recall keyword search scan size
     },
   },
 

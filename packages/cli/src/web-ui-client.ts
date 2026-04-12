@@ -1794,18 +1794,11 @@ export const getWebUiClientScript = (markedSource: string): string => `
                 state.activeMessages = hydratePendingApprovals(messages, allPending);
                 renderMessages(state.activeMessages, payload.hasActiveRun || payload.hasRunningSubagents);
               }
-              if (payload.hasActiveRun) {
-                // Parent agent started its continuation run — switch to live stream
-                delete state.subagentPollInFlight[conversationId];
-                setStreaming(true);
-                state.activeMessages = hydratePendingApprovals(messages, allPending);
-                streamConversationEvents(conversationId, { liveOnly: true }).finally(() => {
-                  if (state.activeConversationId === conversationId) {
-                    pollUntilRunIdle(conversationId);
-                  }
-                });
-              } else if (payload.hasRunningSubagents) {
-                setTimeout(poll, 3000);
+              if (payload.hasActiveRun || payload.hasRunningSubagents) {
+                // Keep polling while subagents are running or the parent
+                // callback is active. Persisted messages are rendered each
+                // cycle so results appear as soon as they're committed.
+                setTimeout(poll, 2000);
               } else {
                 renderMessages(state.activeMessages, false);
                 await loadConversations();
@@ -2711,6 +2704,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
         state.activeStreamAbortController = streamAbortController;
         state.activeStreamRunId = null;
         let _rafId = 0;
+        let _pendingSubagentsConversation = null;
         setStreaming(true);
         try {
           if (!conversationId) {
@@ -2751,7 +2745,6 @@ export const getWebUiClientScript = (markedSource: string): string => `
           let _maxSteps = 0;
           let _receivedTerminalEvent = false;
           let _shouldContinue = false;
-          let _pendingSubagentsConversation = null;
 
           // Helper to read an SSE stream from a fetch response
           const readSseStream = async (response) => {
@@ -3184,17 +3177,11 @@ export const getWebUiClientScript = (markedSource: string): string => `
           elements.prompt.focus();
         }
 
-        // Subagent callback: after sendMessage fully completes (including
-        // finally cleanup), reload the conversation. loadConversation is
-        // the exact same code path as a manual refresh — if the callback
-        // is still running it connects to the event stream; if it already
-        // finished it just renders the final persisted state.
+        // Subagent callback: after sendMessage completes and subagents are
+        // still running, start polling so we pick up their results and the
+        // parent's callback run (which streams the response to the user).
         if (_pendingSubagentsConversation && state.activeConversationId === _pendingSubagentsConversation) {
-          const cbConvId = _pendingSubagentsConversation;
-          await new Promise(r => setTimeout(r, 1200));
-          if (state.activeConversationId === cbConvId && !state.isStreaming) {
-            await loadConversation(cbConvId);
-          }
+          pollForSubagentResults(_pendingSubagentsConversation);
         }
       };
 

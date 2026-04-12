@@ -1795,6 +1795,7 @@ export const WEB_UI_STYLES = `
       font-size: 11px;
       margin-left: 4px;
       cursor: pointer;
+      white-space: nowrap;
     }
     .subagent-link:hover {
       text-decoration: underline;

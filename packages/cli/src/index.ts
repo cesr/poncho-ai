@@ -2234,12 +2234,101 @@ export const createRequestHandler = async (options?: {
     : createConversationStore(stateConfig, { workingDir, agentId: identity.id });
 
   // ---------------------------------------------------------------------------
+  // Conversation recall parameter builders — shared between main and subagent runs
+  // ---------------------------------------------------------------------------
+  const buildRecallParams = (opts: { ownerId: string; tenantId?: string | null; excludeConversationId: string }) => {
+    let cachedRecallCorpus: unknown[] | undefined;
+    const lazyRecallCorpus = async () => {
+      if (cachedRecallCorpus) return cachedRecallCorpus;
+      const _rc0 = performance.now();
+      let recallConversations: Conversation[];
+      if (typeof conversationStore.listSummaries === "function") {
+        const recallSummaries = (await conversationStore.listSummaries(opts.ownerId, opts.tenantId))
+          .filter((s) => s.conversationId !== opts.excludeConversationId && !s.parentConversationId)
+          .slice(0, 20);
+        recallConversations = (
+          await Promise.all(recallSummaries.map((s) => conversationStore.get(s.conversationId)))
+        ).filter((c): c is NonNullable<typeof c> => c != null);
+      } else {
+        recallConversations = (await conversationStore.list(opts.ownerId, opts.tenantId))
+          .filter((item) => item.conversationId !== opts.excludeConversationId && !item.parentConversationId)
+          .slice(0, 20);
+      }
+      cachedRecallCorpus = recallConversations
+        .map((item) => ({
+          conversationId: item.conversationId,
+          title: item.title,
+          updatedAt: item.updatedAt,
+          content: item.messages
+            .slice(-6)
+            .map((message) => `${message.role}: ${typeof message.content === "string" ? message.content : getTextContent(message)}`)
+            .join("\n")
+            .slice(0, 2000),
+        }))
+        .filter((item) => item.content.length > 0);
+      console.info(`[poncho] recall corpus fetched lazily (${cachedRecallCorpus.length} items, ${(performance.now() - _rc0).toFixed(1)}ms)`);
+      return cachedRecallCorpus;
+    };
+
+    const conversationListFn = async () => {
+      const summaries = typeof conversationStore.listSummaries === "function"
+        ? await conversationStore.listSummaries(opts.ownerId, opts.tenantId)
+        : (await conversationStore.list(opts.ownerId, opts.tenantId)).map((c) => ({
+            conversationId: c.conversationId,
+            title: c.title,
+            updatedAt: c.updatedAt,
+            createdAt: c.createdAt,
+            ownerId: c.ownerId,
+            parentConversationId: c.parentConversationId,
+            messageCount: c.messages.length,
+          }));
+      return summaries
+        .filter((s) => s.conversationId !== opts.excludeConversationId && !s.parentConversationId)
+        .map((s) => ({
+          conversationId: s.conversationId,
+          title: s.title,
+          createdAt: s.createdAt,
+          updatedAt: s.updatedAt,
+          messageCount: s.messageCount,
+        }));
+    };
+
+    const conversationFetchFn = async (targetId: string) => {
+      const conv = await conversationStore.get(targetId);
+      if (!conv) return undefined;
+      return {
+        conversationId: conv.conversationId,
+        title: conv.title,
+        createdAt: conv.createdAt,
+        updatedAt: conv.updatedAt,
+        messages: conv.messages
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .map((m) => ({
+            role: m.role,
+            content: typeof m.content === "string" ? m.content : getTextContent(m),
+          })),
+      };
+    };
+
+    return {
+      __conversationRecallCorpus: lazyRecallCorpus,
+      __conversationListFn: conversationListFn,
+      __conversationFetchFn: conversationFetchFn,
+    };
+  };
+
+  // ---------------------------------------------------------------------------
   // Subagent manager -- allows the agent to spawn child agent conversations.
   // ---------------------------------------------------------------------------
   const MAX_SUBAGENT_NESTING = 3; // root → L1 → L2 = 3 levels; L2 cannot spawn further
   const MAX_CONCURRENT_SUBAGENTS = 2;
 
   const activeSubagentRuns = new Map<string, { abortController: AbortController; harness: AgentHarness; parentConversationId: string }>();
+  // Track parent IDs that have subagents spawned but not yet registered in
+  // activeSubagentRuns (because runSubagent's async initialization hasn't
+  // completed yet). This ensures hasPendingSubagentWorkForParent returns
+  // true immediately after spawn, before the background task registers.
+  const recentlySpawnedParents = new Map<string, number>(); // parentId → count of pending spawns
 
   // Pending subagent approvals: when a subagent hits an approval checkpoint,
   // we store a resolver here so the approval endpoint can signal the waiting runSubagent.
@@ -2302,6 +2391,9 @@ export const createRequestHandler = async (options?: {
     owner: string,
   ): Promise<boolean> => {
     if (hasRunningSubagentsForParent(parentConversationId, owner)) {
+      return true;
+    }
+    if (recentlySpawnedParents.has(parentConversationId)) {
       return true;
     }
     if (pendingCallbackNeeded.has(parentConversationId)) {
@@ -2443,6 +2535,14 @@ export const createRequestHandler = async (options?: {
       abortController: childAbortController,
       runId: null,
     });
+    // Now that we're registered in activeSubagentRuns, decrement the
+    // temporary spawn counter (used to bridge the gap before registration).
+    const spawnCount = recentlySpawnedParents.get(parentConversationId) ?? 0;
+    if (spawnCount <= 1) {
+      recentlySpawnedParents.delete(parentConversationId);
+    } else {
+      recentlySpawnedParents.set(parentConversationId, spawnCount - 1);
+    }
 
     childHarness.unregisterTools(["memory_main_write", "memory_main_edit"]);
 
@@ -2470,6 +2570,7 @@ export const createRequestHandler = async (options?: {
         conversationId: childConversationId,
         tenantId: conversation.tenantId ?? undefined,
         parameters: withToolResultArchiveParam({
+          ...buildRecallParams({ ownerId, tenantId: conversation.tenantId, excludeConversationId: childConversationId }),
           __activeConversationId: childConversationId,
           __ownerId: ownerId,
         }, conversation),
@@ -2794,6 +2895,13 @@ export const createRequestHandler = async (options?: {
     }
     // Callback-injected result messages must be visible to the next parent turn.
     // Keep canonical transcript in sync before resolving callback run history.
+    // Re-read pendingSubagentResults to preserve any results that were appended
+    // by concurrently completing subagents since our snapshot read.
+    const processedIds = new Set(pendingResults.map(pr => pr.subagentId));
+    const freshForPending = await conversationStore.get(conversationId);
+    const arrivedDuringCallback = (freshForPending?.pendingSubagentResults ?? [])
+      .filter(pr => !processedIds.has(pr.subagentId));
+    conversation.pendingSubagentResults = arrivedDuringCallback;
     conversation._harnessMessages = [...conversation.messages];
     conversation.updatedAt = Date.now();
     await conversationStore.update(conversation);
@@ -3000,6 +3108,14 @@ export const createRequestHandler = async (options?: {
       conversation.messages = [{ role: "user", content: opts.task }];
       conversation.updatedAt = Date.now();
       await conversationStore.update(conversation);
+
+      // Register this parent as having a pending spawn BEFORE the async
+      // runSubagent starts, so hasPendingSubagentWorkForParent sees it
+      // immediately when the parent's run:completed event fires.
+      recentlySpawnedParents.set(
+        opts.parentConversationId,
+        (recentlySpawnedParents.get(opts.parentConversationId) ?? 0) + 1,
+      );
 
       broadcastEvent(opts.parentConversationId, {
         type: "subagent:spawned",
@@ -3929,6 +4045,7 @@ export const createRequestHandler = async (options?: {
         conversationId,
         tenantId: conversation.tenantId ?? undefined,
         parameters: withToolResultArchiveParam({
+          ...buildRecallParams({ ownerId, tenantId: conversation.tenantId, excludeConversationId: conversationId }),
           __activeConversationId: conversationId,
           __ownerId: ownerId,
         }, conversation),
@@ -5894,39 +6011,6 @@ export const createRequestHandler = async (options?: {
           });
         }
 
-        let cachedRecallCorpus: unknown[] | undefined;
-        const lazyRecallCorpus = async () => {
-          if (cachedRecallCorpus) return cachedRecallCorpus;
-          const _rc0 = performance.now();
-          let recallConversations: Conversation[];
-          if (typeof conversationStore.listSummaries === "function") {
-            const recallSummaries = (await conversationStore.listSummaries(ownerId, ctx.tenantId))
-              .filter((s) => s.conversationId !== conversationId && !s.parentConversationId)
-              .slice(0, 20);
-            recallConversations = (
-              await Promise.all(recallSummaries.map((s) => conversationStore.get(s.conversationId)))
-            ).filter((c): c is NonNullable<typeof c> => c != null);
-          } else {
-            recallConversations = (await conversationStore.list(ownerId, ctx.tenantId))
-              .filter((item) => item.conversationId !== conversationId && !item.parentConversationId)
-              .slice(0, 20);
-          }
-          cachedRecallCorpus = recallConversations
-            .map((item) => ({
-              conversationId: item.conversationId,
-              title: item.title,
-              updatedAt: item.updatedAt,
-              content: item.messages
-                .slice(-6)
-                .map((message) => `${message.role}: ${typeof message.content === "string" ? message.content : getTextContent(message)}`)
-                .join("\n")
-                .slice(0, 2000),
-            }))
-            .filter((item) => item.content.length > 0);
-          console.info(`[poncho] recall corpus fetched lazily (${cachedRecallCorpus.length} items, ${(performance.now() - _rc0).toFixed(1)}ms)`);
-          return cachedRecallCorpus;
-        };
-
         const execution = await executeConversationTurn({
           harness,
           runInput: {
@@ -5935,7 +6019,7 @@ export const createRequestHandler = async (options?: {
             tenantId: ctx.tenantId ?? undefined,
             parameters: withToolResultArchiveParam({
               ...(bodyParameters ?? {}),
-              __conversationRecallCorpus: lazyRecallCorpus,
+              ...buildRecallParams({ ownerId, tenantId: ctx.tenantId, excludeConversationId: conversationId }),
               __activeConversationId: conversationId,
               __ownerId: ownerId,
             }, conversation),

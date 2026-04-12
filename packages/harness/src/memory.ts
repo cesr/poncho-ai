@@ -29,6 +29,23 @@ type RecallItem = {
   content: string;
 };
 
+type ConversationListItem = {
+  conversationId: string;
+  title: string;
+  createdAt?: number;
+  updatedAt: number;
+  messageCount?: number;
+};
+
+type ConversationDetail = {
+  conversationId: string;
+  title: string;
+  createdAt?: number;
+  updatedAt: number;
+  messages: Array<{ role: string; content: string }>;
+};
+
+
 const DEFAULT_MAIN_MEMORY: MainMemory = {
   content: "",
   updatedAt: 0,
@@ -221,56 +238,146 @@ export const createMemoryTools = (
     defineTool({
       name: "conversation_recall",
       description:
-        "Recall relevant snippets from previous conversations when prior context is likely important (for example: 'as we discussed', 'last time', or ambiguous references).",
+        "Recall past conversations. Three modes:\n" +
+        "- Search: provide 'query' to keyword-search past conversations for relevant snippets.\n" +
+        "- List: provide 'after' and/or 'before' dates to browse conversations by date range.\n" +
+        "- Fetch: provide 'conversationId' to load the full message history of a specific conversation.\n" +
+        "Modes can be combined (e.g. query + date range to search within a time window).",
       inputSchema: {
         type: "object",
         properties: {
           query: {
             type: "string",
-            description: "Search query for past conversation recall",
+            description: "Keyword search query for past conversations",
+          },
+          after: {
+            type: "string",
+            description:
+              "ISO 8601 date string. Only return conversations updated after this date (e.g. '2025-03-01').",
+          },
+          before: {
+            type: "string",
+            description:
+              "ISO 8601 date string. Only return conversations updated before this date.",
+          },
+          conversationId: {
+            type: "string",
+            description: "Fetch the full message history of a specific conversation by ID",
+          },
+          lastN: {
+            type: "number",
+            description: "When fetching a conversation, only return the last N messages (max 50)",
           },
           limit: {
             type: "number",
-            description: "Maximum snippets to return",
-          },
-          excludeConversationId: {
-            type: "string",
-            description: "Optional conversation id to exclude from recall",
+            description: "Maximum results to return (default 20 for list, 3 for search, max 50)",
           },
         },
-        required: ["query"],
         additionalProperties: false,
       },
       handler: async (input, context) => {
         const query = typeof input.query === "string" ? input.query.trim() : "";
-        if (!query) {
-          throw new Error("query is required");
+        const after = typeof input.after === "string" ? input.after : "";
+        const before = typeof input.before === "string" ? input.before : "";
+        const fetchId = typeof input.conversationId === "string" ? input.conversationId.trim() : "";
+        const hasDateFilter = after !== "" || before !== "";
+
+        // Determine mode
+        const mode = fetchId ? "fetch" : (query && !hasDateFilter) ? "search" : "list";
+
+        // --- Fetch mode: load full conversation by ID ---
+        if (mode === "fetch") {
+          const rawFetchFn = context.parameters.__conversationFetchFn;
+          if (typeof rawFetchFn !== "function") {
+            throw new Error("Conversation fetching is not available in this environment.");
+          }
+          const conversation = (await (rawFetchFn as (id: string) => Promise<unknown>)(fetchId)) as
+            | ConversationDetail
+            | undefined;
+          if (!conversation) {
+            throw new Error(`Conversation '${fetchId}' not found.`);
+          }
+          const lastN = typeof input.lastN === "number" ? Math.max(1, Math.min(50, input.lastN)) : undefined;
+          const messages = lastN
+            ? conversation.messages.slice(-lastN)
+            : conversation.messages.slice(-50);
+          return {
+            mode: "fetch",
+            conversationId: conversation.conversationId,
+            title: conversation.title,
+            createdAt: conversation.createdAt
+              ? new Date(conversation.createdAt).toISOString()
+              : undefined,
+            updatedAt: new Date(conversation.updatedAt).toISOString(),
+            messageCount: conversation.messages.length,
+            messages: messages.map((m) => ({
+              role: m.role,
+              content: m.content.slice(0, 4000),
+            })),
+          };
         }
+
+        // --- List mode: browse by date, optionally with keyword filtering ---
+        if (mode === "list") {
+          const rawListFn = context.parameters.__conversationListFn;
+          if (typeof rawListFn !== "function") {
+            throw new Error("Conversation listing is not available in this environment.");
+          }
+          const allConversations = (await (rawListFn as () => Promise<unknown>)()) as ConversationListItem[];
+          const limit = Math.max(1, Math.min(50, typeof input.limit === "number" ? input.limit : 20));
+          const afterMs = after ? new Date(after).getTime() : 0;
+          const beforeMs = before ? new Date(before).getTime() : Infinity;
+
+          let filtered = allConversations.filter((item) => {
+            const ts = item.updatedAt;
+            return ts >= afterMs && ts <= beforeMs;
+          });
+
+          // If query is also provided, score and rank by relevance
+          if (query) {
+            filtered = filtered
+              .map((item) => ({
+                ...item,
+                _score: scoreText(item.title, query),
+              }))
+              .filter((item) => item._score > 0)
+              .sort((a, b) => {
+                if (b._score === a._score) return b.updatedAt - a.updatedAt;
+                return b._score - a._score;
+              });
+          }
+
+          return {
+            mode: "list",
+            conversations: filtered.slice(0, limit).map((item) => ({
+              conversationId: item.conversationId,
+              title: item.title,
+              createdAt: item.createdAt
+                ? new Date(item.createdAt).toISOString()
+                : undefined,
+              updatedAt: new Date(item.updatedAt).toISOString(),
+              messageCount: item.messageCount,
+            })),
+          };
+        }
+
+        // --- Search mode: keyword search across conversation content ---
         const limit = Math.max(
           1,
-          Math.min(5, typeof input.limit === "number" ? input.limit : 3),
+          Math.min(10, typeof input.limit === "number" ? input.limit : 3),
         );
-        const excludeConversationId =
-          typeof input.excludeConversationId === "string"
-            ? input.excludeConversationId
-            : "";
         const rawCorpus = context.parameters.__conversationRecallCorpus;
         const resolvedCorpus =
           typeof rawCorpus === "function" ? await (rawCorpus as () => Promise<unknown>)() : rawCorpus;
         const corpus = asRecallCorpus(resolvedCorpus).slice(0, maxRecallConversations);
         const results = corpus
-          .filter((item) =>
-            excludeConversationId ? item.conversationId !== excludeConversationId : true,
-          )
           .map((item) => ({
             ...item,
             score: scoreText(`${item.title}\n${item.content}`, query),
           }))
           .filter((item) => item.score > 0)
           .sort((a, b) => {
-            if (b.score === a.score) {
-              return b.updatedAt - a.updatedAt;
-            }
+            if (b.score === a.score) return b.updatedAt - a.updatedAt;
             return b.score - a.score;
           })
           .slice(0, limit)
@@ -280,7 +387,7 @@ export const createMemoryTools = (
             updatedAt: item.updatedAt,
             snippet: buildRecallSnippet(item.content, query),
           }));
-        return { results };
+        return { mode: "search", results };
       },
     }),
   ];

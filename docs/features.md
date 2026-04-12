@@ -643,7 +643,7 @@ When `memory.enabled` is true in `poncho.config.js`, the harness enables a simpl
 - A single persistent main memory document is loaded at run start and interpolated into the system prompt under `## Persistent Memory`.
 - `memory_main_write` overwrites the entire memory document (for initial writes or full rewrites).
 - `memory_main_edit` performs targeted string-replacement edits on memory (find `old_str`, replace with `new_str`), mirroring `edit_file` semantics. The tool description instructs the model to proactively evaluate each turn whether durable memory should be updated.
-- `conversation_recall` can search recent prior conversations (keyword scoring) when historical context is relevant (`as we discussed`, `last time`, etc.).
+- `conversation_recall` can search, browse, and fetch past conversations. It supports keyword search (scoring by relevance), date-range filtering (`after`/`before`), and fetching a specific conversation's full message history by ID.
 
 ```javascript
 // poncho.config.js
@@ -663,7 +663,7 @@ Available memory tools:
 - `memory_main_get` — read the current memory document
 - `memory_main_write` — overwrite the entire memory document
 - `memory_main_edit` — edit memory via exact string replacement (`old_str` / `new_str`)
-- `conversation_recall` — search past conversations
+- `conversation_recall` — search past conversations by keyword, browse by date range, or fetch a specific conversation's full history
 
 ## Multi-Tenancy
 
