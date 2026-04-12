@@ -301,7 +301,7 @@ export abstract class SqlStorageEngine implements StorageEngine {
           `INSERT INTO conversations (id, agent_id, tenant_id, owner_id, title, data, message_count, created_at, updated_at,
                tool_result_archive, harness_messages, continuation_messages)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-           ${this.dialect.upsert(["id", "agent_id"])}
+           ${this.dialect.upsert(["id"])}
            data = excluded.data, title = excluded.title, message_count = excluded.message_count,
            updated_at = excluded.updated_at, tenant_id = excluded.tenant_id, owner_id = excluded.owner_id,
            tool_result_archive = excluded.tool_result_archive, harness_messages = excluded.harness_messages,
