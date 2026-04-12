@@ -61,49 +61,93 @@ When possible, run package-scoped checks for faster feedback:
 ## Releasing packages to npm
 
 This repo uses [Changesets](https://github.com/changesets/changesets) for versioning and publishing.
+CI handles everything — **never run `changeset version` or `pnpm release` locally**.
 
-### Adding a changeset (during development)
+### Step 1: Add changesets during development
 
-When you make changes that should be released, run:
+Create a `.changeset/*.md` file for each releasable change. You can write them
+directly or use the interactive prompt:
 
 ```bash
 pnpm changeset
 ```
 
-This interactively prompts for:
-1. Which packages changed
-2. Bump type (major/minor/patch)
-3. Summary of changes
+Changeset files have this format:
 
-A markdown file is created in `.changeset/` — commit it with your PR.
+```markdown
+---
+"@poncho-ai/harness": minor
+"@poncho-ai/cli": minor
+---
 
-### Publishing a release
-
-Default flow (CI via GitHub Actions):
-
-1. Add and commit a changeset in your PR (`pnpm changeset`).
-2. Merge the PR to `main`.
-3. The `Release` workflow opens/updates a release PR (`chore: release packages`) using `changeset version`.
-4. Merge the release PR to publish packages and create GitHub Releases.
-
-Manual fallback (when CI release is unavailable):
-
-```bash
-pnpm changeset version   # Consumes changesets, bumps versions, generates CHANGELOGs
-pnpm release             # Builds all packages and publishes to npm
+Short summary of what changed and why.
 ```
 
-**Note:** Publishing requires either:
-- A granular npm access token with "Bypass 2FA for automation" enabled, or
-- Manual publish with OTP: `pnpm -r publish --access public --otp YOUR_CODE`
+Commit changeset files alongside your code — they're part of the change, not a
+separate step. Every feature/fix commit that touches a publishable package
+should include a changeset.
 
-### Publish order
+### Step 2: Push to main
 
-Changesets handles dependency ordering automatically. Manual order if needed:
-1. `@poncho-ai/sdk` (no internal deps)
-2. `@poncho-ai/harness` (depends on sdk)
-3. `@poncho-ai/client` (depends on sdk)
-4. `@poncho-ai/cli` (depends on sdk + harness)
+Push your commits (with changeset files) to `main`. The `Release` GitHub Action
+triggers automatically and does one of two things:
+
+- **Changeset files present** → CI runs `changeset version`, opens (or updates)
+  a PR titled `chore: release packages` with version bumps and changelog entries.
+- **No changeset files** → CI checks for unpublished versions and publishes them
+  to npm, creates git tags, and GitHub Releases.
+
+### Step 3: Merge the release PR
+
+Review the `chore: release packages` PR — it contains the version bumps,
+updated `CHANGELOG.md` files, and any dependency cascade bumps
+(`updateInternalDependencies: "patch"` in changeset config).
+
+Merge it. CI runs again, sees unpublished versions, and publishes everything.
+
+### Step 4: Verify
+
+```bash
+gh run list --limit 1                    # Should be ✓ success
+gh release list --limit 5                # Should show new releases
+```
+
+### What NOT to do
+
+| Don't | Why |
+|-------|-----|
+| `pnpm changeset version` locally | CI does this in the release PR. Running it locally consumes changesets before CI sees them. |
+| `pnpm release` locally | Publishes before CI can create GitHub Releases. CI then sees "already published" and skips. |
+| Forget to include changeset files | Commits without changesets won't be released. CI only bumps versions for consumed changesets. |
+| Forget dependency cascades | `changeset version` auto-bumps dependents. If you version locally by mistake, check `git status` for uncommitted bumps in other packages. |
+
+### Checking for unreleased work
+
+```bash
+# Show unreleased commits per package
+for pkg in sdk harness cli client browser messaging; do
+  ver=$(grep '"version"' packages/$pkg/package.json | grep -o '[0-9.]*')
+  echo "@poncho-ai/$pkg@$ver — $(git log --oneline "@poncho-ai/$pkg@$ver"..HEAD -- "packages/$pkg" | grep -vc "^.*chore:" ) unreleased"
+done
+```
+
+All counts should be 0 after a release.
+
+### Manual fallback (when CI is broken)
+
+Only use this if the GitHub Action is failing for infra reasons:
+
+```bash
+pnpm changeset version   # Consume changesets, bump versions
+git add -A && git commit -m "chore: release packages"
+git push
+pnpm release             # Build + publish to npm
+git push --tags
+# Then manually create GitHub Releases via `gh release create`
+```
+
+Requires either a granular npm token with 2FA bypass or manual OTP:
+`pnpm -r publish --access public --otp YOUR_CODE`
 
 ## Personal Preferences
 
@@ -111,10 +155,6 @@ Changesets handles dependency ordering automatically. Manual order if needed:
   - CLI-only changes: `pnpm --filter poncho build`
   - Cross-package/runtime changes: `pnpm --filter @poncho/sdk build && pnpm --filter @poncho/harness build && pnpm --filter poncho build`
 - Changesets changelog generation uses `@changesets/changelog-github` with repo `cesr/poncho-ai`.
-- Changeset lifecycle guardrail:
-  - Keep `.changeset/*.md` files in feature PRs.
-  - After merging the `chore: release packages` PR, run `git pull --ff-only origin main`; consumed changeset files should disappear.
-  - If old untracked `.changeset/*.md` files remain, treat them as stale release artifacts and ask before deleting.
 - Always ask for confirmation before deleting any file or folder.
 - Never delete files or folders outside this repository under any circumstances.
 
