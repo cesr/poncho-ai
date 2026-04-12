@@ -79,6 +79,72 @@ export interface IsolateBinding {
   handler: (input: Record<string, unknown>) => Promise<unknown> | unknown;
 }
 
+/**
+ * Network access configuration for the bash sandbox (curl, wget).
+ * Network access is disabled by default — you must explicitly allow URLs.
+ */
+export interface NetworkConfig {
+  /**
+   * List of allowed URL prefixes. Each entry must be a full origin (scheme + host),
+   * optionally followed by a path prefix.
+   *
+   * Examples:
+   * - `"https://api.example.com"` — allows all paths on this origin
+   * - `"https://api.example.com/v1/"` — allows only paths starting with /v1/
+   *
+   * Entries can be plain strings or objects with header transforms for credentials brokering:
+   * ```
+   * { url: "https://api.example.com", transform: [{ headers: { "Authorization": "Bearer ..." } }] }
+   * ```
+   */
+  allowedUrls?: (string | { url: string; transform?: { headers: Record<string, string> }[] })[];
+  /** Allowed HTTP methods. Defaults to `["GET", "HEAD"]`. */
+  allowedMethods?: ("GET" | "HEAD" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS")[];
+  /** Bypass the allow-list and permit all URLs and methods. Only use in trusted environments. */
+  dangerouslyAllowAll?: boolean;
+  /** Maximum number of redirects to follow. Default: 20. */
+  maxRedirects?: number;
+  /** Request timeout in milliseconds. Default: 30000. */
+  timeoutMs?: number;
+  /** Maximum response body size in bytes. Default: 10MB. */
+  maxResponseSize?: number;
+  /** Reject URLs resolving to private/loopback IPs (SSRF protection). Default: false. */
+  denyPrivateRanges?: boolean;
+}
+
+export interface BashExecutionLimits {
+  /** Maximum function call/recursion depth. Default: 100. */
+  maxCallDepth?: number;
+  /** Maximum number of commands to execute. Default: 10000. */
+  maxCommandCount?: number;
+  /** Maximum loop iterations for while/for/until. Default: 10000. */
+  maxLoopIterations?: number;
+  /** Maximum total output size (stdout + stderr) in bytes. Default: 10MB. */
+  maxOutputSize?: number;
+  /** Maximum string length in bytes. Default: 10MB. */
+  maxStringLength?: number;
+  /** Maximum array elements. Default: 100000. */
+  maxArrayElements?: number;
+}
+
+export interface BashConfig {
+  /**
+   * Whitelist of allowed commands. When set, only these commands are available.
+   * Omit to allow all built-in commands.
+   *
+   * @example ["cat", "grep", "jq", "echo", "ls", "head", "tail", "wc", "sort"]
+   */
+  commands?: string[];
+  /** Execution limits to prevent runaway scripts. */
+  executionLimits?: BashExecutionLimits;
+  /** Enable python3/python commands in the sandbox. Default: false. */
+  python?: boolean;
+  /** Enable js-exec/node commands via QuickJS in the sandbox. Default: false. */
+  javascript?: boolean;
+  /** Environment variables injected into every bash session. */
+  env?: Record<string, string>;
+}
+
 export interface IsolateConfig {
   /** V8 isolate memory limit in MB. Default: 128 */
   memoryLimit?: number;
@@ -174,6 +240,13 @@ export interface PonchoConfig extends McpConfig {
   webUi?: false;
   /** Enable sandboxed V8 isolate code execution. */
   isolate?: IsolateConfig;
+  /**
+   * Network access for sandboxed tools (bash curl/wget, isolate fetch).
+   * Disabled by default — you must explicitly allow URLs.
+   */
+  network?: NetworkConfig;
+  /** Bash sandbox configuration. */
+  bash?: BashConfig;
   /** Enable browser automation tools. Set `true` for defaults, or provide config. */
   browser?:
     | boolean

@@ -5526,6 +5526,49 @@ export const createRequestHandler = async (options?: {
       return;
     }
 
+    const vfsMatch = pathname.match(/^\/api\/vfs\/(.+)$/);
+    if (vfsMatch && request.method === "GET") {
+      const vfsPath = "/" + decodeURIComponent(vfsMatch[1] ?? "");
+      const tenantId = ctx.tenantId ?? "__default__";
+      const engine = harness.storageEngine;
+      if (!engine) {
+        writeJson(response, 500, { code: "NO_ENGINE", message: "Storage engine not available" });
+        return;
+      }
+      try {
+        const stat = await engine.vfs.stat(tenantId, vfsPath);
+        if (!stat || stat.type !== "file") {
+          writeJson(response, 404, { code: "NOT_FOUND", message: "File not found in VFS" });
+          return;
+        }
+        const data = await engine.vfs.readFile(tenantId, vfsPath);
+        const ext = vfsPath.split(".").pop()?.toLowerCase() ?? "";
+        const mimeMap: Record<string, string> = {
+          jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+          gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
+          pdf: "application/pdf", mp4: "video/mp4", webm: "video/webm",
+          mp3: "audio/mpeg", wav: "audio/wav", txt: "text/plain",
+          json: "application/json", csv: "text/csv", html: "text/html",
+          xml: "application/xml", zip: "application/zip",
+          doc: "application/msword", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          xls: "application/vnd.ms-excel", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        };
+        const contentType = stat.mimeType ?? mimeMap[ext] ?? "application/octet-stream";
+        const filename = vfsPath.split("/").pop() ?? "download";
+        const inline = contentType.startsWith("image/") || contentType.startsWith("text/") || contentType === "application/pdf";
+        response.writeHead(200, {
+          "Content-Type": contentType,
+          "Content-Length": data.length,
+          "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="${filename}"`,
+          "Cache-Control": "no-cache",
+        });
+        response.end(Buffer.from(data));
+      } catch {
+        writeJson(response, 404, { code: "NOT_FOUND", message: "File not found in VFS" });
+      }
+      return;
+    }
+
     if (pathname === "/api/slash-commands" && request.method === "GET") {
       const skills = harness.listSkills().map((s) => ({
         command: "/" + s.name,

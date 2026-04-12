@@ -1436,6 +1436,8 @@ export class AgentHarness {
       engine,
       { maxFileSize, maxTotalStorage },
       bashWorkingDir,
+      config?.bash,
+      config?.network,
     );
     // Register bash tool
     this.registerIfMissing(createBashTool(this.bashManager));
@@ -1451,7 +1453,8 @@ export class AgentHarness {
         config: config.isolate,
         bashManager: this.bashManager,
         libraryPreamble,
-        description: buildRunCodeDescription(config.isolate),
+        description: buildRunCodeDescription(config.isolate, !!config.network),
+        network: config.network,
       });
       this.registerIfMissing(runCodeTool);
     }
@@ -1877,7 +1880,9 @@ Examples:${
             : ""
         }
 - Write a working file: \`echo "data" > /notes.txt\`
-- Process data: \`cat /data.csv | awk -F, '{print $2}' | sort | uniq -c\``
+- Process data: \`cat /data.csv | awk -F, '{print $2}' | sort | uniq -c\`
+
+Files in the VFS are accessible to the user via \`/api/vfs/{path}\`. For example, a file at \`/downloads/report.pdf\` can be linked as \`/api/vfs/downloads/report.pdf\`. Use this to share downloadable files with the user.`
       : "";
 
     // Isolate context (code execution guidance + type stubs)

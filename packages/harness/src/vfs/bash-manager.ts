@@ -3,21 +3,80 @@
 // ---------------------------------------------------------------------------
 
 import { Bash } from "just-bash";
+import type {
+  BashOptions,
+  CommandName,
+  NetworkConfig as JustBashNetworkConfig,
+} from "just-bash";
 import type { StorageEngine } from "../storage/engine.js";
+import type { BashConfig, NetworkConfig } from "../config.js";
 import { PonchoFsAdapter } from "./poncho-fs-adapter.js";
 import { createBashFs } from "./create-bash-fs.js";
 import type { PostgresEngine } from "../storage/postgres-engine.js";
 
+/** Convert poncho NetworkConfig → just-bash NetworkConfig. */
+function toJustBashNetwork(cfg: NetworkConfig): JustBashNetworkConfig {
+  return {
+    allowedUrlPrefixes: cfg.allowedUrls,
+    allowedMethods: cfg.allowedMethods,
+    dangerouslyAllowFullInternetAccess: cfg.dangerouslyAllowAll,
+    maxRedirects: cfg.maxRedirects,
+    timeoutMs: cfg.timeoutMs,
+    maxResponseSize: cfg.maxResponseSize,
+    denyPrivateRanges: cfg.denyPrivateRanges,
+  };
+}
+
+/** Build the just-bash BashOptions from poncho BashConfig + NetworkConfig. */
+function toBashOptions(
+  cfg: BashConfig | undefined,
+  network: NetworkConfig | undefined,
+): Partial<BashOptions> {
+  const opts: Partial<BashOptions> = {};
+
+  if (network) {
+    opts.network = toJustBashNetwork(network);
+  }
+
+  if (!cfg) return opts;
+
+  if (cfg.commands) {
+    opts.commands = cfg.commands as CommandName[];
+  }
+
+  if (cfg.executionLimits) {
+    opts.executionLimits = { ...cfg.executionLimits };
+  }
+
+  if (cfg.python) {
+    opts.python = true;
+  }
+
+  if (cfg.javascript) {
+    opts.javascript = true;
+  }
+
+  if (cfg.env) {
+    opts.env = cfg.env;
+  }
+
+  return opts;
+}
+
 export class BashEnvironmentManager {
   private environments = new Map<string, Bash>();
   private readonly workingDir: string | null;
+  private readonly bashOptions: Partial<BashOptions>;
 
   constructor(
     private engine: StorageEngine,
     private limits: { maxFileSize: number; maxTotalStorage: number },
     workingDir: string | null,
+    bashConfig?: BashConfig,
+    network?: NetworkConfig,
   ) {
     this.workingDir = workingDir;
+    this.bashOptions = toBashOptions(bashConfig, network);
   }
 
   getOrCreate(tenantId: string): Bash {
@@ -25,7 +84,11 @@ export class BashEnvironmentManager {
     if (!bash) {
       const adapter = new PonchoFsAdapter(this.engine, tenantId, this.limits);
       const fs = createBashFs(adapter, this.workingDir);
-      bash = new Bash({ fs, cwd: "/" });
+      bash = new Bash({
+        fs,
+        cwd: "/",
+        ...this.bashOptions,
+      });
       this.environments.set(tenantId, bash);
     }
     return bash;

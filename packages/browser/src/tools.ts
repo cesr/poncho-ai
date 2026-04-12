@@ -10,7 +10,8 @@ export function createBrowserTools(
     {
       name: "browser_open",
       description:
-        "Open a URL in a headless browser. Returns the page title. Use this to navigate to websites and web applications.",
+        "Open a URL in a headless browser. Returns the page title. Use this to navigate to websites and web applications. " +
+        "To open files from the virtual filesystem, use /api/vfs/{path} (e.g. /api/vfs/downloads/report.pdf).",
       inputSchema: {
         type: "object",
         properties: {

@@ -1,9 +1,12 @@
 // ---------------------------------------------------------------------------
 // Isolate Bindings – factory functions that create IsolateBinding objects
 // for VFS operations, scoped fetch, and builder custom bindings.
+//
+// All bindings use __poncho_ prefix to avoid colliding with the standard
+// API polyfills that wrap them (see polyfills.ts).
 // ---------------------------------------------------------------------------
 
-import type { IsolateBinding, IsolateConfig } from "../config.js";
+import type { IsolateBinding, IsolateConfig, NetworkConfig } from "../config.js";
 import type { PonchoFsAdapter } from "../vfs/poncho-fs-adapter.js";
 
 // ---------------------------------------------------------------------------
@@ -14,26 +17,25 @@ export function createVfsBindings(
   adapter: PonchoFsAdapter,
 ): Record<string, IsolateBinding> {
   return {
-    fs_read: {
+    __poncho_fs_read: {
       description: "Read a text file from the VFS",
       inputSchema: {
         type: "object",
-        properties: { path: { type: "string", description: "Absolute path in the VFS" } },
+        properties: { path: { type: "string" } },
         required: ["path"],
       },
       handler: async (input) => {
-        const content = await adapter.readFile(input.path as string);
-        return content;
+        return await adapter.readFile(input.path as string);
       },
     },
 
-    fs_write: {
+    __poncho_fs_write: {
       description: "Write a text file to the VFS",
       inputSchema: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Absolute path in the VFS" },
-          content: { type: "string", description: "Text content to write" },
+          path: { type: "string" },
+          content: { type: "string" },
         },
         required: ["path", "content"],
       },
@@ -42,11 +44,11 @@ export function createVfsBindings(
       },
     },
 
-    fs_read_binary: {
-      description: "Read a binary file from the VFS (returns base64)",
+    __poncho_fs_read_binary: {
+      description: "Read a binary file (returns base64)",
       inputSchema: {
         type: "object",
-        properties: { path: { type: "string", description: "Absolute path in the VFS" } },
+        properties: { path: { type: "string" } },
         required: ["path"],
       },
       handler: async (input) => {
@@ -55,13 +57,13 @@ export function createVfsBindings(
       },
     },
 
-    fs_write_binary: {
-      description: "Write a binary file to the VFS (content is base64-encoded)",
+    __poncho_fs_write_binary: {
+      description: "Write a binary file (content is base64)",
       inputSchema: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Absolute path in the VFS" },
-          content: { type: "string", description: "Base64-encoded binary content" },
+          path: { type: "string" },
+          content: { type: "string" },
         },
         required: ["path", "content"],
       },
@@ -71,11 +73,11 @@ export function createVfsBindings(
       },
     },
 
-    fs_list: {
-      description: "List files and directories at a path",
+    __poncho_fs_list: {
+      description: "List directory entries",
       inputSchema: {
         type: "object",
-        properties: { path: { type: "string", description: "Directory path in the VFS" } },
+        properties: { path: { type: "string" } },
         required: ["path"],
       },
       handler: async (input) => {
@@ -83,11 +85,11 @@ export function createVfsBindings(
       },
     },
 
-    fs_exists: {
-      description: "Check if a file or directory exists",
+    __poncho_fs_exists: {
+      description: "Check if path exists",
       inputSchema: {
         type: "object",
-        properties: { path: { type: "string", description: "Absolute path in the VFS" } },
+        properties: { path: { type: "string" } },
         required: ["path"],
       },
       handler: async (input) => {
@@ -95,11 +97,11 @@ export function createVfsBindings(
       },
     },
 
-    fs_delete: {
+    __poncho_fs_delete: {
       description: "Delete a file or directory",
       inputSchema: {
         type: "object",
-        properties: { path: { type: "string", description: "Absolute path in the VFS" } },
+        properties: { path: { type: "string" } },
         required: ["path"],
       },
       handler: async (input) => {
@@ -107,11 +109,11 @@ export function createVfsBindings(
       },
     },
 
-    fs_mkdir: {
+    __poncho_fs_mkdir: {
       description: "Create a directory (recursive)",
       inputSchema: {
         type: "object",
-        properties: { path: { type: "string", description: "Directory path to create" } },
+        properties: { path: { type: "string" } },
         required: ["path"],
       },
       handler: async (input) => {
@@ -119,11 +121,11 @@ export function createVfsBindings(
       },
     },
 
-    fs_stat: {
-      description: "Get file/directory metadata (size, type, mtime)",
+    __poncho_fs_stat: {
+      description: "Get file metadata",
       inputSchema: {
         type: "object",
-        properties: { path: { type: "string", description: "Absolute path in the VFS" } },
+        properties: { path: { type: "string" } },
         required: ["path"],
       },
       handler: async (input) => {
@@ -145,28 +147,27 @@ export function createVfsBindings(
 
 export function createFetchBinding(
   allowedDomains: string[],
+  network?: NetworkConfig,
 ): IsolateBinding {
+  const allowAll = network?.dangerouslyAllowAll === true;
   const domainSet = new Set(allowedDomains.map((d) => d.toLowerCase()));
 
   return {
-    description: `HTTP fetch restricted to: ${allowedDomains.join(", ")}`,
+    description: "Internal fetch binding",
     inputSchema: {
       type: "object",
       properties: {
-        url: { type: "string", description: "URL to fetch" },
-        method: { type: "string", description: "HTTP method (default: GET)" },
-        headers: {
-          type: "object",
-          description: "Request headers",
-          additionalProperties: { type: "string" },
-        },
-        body: { type: "string", description: "Request body" },
+        url: { type: "string" },
+        method: { type: "string" },
+        headers: { type: "object", additionalProperties: { type: "string" } },
+        body: { type: "string" },
+        binary: { type: "boolean" },
       },
       required: ["url"],
     },
     handler: async (input) => {
       const url = new URL(input.url as string);
-      if (!domainSet.has(url.hostname.toLowerCase())) {
+      if (!allowAll && !domainSet.has(url.hostname.toLowerCase())) {
         throw new Error(
           `Fetch blocked: domain "${url.hostname}" is not in the allowed list [${allowedDomains.join(", ")}]`,
         );
@@ -176,14 +177,20 @@ export function createFetchBinding(
         method: (input.method as string) ?? "GET",
         headers: (input.headers as Record<string, string>) ?? undefined,
         body: (input.body as string) ?? undefined,
-        redirect: "manual",
+        redirect: "follow",
       });
 
-      const body = await resp.text();
       const headers: Record<string, string> = {};
       resp.headers.forEach((v, k) => { headers[k] = v; });
 
-      return { status: resp.status, headers, body };
+      if (input.binary) {
+        const buf = await resp.arrayBuffer();
+        const base64 = Buffer.from(buf).toString("base64");
+        return { status: resp.status, statusText: resp.statusText, headers, body: base64, encoding: "base64" };
+      }
+
+      const body = await resp.text();
+      return { status: resp.status, statusText: resp.statusText, headers, body };
     },
   };
 }
@@ -195,6 +202,5 @@ export function createFetchBinding(
 export function mergeBuilderBindings(
   configBindings: NonNullable<IsolateConfig["bindings"]>,
 ): Record<string, IsolateBinding> {
-  // Config bindings are already in IsolateBinding format
   return { ...configBindings };
 }

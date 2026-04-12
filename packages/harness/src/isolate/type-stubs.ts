@@ -11,29 +11,69 @@ import type { IsolateConfig, IsolateBinding } from "../config.js";
 export function generateIsolateTypeStubs(config: IsolateConfig): string {
   const lines: string[] = [];
 
-  // VFS
+  // Standard APIs
   lines.push(
-    "// Filesystem (persistent virtual filesystem, all async)",
-    "declare function fs_read(input: { path: string }): Promise<string>;",
-    "declare function fs_write(input: { path: string; content: string }): Promise<void>;",
-    "declare function fs_read_binary(input: { path: string }): Promise<string>; // returns base64",
-    "declare function fs_write_binary(input: { path: string; content: string }): Promise<void>; // content is base64",
-    "declare function fs_list(input: { path: string }): Promise<string[]>;",
-    "declare function fs_exists(input: { path: string }): Promise<boolean>;",
-    "declare function fs_delete(input: { path: string }): Promise<void>;",
-    "declare function fs_mkdir(input: { path: string }): Promise<void>;",
-    "declare function fs_stat(input: { path: string }): Promise<{ isFile: boolean; isDirectory: boolean; size: number; mtime: string }>;",
+    "// Standard Web/Node.js APIs available in the sandbox",
+    "",
+    "// --- fetch (standard Web API) ---",
+    "declare function fetch(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<Response>;",
+    "declare class Response {",
+    "  readonly ok: boolean;",
+    "  readonly status: number;",
+    "  readonly statusText: string;",
+    "  readonly headers: Headers;",
+    "  text(): Promise<string>;",
+    "  json(): Promise<any>;",
+    "  arrayBuffer(): Promise<ArrayBuffer>;",
+    "  blob(): Promise<Blob>;",
+    "}",
+    "",
+    "// --- fs (Node.js-compatible) ---",
+    "declare const fs: {",
+    "  readFile(path: string, encoding?: string): Promise<string | Buffer>;",
+    "  writeFile(path: string, data: string | Buffer | Uint8Array): Promise<void>;",
+    "  readdir(path: string): Promise<string[]>;",
+    "  mkdir(path: string): Promise<void>;",
+    "  stat(path: string): Promise<{ isFile(): boolean; isDirectory(): boolean; size: number; mtime: Date }>;",
+    "  exists(path: string): Promise<boolean>;",
+    "  unlink(path: string): Promise<void>;",
+    "  rm(path: string): Promise<void>;",
+    "};",
+    "",
+    "// --- path ---",
+    "declare const path: {",
+    "  join(...parts: string[]): string;",
+    "  resolve(...parts: string[]): string;",
+    "  basename(p: string, ext?: string): string;",
+    "  dirname(p: string): string;",
+    "  extname(p: string): string;",
+    "};",
+    "",
+    "// --- Buffer, encoding, crypto ---",
+    "declare class Buffer extends Uint8Array {",
+    "  static from(input: string | ArrayBuffer | Uint8Array | number[], encoding?: string): Buffer;",
+    "  static alloc(size: number, fill?: number): Buffer;",
+    "  static concat(list: Uint8Array[]): Buffer;",
+    "  toString(encoding?: 'utf-8' | 'base64' | 'hex'): string;",
+    "}",
+    "declare function atob(data: string): string;",
+    "declare function btoa(data: string): string;",
+    "declare function setTimeout(fn: () => void, ms?: number): number;",
+    "declare function clearTimeout(id: number): void;",
+    "declare const crypto: { randomUUID(): string; getRandomValues(arr: Uint8Array): Uint8Array };",
+    "declare function structuredClone<T>(value: T): T;",
   );
 
-  // Fetch
-  if (config.apis?.fetch) {
-    const domains = config.apis.fetch.allowedDomains.join(", ");
-    lines.push(
-      "",
-      `// HTTP fetch (restricted to: ${domains})`,
-      "declare function fetch(input: { url: string; method?: string; headers?: Record<string, string>; body?: string }): Promise<{ status: number; headers: Record<string, string>; body: string }>;",
-    );
-  }
+  // Console
+  lines.push(
+    "",
+    "// Console (output captured and returned in tool result)",
+    "declare const console: {",
+    "  log(...args: unknown[]): void; error(...args: unknown[]): void;",
+    "  warn(...args: unknown[]): void; info(...args: unknown[]): void;",
+    "  table(data: unknown): void; time(label?: string): void; timeEnd(label?: string): void;",
+    "};",
+  );
 
   // Builder custom bindings
   if (config.bindings) {
@@ -45,13 +85,6 @@ export function generateIsolateTypeStubs(config: IsolateConfig): string {
       }
     }
   }
-
-  // Console
-  lines.push(
-    "",
-    "// Console (output captured and returned in tool result)",
-    "declare const console: { log(...args: unknown[]): void; error(...args: unknown[]): void; warn(...args: unknown[]): void; info(...args: unknown[]): void; debug(...args: unknown[]): void; };",
-  );
 
   // Libraries
   if (config.libraries?.length) {
@@ -68,27 +101,37 @@ export function generateIsolateTypeStubs(config: IsolateConfig): string {
 /**
  * Build the dynamic tool description for `run_code` based on the isolate config.
  */
-export function buildRunCodeDescription(config: IsolateConfig): string {
+export function buildRunCodeDescription(
+  config: IsolateConfig,
+  hasNetwork?: boolean,
+): string {
   const parts: string[] = [
-    "Execute JavaScript/TypeScript code in a sandboxed V8 isolate.",
+    "Execute JavaScript/TypeScript code in a sandboxed V8 isolate with standard Node.js/Web APIs.",
     "",
     "Input: provide either `code` (inline string) or `file` (path to a .js/.ts file in the VFS).",
     "",
-    "Available APIs inside the isolate (all async, all take a single object argument):",
-    "- fs_read({path}) / fs_write({path, content}) / fs_read_binary({path}) / fs_write_binary({path, content})",
-    "- fs_list({path}) / fs_exists({path}) / fs_delete({path}) / fs_mkdir({path}) / fs_stat({path})",
-    "- console.log() / console.error() -- output captured and returned (not async)",
+    "Available standard APIs:",
+    "- fs.readFile(path, encoding?) / fs.writeFile(path, data) / fs.readdir(path) / fs.mkdir(path)",
+    "- fs.stat(path) / fs.exists(path) / fs.unlink(path)",
+    "- path.join() / path.resolve() / path.basename() / path.dirname() / path.extname()",
+    "- Buffer.from() / Buffer.alloc() / Buffer.concat() / buf.toString(encoding)",
+    "- atob() / btoa() / setTimeout() / crypto.randomUUID() / structuredClone()",
+    "- console.log() / console.error() / console.table()",
   ];
 
-  if (config.apis?.fetch) {
+  if (hasNetwork || config.apis?.fetch) {
     parts.push(
-      `- fetch({url, method?, headers?, body?}) -- restricted to: ${config.apis.fetch.allowedDomains.join(", ")}`,
+      "- fetch(url, init?) — standard Web fetch API with Response.text(), .json(), .arrayBuffer()",
+    );
+  } else {
+    parts.push(
+      "- fetch() — not available (enable `network` in poncho.config.js)",
     );
   }
 
   if (config.bindings) {
     for (const [name, binding] of Object.entries(config.bindings)) {
-      parts.push(`- ${name}({...}) -- ${binding.description}`);
+      parts.push(`- ${name}({...}) — ${binding.description}`);
     }
   }
 

@@ -3,10 +3,11 @@
 // ---------------------------------------------------------------------------
 
 import { defineTool, type ToolDefinition } from "@poncho-ai/sdk";
-import type { IsolateConfig, IsolateBinding } from "../config.js";
+import type { IsolateConfig, IsolateBinding, NetworkConfig } from "../config.js";
 import type { BashEnvironmentManager } from "../vfs/bash-manager.js";
 import { createIsolateRuntime, type IsolateRuntime } from "./runtime.js";
 import { createVfsBindings, createFetchBinding, mergeBuilderBindings } from "./bindings.js";
+import { buildPolyfillPreamble } from "./polyfills.js";
 
 // ---------------------------------------------------------------------------
 // TS stripping via esbuild (dynamic import)
@@ -64,6 +65,8 @@ export interface CreateRunCodeToolOptions {
   libraryPreamble: string | null;
   /** Dynamic tool description built from config. */
   description: string;
+  /** Top-level network config — auto-registers fetch binding when set. */
+  network?: NetworkConfig;
 }
 
 export function createRunCodeTool(opts: CreateRunCodeToolOptions): ToolDefinition {
@@ -82,12 +85,32 @@ export function createRunCodeTool(opts: CreateRunCodeToolOptions): ToolDefinitio
 
   // Static bindings (created once, reused across calls)
   const staticBindings: Record<string, IsolateBinding> = {};
+
+  // Explicit isolate.apis.fetch takes precedence, then top-level network config
   if (config.apis?.fetch) {
-    staticBindings.fetch = createFetchBinding(config.apis.fetch.allowedDomains);
+    staticBindings.__poncho_fetch = createFetchBinding(config.apis.fetch.allowedDomains);
+  } else if (opts.network) {
+    const net = opts.network;
+    if (net.dangerouslyAllowAll) {
+      staticBindings.__poncho_fetch = createFetchBinding([], net);
+    } else if (net.allowedUrls?.length) {
+      const domains: string[] = [];
+      for (const entry of net.allowedUrls) {
+        const urlStr = typeof entry === "string" ? entry : entry.url;
+        try { domains.push(new URL(urlStr).hostname); } catch { /* skip invalid */ }
+      }
+      if (domains.length > 0) {
+        staticBindings.__poncho_fetch = createFetchBinding(domains, net);
+      }
+    }
   }
+
   if (config.bindings) {
     Object.assign(staticBindings, mergeBuilderBindings(config.bindings));
   }
+
+  const hasNetwork = "__poncho_fetch" in staticBindings;
+  const polyfillPreamble = buildPolyfillPreamble(hasNetwork);
 
   return defineTool({
     name: "run_code",
@@ -170,6 +193,7 @@ export function createRunCodeTool(opts: CreateRunCodeToolOptions): ToolDefinitio
         allBindings,
         libraryPreamble,
         context.abortSignal,
+        polyfillPreamble,
       );
 
       // Format output

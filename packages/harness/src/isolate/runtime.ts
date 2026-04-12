@@ -23,6 +23,7 @@ export interface IsolateRuntime {
     bindings: Record<string, IsolateBinding>,
     preamble: string | null,
     signal?: AbortSignal,
+    polyfillPreamble?: string | null,
   ): Promise<ExecutionResult>;
 }
 
@@ -109,7 +110,7 @@ export function createIsolateRuntime(config: {
   outputLimit: number;
 }): IsolateRuntime {
   return {
-    async execute(code, bindings, preamble, signal) {
+    async execute(code, bindings, preamble, signal, polyfillPreamble) {
       const ivm = await loadIvm();
 
       const isolate = new ivm.Isolate({
@@ -168,6 +169,11 @@ export function createIsolateRuntime(config: {
         // Evaluate runtime preamble (console capture + binding wrappers)
         const runtimePreamble = buildRuntimePreamble() + "\n" + wrapperDecls.join("\n");
         await context.eval(runtimePreamble, { filename: "<runtime>" });
+
+        // Evaluate polyfill preamble (standard APIs wrapping internal bindings)
+        if (polyfillPreamble) {
+          await context.eval(polyfillPreamble, { filename: "<polyfills>" });
+        }
 
         // Evaluate library preamble (bundled libs + require shim)
         if (preamble) {

@@ -144,4 +144,99 @@ describe("bash + VFS integration", () => {
     const fs = createBashFs(adapter, null);
     expect(fs).toBe(adapter); // Should return adapter directly
   });
+
+  it("enables curl when network config is provided", async () => {
+    const engine = new InMemoryEngine("test");
+    await engine.initialize();
+    const manager = new BashEnvironmentManager(engine, LIMITS, null, undefined, {
+      dangerouslyAllowAll: true,
+    });
+    const bash = manager.getOrCreate("t1");
+
+    // curl should be registered as a command when network is configured.
+    // Fetching a known URL and writing to VFS:
+    const result = await bash.exec("curl -s -o /test.txt https://example.com");
+    expect(result.exitCode).toBe(0);
+
+    // Verify the file was written to VFS
+    const adapter = manager.getAdapter("t1");
+    expect(await adapter.exists("/test.txt")).toBe(true);
+    const content = await adapter.readFile("/test.txt");
+    expect(content.length).toBeGreaterThan(0);
+    expect(content).toContain("Example Domain");
+
+    manager.destroyAll();
+    await engine.close();
+  });
+
+  it("blocks curl when no network config is provided", async () => {
+    const engine = new InMemoryEngine("test");
+    await engine.initialize();
+    const manager = new BashEnvironmentManager(engine, LIMITS, null);
+    const bash = manager.getOrCreate("t1");
+
+    const result = await bash.exec("curl https://example.com");
+    // curl should either not be found or be blocked
+    expect(result.exitCode).not.toBe(0);
+
+    manager.destroyAll();
+    await engine.close();
+  });
+
+  it("restricts commands when whitelist is provided", async () => {
+    const engine = new InMemoryEngine("test");
+    await engine.initialize();
+    const manager = new BashEnvironmentManager(engine, LIMITS, null, {
+      commands: ["echo", "cat"],
+    });
+    const bash = manager.getOrCreate("t1");
+
+    // Allowed commands work
+    const echoResult = await bash.exec('echo "hello"');
+    expect(echoResult.exitCode).toBe(0);
+    expect(echoResult.stdout.trim()).toBe("hello");
+
+    // Disallowed commands fail
+    const rmResult = await bash.exec("rm /some-file");
+    expect(rmResult.exitCode).not.toBe(0);
+
+    manager.destroyAll();
+    await engine.close();
+  });
+
+  it("enforces execution limits", async () => {
+    const engine = new InMemoryEngine("test");
+    await engine.initialize();
+    const manager = new BashEnvironmentManager(engine, LIMITS, null, {
+      executionLimits: { maxLoopIterations: 5 },
+    });
+    const bash = manager.getOrCreate("t1");
+
+    // A loop that exceeds the limit should fail
+    const result = await bash.exec("for i in $(seq 1 100); do echo $i; done");
+    expect(result.exitCode).not.toBe(0);
+
+    manager.destroyAll();
+    await engine.close();
+  });
+
+  it("injects environment variables", async () => {
+    const engine = new InMemoryEngine("test");
+    await engine.initialize();
+    const manager = new BashEnvironmentManager(engine, LIMITS, null, {
+      env: { MY_VAR: "hello_world", TZ: "UTC" },
+    });
+    const bash = manager.getOrCreate("t1");
+
+    const result = await bash.exec("echo $MY_VAR");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("hello_world");
+
+    const tzResult = await bash.exec("echo $TZ");
+    expect(tzResult.exitCode).toBe(0);
+    expect(tzResult.stdout.trim()).toBe("UTC");
+
+    manager.destroyAll();
+    await engine.close();
+  });
 });
