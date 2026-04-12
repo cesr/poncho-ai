@@ -176,6 +176,7 @@ export function createFetchBinding(
         method: (input.method as string) ?? "GET",
         headers: (input.headers as Record<string, string>) ?? undefined,
         body: (input.body as string) ?? undefined,
+        redirect: "manual",
       });
 
       const body = await resp.text();

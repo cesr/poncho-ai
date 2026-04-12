@@ -156,15 +156,6 @@ export interface RunResult {
   contextWindow?: number;
 }
 
-/** Result from a `run_code` tool execution in a V8 isolate. */
-export interface IsolateResult {
-  stdout: string;
-  stderr: string;
-  result?: unknown;
-  error?: { message: string; name?: string; line?: number; column?: number };
-  executionTimeMs: number;
-}
-
 export interface AgentFailure {
   code: string;
   message: string;

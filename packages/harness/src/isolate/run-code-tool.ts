@@ -36,8 +36,8 @@ async function stripTypeScript(code: string): Promise<string> {
   const result = await transform(wrapped, { loader: "ts" });
   // Unwrap: remove the function declaration and closing brace
   const stripped = result.code
-    .replace(/^async function __poncho_wrapper__\(\) \{\n/, "")
-    .replace(/\n\}\n?$/, "");
+    .replace(/^async function __poncho_wrapper__\(\)\s*\{\n?/, "")
+    .replace(/\n?\}\s*$/, "");
   return stripped;
 }
 

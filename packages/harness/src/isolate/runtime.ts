@@ -137,8 +137,10 @@ export function createIsolateRuntime(config: {
       }
 
       const t0 = performance.now();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let context: any;
       try {
-        const context = await isolate.createContext();
+        context = await isolate.createContext();
         const jail = context.global;
 
         // Inject output limit constant
@@ -216,11 +218,23 @@ export function createIsolateRuntime(config: {
           };
         }
 
+        // Try to recover stdout/stderr captured before the error
+        let stdout = "";
+        let stderr = "";
+        if (context) {
+          try {
+            stdout = (await context.eval("__stdout.join('\\n')", { copy: true })) as string;
+            stderr = (await context.eval("__stderr.join('\\n')", { copy: true })) as string;
+          } catch {
+            // Context may be disposed or unavailable
+          }
+        }
+
         const error = err instanceof Error ? err : new Error(String(err));
         const parsed = parseV8Error(error);
         return {
-          stdout: "",
-          stderr: "",
+          stdout,
+          stderr,
           error: parsed,
           executionTimeMs: elapsed,
         };
@@ -256,7 +270,7 @@ function parseV8Error(error: Error): {
   // Match "<user-code>:N:N" in stack trace
   const match = error.stack?.match(/<user-code>:(\d+):(\d+)/);
   if (match) {
-    // Subtract 2 for the async IIFE wrapper line
+    // Subtract 1 for the async IIFE wrapper line
     const rawLine = parseInt(match[1]!, 10);
     result.line = Math.max(1, rawLine - 1);
     result.column = parseInt(match[2]!, 10);
