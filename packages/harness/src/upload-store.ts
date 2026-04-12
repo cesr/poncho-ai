@@ -26,6 +26,7 @@ const tryImport = async (mod: string, workingDir?: string): Promise<any> => {
 };
 
 export const PONCHO_UPLOAD_SCHEME = "poncho-upload://";
+export const VFS_SCHEME = "vfs://";
 
 export interface UploadStore {
   put(key: string, data: Buffer, mediaType: string): Promise<string>;

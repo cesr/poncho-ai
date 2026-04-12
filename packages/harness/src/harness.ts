@@ -14,7 +14,7 @@ import type {
 } from "@poncho-ai/sdk";
 import { defineTool, getTextContent } from "@poncho-ai/sdk";
 import type { UploadStore } from "./upload-store.js";
-import { PONCHO_UPLOAD_SCHEME, deriveUploadKey } from "./upload-store.js";
+import { PONCHO_UPLOAD_SCHEME, VFS_SCHEME, deriveUploadKey } from "./upload-store.js";
 import type { StorageEngine } from "./storage/engine.js";
 import { createStorageEngine, type StorageProvider } from "./storage/index.js";
 import {
@@ -25,6 +25,9 @@ import {
 } from "./storage/store-adapters.js";
 import { BashEnvironmentManager } from "./vfs/bash-manager.js";
 import { createBashTool } from "./vfs/bash-tool.js";
+import { createReadFileTool } from "./vfs/read-file-tool.js";
+import { createEditFileTool } from "./vfs/edit-file-tool.js";
+import { createWriteFileTool } from "./vfs/write-file-tool.js";
 import { PonchoFsAdapter } from "./vfs/poncho-fs-adapter.js";
 import { parseAgentFile, parseAgentMarkdown, renderAgentPrompt, type ParsedAgent, type AgentFrontmatter } from "./agent-parser.js";
 import { loadPonchoConfig, resolveMemoryConfig, resolveStateConfig, type PonchoConfig, type ToolAccess, type BuiltInToolToggles } from "./config.js";
@@ -623,14 +626,14 @@ function extractMediaFromToolOutput(output: unknown): {
         obj.type === "file" &&
         typeof obj.data === "string" &&
         typeof obj.mediaType === "string" &&
-        (obj.mediaType as string).startsWith("image/")
+        ((obj.mediaType as string).startsWith("image/") || obj.mediaType === "application/pdf")
       ) {
         mediaItems.push({
           type: "media",
           data: obj.data as string,
           mediaType: obj.mediaType as string,
         });
-        return { type: "file", mediaType: obj.mediaType, filename: obj.filename ?? "image", _stripped: true };
+        return { type: "file", mediaType: obj.mediaType, filename: obj.filename ?? "file", _stripped: true };
       }
       const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(obj)) out[k] = walk(v);
@@ -1439,8 +1442,11 @@ export class AgentHarness {
       config?.bash,
       config?.network,
     );
-    // Register bash tool
+    // Register VFS tools
     this.registerIfMissing(createBashTool(this.bashManager));
+    this.registerIfMissing(createReadFileTool(engine));
+    this.registerIfMissing(createEditFileTool(engine));
+    this.registerIfMissing(createWriteFileTool(engine));
 
     // --- Isolate (V8 sandboxed code execution) ---
     if (config?.isolate) {
@@ -2113,9 +2119,37 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const rich = (meta as any)?._richToolResults as unknown[] | undefined;
             if (rich && rich.length > 0) {
-              // The rich array already conforms to the AI SDK ToolContent shape
-              // (tool-result parts with multi-part content outputs).  Cast
-              // through `any` because the exact generic types are internal.
+              // Resolve any vfs:// references in media items before sending
+              // to the model. This keeps conversation history lightweight
+              // (only stores the reference) while materializing the actual
+              // bytes on demand at model-request time.
+              if (this.storageEngine) {
+                const tid = input.tenantId ?? "__default__";
+                for (const part of rich) {
+                  const p = part as Record<string, unknown>;
+                  if (p.output && typeof p.output === "object") {
+                    const out = p.output as Record<string, unknown>;
+                    if (Array.isArray(out.value)) {
+                      for (let i = 0; i < out.value.length; i++) {
+                        const item = out.value[i] as Record<string, unknown>;
+                        if (
+                          item.type === "media" &&
+                          typeof item.data === "string" &&
+                          (item.data as string).startsWith(VFS_SCHEME)
+                        ) {
+                          try {
+                            const vfsPath = (item.data as string).slice(VFS_SCHEME.length);
+                            const buf = await this.storageEngine.vfs.readFile(tid, vfsPath);
+                            item.data = Buffer.from(buf).toString("base64");
+                          } catch {
+                            // File no longer available; leave as-is
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               return [{ role: "tool" as const, content: rich as any }];
             }
@@ -2269,7 +2303,11 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
                 if (!isSupportedImage && !isSupportedFile && isTextBasedMime(part.mediaType)) {
                   let textContent: string;
                   try {
-                    if (part.data.startsWith(PONCHO_UPLOAD_SCHEME) && this.uploadStore) {
+                    if (part.data.startsWith(VFS_SCHEME) && this.storageEngine) {
+                      const vfsPath = part.data.slice(VFS_SCHEME.length);
+                      const buf = await this.storageEngine.vfs.readFile(input.tenantId ?? "__default__", vfsPath);
+                      textContent = Buffer.from(buf).toString("utf8");
+                    } else if (part.data.startsWith(PONCHO_UPLOAD_SCHEME) && this.uploadStore) {
                       const buf = await this.uploadStore.get(part.data);
                       textContent = buf.toString("utf8");
                     } else if (part.data.startsWith("https://") || part.data.startsWith("http://")) {
@@ -2298,7 +2336,11 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
                 // fetch URLs itself (which fails for private blob stores).
                 let resolvedData: string;
                 try {
-                  if (part.data.startsWith(PONCHO_UPLOAD_SCHEME) && this.uploadStore) {
+                  if (part.data.startsWith(VFS_SCHEME) && this.storageEngine) {
+                    const vfsPath = part.data.slice(VFS_SCHEME.length);
+                    const buf = await this.storageEngine.vfs.readFile(input.tenantId ?? "__default__", vfsPath);
+                    resolvedData = Buffer.from(buf).toString("base64");
+                  } else if (part.data.startsWith(PONCHO_UPLOAD_SCHEME) && this.uploadStore) {
                     const buf = await this.uploadStore.get(part.data);
                     resolvedData = buf.toString("base64");
                   } else if (part.data.startsWith("https://") || part.data.startsWith("http://")) {
