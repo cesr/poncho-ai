@@ -56,6 +56,7 @@ export class PostgresEngine extends SqlStorageEngine {
     const postgres = (await import("postgres")).default;
     this.sql = postgres(url, {
       onnotice: () => {},
+      prepare: false,
     });
   }
 
