@@ -64,6 +64,31 @@ function runEngineTests(name: string, factory: () => Promise<{ engine: StorageEn
         expect(results).toHaveLength(1);
         expect(results[0].title).toBe("alpha beta");
       });
+
+      it("persists parentConversationId atomically when provided to create", async () => {
+        const parent = await engine.conversations.create("o", "Parent");
+        const child = await engine.conversations.create("o", "Child", null, {
+          parentConversationId: parent.conversationId,
+          subagentMeta: { task: "do thing", status: "running" },
+          messages: [{ role: "user", content: "do thing" }],
+        });
+
+        // Returned object reflects init fields
+        expect(child.parentConversationId).toBe(parent.conversationId);
+        expect(child.subagentMeta?.task).toBe("do thing");
+        expect(child.messages).toHaveLength(1);
+
+        // listSummaries reads the dedicated column — child must be linked to parent.
+        const summaries = await engine.conversations.list("o");
+        const childSummary = summaries.find((s) => s.conversationId === child.conversationId);
+        expect(childSummary?.parentConversationId).toBe(parent.conversationId);
+
+        // get() rehydrates from data blob — parent + meta must round-trip.
+        const reloaded = await engine.conversations.get(child.conversationId);
+        expect(reloaded?.parentConversationId).toBe(parent.conversationId);
+        expect(reloaded?.subagentMeta?.task).toBe("do thing");
+        expect(reloaded?.messages).toHaveLength(1);
+      });
     });
 
     // -- Memory --

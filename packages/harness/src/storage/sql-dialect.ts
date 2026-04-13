@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   Conversation,
+  ConversationCreateInit,
   ConversationSummary,
   PendingSubagentResult,
 } from "../state.js";
@@ -244,19 +245,30 @@ export abstract class SqlStorageEngine implements StorageEngine {
       ownerId?: string,
       title?: string,
       tenantId?: string | null,
+      init?: ConversationCreateInit,
     ): Promise<Conversation> => {
       const id = randomUUID();
       const now = Date.now();
       const conv: Conversation = {
         conversationId: id,
         title: normalizeTitle(title),
-        messages: [],
+        messages: init?.messages ?? [],
         ownerId: ownerId ?? DEFAULT_OWNER,
         tenantId: tenantId === undefined ? null : tenantId,
         createdAt: now,
         updatedAt: now,
+        ...(init?.parentConversationId !== undefined
+          ? { parentConversationId: init.parentConversationId }
+          : {}),
+        ...(init?.subagentMeta !== undefined
+          ? { subagentMeta: init.subagentMeta }
+          : {}),
+        ...(init?.channelMeta !== undefined
+          ? { channelMeta: init.channelMeta }
+          : {}),
       };
       const data = JSON.stringify(conv);
+      const channelMetaJson = conv.channelMeta ? JSON.stringify(conv.channelMeta) : null;
       await this.executor.run(
         rewrite(
           `INSERT INTO conversations (id, agent_id, tenant_id, owner_id, title, data, message_count, created_at, updated_at,
@@ -271,12 +283,12 @@ export abstract class SqlStorageEngine implements StorageEngine {
           conv.ownerId,
           conv.title,
           data,
-          0,
+          conv.messages.length,
           new Date(now).toISOString(),
           new Date(now).toISOString(),
-          null,
+          conv.parentConversationId ?? null,
           0,
-          null,
+          channelMetaJson,
         ],
       );
       return conv;

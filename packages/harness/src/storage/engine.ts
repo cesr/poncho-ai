@@ -1,5 +1,6 @@
 import type {
   Conversation,
+  ConversationCreateInit,
   ConversationSummary,
   PendingSubagentResult,
 } from "../state.js";
@@ -40,7 +41,12 @@ export interface StorageEngine {
   conversations: {
     list(ownerId?: string, tenantId?: string | null): Promise<ConversationSummary[]>;
     get(conversationId: string): Promise<Conversation | undefined>;
-    create(ownerId?: string, title?: string, tenantId?: string | null): Promise<Conversation>;
+    create(
+      ownerId?: string,
+      title?: string,
+      tenantId?: string | null,
+      init?: ConversationCreateInit,
+    ): Promise<Conversation>;
     update(conversation: Conversation): Promise<void>;
     rename(conversationId: string, title: string): Promise<Conversation | undefined>;
     delete(conversationId: string): Promise<boolean>;

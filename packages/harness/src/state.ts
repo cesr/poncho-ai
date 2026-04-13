@@ -77,11 +77,23 @@ export interface Conversation {
   updatedAt: number;
 }
 
+export interface ConversationCreateInit {
+  parentConversationId?: string;
+  subagentMeta?: Conversation["subagentMeta"];
+  messages?: Message[];
+  channelMeta?: Conversation["channelMeta"];
+}
+
 export interface ConversationStore {
   list(ownerId?: string, tenantId?: string | null): Promise<Conversation[]>;
   listSummaries(ownerId?: string, tenantId?: string | null): Promise<ConversationSummary[]>;
   get(conversationId: string): Promise<Conversation | undefined>;
-  create(ownerId?: string, title?: string, tenantId?: string | null): Promise<Conversation>;
+  create(
+    ownerId?: string,
+    title?: string,
+    tenantId?: string | null,
+    init?: ConversationCreateInit,
+  ): Promise<Conversation>;
   update(conversation: Conversation): Promise<void>;
   rename(conversationId: string, title: string): Promise<Conversation | undefined>;
   delete(conversationId: string): Promise<boolean>;
@@ -197,16 +209,30 @@ export class InMemoryConversationStore implements ConversationStore {
     return this.conversations.get(conversationId);
   }
 
-  async create(ownerId = DEFAULT_OWNER, title?: string, tenantId: string | null = null): Promise<Conversation> {
+  async create(
+    ownerId = DEFAULT_OWNER,
+    title?: string,
+    tenantId: string | null = null,
+    init?: ConversationCreateInit,
+  ): Promise<Conversation> {
     const now = Date.now();
     const conversation: Conversation = {
       conversationId: globalThis.crypto?.randomUUID?.() ?? `${now}-${Math.random()}`,
       title: normalizeTitle(title),
-      messages: [],
+      messages: init?.messages ?? [],
       ownerId,
       tenantId,
       createdAt: now,
       updatedAt: now,
+      ...(init?.parentConversationId !== undefined
+        ? { parentConversationId: init.parentConversationId }
+        : {}),
+      ...(init?.subagentMeta !== undefined
+        ? { subagentMeta: init.subagentMeta }
+        : {}),
+      ...(init?.channelMeta !== undefined
+        ? { channelMeta: init.channelMeta }
+        : {}),
     };
     this.conversations.set(conversation.conversationId, conversation);
     return conversation;

@@ -3110,12 +3110,19 @@ export const createRequestHandler = async (options?: {
         throw new Error(`Maximum concurrent subagents (${MAX_CONCURRENT_SUBAGENTS}) per parent reached. Wait for running subagents to complete or stop some first.`);
       }
 
-      const conversation = await conversationStore.create(opts.ownerId, opts.task.slice(0, 80), opts.tenantId ?? null);
-      conversation.parentConversationId = opts.parentConversationId;
-      conversation.subagentMeta = { task: opts.task, status: "running" };
-      conversation.messages = [{ role: "user", content: opts.task }];
-      conversation.updatedAt = Date.now();
-      await conversationStore.update(conversation);
+      // Atomic create: parent_conversation_id and initial state are persisted
+      // in the single INSERT. This prevents orphaned top-level-looking
+      // subagents if a follow-up update is interrupted.
+      const conversation = await conversationStore.create(
+        opts.ownerId,
+        opts.task.slice(0, 80),
+        opts.tenantId ?? null,
+        {
+          parentConversationId: opts.parentConversationId,
+          subagentMeta: { task: opts.task, status: "running" },
+          messages: [{ role: "user", content: opts.task }],
+        },
+      );
 
       // Register this parent as having a pending spawn BEFORE the async
       // runSubagent starts, so hasPendingSubagentWorkForParent sees it

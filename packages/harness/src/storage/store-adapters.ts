@@ -6,6 +6,7 @@
 
 import type {
   Conversation,
+  ConversationCreateInit,
   ConversationStore,
   ConversationSummary,
   PendingSubagentResult,
@@ -35,8 +36,12 @@ export function createConversationStoreFromEngine(
       engine.conversations.list(ownerId, tenantId),
     get: (conversationId: string) =>
       engine.conversations.get(conversationId),
-    create: (ownerId?: string, title?: string, tenantId?: string | null) =>
-      engine.conversations.create(ownerId, title, tenantId),
+    create: (
+      ownerId?: string,
+      title?: string,
+      tenantId?: string | null,
+      init?: ConversationCreateInit,
+    ) => engine.conversations.create(ownerId, title, tenantId, init),
     update: (conversation: Conversation) =>
       engine.conversations.update(conversation),
     rename: (conversationId: string, title: string) =>

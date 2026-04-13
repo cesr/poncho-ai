@@ -5,6 +5,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   Conversation,
+  ConversationCreateInit,
   ConversationSummary,
   PendingSubagentResult,
 } from "../state.js";
@@ -105,16 +106,26 @@ export class InMemoryEngine implements StorageEngine {
       ownerId?: string,
       title?: string,
       tenantId?: string | null,
+      init?: ConversationCreateInit,
     ): Promise<Conversation> => {
       const now = Date.now();
       const conv: Conversation = {
         conversationId: randomUUID(),
         title: normalizeTitle(title),
-        messages: [],
+        messages: init?.messages ?? [],
         ownerId: ownerId ?? DEFAULT_OWNER,
         tenantId: tenantId === undefined ? null : tenantId,
         createdAt: now,
         updatedAt: now,
+        ...(init?.parentConversationId !== undefined
+          ? { parentConversationId: init.parentConversationId }
+          : {}),
+        ...(init?.subagentMeta !== undefined
+          ? { subagentMeta: init.subagentMeta }
+          : {}),
+        ...(init?.channelMeta !== undefined
+          ? { channelMeta: init.channelMeta }
+          : {}),
       };
       this.convs.set(conv.conversationId, conv);
       return conv;
