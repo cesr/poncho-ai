@@ -1,5 +1,11 @@
 # @poncho-ai/cli
 
+## 0.36.7
+
+### Patch Changes
+
+- [#89](https://github.com/cesr/poncho-ai/pull/89) [`e71cd6d`](https://github.com/cesr/poncho-ai/commit/e71cd6dcbdbba947ca5aed5f0ffddf91ac50a7e8) Thanks [@cesr](https://github.com/cesr)! - fix: surface a loud stderr warning when the CLI falls back to in-memory conversation storage (i.e. when `harness.storageEngine` is undefined). Previously this path was silent — agents appeared to work but nothing persisted to disk, no DB file was created, and the new bash tool was absent, all with zero log output. Also triggers a patch republish so the CLI tarball is re-pinned to the current workspace harness.
+
 ## 0.36.6
 
 ### Patch Changes
