@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.37.0
+
+### Minor Changes
+
+- [`86bc5ac`](https://github.com/cesr/poncho-ai/commit/86bc5ac2a73b80a286228cd9e3b663b50b3d82e7) Thanks [@cesr](https://github.com/cesr)! - perf: promote parentConversationId, pendingApprovals, and channelMeta to dedicated columns so list/summary queries no longer fetch the full data JSONB blob — dramatically reduces database egress
+
 ## 0.36.4
 
 ### Patch Changes
