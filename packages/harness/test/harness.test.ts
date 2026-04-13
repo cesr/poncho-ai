@@ -617,7 +617,7 @@ description: Safe skill
       script: "../outside.ts",
     }, stubContext);
     expect(result).toMatchObject({
-      error: expect.stringContaining("must be relative and within the allowed directory"),
+      error: expect.stringContaining("Expected a relative path"),
     });
   });
 

@@ -333,6 +333,39 @@ const hasUntruncatedToolResults = (messages: Message[]): boolean => {
   return false;
 };
 
+/**
+ * Finds the last ModelMessage index that's safe to place a prompt cache
+ * breakpoint at — i.e. the last index before any untruncated tool-result.
+ *
+ * Untruncated tool-results from a prior run will be truncated on the next
+ * run, which would invalidate any cache write covering them. Placing the
+ * breakpoint just before them lets us cache only the stable prefix (system
+ * prompt + earlier turns) while still reading it back next turn.
+ *
+ * Returns `messages.length - 1` when there are no untruncated tool-results
+ * (normal tail-of-history caching).
+ */
+const findLastStableCacheIndex = (messages: ModelMessage[]): number => {
+  for (let i = 0; i < messages.length; i += 1) {
+    const msg = messages[i]!;
+    if (msg.role !== "tool") continue;
+    if (!Array.isArray(msg.content)) continue;
+    for (const part of msg.content) {
+      if (!part || typeof part !== "object") continue;
+      const p = part as { type?: string; output?: { type?: string; value?: unknown } };
+      if (p.type !== "tool-result" || !p.output) continue;
+      // JSON outputs bypass truncation (only text content is truncated).
+      if (p.output.type === "json") return i - 1;
+      if (p.output.type === "text" && typeof p.output.value === "string") {
+        if (!p.output.value.startsWith(TOOL_RESULT_TRUNCATED_PREFIX)) {
+          return i - 1;
+        }
+      }
+    }
+  }
+  return messages.length - 1;
+};
+
 const DEVELOPMENT_MODE_CONTEXT = `## Development Mode Context
 
 You are running locally in development mode. Treat this as an editable agent workspace.
@@ -1799,16 +1832,15 @@ export class AgentHarness {
       );
     }
     const hasFullToolResults = hasUntruncatedToolResults(messages);
-    const enablePromptCache = !hasFullToolResults;
-    if (!enablePromptCache) {
+    if (hasFullToolResults) {
       console.info(
-        `[poncho][cost] Prompt cache write disabled for run "${runId}" ` +
-        `(untruncated tool results present in history).`,
+        `[poncho][cost] Prompt cache breakpoint will be placed before untruncated ` +
+        `tool results for run "${runId}" (stable prefix only).`,
       );
     } else {
       console.info(
-        `[poncho][cost] Prompt cache write enabled for run "${runId}" ` +
-        `(history has no untruncated tool results).`,
+        `[poncho][cost] Prompt cache breakpoint will be placed at history tail ` +
+        `for run "${runId}" (no untruncated tool results).`,
       );
     }
     const inputMessageCount = messages.length;
@@ -1917,8 +1949,17 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
       const promptWithSkills = this.skillContextWindow
         ? `${agentPrompt}${developmentContext}\n\n${this.skillContextWindow}${browserContext}${fsContext}${isolateContext}`
         : `${agentPrompt}${developmentContext}${browserContext}${fsContext}${isolateContext}`;
+      // Quantize to the hour so the system prompt is stable across runs
+      // within the same hour. Including a per-millisecond timestamp would
+      // invalidate the prompt cache on every run, since the system prompt
+      // is the first block the cache tries to match.
+      const hourlyTime = (() => {
+        const d = new Date();
+        d.setUTCMinutes(0, 0, 0);
+        return d.toISOString();
+      })();
       const timeContext = this.reminderStore
-        ? `\n\nCurrent UTC time: ${new Date().toISOString()}`
+        ? `\n\nCurrent UTC time (hour precision): ${hourlyTime}`
         : "";
       return `${promptWithSkills}${memoryContext}${todoContext}${timeContext}`;
     };
@@ -2452,9 +2493,17 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
 
         const temperature = agent.frontmatter.model?.temperature ?? 0.2;
         const maxTokens = agent.frontmatter.model?.maxTokens;
-        const cachedMessages = enablePromptCache
-          ? addPromptCacheBreakpoints(coreMessages, modelInstance)
-          : coreMessages;
+        // Place the breakpoint before any untruncated tool-result so we
+        // cache only the stable prefix when prior-run tool results are
+        // still full-fidelity. Otherwise cache at the history tail.
+        const breakpointIndex = hasFullToolResults
+          ? findLastStableCacheIndex(coreMessages)
+          : coreMessages.length - 1;
+        const cachedMessages = addPromptCacheBreakpoints(
+          coreMessages,
+          modelInstance,
+          breakpointIndex,
+        );
 
         const telemetryEnabled = this.loadedConfig?.telemetry?.enabled !== false;
 
