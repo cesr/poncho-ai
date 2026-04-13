@@ -1,5 +1,13 @@
 # @poncho-ai/cli
 
+## 0.36.9
+
+### Patch Changes
+
+- [`af5b449`](https://github.com/cesr/poncho-ai/commit/af5b449b46c9994b5b7335c5d64e4c66d5d8f3d8) Thanks [@cesr](https://github.com/cesr)! - perf(web-ui): parallelize conversation and todos fetches when selecting a conversation.
+
+  Selecting a conversation in the sidebar previously issued `/api/conversations/:id` and `/api/conversations/:id/todos` sequentially, so the todos round-trip was paid on top of the (usually larger) conversation round-trip. Todos only needs the conversation id, so both requests now fire in parallel and the todos response is awaited just before the todo panel renders. The result is roughly one RTT shaved off every sidebar click, which is very noticeable on non-local connections.
+
 ## 0.36.8
 
 ### Patch Changes
