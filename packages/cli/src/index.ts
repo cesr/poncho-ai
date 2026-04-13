@@ -2229,6 +2229,14 @@ export const createRequestHandler = async (options?: {
   const telemetry = new TelemetryEmitter(config?.telemetry);
   const identity = await ensureAgentIdentity(workingDir);
   const stateConfig = resolveStateConfig(config);
+  if (!harness.storageEngine) {
+    process.stderr.write(
+      "[poncho] WARNING: harness.storageEngine is undefined. " +
+        "This usually means an outdated @poncho-ai/harness (< 0.37.0) is installed. " +
+        "Falling back to in-memory storage — conversations will NOT be persisted. " +
+        "Fix: `pnpm up @poncho-ai/harness@latest` or add a pnpm.overrides entry to force resolution.\n",
+    );
+  }
   const conversationStore = harness.storageEngine
     ? createConversationStoreFromEngine(harness.storageEngine)
     : createConversationStore(stateConfig, { workingDir, agentId: identity.id });
@@ -6978,9 +6986,18 @@ export const runInteractive = async (
       params,
       workingDir,
       config,
-      conversationStore: harness.storageEngine
-        ? createConversationStoreFromEngine(harness.storageEngine)
-        : createConversationStore(resolveStateConfig(config), { workingDir, agentId: identity.id }),
+      conversationStore: (() => {
+        if (!harness.storageEngine) {
+          process.stderr.write(
+            "[poncho] WARNING: harness.storageEngine is undefined. " +
+              "This usually means an outdated @poncho-ai/harness (< 0.37.0) is installed. " +
+              "Falling back to in-memory storage — conversations will NOT be persisted. " +
+              "Fix: `pnpm up @poncho-ai/harness@latest` or add a pnpm.overrides entry to force resolution.\n",
+          );
+          return createConversationStore(resolveStateConfig(config), { workingDir, agentId: identity.id });
+        }
+        return createConversationStoreFromEngine(harness.storageEngine);
+      })(),
     });
   } finally {
     await harness.shutdown();
