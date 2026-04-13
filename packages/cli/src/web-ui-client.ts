@@ -1459,7 +1459,12 @@ export const getWebUiClientScript = (markedSource: string): string => `
 
       const loadConversation = async (conversationId) => {
         if (window._resetBrowserPanel) window._resetBrowserPanel();
-        const payload = await api("/api/conversations/" + encodeURIComponent(conversationId));
+        // Kick off conversation + todos fetches in parallel — todos only needs
+        // the id, so there's no reason to wait for the conversation response.
+        const conversationPromise = api("/api/conversations/" + encodeURIComponent(conversationId));
+        const todosPromise = api("/api/conversations/" + encodeURIComponent(conversationId) + "/todos")
+          .catch(() => ({ todos: [] }));
+        const payload = await conversationPromise;
         elements.chatTitle.textContent = payload.conversation.title;
         // Merge own pending approvals + subagent pending approvals
         var allPendingApprovals = [].concat(
@@ -1507,12 +1512,8 @@ export const getWebUiClientScript = (markedSource: string): string => `
           loadSubagents(subagentParentId);
         }
 
-        try {
-          const todosPayload = await api("/api/conversations/" + encodeURIComponent(conversationId) + "/todos");
-          state.todos = todosPayload.todos || [];
-        } catch (_e) {
-          state.todos = [];
-        }
+        const todosPayload = await todosPromise;
+        state.todos = todosPayload.todos || [];
         _autoCollapseTodos();
         renderTodoPanel();
 
