@@ -142,4 +142,36 @@ export const migrations: Migration[] = [
       ];
     },
   },
+  {
+    version: 4,
+    name: "promote_summary_fields_to_columns",
+    up: (d) => {
+      const jsonType = d === "sqlite" ? "TEXT" : "JSONB";
+      return [
+        `ALTER TABLE conversations ADD COLUMN parent_conversation_id TEXT`,
+        `ALTER TABLE conversations ADD COLUMN has_pending_approvals INTEGER NOT NULL DEFAULT 0`,
+        `ALTER TABLE conversations ADD COLUMN channel_meta ${jsonType}`,
+        // Backfill from data blob
+        ...(d === "sqlite"
+          ? [
+              `UPDATE conversations SET
+                parent_conversation_id = json_extract(data, '$.parentConversationId'),
+                has_pending_approvals = CASE
+                  WHEN json_array_length(COALESCE(json_extract(data, '$.pendingApprovals'), '[]')) > 0 THEN 1
+                  ELSE 0
+                END,
+                channel_meta = json_extract(data, '$.channelMeta')`,
+            ]
+          : [
+              `UPDATE conversations SET
+                parent_conversation_id = data->>'parentConversationId',
+                has_pending_approvals = CASE
+                  WHEN jsonb_array_length(COALESCE(data->'pendingApprovals', '[]'::jsonb)) > 0 THEN 1
+                  ELSE 0
+                END,
+                channel_meta = data->'channelMeta'`,
+            ]),
+      ];
+    },
+  },
 ];

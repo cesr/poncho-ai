@@ -189,7 +189,8 @@ export abstract class SqlStorageEngine implements StorageEngine {
       const filterTenant = tenantId !== undefined;
       const params: unknown[] = [this.agentId];
       let sql = `SELECT id, title, updated_at, created_at, owner_id, tenant_id,
-                        message_count, data
+                        message_count, parent_conversation_id,
+                        has_pending_approvals, channel_meta
                  FROM conversations WHERE agent_id = $1`;
       if (filterTenant) {
         sql += ` AND tenant_id = $2`;
@@ -258,8 +259,9 @@ export abstract class SqlStorageEngine implements StorageEngine {
       const data = JSON.stringify(conv);
       await this.executor.run(
         rewrite(
-          `INSERT INTO conversations (id, agent_id, tenant_id, owner_id, title, data, message_count, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          `INSERT INTO conversations (id, agent_id, tenant_id, owner_id, title, data, message_count, created_at, updated_at,
+               parent_conversation_id, has_pending_approvals, channel_meta)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
           this.dialect,
         ),
         [
@@ -272,6 +274,9 @@ export abstract class SqlStorageEngine implements StorageEngine {
           0,
           new Date(now).toISOString(),
           new Date(now).toISOString(),
+          null,
+          0,
+          null,
         ],
       );
       return conv;
@@ -296,16 +301,23 @@ export abstract class SqlStorageEngine implements StorageEngine {
       const tid = normalizeTenant(conversation.tenantId);
       const now = new Date(conversation.updatedAt).toISOString();
       const created = new Date(conversation.createdAt).toISOString();
+      const parentConvId = conversation.parentConversationId ?? null;
+      const hasPendingApprovals = (conversation.pendingApprovals?.length ?? 0) > 0 ? 1 : 0;
+      const channelMetaJson = conversation.channelMeta ? JSON.stringify(conversation.channelMeta) : null;
       await this.executor.run(
         rewrite(
           `INSERT INTO conversations (id, agent_id, tenant_id, owner_id, title, data, message_count, created_at, updated_at,
-               tool_result_archive, harness_messages, continuation_messages)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+               tool_result_archive, harness_messages, continuation_messages,
+               parent_conversation_id, has_pending_approvals, channel_meta)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
            ${this.dialect.upsert(["id"])}
            data = excluded.data, title = excluded.title, message_count = excluded.message_count,
            updated_at = excluded.updated_at, tenant_id = excluded.tenant_id, owner_id = excluded.owner_id,
            tool_result_archive = excluded.tool_result_archive, harness_messages = excluded.harness_messages,
-           continuation_messages = excluded.continuation_messages`,
+           continuation_messages = excluded.continuation_messages,
+           parent_conversation_id = excluded.parent_conversation_id,
+           has_pending_approvals = excluded.has_pending_approvals,
+           channel_meta = excluded.channel_meta`,
           this.dialect,
         ),
         [
@@ -321,6 +333,9 @@ export abstract class SqlStorageEngine implements StorageEngine {
           archiveJson,
           harnessJson,
           continuationJson,
+          parentConvId,
+          hasPendingApprovals,
+          channelMetaJson,
         ],
       );
     },
@@ -359,7 +374,8 @@ export abstract class SqlStorageEngine implements StorageEngine {
       // SQLite uses positional ? so we can't reuse $2, need separate params
       const params: unknown[] = [this.agentId, pattern, pattern];
       let sql = `SELECT id, title, updated_at, created_at, owner_id, tenant_id,
-                        message_count, data
+                        message_count, parent_conversation_id,
+                        has_pending_approvals, channel_meta
                  FROM conversations
                  WHERE agent_id = $1 AND (title LIKE $2 OR data LIKE $3)`;
       if (filterTenant) {
@@ -882,8 +898,8 @@ export abstract class SqlStorageEngine implements StorageEngine {
   }
 
   private rowToSummary(row: QueryRow): ConversationSummary {
-    const data = this.parseConversation(row.data);
     const tid = row.tenant_id as string;
+    const rawChannelMeta = row.channel_meta;
     return {
       conversationId: row.id as string,
       title: row.title as string,
@@ -892,9 +908,11 @@ export abstract class SqlStorageEngine implements StorageEngine {
       ownerId: row.owner_id as string,
       tenantId: tid === DEFAULT_TENANT ? null : tid,
       messageCount: row.message_count as number,
-      hasPendingApprovals: (data.pendingApprovals?.length ?? 0) > 0,
-      parentConversationId: data.parentConversationId,
-      channelMeta: data.channelMeta,
+      hasPendingApprovals: !!(row.has_pending_approvals),
+      parentConversationId: (row.parent_conversation_id as string) || undefined,
+      channelMeta: rawChannelMeta
+        ? (typeof rawChannelMeta === "string" ? JSON.parse(rawChannelMeta) : rawChannelMeta)
+        : undefined,
     };
   }
 
