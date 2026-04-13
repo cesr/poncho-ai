@@ -106,30 +106,26 @@ async function readJsonSafe(filePath) {
   }
 }
 
-async function findAgentDir(workingDir) {
+async function findAgentDirs(workingDir) {
   const ponchoDir = resolve(workingDir, ".poncho");
+  const results = [];
   try {
     const entries = await readdir(ponchoDir, { withFileTypes: true });
     for (const e of entries) {
       if (e.isDirectory() && !e.name.startsWith(".")) {
-        return { dir: resolve(ponchoDir, e.name), id: e.name };
+        results.push({ dir: resolve(ponchoDir, e.name), id: e.name });
       }
     }
   } catch { /* no .poncho dir */ }
-  return undefined;
+  return results;
 }
 
 // ---------------------------------------------------------------------------
 // Read from local
 // ---------------------------------------------------------------------------
 
-async function readLocal(workingDir) {
-  const agent = await findAgentDir(workingDir);
-  if (!agent) {
-    console.error("No .poncho agent directory found in", workingDir);
-    process.exit(1);
-  }
-  console.log(`Found local agent: ${agent.id} at ${agent.dir}`);
+async function readLocalAgent(agent) {
+  console.log(`  Reading agent: ${agent.id} at ${agent.dir}`);
 
   const data = { agentId: agent.id, conversations: [], memories: [], todos: [], reminders: [] };
 
@@ -187,6 +183,29 @@ async function readLocal(workingDir) {
   }
 
   return data;
+}
+
+async function readLocal(workingDir) {
+  const agents = await findAgentDirs(workingDir);
+  if (agents.length === 0) {
+    console.error("No .poncho agent directory found in", workingDir);
+    process.exit(1);
+  }
+
+  // If --agent-id is specified, filter to that agent
+  const filtered = AGENT_ID ? agents.filter((a) => a.id === AGENT_ID) : agents;
+  if (filtered.length === 0) {
+    console.error(`Agent "${AGENT_ID}" not found. Available agents: ${agents.map((a) => a.id).join(", ")}`);
+    process.exit(1);
+  }
+
+  console.log(`Found ${filtered.length} agent(s) to migrate`);
+
+  const results = [];
+  for (const agent of filtered) {
+    results.push(await readLocalAgent(agent));
+  }
+  return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -323,9 +342,12 @@ async function readUpstash(agentId) {
 async function readFromEngine(sourceProvider, agentId) {
   if (!agentId) {
     // Try to detect from .poncho directory
-    const agent = await findAgentDir(WORKING_DIR);
-    if (agent) agentId = agent.id;
-    else {
+    const agents = await findAgentDirs(WORKING_DIR);
+    if (agents.length === 1) agentId = agents[0].id;
+    else if (agents.length > 1) {
+      console.error(`Multiple agents found: ${agents.map((a) => a.id).join(", ")}. Use --agent-id to specify one.`);
+      process.exit(1);
+    } else {
       console.error("--agent-id is required for engine source (or run from a project with .poncho/)");
       process.exit(1);
     }
@@ -513,40 +535,43 @@ async function main() {
   console.log(`Working dir: ${WORKING_DIR}`);
   if (DRY_RUN) console.log("(dry run — no data will be written)\n");
 
-  // Read source
-  let data;
+  // Read source — local returns an array (one per agent), others return a single object
+  let dataList;
   if (SOURCE === "local") {
-    data = await readLocal(WORKING_DIR);
+    dataList = await readLocal(WORKING_DIR);
   } else if (SOURCE === "upstash") {
-    data = await readUpstash(AGENT_ID);
+    dataList = [await readUpstash(AGENT_ID)];
   } else if (SOURCE === "sqlite" || SOURCE === "postgresql") {
-    data = await readFromEngine(SOURCE, AGENT_ID);
+    dataList = [await readFromEngine(SOURCE, AGENT_ID)];
   } else {
     console.error(`Unknown source: ${SOURCE}. Use "local", "upstash", "sqlite", or "postgresql".`);
     process.exit(1);
   }
 
-  console.log(`\nRead from ${SOURCE}:`);
-  console.log(`  Conversations: ${data.conversations.length}`);
-  console.log(`  Memories: ${data.memories?.length ?? 0}`);
-  console.log(`  Todo lists: ${data.todos.length}`);
-  console.log(`  Reminders: ${data.reminders.length}`);
-  if (data.vfsFiles?.length) console.log(`  VFS files: ${data.vfsFiles.length}`);
+  for (const data of dataList) {
+    console.log(`\nAgent: ${data.agentId}`);
+    console.log(`  Read from ${SOURCE}:`);
+    console.log(`    Conversations: ${data.conversations.length}`);
+    console.log(`    Memories: ${data.memories?.length ?? 0}`);
+    console.log(`    Todo lists: ${data.todos.length}`);
+    console.log(`    Reminders: ${data.reminders.length}`);
+    if (data.vfsFiles?.length) console.log(`    VFS files: ${data.vfsFiles.length}`);
 
-  if (data.conversations.length === 0 && !data.memories?.length && data.todos.length === 0 && data.reminders.length === 0 && !data.vfsFiles?.length) {
-    console.log("\nNothing to migrate.");
-    process.exit(0);
+    if (data.conversations.length === 0 && !data.memories?.length && data.todos.length === 0 && data.reminders.length === 0 && !data.vfsFiles?.length) {
+      console.log("  Nothing to migrate for this agent.");
+      continue;
+    }
+
+    const result = await writeToEngine(data);
+
+    console.log(`  ${DRY_RUN ? "Would import" : "Imported"} to ${TARGET}:`);
+    console.log(`    Conversations: ${result.convCount}`);
+    console.log(`    Memories: ${result.memoryCount}`);
+    console.log(`    Todos: ${result.todoCount}`);
+    console.log(`    Reminders: ${result.reminderCount}`);
+    if (result.vfsCount) console.log(`    VFS files: ${result.vfsCount}`);
   }
 
-  // Write to target
-  const result = await writeToEngine(data);
-
-  console.log(`\n${DRY_RUN ? "Would import" : "Imported"} to ${TARGET}:`);
-  console.log(`  Conversations: ${result.convCount}`);
-  console.log(`  Memories: ${result.memoryCount}`);
-  console.log(`  Todos: ${result.todoCount}`);
-  console.log(`  Reminders: ${result.reminderCount}`);
-  if (result.vfsCount) console.log(`  VFS files: ${result.vfsCount}`);
   console.log("\nDone!");
 }
 
