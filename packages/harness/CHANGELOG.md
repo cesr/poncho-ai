@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.37.1
+
+### Patch Changes
+
+- [`fb61a62`](https://github.com/cesr/poncho-ai/commit/fb61a6259367f0a62d0acd7a20ef2fae93013819) Thanks [@cesr](https://github.com/cesr)! - fix: migration script now discovers and migrates all agent directories instead of only the first one
+
 ## 0.37.0
 
 ### Minor Changes
