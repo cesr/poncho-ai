@@ -38,6 +38,13 @@ import {
   computeNextOccurrence,
 } from "@poncho-ai/harness";
 import type { AgentEvent, FileInput, Message, RunInput } from "@poncho-ai/sdk";
+import type {
+  ApiApprovalResponse,
+  ApiCompactResponse,
+  ApiSlashCommand,
+  ApiStopRunResponse,
+  ApiSubagentSummary,
+} from "@poncho-ai/sdk";
 import { getTextContent } from "@poncho-ai/sdk";
 import {
   AgentBridge,
@@ -5192,7 +5199,7 @@ export const createRequestHandler = async (options?: {
           await conversationStore.update(childConv);
         }
 
-        writeJson(response, 200, { ok: true, approvalId, approved });
+        writeJson(response, 200, { ok: true, approvalId, approved } satisfies ApiApprovalResponse);
         return;
       }
 
@@ -5256,7 +5263,7 @@ export const createRequestHandler = async (options?: {
         allApprovals.every(a => a.decision != null);
 
       if (!allDecided) {
-        writeJson(response, 200, { ok: true, approvalId, approved, batchComplete: false });
+        writeJson(response, 200, { ok: true, approvalId, approved, batchComplete: false } satisfies ApiApprovalResponse);
         return;
       }
 
@@ -5393,7 +5400,7 @@ export const createRequestHandler = async (options?: {
         await resumeWork;
       }
 
-      writeJson(response, 200, { ok: true, approvalId, approved, batchComplete: true });
+      writeJson(response, 200, { ok: true, approvalId, approved, batchComplete: true } satisfies ApiApprovalResponse);
       return;
     }
 
@@ -5451,7 +5458,7 @@ export const createRequestHandler = async (options?: {
       // Use summaries to find child IDs, then only load those child files
       const allSummaries = await conversationStore.listSummaries(ownerId, ctx.tenantId);
       const childSummaries = allSummaries.filter((s) => s.parentConversationId === parentId);
-      const subagents: Array<Record<string, unknown>> = [];
+      const subagents: ApiSubagentSummary[] = [];
       for (const s of childSummaries) {
         const c = await conversationStore.get(s.conversationId);
         if (c) {
@@ -5462,8 +5469,8 @@ export const createRequestHandler = async (options?: {
             status: c.subagentMeta?.status ?? "stopped",
             messageCount: c.messages.length,
             hasPendingApprovals: Array.isArray(c.pendingApprovals) && c.pendingApprovals.length > 0,
-            createdAt: c.createdAt,
-            updatedAt: c.updatedAt,
+            createdAt: String(c.createdAt),
+            updatedAt: String(c.updatedAt),
           });
         }
       }
@@ -5597,7 +5604,7 @@ export const createRequestHandler = async (options?: {
         writeJson(response, 200, {
           ok: true,
           stopped: false,
-        });
+        } satisfies ApiStopRunResponse);
         return;
       }
       if (activeRun.abortController.signal.aborted) {
@@ -5605,7 +5612,7 @@ export const createRequestHandler = async (options?: {
         writeJson(response, 200, {
           ok: true,
           stopped: false,
-        });
+        } satisfies ApiStopRunResponse);
         return;
       }
       if (requestedRunId && activeRun.runId !== requestedRunId) {
@@ -5613,7 +5620,7 @@ export const createRequestHandler = async (options?: {
           ok: true,
           stopped: false,
           runId: activeRun.runId ?? undefined,
-        });
+        } satisfies ApiStopRunResponse);
         return;
       }
       if (!requestedRunId) {
@@ -5621,7 +5628,7 @@ export const createRequestHandler = async (options?: {
           ok: true,
           stopped: false,
           runId: activeRun.runId ?? undefined,
-        });
+        } satisfies ApiStopRunResponse);
         return;
       }
       activeRun.abortController.abort();
@@ -5630,7 +5637,7 @@ export const createRequestHandler = async (options?: {
         ok: true,
         stopped: true,
         runId: activeRun.runId ?? undefined,
-      });
+      } satisfies ApiStopRunResponse);
       return;
     }
 
@@ -5703,12 +5710,12 @@ export const createRequestHandler = async (options?: {
     }
 
     if (pathname === "/api/slash-commands" && request.method === "GET") {
-      const skills = harness.listSkills().map((s) => ({
+      const skills: ApiSlashCommand[] = harness.listSkills().map((s) => ({
         command: "/" + s.name,
         description: s.description,
         type: "skill" as const,
       }));
-      const builtIn = [
+      const builtIn: ApiSlashCommand[] = [
         { command: "/compact", description: "Compact conversation context", type: "command" as const },
       ];
       writeJson(response, 200, { commands: [...builtIn, ...skills] });
@@ -5754,10 +5761,10 @@ export const createRequestHandler = async (options?: {
       }
       writeJson(response, 200, {
         compacted: result.compacted,
-        messagesBefore: result.messagesBefore,
-        messagesAfter: result.messagesAfter,
+        messagesBefore: result.messagesBefore ?? 0,
+        messagesAfter: result.messagesAfter ?? 0,
         warning: result.warning,
-      });
+      } satisfies ApiCompactResponse);
       return;
     }
 

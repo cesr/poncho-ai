@@ -1,5 +1,45 @@
-import type { AgentEvent, ContentPart, RunInput, RunResult } from "@poncho-ai/sdk";
+import type { AgentEvent, RunInput, RunResult } from "@poncho-ai/sdk";
 import { SignJWT } from "jose";
+import { BaseClient } from "./base.js";
+import type { AgentClientOptions } from "./base.js";
+import type { ConversationRecord, FileAttachment, SyncRunResponse } from "./types.js";
+import type { SubscribeToEventsOptions } from "./conversations.js";
+import {
+  listConversations,
+  createConversation,
+  getConversation,
+  getConversationStatus,
+  deleteConversation,
+  renameConversation,
+  stopRun,
+  compactConversation,
+  listTodos,
+  subscribeToEvents,
+} from "./conversations.js";
+import { submitApproval } from "./approvals.js";
+import { listSubagents } from "./subagents.js";
+import { listSecrets, setSecret, deleteSecret } from "./secrets.js";
+import { listSlashCommands } from "./commands.js";
+import { readFile } from "./vfs.js";
+
+// Re-export everything consumers need
+export type { AgentClientOptions } from "./base.js";
+export type {
+  SyncRunResponse,
+  ContinueInput,
+  ConversationSummary,
+  ConversationRecord,
+  FileAttachment,
+} from "./types.js";
+export type { SubscribeToEventsOptions } from "./conversations.js";
+export type {
+  ApiApprovalResponse,
+  ApiStopRunResponse,
+  ApiCompactResponse,
+  ApiSubagentSummary,
+  ApiSecretEntry,
+  ApiSlashCommand,
+} from "@poncho-ai/sdk";
 
 export interface CreateTenantTokenOptions {
   /** The signing key (typically PONCHO_AUTH_TOKEN). */
@@ -36,183 +76,37 @@ export async function createTenantToken(options: CreateTenantTokenOptions): Prom
   return await builder.sign(secret);
 }
 
-export interface AgentClientOptions {
-  url: string;
-  /** Raw API key (PONCHO_AUTH_TOKEN) for builder/admin access. Mutually exclusive with `token`. */
-  apiKey?: string;
-  /** Tenant JWT for scoped access. Mutually exclusive with `apiKey`. */
-  token?: string;
-  fetchImpl?: typeof fetch;
-}
+export class AgentClient extends BaseClient {
+  // --- Conversation management (from conversations.ts) ---
+  listConversations = listConversations;
+  createConversation = createConversation;
+  getConversation = getConversation;
+  getConversationStatus = getConversationStatus;
+  deleteConversation = deleteConversation;
+  renameConversation = renameConversation;
+  stopRun = stopRun;
+  compactConversation = compactConversation;
+  listTodos = listTodos;
+  subscribeToEvents = subscribeToEvents;
 
-export interface SyncRunResponse {
-  runId: string;
-  status: RunResult["status"];
-  result: RunResult;
-  pendingSubagents?: boolean;
-}
+  // --- Approvals (from approvals.ts) ---
+  submitApproval = submitApproval;
 
-export interface ContinueInput {
-  runId: string;
-  message: string;
-  parameters?: Record<string, unknown>;
-}
+  // --- Subagents (from subagents.ts) ---
+  listSubagents = listSubagents;
 
-export interface ConversationSummary {
-  conversationId: string;
-  title: string;
-  runtimeRunId?: string;
-  ownerId: string;
-  tenantId: string | null;
-  createdAt: number;
-  updatedAt: number;
-  messageCount: number;
-}
+  // --- Secrets (from secrets.ts) ---
+  listSecrets = listSecrets;
+  setSecret = setSecret;
+  deleteSecret = deleteSecret;
 
-export interface FileAttachment {
-  /** base64-encoded file data or a URL */
-  data: string;
-  mediaType: string;
-  filename?: string;
-}
+  // --- Slash commands (from commands.ts) ---
+  listSlashCommands = listSlashCommands;
 
-export interface ConversationRecord extends Omit<ConversationSummary, "messageCount"> {
-  messages: Array<{ role: "user" | "assistant"; content: string | ContentPart[] }>;
-}
+  // --- VFS (from vfs.ts) ---
+  readFile = readFile;
 
-const trimTrailingSlash = (value: string): string => value.replace(/\/+$/, "");
-
-export class AgentClient {
-  private readonly baseUrl: string;
-  private readonly bearerToken?: string;
-  private readonly fetchImpl: typeof fetch;
-
-  constructor(options: AgentClientOptions) {
-    if (options.apiKey && options.token) {
-      throw new Error("AgentClientOptions: apiKey and token are mutually exclusive");
-    }
-    this.baseUrl = trimTrailingSlash(options.url);
-    this.bearerToken = options.apiKey ?? options.token;
-    this.fetchImpl = options.fetchImpl ?? fetch;
-  }
-
-  private headers(): HeadersInit {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (this.bearerToken) {
-      headers.Authorization = `Bearer ${this.bearerToken}`;
-    }
-    return headers;
-  }
-
-  private async parseSse(response: Response): Promise<AgentEvent[]> {
-    if (!response.body) {
-      throw new Error("Missing response body");
-    }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    const events: AgentEvent[] = [];
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      buffer += decoder.decode(value, { stream: true });
-      const frames = buffer.split("\n\n");
-      buffer = frames.pop() ?? "";
-      for (const frame of frames) {
-        const lines = frame
-          .split("\n")
-          .map((line) => line.trim())
-          .filter(Boolean);
-        const dataLine = lines.find((line) => line.startsWith("data:"));
-        if (!dataLine) {
-          continue;
-        }
-        const payload = JSON.parse(dataLine.slice("data:".length).trim()) as AgentEvent;
-        events.push(payload);
-      }
-    }
-    return events;
-  }
-
-  async listConversations(): Promise<ConversationSummary[]> {
-    const response = await this.fetchImpl(`${this.baseUrl}/api/conversations`, {
-      method: "GET",
-      headers: this.headers(),
-    });
-    if (!response.ok) {
-      throw new Error(`List conversations failed: HTTP ${response.status}`);
-    }
-    const payload = (await response.json()) as { conversations: ConversationSummary[] };
-    return payload.conversations;
-  }
-
-  async createConversation(input?: { title?: string }): Promise<ConversationRecord> {
-    const response = await this.fetchImpl(`${this.baseUrl}/api/conversations`, {
-      method: "POST",
-      headers: this.headers(),
-      body: JSON.stringify(input ?? {}),
-    });
-    if (!response.ok) {
-      throw new Error(`Create conversation failed: HTTP ${response.status}`);
-    }
-    const payload = (await response.json()) as { conversation: ConversationRecord };
-    return payload.conversation;
-  }
-
-  async getConversation(conversationId: string): Promise<ConversationRecord> {
-    const response = await this.fetchImpl(
-      `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}`,
-      {
-        method: "GET",
-        headers: this.headers(),
-      },
-    );
-    if (!response.ok) {
-      throw new Error(`Get conversation failed: HTTP ${response.status}`);
-    }
-    const payload = (await response.json()) as { conversation: ConversationRecord };
-    return payload.conversation;
-  }
-
-  async getConversationStatus(conversationId: string): Promise<{
-    conversation: ConversationRecord;
-    hasActiveRun: boolean;
-    hasRunningSubagents: boolean;
-    needsContinuation?: boolean;
-  }> {
-    const response = await this.fetchImpl(
-      `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}`,
-      {
-        method: "GET",
-        headers: this.headers(),
-      },
-    );
-    if (!response.ok) {
-      throw new Error(`Get conversation status failed: HTTP ${response.status}`);
-    }
-    return (await response.json()) as {
-      conversation: ConversationRecord;
-      hasActiveRun: boolean;
-      hasRunningSubagents: boolean;
-    };
-  }
-
-  async deleteConversation(conversationId: string): Promise<void> {
-    const response = await this.fetchImpl(
-      `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}`,
-      {
-        method: "DELETE",
-        headers: this.headers(),
-      },
-    );
-    if (!response.ok) {
-      throw new Error(`Delete conversation failed: HTTP ${response.status}`);
-    }
-  }
+  // --- Core messaging & streaming (kept inline) ---
 
   async sendMessage(
     conversationId: string,
@@ -406,7 +300,7 @@ export class AgentClient {
     });
   }
 
-  async continue(input: ContinueInput & { files?: FileAttachment[] }): Promise<SyncRunResponse> {
+  async continue(input: { runId: string; message: string; parameters?: Record<string, unknown>; files?: FileAttachment[] }): Promise<SyncRunResponse> {
     return await this.sendMessage(input.runId, input.message, {
       parameters: input.parameters,
       files: input.files,
@@ -452,43 +346,20 @@ export class AgentClient {
     let stepBudget = 0;
     let shouldContinue = false;
 
-    const readSseStream = async function* (response: Response): AsyncGenerator<AgentEvent> {
-      if (!response.body) return;
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+    const self = this;
+    const readStream = async function* (response: Response): AsyncGenerator<AgentEvent> {
       shouldContinue = false;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const frames = buffer.split("\n\n");
-        buffer = frames.pop() ?? "";
-
-        for (const frame of frames) {
-          const lines = frame
-            .split("\n")
-            .map((line) => line.trim())
-            .filter(Boolean);
-
-          const eventType = lines.find((line) => line.startsWith("event:"));
-          const dataLine = lines.find((line) => line.startsWith("data:"));
-          if (!eventType || !dataLine) continue;
-
-          const payload = JSON.parse(dataLine.slice("data:".length).trim()) as AgentEvent;
-          if (payload.type === "run:completed") {
-            totalSteps += payload.result.steps;
-            if (typeof payload.result.maxSteps === "number") stepBudget = payload.result.maxSteps;
-            if (payload.result.continuation && (stepBudget <= 0 || totalSteps < stepBudget)) {
-              shouldContinue = true;
-            }
+      for await (const payload of self.readSseStream(response)) {
+        if (payload.type === "run:completed") {
+          totalSteps += payload.result.steps;
+          if (typeof payload.result.maxSteps === "number") stepBudget = payload.result.maxSteps;
+          if (payload.result.continuation && (stepBudget <= 0 || totalSteps < stepBudget)) {
+            shouldContinue = true;
           }
-          yield payload;
-          if (payload.type === "run:completed" && payload.pendingSubagents) {
-            yield { type: "subagents:pending" } as AgentEvent;
-          }
+        }
+        yield payload;
+        if (payload.type === "run:completed" && payload.pendingSubagents) {
+          yield { type: "subagents:pending" } as AgentEvent;
         }
       }
     };
@@ -508,7 +379,7 @@ export class AgentClient {
     if (!response.ok || !response.body) {
       throw new Error(`Streaming request failed: HTTP ${response.status}`);
     }
-    yield* readSseStream(response);
+    yield* readStream(response);
 
     // Continuation loop via /continue endpoint
     while (shouldContinue) {
@@ -520,7 +391,7 @@ export class AgentClient {
         },
       );
       if (!contResponse.ok || !contResponse.body) break;
-      yield* readSseStream(contResponse);
+      yield* readStream(contResponse);
     }
   }
 }
