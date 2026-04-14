@@ -1,5 +1,24 @@
 # @poncho-ai/cli
 
+## 0.37.0
+
+### Minor Changes
+
+- [`620a0c8`](https://github.com/cesr/poncho-ai/commit/620a0c89efaafce28968fca5cbde2e2b19bd1595) Thanks [@cesr](https://github.com/cesr)! - feat: add recurrent reminders (daily, weekly, monthly, cron)
+
+  The `set_reminder` tool now accepts an optional `recurrence` parameter that makes reminders repeat on a schedule instead of firing once. Supports daily, weekly (with specific days-of-week), monthly, and cron expressions. Recurring reminders are rescheduled after each firing and can be bounded by `maxOccurrences` or `endsAt`. Cancel a recurring reminder to stop all future occurrences.
+
+### Patch Changes
+
+- [`6486de2`](https://github.com/cesr/poncho-ai/commit/6486de2242a2976068e4bd09f7c0f2d978c35c96) Thanks [@cesr](https://github.com/cesr)! - fix: persist subagent `parentConversationId` atomically so children never appear top-level in the sidebar.
+
+  `SubagentManager.spawn` previously did a two-step write: `conversationStore.create(...)` followed by `conversationStore.update(...)` to attach `parentConversationId`, `subagentMeta`, and the initial user message. If the follow-up update was interrupted (serverless timeout, transient DB error), the child row was left in the database with `parent_conversation_id = NULL`, so it slipped past the `!c.parentConversationId` filter on `/api/conversations` and showed up as a top-level conversation. This was especially visible with cron-driven research subagents.
+
+  `ConversationStore.create` now accepts an optional `init` bag (`parentConversationId`, `subagentMeta`, `messages`, `channelMeta`) that is written in the single INSERT — both into the `data` blob and into the dedicated `parent_conversation_id` column. `spawn` passes those fields through and drops the redundant update, eliminating the orphan window. All existing `create(ownerId, title, tenantId)` callers keep working since `init` is optional.
+
+- Updated dependencies [[`6486de2`](https://github.com/cesr/poncho-ai/commit/6486de2242a2976068e4bd09f7c0f2d978c35c96), [`0d0578f`](https://github.com/cesr/poncho-ai/commit/0d0578fbc97a3d2644c4e22cab14ff02a79f805f), [`620a0c8`](https://github.com/cesr/poncho-ai/commit/620a0c89efaafce28968fca5cbde2e2b19bd1595)]:
+  - @poncho-ai/harness@0.38.0
+
 ## 0.36.9
 
 ### Patch Changes
