@@ -11,7 +11,7 @@ import type {
 } from "../state.js";
 import type { MainMemory } from "../memory.js";
 import type { TodoItem } from "../todo-tools.js";
-import type { Reminder } from "../reminder-store.js";
+import type { Reminder, ReminderCreateInput, ReminderStatus } from "../reminder-store.js";
 import type { StorageEngine, VfsDirEntry, VfsStat } from "./engine.js";
 
 // ---------------------------------------------------------------------------
@@ -248,14 +248,7 @@ export class InMemoryEngine implements StorageEngine {
       return results;
     },
 
-    create: async (input: {
-      task: string;
-      scheduledAt: number;
-      timezone?: string;
-      conversationId: string;
-      ownerId?: string;
-      tenantId?: string | null;
-    }): Promise<Reminder> => {
+    create: async (input: ReminderCreateInput): Promise<Reminder> => {
       const r: Reminder = {
         id: randomUUID(),
         task: input.task,
@@ -266,8 +259,19 @@ export class InMemoryEngine implements StorageEngine {
         conversationId: input.conversationId,
         ownerId: input.ownerId,
         tenantId: input.tenantId,
+        recurrence: input.recurrence ?? null,
+        occurrenceCount: 0,
       };
       this.reminderData.set(r.id, r);
+      return r;
+    },
+
+    update: async (id: string, fields: { scheduledAt?: number; occurrenceCount?: number; status?: ReminderStatus }): Promise<Reminder> => {
+      const r = this.reminderData.get(id);
+      if (!r) throw new Error(`Reminder ${id} not found`);
+      if (fields.scheduledAt !== undefined) r.scheduledAt = fields.scheduledAt;
+      if (fields.occurrenceCount !== undefined) r.occurrenceCount = fields.occurrenceCount;
+      if (fields.status !== undefined) r.status = fields.status;
       return r;
     },
 

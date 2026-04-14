@@ -6,7 +6,7 @@ import type {
 } from "../state.js";
 import type { MainMemory } from "../memory.js";
 import type { TodoItem } from "../todo-tools.js";
-import type { Reminder } from "../reminder-store.js";
+import type { Reminder, ReminderCreateInput, ReminderStatus } from "../reminder-store.js";
 
 // ---------------------------------------------------------------------------
 // VFS types
@@ -73,14 +73,8 @@ export interface StorageEngine {
   // --- Reminders (replaces ReminderStore) ---
   reminders: {
     list(tenantId?: string | null): Promise<Reminder[]>;
-    create(input: {
-      task: string;
-      scheduledAt: number;
-      timezone?: string;
-      conversationId: string;
-      ownerId?: string;
-      tenantId?: string | null;
-    }): Promise<Reminder>;
+    create(input: ReminderCreateInput): Promise<Reminder>;
+    update(id: string, fields: { scheduledAt?: number; occurrenceCount?: number; status?: ReminderStatus }): Promise<Reminder>;
     cancel(id: string): Promise<Reminder>;
     delete(id: string): Promise<void>;
   };

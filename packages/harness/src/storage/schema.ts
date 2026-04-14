@@ -174,4 +174,15 @@ export const migrations: Migration[] = [
       ];
     },
   },
+  {
+    version: 5,
+    name: "add_reminder_recurrence",
+    up: (d) => {
+      const jsonType = d === "sqlite" ? "TEXT" : "JSONB";
+      return [
+        `ALTER TABLE reminders ADD COLUMN recurrence ${jsonType}`,
+        `ALTER TABLE reminders ADD COLUMN occurrence_count INTEGER NOT NULL DEFAULT 0`,
+      ];
+    },
+  },
 ];

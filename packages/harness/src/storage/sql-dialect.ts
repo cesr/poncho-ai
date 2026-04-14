@@ -16,7 +16,7 @@ import type {
 } from "../state.js";
 import type { MainMemory } from "../memory.js";
 import type { TodoItem } from "../todo-tools.js";
-import type { Reminder } from "../reminder-store.js";
+import type { Reminder, ReminderCreateInput, ReminderStatus } from "../reminder-store.js";
 import type { StorageEngine, VfsDirEntry, VfsStat } from "./engine.js";
 import { type DialectTag, migrations } from "./schema.js";
 
@@ -509,21 +509,15 @@ export abstract class SqlStorageEngine implements StorageEngine {
       return rows.map((r) => this.rowToReminder(r));
     },
 
-    create: async (input: {
-      task: string;
-      scheduledAt: number;
-      timezone?: string;
-      conversationId: string;
-      ownerId?: string;
-      tenantId?: string | null;
-    }): Promise<Reminder> => {
+    create: async (input: ReminderCreateInput): Promise<Reminder> => {
       const id = randomUUID();
       const now = Date.now();
       const tid = normalizeTenant(input.tenantId);
+      const recurrenceJson = input.recurrence ? JSON.stringify(input.recurrence) : null;
       await this.executor.run(
         rewrite(
-          `INSERT INTO reminders (id, agent_id, tenant_id, owner_id, conversation_id, task, status, scheduled_at, timezone, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          `INSERT INTO reminders (id, agent_id, tenant_id, owner_id, conversation_id, task, status, scheduled_at, timezone, created_at, recurrence, occurrence_count)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
           this.dialect,
         ),
         [
@@ -537,6 +531,8 @@ export abstract class SqlStorageEngine implements StorageEngine {
           input.scheduledAt,
           input.timezone ?? null,
           new Date(now).toISOString(),
+          recurrenceJson,
+          0,
         ],
       );
       return {
@@ -549,7 +545,52 @@ export abstract class SqlStorageEngine implements StorageEngine {
         conversationId: input.conversationId,
         ownerId: input.ownerId,
         tenantId: input.tenantId,
+        recurrence: input.recurrence ?? null,
+        occurrenceCount: 0,
       };
+    },
+
+    update: async (id: string, fields: { scheduledAt?: number; occurrenceCount?: number; status?: ReminderStatus }): Promise<Reminder> => {
+      const setClauses: string[] = [];
+      const params: unknown[] = [];
+      let idx = 1;
+      if (fields.scheduledAt !== undefined) {
+        setClauses.push(`scheduled_at = $${idx++}`);
+        params.push(fields.scheduledAt);
+      }
+      if (fields.occurrenceCount !== undefined) {
+        setClauses.push(`occurrence_count = $${idx++}`);
+        params.push(fields.occurrenceCount);
+      }
+      if (fields.status !== undefined) {
+        setClauses.push(`status = $${idx++}`);
+        params.push(fields.status);
+      }
+      if (setClauses.length === 0) {
+        // Nothing to update — just fetch
+        const row = await this.executor.get(
+          rewrite("SELECT * FROM reminders WHERE id = $1 AND agent_id = $2", this.dialect),
+          [id, this.agentId],
+        );
+        if (!row) throw new Error(`Reminder ${id} not found`);
+        return this.rowToReminder(row);
+      }
+      params.push(id, this.agentId);
+      const idIdx = idx++;
+      const agentIdx = idx++;
+      await this.executor.run(
+        rewrite(
+          `UPDATE reminders SET ${setClauses.join(", ")} WHERE id = $${idIdx} AND agent_id = $${agentIdx}`,
+          this.dialect,
+        ),
+        params,
+      );
+      const row = await this.executor.get(
+        rewrite("SELECT * FROM reminders WHERE id = $1 AND agent_id = $2", this.dialect),
+        [id, this.agentId],
+      );
+      if (!row) throw new Error(`Reminder ${id} not found`);
+      return this.rowToReminder(row);
     },
 
     cancel: async (id: string): Promise<Reminder> => {
@@ -930,6 +971,16 @@ export abstract class SqlStorageEngine implements StorageEngine {
 
   private rowToReminder(row: QueryRow): Reminder {
     const tid = row.tenant_id as string;
+    let recurrence: Reminder["recurrence"] = null;
+    if (row.recurrence) {
+      try {
+        recurrence = typeof row.recurrence === "string"
+          ? JSON.parse(row.recurrence)
+          : row.recurrence;
+      } catch {
+        recurrence = null;
+      }
+    }
     return {
       id: row.id as string,
       task: row.task as string,
@@ -940,6 +991,8 @@ export abstract class SqlStorageEngine implements StorageEngine {
       conversationId: row.conversation_id as string,
       ownerId: (row.owner_id as string) ?? undefined,
       tenantId: tid === DEFAULT_TENANT ? null : tid,
+      recurrence,
+      occurrenceCount: (row.occurrence_count as number) ?? 0,
     };
   }
 

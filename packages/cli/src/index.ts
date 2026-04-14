@@ -35,6 +35,7 @@ import {
   type UploadStore,
   verifyTenantToken,
   createSecretsStore,
+  computeNextOccurrence,
 } from "@poncho-ai/harness";
 import type { AgentEvent, FileInput, Message, RunInput } from "@poncho-ai/sdk";
 import { getTextContent } from "@poncho-ai/sdk";
@@ -6493,18 +6494,36 @@ export const createRequestHandler = async (options?: {
 
       for (const reminder of due) {
         try {
-          await reminderStore.delete(reminder.id);
+          // For recurring reminders, compute the next occurrence before any
+          // state changes so we can reschedule. For one-off reminders, delete.
+          const nextScheduledAt = computeNextOccurrence(reminder);
+          if (nextScheduledAt) {
+            await reminderStore.update(reminder.id, {
+              scheduledAt: nextScheduledAt,
+              occurrenceCount: (reminder.occurrenceCount ?? 0) + 1,
+            });
+          } else {
+            await reminderStore.delete(reminder.id);
+          }
 
           const originConv = reminder.conversationId
             ? await conversationStore.get(reminder.conversationId)
             : undefined;
           const channelMeta = originConv?.channelMeta;
 
+          const isRecurring = !!reminder.recurrence;
+          const recurrenceNote = isRecurring && nextScheduledAt
+            ? `\nNext occurrence: ${new Date(nextScheduledAt).toISOString()}`
+            : isRecurring
+              ? "\nThis was the final occurrence."
+              : "";
+
           const framedMessage =
             `[Reminder] A reminder you previously set has fired.\n` +
             `Task: "${reminder.task}"\n` +
             `Originally set at: ${new Date(reminder.createdAt).toISOString()}\n` +
-            `Scheduled for: ${new Date(reminder.scheduledAt).toISOString()}`;
+            `Scheduled for: ${new Date(reminder.scheduledAt).toISOString()}` +
+            recurrenceNote;
 
           if (channelMeta) {
             const adapter = messagingAdapters.get(channelMeta.platform);

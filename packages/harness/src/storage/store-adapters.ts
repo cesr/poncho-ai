@@ -13,7 +13,7 @@ import type {
 } from "../state.js";
 import type { MainMemory, MemoryStore } from "../memory.js";
 import type { TodoItem, TodoStore } from "../todo-tools.js";
-import type { Reminder, ReminderStore } from "../reminder-store.js";
+import type { Reminder, ReminderCreateInput, ReminderStatus, ReminderStore } from "../reminder-store.js";
 import type { StorageEngine } from "./engine.js";
 
 // ---------------------------------------------------------------------------
@@ -91,14 +91,9 @@ export function createReminderStoreFromEngine(
 ): ReminderStore {
   return {
     list: () => engine.reminders.list(),
-    create: (input: {
-      task: string;
-      scheduledAt: number;
-      timezone?: string;
-      conversationId: string;
-      ownerId?: string;
-      tenantId?: string | null;
-    }) => engine.reminders.create(input),
+    create: (input: ReminderCreateInput) => engine.reminders.create(input),
+    update: (id: string, fields: { scheduledAt?: number; occurrenceCount?: number; status?: ReminderStatus }) =>
+      engine.reminders.update(id, fields),
     cancel: (id: string) => engine.reminders.cancel(id),
     delete: (id: string) => engine.reminders.delete(id),
   };
