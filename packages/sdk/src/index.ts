@@ -109,6 +109,7 @@ export const defineTool = <
 ): ToolDefinition<TInput, TOutput> => definition;
 
 export * from "./config-registry.js";
+export * from "./api-types.js";
 
 export interface FileInput {
   /** base64 data, data: URI, or https:// URL */
