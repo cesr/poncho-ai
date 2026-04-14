@@ -6,6 +6,7 @@ import { Bash } from "just-bash";
 import type {
   BashOptions,
   CommandName,
+  IFileSystem,
   NetworkConfig as JustBashNetworkConfig,
 } from "just-bash";
 import type { StorageEngine } from "../storage/engine.js";
@@ -65,6 +66,7 @@ function toBashOptions(
 
 export class BashEnvironmentManager {
   private environments = new Map<string, Bash>();
+  private filesystems = new Map<string, IFileSystem>();
   private readonly workingDir: string | null;
   private readonly bashOptions: Partial<BashOptions>;
 
@@ -79,11 +81,21 @@ export class BashEnvironmentManager {
     this.bashOptions = toBashOptions(bashConfig, network);
   }
 
+  /** Return the combined IFileSystem (VFS + optional /project mount) for a tenant. */
+  getFs(tenantId: string): IFileSystem {
+    let fs = this.filesystems.get(tenantId);
+    if (!fs) {
+      const adapter = new PonchoFsAdapter(this.engine, tenantId, this.limits);
+      fs = createBashFs(adapter, this.workingDir);
+      this.filesystems.set(tenantId, fs);
+    }
+    return fs;
+  }
+
   getOrCreate(tenantId: string): Bash {
     let bash = this.environments.get(tenantId);
     if (!bash) {
-      const adapter = new PonchoFsAdapter(this.engine, tenantId, this.limits);
-      const fs = createBashFs(adapter, this.workingDir);
+      const fs = this.getFs(tenantId);
       bash = new Bash({
         fs,
         cwd: "/",
@@ -112,9 +124,11 @@ export class BashEnvironmentManager {
 
   destroy(tenantId: string): void {
     this.environments.delete(tenantId);
+    this.filesystems.delete(tenantId);
   }
 
   destroyAll(): void {
     this.environments.clear();
+    this.filesystems.clear();
   }
 }

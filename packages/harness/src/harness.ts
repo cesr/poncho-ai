@@ -1477,9 +1477,10 @@ export class AgentHarness {
     );
     // Register VFS tools
     this.registerIfMissing(createBashTool(this.bashManager));
-    this.registerIfMissing(createReadFileTool(engine));
-    this.registerIfMissing(createEditFileTool(engine));
-    this.registerIfMissing(createWriteFileTool(engine));
+    const getFs = (tenantId: string) => this.bashManager!.getFs(tenantId);
+    this.registerIfMissing(createReadFileTool(getFs));
+    this.registerIfMissing(createEditFileTool(getFs));
+    this.registerIfMissing(createWriteFileTool(getFs));
 
     // --- Isolate (V8 sandboxed code execution) ---
     if (config?.isolate) {

@@ -1,12 +1,12 @@
 // ---------------------------------------------------------------------------
-// write_file tool – create or overwrite a file in the VFS.
+// write_file tool – create or overwrite a file in the filesystem.
 // ---------------------------------------------------------------------------
 
 import { defineTool, type ToolDefinition } from "@poncho-ai/sdk";
-import type { StorageEngine } from "../storage/engine.js";
+import type { IFileSystem } from "just-bash";
 
 export const createWriteFileTool = (
-  engine: StorageEngine,
+  getFs: (tenantId: string) => IFileSystem,
 ): ToolDefinition => defineTool({
   name: "write_file",
   description:
@@ -35,14 +35,15 @@ export const createWriteFileTool = (
     if (!filePath) throw new Error("path is required");
 
     const tenantId = context.tenantId ?? "__default__";
+    const fs = getFs(tenantId);
 
     // Create parent directories
     const dir = filePath.slice(0, filePath.lastIndexOf("/"));
     if (dir) {
-      await engine.vfs.mkdir(tenantId, dir, true);
+      await fs.mkdir(dir, { recursive: true });
     }
 
-    await engine.vfs.writeFile(tenantId, filePath, new TextEncoder().encode(content));
+    await fs.writeFile(filePath, content);
 
     return { ok: true, path: filePath };
   },

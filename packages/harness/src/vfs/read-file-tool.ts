@@ -1,12 +1,10 @@
 // ---------------------------------------------------------------------------
-// read_file tool – read files from the VFS, returning binary files (images,
-// PDFs) as FileContentPart references that the harness resolves lazily at
-// model-request time via the vfs:// scheme.
+// read_file tool – read files from the filesystem, returning binary files
+// (images, PDFs) as inline base64 media parts.
 // ---------------------------------------------------------------------------
 
 import { defineTool, type ToolDefinition } from "@poncho-ai/sdk";
-import type { StorageEngine } from "../storage/engine.js";
-import { VFS_SCHEME } from "../upload-store.js";
+import type { IFileSystem } from "just-bash";
 
 const MIME_MAP: Record<string, string> = {
   ".txt": "text/plain",
@@ -48,7 +46,7 @@ const isTextMime = (mime: string): boolean =>
   mime === "application/x-sh";
 
 export const createReadFileTool = (
-  engine: StorageEngine,
+  getFs: (tenantId: string) => IFileSystem,
 ): ToolDefinition => defineTool({
   name: "read_file",
   description:
@@ -73,29 +71,30 @@ export const createReadFileTool = (
     }
 
     const tenantId = context.tenantId ?? "__default__";
-    const stat = await engine.vfs.stat(tenantId, filePath);
-    if (!stat) {
+    const fs = getFs(tenantId);
+
+    if (!(await fs.exists(filePath))) {
       throw new Error(`File not found: ${filePath}`);
     }
-    if (stat.type === "directory") {
+    const stat = await fs.stat(filePath);
+    if (stat.isDirectory) {
       throw new Error(`${filePath} is a directory, not a file`);
     }
 
-    const mediaType = stat.mimeType ?? mimeFromPath(filePath) ?? "application/octet-stream";
+    const mediaType = mimeFromPath(filePath) ?? "application/octet-stream";
     const filename = filePath.split("/").pop() ?? filePath;
 
     // Text files: read and return inline
     if (isTextMime(mediaType)) {
-      const buf = await engine.vfs.readFile(tenantId, filePath);
-      const text = Buffer.from(buf).toString("utf8");
+      const text = await fs.readFile(filePath);
       return { filename, mediaType, content: text };
     }
 
-    // Images and PDFs: return a vfs:// reference that the harness resolves
-    // lazily at model-request time — the actual bytes never sit in context.
+    // Binary files (images, PDFs): read bytes and return as base64
+    const buf = await fs.readFileBuffer(filePath);
     return {
       type: "file",
-      data: `${VFS_SCHEME}${filePath}`,
+      data: Buffer.from(buf).toString("base64"),
       mediaType,
       filename,
     };

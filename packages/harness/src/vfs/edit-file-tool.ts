@@ -3,10 +3,10 @@
 // ---------------------------------------------------------------------------
 
 import { defineTool, type ToolDefinition } from "@poncho-ai/sdk";
-import type { StorageEngine } from "../storage/engine.js";
+import type { IFileSystem } from "just-bash";
 
 export const createEditFileTool = (
-  engine: StorageEngine,
+  getFs: (tenantId: string) => IFileSystem,
 ): ToolDefinition => defineTool({
   name: "edit_file",
   description:
@@ -44,12 +44,13 @@ export const createEditFileTool = (
     if (!oldStr) throw new Error("old_str must not be empty");
 
     const tenantId = context.tenantId ?? "__default__";
-    const stat = await engine.vfs.stat(tenantId, filePath);
-    if (!stat) throw new Error(`File not found: ${filePath}`);
-    if (stat.type === "directory") throw new Error(`${filePath} is a directory`);
+    const fs = getFs(tenantId);
 
-    const buf = await engine.vfs.readFile(tenantId, filePath);
-    const content = Buffer.from(buf).toString("utf8");
+    if (!(await fs.exists(filePath))) throw new Error(`File not found: ${filePath}`);
+    const stat = await fs.stat(filePath);
+    if (stat.isDirectory) throw new Error(`${filePath} is a directory`);
+
+    const content = await fs.readFile(filePath);
 
     const first = content.indexOf(oldStr);
     if (first === -1) {
@@ -65,7 +66,7 @@ export const createEditFileTool = (
     }
 
     const updated = content.slice(0, first) + newStr + content.slice(first + oldStr.length);
-    await engine.vfs.writeFile(tenantId, filePath, new TextEncoder().encode(updated));
+    await fs.writeFile(filePath, updated);
 
     return { ok: true, path: filePath };
   },
