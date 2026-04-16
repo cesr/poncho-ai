@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import type {
   Conversation,
   ConversationCreateInit,
+  ConversationStatusSnapshot,
   ConversationSummary,
   PendingSubagentResult,
 } from "../state.js";
@@ -105,10 +106,92 @@ const rewrite = (sql: string, dialect: Dialect): string => {
 // SqlStorageEngine base class
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Conversation egress meter — tracks estimated bytes read from / written to
+// the conversations table per method. Enable periodic logging by setting
+// PONCHO_LOG_EGRESS=1 in the environment.
+// ---------------------------------------------------------------------------
+
+interface EgressBucket {
+  calls: number;
+  bytes: number;
+}
+
+class ConversationEgressMeter {
+  readonly read: Record<string, EgressBucket> = {};
+  readonly write: Record<string, EgressBucket> = {};
+  private lastLogAt = Date.now();
+  private readonly logIntervalMs: number;
+  private readonly enabled: boolean;
+
+  constructor(logIntervalMs = 60_000) {
+    this.logIntervalMs = logIntervalMs;
+    this.enabled = true;
+  }
+
+  trackRead(method: string, bytes: number): void {
+    const b = (this.read[method] ??= { calls: 0, bytes: 0 });
+    b.calls += 1;
+    b.bytes += bytes;
+    this.maybeLog();
+  }
+
+  trackWrite(method: string, bytes: number): void {
+    const b = (this.write[method] ??= { calls: 0, bytes: 0 });
+    b.calls += 1;
+    b.bytes += bytes;
+    this.maybeLog();
+  }
+
+  private maybeLog(): void {
+    if (!this.enabled) return;
+    const now = Date.now();
+    if (now - this.lastLogAt < this.logIntervalMs) return;
+    this.lastLogAt = now;
+    this.flush();
+  }
+
+  flush(): void {
+    const fmt = (buckets: Record<string, EgressBucket>) =>
+      Object.entries(buckets)
+        .filter(([, b]) => b.calls > 0)
+        .map(([m, b]) => `${m}=${b.calls}calls/${fmtBytes(b.bytes)}`)
+        .join(", ");
+    const r = fmt(this.read);
+    const w = fmt(this.write);
+    if (r || w) {
+      process.stderr.write(
+        `[poncho][egress] read: ${r || "(none)"} | write: ${w || "(none)"}\n`,
+      );
+    }
+    // Reset after logging.
+    for (const b of Object.values(this.read)) { b.calls = 0; b.bytes = 0; }
+    for (const b of Object.values(this.write)) { b.calls = 0; b.bytes = 0; }
+  }
+}
+
+const fmtBytes = (n: number): string => {
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)}MB`;
+};
+
+/** Estimate the byte size of a string-ish value (JSON column from the DB). */
+const colBytes = (v: unknown): number => {
+  if (v == null) return 0;
+  if (typeof v === "string") return v.length;
+  if (Buffer.isBuffer(v)) return v.byteLength;
+  // JSONB columns in node-postgres come back as parsed objects — estimate
+  // by re-stringifying. This is only called on the measured hot paths, so
+  // the overhead is acceptable.
+  return JSON.stringify(v).length;
+};
+
 export abstract class SqlStorageEngine implements StorageEngine {
   protected readonly dialect: Dialect;
   protected readonly agentId: string;
   protected abstract readonly executor: QueryExecutor;
+  protected readonly egressMeter = new ConversationEgressMeter();
 
   constructor(dialect: Dialect, agentId: string) {
     this.dialect = dialect;
@@ -125,6 +208,11 @@ export abstract class SqlStorageEngine implements StorageEngine {
   }
 
   abstract close(): Promise<void>;
+
+  /** Flush egress stats before shutdown. Subclasses should call super. */
+  protected flushEgressStats(): void {
+    this.egressMeter.flush();
+  }
 
   /** Hook for subclass-specific setup (e.g. WAL mode). */
   protected async onBeforeInit(): Promise<void> {}
@@ -208,6 +296,83 @@ export abstract class SqlStorageEngine implements StorageEngine {
     },
 
     get: async (conversationId: string): Promise<Conversation | undefined> => {
+      // Skip tool_result_archive — unbounded blob, only needed on run-entry
+      // paths which must use getWithArchive() instead.
+      const row = await this.executor.get<{
+        data: unknown;
+        harness_messages: unknown;
+        continuation_messages: unknown;
+      }>(
+        rewrite("SELECT data, harness_messages, continuation_messages FROM conversations WHERE id = $1 AND agent_id = $2", this.dialect),
+        [conversationId, this.agentId],
+      );
+      if (!row) return undefined;
+      this.egressMeter.trackRead("get",
+        colBytes(row.data) + colBytes(row.harness_messages) + colBytes(row.continuation_messages));
+      const conv = this.parseConversation(row.data);
+      if (row.harness_messages) {
+        conv._harnessMessages =
+          typeof row.harness_messages === "string"
+            ? JSON.parse(row.harness_messages)
+            : row.harness_messages;
+      }
+      if (row.continuation_messages) {
+        conv._continuationMessages =
+          typeof row.continuation_messages === "string"
+            ? JSON.parse(row.continuation_messages)
+            : row.continuation_messages;
+      }
+      return conv;
+    },
+
+    getStatusSnapshot: async (
+      conversationId: string,
+    ): Promise<ConversationStatusSnapshot | undefined> => {
+      // Column-only read. runStatus lives inside the `data` JSON; extract it
+      // with a dialect-specific JSON path expression rather than pulling the
+      // whole blob.
+      const runStatusExpr = this.dialect.tag === "sqlite"
+        ? "json_extract(data, '$.runStatus')"
+        : "data->>'runStatus'";
+      const row = await this.executor.get<{
+        updated_at: string;
+        message_count: number;
+        has_pending_approvals: number | boolean;
+        parent_conversation_id: string | null;
+        owner_id: string;
+        tenant_id: string | null;
+        has_continuation_messages: number | boolean;
+        run_status: string | null;
+      }>(
+        rewrite(
+          `SELECT updated_at, message_count, has_pending_approvals,
+                  parent_conversation_id, owner_id, tenant_id,
+                  (continuation_messages IS NOT NULL) AS has_continuation_messages,
+                  ${runStatusExpr} AS run_status
+           FROM conversations WHERE id = $1 AND agent_id = $2`,
+          this.dialect,
+        ),
+        [conversationId, this.agentId],
+      );
+      if (!row) return undefined;
+      this.egressMeter.trackRead("getStatusSnapshot", 200); // fixed-size column read
+      const runStatus = row.run_status === "running" || row.run_status === "idle"
+        ? row.run_status
+        : null;
+      return {
+        conversationId,
+        updatedAt: new Date(row.updated_at).getTime(),
+        messageCount: row.message_count ?? 0,
+        hasPendingApprovals: !!row.has_pending_approvals,
+        hasContinuationMessages: !!row.has_continuation_messages,
+        parentConversationId: row.parent_conversation_id,
+        ownerId: row.owner_id,
+        tenantId: row.tenant_id === "__default__" ? null : row.tenant_id,
+        runStatus,
+      };
+    },
+
+    getWithArchive: async (conversationId: string): Promise<Conversation | undefined> => {
       const row = await this.executor.get<{
         data: unknown;
         tool_result_archive: unknown;
@@ -218,8 +383,10 @@ export abstract class SqlStorageEngine implements StorageEngine {
         [conversationId, this.agentId],
       );
       if (!row) return undefined;
+      this.egressMeter.trackRead("getWithArchive",
+        colBytes(row.data) + colBytes(row.tool_result_archive) +
+        colBytes(row.harness_messages) + colBytes(row.continuation_messages));
       const conv = this.parseConversation(row.data);
-      // Rehydrate heavy fields from separate columns
       if (row.tool_result_archive) {
         conv._toolResultArchive =
           typeof row.tool_result_archive === "string"
@@ -309,6 +476,9 @@ export abstract class SqlStorageEngine implements StorageEngine {
       const archiveJson = archive ? JSON.stringify(archive) : null;
       const harnessJson = harnessMessages ? JSON.stringify(harnessMessages) : null;
       const continuationJson = continuationMessages ? JSON.stringify(continuationMessages) : null;
+      this.egressMeter.trackWrite("update",
+        data.length + (archiveJson?.length ?? 0) +
+        (harnessJson?.length ?? 0) + (continuationJson?.length ?? 0));
       const msgCount = conversation.messages?.length ?? 0;
       const tid = normalizeTenant(conversation.tenantId);
       const now = new Date(conversation.updatedAt).toISOString();
@@ -325,7 +495,12 @@ export abstract class SqlStorageEngine implements StorageEngine {
            ${this.dialect.upsert(["id"])}
            data = excluded.data, title = excluded.title, message_count = excluded.message_count,
            updated_at = excluded.updated_at, tenant_id = excluded.tenant_id, owner_id = excluded.owner_id,
-           tool_result_archive = excluded.tool_result_archive, harness_messages = excluded.harness_messages,
+           -- tool_result_archive is append-only from the caller's side; if the
+           -- in-memory conversation was loaded via the light get() variant it
+           -- won't have _toolResultArchive attached, so we must preserve the
+           -- existing column instead of clobbering it with NULL.
+           tool_result_archive = COALESCE(excluded.tool_result_archive, conversations.tool_result_archive),
+           harness_messages = excluded.harness_messages,
            continuation_messages = excluded.continuation_messages,
            parent_conversation_id = excluded.parent_conversation_id,
            has_pending_approvals = excluded.has_pending_approvals,

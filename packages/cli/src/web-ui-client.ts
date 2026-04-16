@@ -1707,43 +1707,65 @@ export const getWebUiClientScript = (markedSource: string): string => `
         });
       };
 
+      // Fetch the full conversation and sync UI state. Extracted so both
+      // poll loops can call it only when the cheap /status endpoint shows
+      // something has actually changed.
+      const refetchConversationAndRender = async (conversationId, streaming) => {
+        const payload = await api("/api/conversations/" + encodeURIComponent(conversationId));
+        if (state.activeConversationId !== conversationId || !payload.conversation) return payload;
+        var allPending = [].concat(payload.conversation.pendingApprovals || []);
+        if (Array.isArray(payload.subagentPendingApprovals)) {
+          payload.subagentPendingApprovals.forEach(function(sa) {
+            var subIdShort = sa.subagentId && sa.subagentId.length > 12 ? sa.subagentId.slice(0, 12) + "..." : (sa.subagentId || "");
+            allPending.push({
+              approvalId: sa.approvalId,
+              tool: sa.tool,
+              input: sa.input,
+              _subagentId: sa.subagentId,
+              _subagentLabel: "subagent " + subIdShort,
+            });
+          });
+        }
+        state.activeMessages = hydratePendingApprovals(
+          payload.conversation.messages || [],
+          allPending,
+        );
+        if (typeof payload.conversation.contextTokens === "number") {
+          state.contextTokens = payload.conversation.contextTokens;
+        }
+        if (typeof payload.conversation.contextWindow === "number" && payload.conversation.contextWindow > 0) {
+          state.contextWindow = payload.conversation.contextWindow;
+        }
+        updateContextRing();
+        renderMessages(state.activeMessages, streaming);
+        return payload;
+      };
+
       const pollUntilRunIdle = (conversationId) => {
+        let lastUpdatedAt = 0;
+        let lastMessageCount = -1;
+        let lastPendingSignature = "";
         const poll = async () => {
           if (state.activeConversationId !== conversationId) return;
           try {
-            var payload = await api("/api/conversations/" + encodeURIComponent(conversationId));
+            // Cheap status check — no data blob, no archive, no messages.
+            const status = await api("/api/conversations/" + encodeURIComponent(conversationId) + "/status");
             if (state.activeConversationId !== conversationId) return;
-            if (payload.conversation) {
-              var allPending = [].concat(
-                payload.conversation.pendingApprovals || [],
-              );
-              if (Array.isArray(payload.subagentPendingApprovals)) {
-                payload.subagentPendingApprovals.forEach(function(sa) {
-                  var subIdShort = sa.subagentId && sa.subagentId.length > 12 ? sa.subagentId.slice(0, 12) + "..." : (sa.subagentId || "");
-                  allPending.push({
-                    approvalId: sa.approvalId,
-                    tool: sa.tool,
-                    input: sa.input,
-                    _subagentId: sa.subagentId,
-                    _subagentLabel: "subagent " + subIdShort,
-                  });
-                });
-              }
-              state.activeMessages = hydratePendingApprovals(
-                payload.conversation.messages || [],
-                allPending,
-              );
-              if (typeof payload.conversation.contextTokens === "number") {
-                state.contextTokens = payload.conversation.contextTokens;
-              }
-              if (typeof payload.conversation.contextWindow === "number" && payload.conversation.contextWindow > 0) {
-                state.contextWindow = payload.conversation.contextWindow;
-              }
-              updateContextRing();
-              renderMessages(state.activeMessages, payload.hasActiveRun);
+            const pendingSignature =
+              (status.hasPendingApprovals ? 1 : 0) + ":" + (status.subagentPendingApprovalsCount || 0);
+            const changed =
+              status.updatedAt > lastUpdatedAt ||
+              status.messageCount !== lastMessageCount ||
+              pendingSignature !== lastPendingSignature;
+            if (changed) {
+              lastUpdatedAt = status.updatedAt;
+              lastMessageCount = status.messageCount;
+              lastPendingSignature = pendingSignature;
+              await refetchConversationAndRender(conversationId, status.hasActiveRun);
+              if (state.activeConversationId !== conversationId) return;
             }
-            if (payload.hasActiveRun || payload.hasRunningSubagents) {
-              if (payload.hasActiveRun && window._connectBrowserStream) window._connectBrowserStream();
+            if (status.hasActiveRun || status.hasRunningSubagents) {
+              if (status.hasActiveRun && window._connectBrowserStream) window._connectBrowserStream();
               setTimeout(poll, 2000);
             } else {
               setStreaming(false);
@@ -1762,49 +1784,34 @@ export const getWebUiClientScript = (markedSource: string): string => `
         state.subagentPollInFlight[conversationId] = true;
         let lastMessageCount = state.activeMessages ? state.activeMessages.length : 0;
         let lastUpdatedAt = 0;
+        let lastPendingSignature = "";
         const poll = async () => {
           if (state.activeConversationId !== conversationId) {
             delete state.subagentPollInFlight[conversationId];
             return;
           }
           try {
-            var payload = await api("/api/conversations/" + encodeURIComponent(conversationId));
+            const status = await api("/api/conversations/" + encodeURIComponent(conversationId) + "/status");
             if (state.activeConversationId !== conversationId) return;
-            if (payload.conversation) {
-              var messages = payload.conversation.messages || [];
-              var allPending = [].concat(
-                payload.conversation.pendingApprovals || [],
-              );
-              if (Array.isArray(payload.subagentPendingApprovals)) {
-                payload.subagentPendingApprovals.forEach(function(sa) {
-                  var subIdShort = sa.subagentId && sa.subagentId.length > 12 ? sa.subagentId.slice(0, 12) + "..." : (sa.subagentId || "");
-                  allPending.push({
-                    approvalId: sa.approvalId,
-                    tool: sa.tool,
-                    input: sa.input,
-                    _subagentId: sa.subagentId,
-                    _subagentLabel: "subagent " + subIdShort,
-                  });
-                });
-              }
-              const conversationUpdatedAt =
-                typeof payload.conversation.updatedAt === "number" ? payload.conversation.updatedAt : 0;
-              if (messages.length > lastMessageCount || conversationUpdatedAt > lastUpdatedAt) {
-                lastMessageCount = messages.length;
-                lastUpdatedAt = conversationUpdatedAt;
-                state.activeMessages = hydratePendingApprovals(messages, allPending);
-                renderMessages(state.activeMessages, payload.hasActiveRun || payload.hasRunningSubagents);
-              }
-              if (payload.hasActiveRun || payload.hasRunningSubagents) {
-                // Keep polling while subagents are running or the parent
-                // callback is active. Persisted messages are rendered each
-                // cycle so results appear as soon as they're committed.
-                setTimeout(poll, 2000);
-              } else {
-                renderMessages(state.activeMessages, false);
-                await loadConversations();
-                delete state.subagentPollInFlight[conversationId];
-              }
+            const pendingSignature =
+              (status.hasPendingApprovals ? 1 : 0) + ":" + (status.subagentPendingApprovalsCount || 0);
+            const changed =
+              status.messageCount > lastMessageCount ||
+              status.updatedAt > lastUpdatedAt ||
+              pendingSignature !== lastPendingSignature;
+            if (changed) {
+              lastMessageCount = status.messageCount;
+              lastUpdatedAt = status.updatedAt;
+              lastPendingSignature = pendingSignature;
+              await refetchConversationAndRender(conversationId, status.hasActiveRun || status.hasRunningSubagents);
+              if (state.activeConversationId !== conversationId) return;
+            }
+            if (status.hasActiveRun || status.hasRunningSubagents) {
+              setTimeout(poll, 2000);
+            } else {
+              renderMessages(state.activeMessages, false);
+              await loadConversations();
+              delete state.subagentPollInFlight[conversationId];
             }
           } catch {
             // Polling error; retry

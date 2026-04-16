@@ -94,6 +94,7 @@ export class SqliteEngine extends SqlStorageEngine {
   }
 
   async close(): Promise<void> {
+    this.flushEgressStats();
     this.db?.close();
   }
 }

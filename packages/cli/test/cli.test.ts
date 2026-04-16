@@ -140,14 +140,65 @@ vi.mock("@poncho-ai/harness", async (importOriginal) => {
   },
   createConversationStore: () => {
     const store = new FileConversationStore(process.cwd());
+    // The test mock conversation store implements the minimum of the
+    // ConversationStore interface the CLI uses. The file store already
+    // holds the full conversation object, so the light `get` / heavy
+    // `getWithArchive` distinction doesn't matter here — both delegate
+    // to the same underlying read.
+    // FileConversationStore returns a narrow WebUiConversation; widen to
+    // the optional harness fields so the summary / snapshot projections
+    // can reference them without TS errors.
+    type LooseConv = Awaited<ReturnType<FileConversationStore["get"]>> & {
+      parentConversationId?: string;
+      pendingApprovals?: unknown[];
+      channelMeta?: { platform: string; channelId: string; platformThreadId: string };
+      _continuationMessages?: unknown[];
+      runStatus?: "running" | "idle";
+    };
+    const listSummaries = async (ownerId?: string) =>
+      ((await store.list(ownerId)) as LooseConv[]).map((c) => ({
+        conversationId: c!.conversationId,
+        title: c!.title,
+        updatedAt: c!.updatedAt,
+        createdAt: c!.createdAt,
+        ownerId: c!.ownerId,
+        tenantId: c!.tenantId,
+        parentConversationId: c!.parentConversationId,
+        messageCount: c!.messages?.length ?? 0,
+        hasPendingApprovals:
+          Array.isArray(c!.pendingApprovals) && c!.pendingApprovals.length > 0,
+        channelMeta: c!.channelMeta,
+      }));
     return {
       list: (ownerId?: string) => store.list(ownerId),
+      listSummaries,
       get: (conversationId: string) => store.get(conversationId),
+      getWithArchive: (conversationId: string) => store.get(conversationId),
+      getStatusSnapshot: async (conversationId: string) => {
+        const c = (await store.get(conversationId)) as LooseConv | undefined;
+        if (!c) return undefined;
+        return {
+          conversationId: c.conversationId,
+          updatedAt: c.updatedAt,
+          messageCount: c.messages?.length ?? 0,
+          hasPendingApprovals:
+            Array.isArray(c.pendingApprovals) && c.pendingApprovals.length > 0,
+          hasContinuationMessages:
+            Array.isArray(c._continuationMessages) &&
+            (c._continuationMessages?.length ?? 0) > 0,
+          parentConversationId: c.parentConversationId ?? null,
+          ownerId: c.ownerId,
+          tenantId: c.tenantId ?? null,
+          runStatus: c.runStatus ?? null,
+        };
+      },
       create: (ownerId?: string, title?: string) => store.create(ownerId, title),
       update: (conversation: Awaited<ReturnType<FileConversationStore["create"]>>) =>
         store.update(conversation),
       rename: (conversationId: string, title: string) => store.rename(conversationId, title),
       delete: (conversationId: string) => store.delete(conversationId),
+      appendSubagentResult: async () => {},
+      clearCallbackLock: async (conversationId: string) => store.get(conversationId),
     };
   },
   InMemoryStateStore: class {},

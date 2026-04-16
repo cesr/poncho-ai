@@ -2567,7 +2567,9 @@ export const createRequestHandler = async (options?: {
     let runResult: { status: "completed" | "error" | "cancelled"; response?: string; steps: number; duration: number; continuation?: boolean; continuationMessages?: Message[] } | undefined;
 
     try {
-      const conversation = await conversationStore.get(childConversationId);
+      // getWithArchive — conversation feeds withToolResultArchiveParam below,
+      // which requires _toolResultArchive attached to reseed the harness.
+      const conversation = await conversationStore.getWithArchive(childConversationId);
       if (!conversation) throw new Error("Subagent conversation not found");
 
       if (conversation.subagentMeta?.status === "stopped") return;
@@ -2869,7 +2871,9 @@ export const createRequestHandler = async (options?: {
   const CALLBACK_LOCK_STALE_MS = 5 * 60 * 1000;
 
   const processSubagentCallback = async (conversationId: string, skipLockCheck = false): Promise<void> => {
-    const conversation = await conversationStore.get(conversationId);
+    // getWithArchive — conversation feeds withToolResultArchiveParam when
+    // the callback triggers a parent run continuation.
+    const conversation = await conversationStore.getWithArchive(conversationId);
     if (!conversation) return;
 
     const pendingResults = conversation.pendingSubagentResults ?? [];
@@ -3509,7 +3513,8 @@ export const createRequestHandler = async (options?: {
       return { messages: [] };
     },
     async run(conversationId, input) {
-      const latestConversation = await conversationStore.get(conversationId);
+      // getWithArchive — latestConversation feeds withToolResultArchiveParam.
+      const latestConversation = await conversationStore.getWithArchive(conversationId);
       const canonicalHistory = latestConversation
         ? loadCanonicalHistory(latestConversation)
         : { messages: [...input.messages], source: "messages" as const };
@@ -3922,7 +3927,9 @@ export const createRequestHandler = async (options?: {
     conversationId: string,
     onYield?: (event: AgentEvent) => void | Promise<void>,
   ): Promise<void> {
-    const conversation = await conversationStore.get(conversationId);
+    // getWithArchive — conversation feeds withToolResultArchiveParam in
+    // runChatContinuation / runSubagentContinuation below.
+    const conversation = await conversationStore.getWithArchive(conversationId);
     if (!conversation) return;
     if (Array.isArray(conversation.pendingApprovals) && conversation.pendingApprovals.length > 0) return;
     if (!conversation._continuationMessages?.length) return;
@@ -5491,6 +5498,48 @@ export const createRequestHandler = async (options?: {
       return;
     }
 
+    // Cheap status endpoint — column-only reads + in-memory state. Used by
+    // the web UI poll loop to check whether the full conversation needs to
+    // be refetched. Intentionally kept minimal: returning extra fields here
+    // re-creates the egress problem the endpoint exists to avoid.
+    const conversationStatusMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/status$/);
+    if (conversationStatusMatch && request.method === "GET") {
+      const conversationId = decodeURIComponent(conversationStatusMatch[1] ?? "");
+      const snapshot = await conversationStore.getStatusSnapshot(conversationId);
+      if (!snapshot || !canAccessConversation(snapshot)) {
+        writeJson(response, 404, {
+          code: "CONVERSATION_NOT_FOUND",
+          message: "Conversation not found",
+        });
+        return;
+      }
+      const activeStream = conversationEventStreams.get(conversationId);
+      const hasActiveRun =
+        (!!activeStream && !activeStream.finished) || snapshot.runStatus === "running";
+      const hasRunningSubagents = !snapshot.parentConversationId
+        ? hasRunningSubagentsForParent(conversationId, snapshot.ownerId)
+        : false;
+      let subagentPendingApprovalsCount = 0;
+      if (!snapshot.parentConversationId) {
+        for (const [, pa] of pendingSubagentApprovals) {
+          if (pa.parentConversationId === conversationId) subagentPendingApprovalsCount += 1;
+        }
+      }
+      const needsContinuation =
+        !hasActiveRun && snapshot.hasContinuationMessages && !snapshot.hasPendingApprovals;
+      writeJson(response, 200, {
+        conversationId,
+        updatedAt: snapshot.updatedAt,
+        messageCount: snapshot.messageCount,
+        hasPendingApprovals: snapshot.hasPendingApprovals,
+        subagentPendingApprovalsCount,
+        hasActiveRun,
+        hasRunningSubagents,
+        needsContinuation,
+      });
+      return;
+    }
+
     const conversationPathMatch = pathname.match(/^\/api\/conversations\/([^/]+)$/);
     if (conversationPathMatch) {
       const conversationId = decodeURIComponent(conversationPathMatch[1] ?? "");
@@ -5546,6 +5595,9 @@ export const createRequestHandler = async (options?: {
             pendingApprovals: storedPending,
             _continuationMessages: undefined,
             _harnessMessages: undefined,
+            // The browser has no use for the archive; make sure we never ship
+            // it back even if the conversation was loaded via getWithArchive.
+            _toolResultArchive: undefined,
           },
           subagentPendingApprovals: subagentPending,
           hasActiveRun: hasActiveRun || hasPendingCallbackResults,
@@ -5854,7 +5906,9 @@ export const createRequestHandler = async (options?: {
     const conversationMessageMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
     if (conversationMessageMatch && request.method === "POST") {
       const conversationId = decodeURIComponent(conversationMessageMatch[1] ?? "");
-      const conversation = await conversationStore.get(conversationId);
+      // getWithArchive — conversation feeds withToolResultArchiveParam when
+      // the turn below calls executeConversationTurn.
+      const conversation = await conversationStore.getWithArchive(conversationId);
       if (!conversation || !canAccessConversation(conversation)) {
         writeJson(response, 404, {
           code: "CONVERSATION_NOT_FOUND",
@@ -6311,7 +6365,9 @@ export const createRequestHandler = async (options?: {
 
           const chatResults: Array<{ chatId: string; status: string; steps?: number }> = [];
           for (const [chatId, summary] of targetSummaries) {
-            const conv = await conversationStore.get(summary.conversationId);
+            // getWithArchive — conv feeds runCronAgent below which needs the
+            // archive to reseed the harness.
+            const conv = await conversationStore.getWithArchive(summary.conversationId);
             if (!conv) continue;
 
             const task = `[Scheduled: ${jobName}]\n${cronJob.task}`;
@@ -6514,7 +6570,9 @@ export const createRequestHandler = async (options?: {
           }
 
           const originConv = reminder.conversationId
-            ? await conversationStore.get(reminder.conversationId)
+            // getWithArchive — originConv feeds runCronAgent below which
+            // needs the archive to reseed the harness.
+            ? await conversationStore.getWithArchive(reminder.conversationId)
             : undefined;
           const channelMeta = originConv?.channelMeta;
 
@@ -6728,7 +6786,9 @@ export const startDevServer = async (
 
               let totalChats = 0;
               for (const [chatId, summary] of targetSummaries) {
-                const conversation = await store.get(summary.conversationId);
+                // getWithArchive — conversation feeds runCronAgent below
+                // which needs the archive to reseed the harness.
+                const conversation = await store.getWithArchive(summary.conversationId);
                 if (!conversation) continue;
 
                 const task = `[Scheduled: ${jobName}]\n${config.task}`;

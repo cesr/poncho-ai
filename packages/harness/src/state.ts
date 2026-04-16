@@ -87,7 +87,23 @@ export interface ConversationCreateInit {
 export interface ConversationStore {
   list(ownerId?: string, tenantId?: string | null): Promise<Conversation[]>;
   listSummaries(ownerId?: string, tenantId?: string | null): Promise<ConversationSummary[]>;
+  /**
+   * Cheap column-level fetch — returns summary fields only, no data blob.
+   * Use this on hot polling paths where the caller just needs to know
+   * whether the conversation has changed since last fetch.
+   */
+  getStatusSnapshot(conversationId: string): Promise<ConversationStatusSnapshot | undefined>;
+  /**
+   * Load a conversation WITHOUT the tool_result_archive blob. Default for
+   * read paths — archive can grow unboundedly and most callers don't need it.
+   */
   get(conversationId: string): Promise<Conversation | undefined>;
+  /**
+   * Load a conversation WITH the tool_result_archive. Use this only on
+   * run-entry paths that reseed the harness (via withToolResultArchiveParam
+   * or by passing the archive to runCronAgent).
+   */
+  getWithArchive(conversationId: string): Promise<Conversation | undefined>;
   create(
     ownerId?: string,
     title?: string,
@@ -209,6 +225,28 @@ export class InMemoryConversationStore implements ConversationStore {
     return this.conversations.get(conversationId);
   }
 
+  // In-memory stores already hold the full conversation object, so there's
+  // no separate archive blob to load. Both variants return the same data.
+  async getWithArchive(conversationId: string): Promise<Conversation | undefined> {
+    return this.get(conversationId);
+  }
+
+  async getStatusSnapshot(conversationId: string): Promise<ConversationStatusSnapshot | undefined> {
+    const c = await this.get(conversationId);
+    if (!c) return undefined;
+    return {
+      conversationId: c.conversationId,
+      updatedAt: c.updatedAt,
+      messageCount: c.messages.length,
+      hasPendingApprovals: Array.isArray(c.pendingApprovals) && c.pendingApprovals.length > 0,
+      hasContinuationMessages: Array.isArray(c._continuationMessages) && c._continuationMessages.length > 0,
+      parentConversationId: c.parentConversationId ?? null,
+      ownerId: c.ownerId,
+      tenantId: c.tenantId,
+      runStatus: c.runStatus ?? null,
+    };
+  }
+
   async create(
     ownerId = DEFAULT_OWNER,
     title?: string,
@@ -293,6 +331,23 @@ export type ConversationSummary = {
     channelId: string;
     platformThreadId: string;
   };
+};
+
+/**
+ * Lightweight status snapshot — column-level reads only, no data blob.
+ * Used by cheap polling endpoints that just need to know "has anything
+ * changed?" without paying to deserialize the full conversation.
+ */
+export type ConversationStatusSnapshot = {
+  conversationId: string;
+  updatedAt: number;
+  messageCount: number;
+  hasPendingApprovals: boolean;
+  hasContinuationMessages: boolean;
+  parentConversationId: string | null;
+  ownerId: string;
+  tenantId: string | null;
+  runStatus: "running" | "idle" | null;
 };
 
 // ---------------------------------------------------------------------------

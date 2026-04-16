@@ -36,6 +36,10 @@ export function createConversationStoreFromEngine(
       engine.conversations.list(ownerId, tenantId),
     get: (conversationId: string) =>
       engine.conversations.get(conversationId),
+    getWithArchive: (conversationId: string) =>
+      engine.conversations.getWithArchive(conversationId),
+    getStatusSnapshot: (conversationId: string) =>
+      engine.conversations.getStatusSnapshot(conversationId),
     create: (
       ownerId?: string,
       title?: string,
