@@ -38,6 +38,7 @@ export {
   AgentOrchestrator,
   type ActiveConversationRun,
   type EventSink,
+  type OrchestratorHooks,
   type ContinuationHooks,
   type OrchestratorOptions,
 } from "./orchestrator.js";

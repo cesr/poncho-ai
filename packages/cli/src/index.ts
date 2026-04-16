@@ -1867,7 +1867,7 @@ export const createRequestHandler = async (options?: {
     conversationStore,
     eventSink: (conversationId, event) => broadcastEvent(conversationId, event),
     telemetry,
-    continuationHooks: {
+    hooks: {
       onContinuationStart(conversationId) {
         const prevStream = conversationEventStreams.get(conversationId);
         if (prevStream) {
@@ -1888,12 +1888,50 @@ export const createRequestHandler = async (options?: {
       async *runSubagentContinuation(conversationId, conversation, continuationMessages) {
         yield* runSubagentContinuation(conversationId, conversation, continuationMessages);
       },
+      onApprovalCheckpoint(conversationId, approvals) {
+        // Telegram approval notification
+        const conv = conversationStore.get(conversationId).then(c => {
+          if (!c?.channelMeta || c.channelMeta.platform !== "telegram") return;
+          const tgAdapter = messagingAdapters.get("telegram") as TelegramAdapter | undefined;
+          if (!tgAdapter) return;
+          const messageThreadId = parseTelegramMessageThreadIdFromPlatformThreadId(
+            c.channelMeta.platformThreadId,
+            c.channelMeta.channelId,
+          );
+          void tgAdapter.sendApprovalRequest(
+            c.channelMeta.channelId,
+            approvals,
+            { message_thread_id: messageThreadId },
+          ).catch(() => {});
+        });
+        void conv;
+      },
+      onResumeComplete(conversationId, checkpointedRun) {
+        const hadDeferred = pendingCallbackNeeded.delete(conversationId);
+        conversationStore.get(conversationId).then(postConv => {
+          const needsResumeCallback = hadDeferred || !!postConv?.pendingSubagentResults?.length;
+          const hasRunningResumeChildren = Array.from(activeSubagentRuns.values()).some(
+            (run) => run.parentConversationId === conversationId,
+          );
+          if (!needsResumeCallback && !hasRunningResumeChildren) {
+            finishConversationStream(conversationId);
+          }
+          if (needsResumeCallback) {
+            processSubagentCallback(conversationId, true).catch(err =>
+              console.error(`[poncho][subagent-callback] Post-resume callback failed:`, err instanceof Error ? err.message : err),
+            );
+          }
+        });
+      },
     },
   });
-  // Redirect local aliases to orchestrator-owned maps
+  // Redirect local aliases to orchestrator-owned maps/methods
   runOwners = orchestrator.runOwners;
   runConversations = orchestrator.runConversations;
   activeConversationRuns = orchestrator.activeConversationRuns;
+  const approvalDecisionTracker = orchestrator.approvalDecisionTracker;
+  const findPendingApproval = orchestrator.findPendingApproval.bind(orchestrator);
+  const resumeRunFromCheckpoint = orchestrator.resumeRunFromCheckpoint.bind(orchestrator);
 
   // ---------------------------------------------------------------------------
   // Conversation recall parameter builders — shared between main and subagent runs
@@ -2003,39 +2041,7 @@ export const createRequestHandler = async (options?: {
   };
   const pendingSubagentApprovals = new Map<string, PendingSubagentApproval>();
 
-  // Tracks approval decisions in memory so parallel batch requests don't
-  // race against the conversation store (each file-store read returns a
-  // separate copy, causing last-writer-wins when decisions overlap).
-  const approvalDecisionTracker = new Map<string, Map<string, boolean>>();
-
-  const findPendingApproval = async (
-    approvalId: string,
-    owner: string,
-  ): Promise<{ conversation: Conversation; approval: StoredApproval } | undefined> => {
-    const searchedConversationIds = new Set<string>();
-    const scan = async (conversations: Conversation[]) => {
-      for (const conv of conversations) {
-        if (searchedConversationIds.has(conv.conversationId)) continue;
-        searchedConversationIds.add(conv.conversationId);
-        if (!Array.isArray(conv.pendingApprovals)) continue;
-        const match = conv.pendingApprovals.find((approval) => approval.approvalId === approvalId);
-        if (match) {
-          return { conversation: conv, approval: match as StoredApproval };
-        }
-      }
-      return undefined;
-    };
-
-    const ownerScoped = await scan(await conversationStore.list(owner));
-    if (ownerScoped) return ownerScoped;
-
-    // In local-owner mode (default dev), historical conversations may exist
-    // with mixed ownership keys; do one global fallback scan.
-    if (owner === "local-owner") {
-      return await scan(await conversationStore.list());
-    }
-    return undefined;
-  };
+  // approvalDecisionTracker, findPendingApproval — aliased from orchestrator above
 
   const hasRunningSubagentsForParent = (
     parentConversationId: string,
@@ -2889,225 +2895,7 @@ export const createRequestHandler = async (options?: {
 
   harness.setSubagentManager(subagentManager);
 
-  // ---------------------------------------------------------------------------
-  // Resume a run from a persisted checkpoint after approval.
-  // Processes events the same way the interactive/messaging runners do.
-  // ---------------------------------------------------------------------------
-  const resumeRunFromCheckpoint = async (
-    conversationId: string,
-    conversation: Conversation,
-    checkpoint: NonNullable<Conversation["pendingApprovals"]>[number],
-    toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }>,
-  ): Promise<void> => {
-    const abortController = new AbortController();
-    activeConversationRuns.set(conversationId, {
-      ownerId: conversation.ownerId,
-      abortController,
-      runId: null,
-    });
-    let latestRunId = conversation.runtimeRunId ?? "";
-    let checkpointedRun = false;
-
-    const normalizedCheckpoint = normalizeApprovalCheckpoint(checkpoint, conversation.messages);
-    const baseMessages = normalizedCheckpoint.baseMessageCount != null
-      ? conversation.messages.slice(0, normalizedCheckpoint.baseMessageCount)
-      : [];
-    const fullCheckpointMessages = [...baseMessages, ...normalizedCheckpoint.checkpointMessages!];
-
-    // Build the tool result message that continueFromToolResult will also
-    // construct internally.  We need it here so that if the resumed run hits
-    // another approval checkpoint, the nested checkpoint includes complete
-    // tool-call/result pairs — otherwise the Vercel AI SDK throws
-    // MissingToolResultsError when converting the history on the next resume.
-    let resumeToolResultMsg: Message | undefined;
-    const lastCpMsg = fullCheckpointMessages[fullCheckpointMessages.length - 1];
-    if (lastCpMsg?.role === "assistant") {
-      try {
-        const parsed = JSON.parse(typeof lastCpMsg.content === "string" ? lastCpMsg.content : "");
-        const cpToolCalls: Array<{ id: string; name: string }> = parsed.tool_calls ?? [];
-        if (cpToolCalls.length > 0) {
-          const providedMap = new Map(toolResults.map(r => [r.callId, r]));
-          resumeToolResultMsg = {
-            role: "tool",
-            content: JSON.stringify(cpToolCalls.map(tc => {
-              const provided = providedMap.get(tc.id);
-              return {
-                type: "tool_result",
-                tool_use_id: tc.id,
-                tool_name: provided?.toolName ?? tc.name,
-                content: provided
-                  ? (provided.error ? `Tool error: ${provided.error}` : JSON.stringify(provided.result ?? null))
-                  : "Tool error: Tool execution deferred (pending approval checkpoint)",
-              };
-            })),
-            metadata: { timestamp: Date.now() },
-          };
-        }
-      } catch { /* last message is not a parseable assistant-with-tools — skip */ }
-    }
-    const fullCheckpointWithResults = resumeToolResultMsg
-      ? [...fullCheckpointMessages, resumeToolResultMsg]
-      : fullCheckpointMessages;
-
-    let draftRef: TurnDraftState | undefined;
-    let execution: ExecuteTurnResult | undefined;
-
-    try {
-      execution = await executeConversationTurn({
-        harness,
-        events: harness.continueFromToolResult({
-          messages: fullCheckpointMessages,
-          toolResults,
-          conversationId,
-          abortSignal: abortController.signal,
-        }),
-        initialContextTokens: conversation.contextTokens ?? 0,
-        initialContextWindow: conversation.contextWindow ?? 0,
-        onEvent: async (event, draft) => {
-          draftRef = draft;
-          if (event.type === "run:started") {
-            latestRunId = event.runId;
-            runOwners.set(event.runId, conversation.ownerId);
-            runConversations.set(event.runId, conversationId);
-            const active = activeConversationRuns.get(conversationId);
-            if (active && active.abortController === abortController) {
-              active.runId = event.runId;
-            }
-          }
-          if (event.type === "tool:approval:required") {
-            const toolText = `- approval required \`${event.tool}\``;
-            draft.toolTimeline.push(toolText);
-            draft.currentTools.push(toolText);
-          }
-          if (event.type === "tool:approval:checkpoint") {
-            const conv = await conversationStore.get(conversationId);
-            if (conv) {
-              conv.pendingApprovals = buildApprovalCheckpoints({
-                approvals: event.approvals,
-                runId: latestRunId,
-                checkpointMessages: [...fullCheckpointWithResults, ...event.checkpointMessages],
-                baseMessageCount: 0,
-                pendingToolCalls: event.pendingToolCalls,
-              });
-              conv.updatedAt = Date.now();
-              await conversationStore.update(conv);
-
-              if (conv.channelMeta?.platform === "telegram") {
-                const tgAdapter = messagingAdapters.get("telegram") as TelegramAdapter | undefined;
-                if (tgAdapter) {
-                  const messageThreadId = parseTelegramMessageThreadIdFromPlatformThreadId(
-                    conv.channelMeta.platformThreadId,
-                    conv.channelMeta.channelId,
-                  );
-                  void tgAdapter.sendApprovalRequest(
-                    conv.channelMeta.channelId,
-                    event.approvals.map(a => ({ approvalId: a.approvalId, tool: a.tool, input: a.input })),
-                    { message_thread_id: messageThreadId },
-                  ).catch(() => {});
-                }
-              }
-            }
-            checkpointedRun = true;
-          }
-          await telemetry.emit(event);
-          broadcastEvent(conversationId, event);
-          emitBrowserStatusIfActive(conversationId, event);
-        },
-      });
-      flushTurnDraft(execution.draft);
-      latestRunId = execution.latestRunId || latestRunId;
-    } catch (err) {
-      console.error("[resume-run] error:", err instanceof Error ? err.message : err);
-      if (draftRef) {
-        draftRef.assistantResponse = draftRef.assistantResponse || `[Error: ${err instanceof Error ? err.message : "Unknown error"}]`;
-        flushTurnDraft(draftRef);
-      }
-    }
-
-    const draft = execution?.draft ?? draftRef ?? createTurnDraftState();
-
-    if (!checkpointedRun) {
-      const conv = await conversationStore.get(conversationId);
-      if (conv) {
-        const hasAssistantContent =
-          draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0 || draft.sections.length > 0;
-        if (hasAssistantContent) {
-          const prevMessages = conv.messages;
-          const lastMsg = prevMessages[prevMessages.length - 1];
-          if (lastMsg && lastMsg.role === "assistant" && lastMsg.metadata) {
-            const existingToolActivity = (lastMsg.metadata as Record<string, unknown>).toolActivity;
-            const existingSections = (lastMsg.metadata as Record<string, unknown>).sections;
-            const mergedTimeline = [
-              ...(Array.isArray(existingToolActivity) ? existingToolActivity as string[] : []),
-              ...draft.toolTimeline,
-            ];
-            const mergedSections = [
-              ...(Array.isArray(existingSections) ? existingSections as Array<{ type: "text" | "tools"; content: string | string[] }> : []),
-              ...draft.sections,
-            ];
-            const mergedText = (typeof lastMsg.content === "string" ? lastMsg.content : "") + draft.assistantResponse;
-            conv.messages = [
-              ...prevMessages.slice(0, -1),
-              {
-                role: "assistant" as const,
-                content: mergedText,
-                metadata: {
-                  toolActivity: mergedTimeline,
-                  sections: mergedSections.length > 0 ? mergedSections : undefined,
-                } as Message["metadata"],
-              },
-            ];
-          } else {
-            conv.messages = [
-              ...prevMessages,
-              {
-                role: "assistant" as const,
-                content: draft.assistantResponse,
-                metadata: buildAssistantMetadata(draft),
-              },
-            ];
-          }
-        }
-        applyTurnMetadata(conv, {
-          latestRunId,
-          contextTokens: execution?.runContextTokens ?? 0,
-          contextWindow: execution?.runContextWindow ?? 0,
-          harnessMessages: execution?.runHarnessMessages,
-        }, { shouldRebuildCanonical: true });
-        await conversationStore.update(conv);
-      }
-    } else {
-      const conv = await conversationStore.get(conversationId);
-      if (conv) {
-        conv.runStatus = "idle";
-        conv.updatedAt = Date.now();
-        await conversationStore.update(conv);
-      }
-    }
-
-    activeConversationRuns.delete(conversationId);
-    if (latestRunId) {
-      runOwners.delete(latestRunId);
-      runConversations.delete(latestRunId);
-    }
-    console.log("[resume-run] complete for", conversationId);
-
-    // Check for pending subagent results that arrived during the run
-    const hadDeferred = pendingCallbackNeeded.delete(conversationId);
-    const postConv = await conversationStore.get(conversationId);
-    const needsResumeCallback = hadDeferred || !!postConv?.pendingSubagentResults?.length;
-    const hasRunningResumeChildren = Array.from(activeSubagentRuns.values()).some(
-      (run) => run.parentConversationId === conversationId,
-    );
-    if (!needsResumeCallback && !hasRunningResumeChildren) {
-      finishConversationStream(conversationId);
-    }
-    if (needsResumeCallback) {
-      processSubagentCallback(conversationId, true).catch(err =>
-        console.error(`[poncho][subagent-callback] Post-resume callback failed:`, err instanceof Error ? err.message : err),
-      );
-    }
-  };
+  // resumeRunFromCheckpoint — aliased from orchestrator above
 
   // ---------------------------------------------------------------------------
   // Messaging adapters (Slack, etc.) — routes bypass Poncho auth; each
