@@ -14,7 +14,7 @@ import {
 vi.mock("@poncho-ai/harness", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@poncho-ai/harness")>();
   return {
-  parseAgentMarkdown: actual.parseAgentMarkdown,
+  ...actual,
   AgentHarness: class MockHarness {
     async initialize(): Promise<void> {}
     setSubagentManager(): void {}

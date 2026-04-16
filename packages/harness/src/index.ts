@@ -27,5 +27,6 @@ export * from "./tenant-token.js";
 export * from "./tool-dispatcher.js";
 export * from "./subagent-manager.js";
 export * from "./subagent-tools.js";
+export * from "./orchestrator/index.js";
 export { defineTool } from "@poncho-ai/sdk";
 export type { ToolDefinition } from "@poncho-ai/sdk";
