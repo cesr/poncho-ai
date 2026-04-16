@@ -36,6 +36,34 @@ import {
   verifyTenantToken,
   createSecretsStore,
   computeNextOccurrence,
+  isMessageArray,
+  loadCanonicalHistory,
+  loadRunHistory,
+  resolveRunRequest,
+  createTurnDraftState,
+  cloneSections,
+  flushTurnDraft,
+  buildToolCompletedText,
+  recordStandardTurnEvent,
+  buildAssistantMetadata,
+  executeConversationTurn,
+  normalizeApprovalCheckpoint,
+  buildApprovalCheckpoints,
+  applyTurnMetadata,
+  type HistorySource,
+  type RunRequest,
+  type RunOutcome,
+  type StoredApproval,
+  type PendingToolCall,
+  type ApprovalEventItem,
+  type TurnSection,
+  type TurnDraftState,
+  type ExecuteTurnResult,
+  type TurnResultMetadata,
+  TOOL_RESULT_ARCHIVE_PARAM,
+  withToolResultArchiveParam,
+  MAX_CONTINUATION_COUNT,
+  AgentOrchestrator,
 } from "@poncho-ai/harness";
 import type { AgentEvent, FileInput, Message, RunInput } from "@poncho-ai/sdk";
 import type {
@@ -111,15 +139,7 @@ const EXT_MIME_MAP: Record<string, string> = {
   json: "application/json", csv: "text/csv", html: "text/html",
 };
 const extToMime = (ext: string): string => EXT_MIME_MAP[ext] ?? "application/octet-stream";
-const TOOL_RESULT_ARCHIVE_PARAM = "__toolResultArchive";
-
-const withToolResultArchiveParam = (
-  parameters: Record<string, unknown> | undefined,
-  conversation: Conversation,
-): Record<string, unknown> => ({
-  ...(parameters ?? {}),
-  [TOOL_RESULT_ARCHIVE_PARAM]: conversation._toolResultArchive ?? {},
-});
+// TOOL_RESULT_ARCHIVE_PARAM, withToolResultArchiveParam — imported from @poncho-ai/harness/orchestrator
 
 const readRequestBody = async (request: IncomingMessage): Promise<unknown> => {
   const chunks: Buffer[] = [];
@@ -352,359 +372,9 @@ const normalizeMessageForClient = (message: Message): Message | null => {
   return message;
 };
 
-const isMessageArray = (value: unknown): value is Message[] =>
-  Array.isArray(value) &&
-  value.every((entry) => {
-    if (!entry || typeof entry !== "object") return false;
-    const row = entry as Record<string, unknown>;
-    const role = row.role;
-    const content = row.content;
-    const roleOk = role === "system" || role === "user" || role === "assistant" || role === "tool";
-    const contentOk = typeof content === "string" || Array.isArray(content);
-    return roleOk && contentOk;
-  });
+// isMessageArray, loadCanonicalHistory, loadRunHistory — imported from @poncho-ai/harness/orchestrator
 
-type HistorySource = "harness" | "continuation" | "messages";
-
-const loadCanonicalHistory = (
-  conversation: Conversation,
-): { messages: Message[]; source: HistorySource } => {
-  if (isMessageArray(conversation._harnessMessages) && conversation._harnessMessages.length > 0) {
-    return { messages: [...conversation._harnessMessages], source: "harness" };
-  }
-  return { messages: [...conversation.messages], source: "messages" };
-};
-
-const loadRunHistory = (
-  conversation: Conversation,
-  options?: { preferContinuation?: boolean },
-): { messages: Message[]; source: HistorySource; shouldRebuildCanonical: boolean } => {
-  if (options?.preferContinuation && isMessageArray(conversation._continuationMessages) && conversation._continuationMessages.length > 0) {
-    return {
-      messages: [...conversation._continuationMessages],
-      source: "continuation",
-      shouldRebuildCanonical: !isMessageArray(conversation._harnessMessages) || conversation._harnessMessages.length === 0,
-    };
-  }
-  const canonical = loadCanonicalHistory(conversation);
-  return {
-    ...canonical,
-    shouldRebuildCanonical: canonical.source !== "harness",
-  };
-};
-
-type StoredApproval = NonNullable<Conversation["pendingApprovals"]>[number];
-type PendingToolCall = { id: string; name: string; input: Record<string, unknown> };
-type ApprovalEventItem = {
-  approvalId: string;
-  tool: string;
-  toolCallId?: string;
-  input: Record<string, unknown>;
-};
-type RunRequest = {
-  conversationId: string;
-  messages: Message[];
-  preferContinuation?: boolean;
-};
-type RunOutcome = {
-  source: HistorySource;
-  shouldRebuildCanonical: boolean;
-  messages: Message[];
-};
-type TurnSection = { type: "text" | "tools"; content: string | string[] };
-type TurnDraftState = {
-  assistantResponse: string;
-  toolTimeline: string[];
-  sections: TurnSection[];
-  currentTools: string[];
-  currentText: string;
-};
-type ExecuteTurnResult = {
-  latestRunId: string;
-  runCancelled: boolean;
-  runContinuation: boolean;
-  runContinuationMessages?: Message[];
-  runHarnessMessages?: Message[];
-  runContextTokens: number;
-  runContextWindow: number;
-  runSteps: number;
-  runMaxSteps?: number;
-  draft: TurnDraftState;
-};
-
-const createTurnDraftState = (): TurnDraftState => ({
-  assistantResponse: "",
-  toolTimeline: [],
-  sections: [],
-  currentTools: [],
-  currentText: "",
-});
-
-const cloneSections = (sections: TurnSection[]): TurnSection[] =>
-  sections.map((section) => ({
-    type: section.type,
-    content: Array.isArray(section.content) ? [...section.content] : section.content,
-  }));
-
-const flushTurnDraft = (draft: TurnDraftState): void => {
-  if (draft.currentTools.length > 0) {
-    draft.sections.push({ type: "tools", content: draft.currentTools });
-    draft.currentTools = [];
-  }
-  if (draft.currentText.length > 0) {
-    draft.sections.push({ type: "text", content: draft.currentText });
-    draft.currentText = "";
-  }
-};
-
-/** Build enriched tool:completed text with input details (bash command, URL, etc.) */
-const buildToolCompletedText = (event: AgentEvent & { type: "tool:completed" }): string => {
-  const input = event.input as Record<string, unknown> | undefined;
-  const output = event.output as Record<string, unknown> | undefined;
-
-  const meta: string[] = [`${event.duration}ms`];
-  let detail = "";
-
-  if (event.tool === "bash" && input && typeof input.command === "string") {
-    detail = input.command;
-  } else if (event.tool === "web_search") {
-    const q = (input?.query as string) || (output?.query as string) || "";
-    if (q) detail = `"${q.length > 60 ? q.slice(0, 57) + "..." : q}"`;
-  } else if (event.tool === "web_fetch") {
-    const u = (input?.url as string) || (output?.url as string) || "";
-    if (u) detail = u;
-  } else if (event.tool === "spawn_subagent") {
-    if (input && typeof input.task === "string") detail = input.task;
-  } else if (input) {
-    // Generic: pick the first short string value from input
-    for (const [, v] of Object.entries(input)) {
-      if (typeof v === "string" && v.length > 0) {
-        detail = v.length > 80 ? v.slice(0, 77) + "..." : v;
-        break;
-      }
-    }
-  }
-  if (detail) {
-    detail = detail.replace(/\n/g, " ");
-    meta.push(detail);
-  }
-
-  let text = `- done \`${event.tool}\`` + (meta.length > 0 ? ` (${meta.join(", ")})` : "");
-
-  if (event.tool === "spawn_subagent" && output?.subagentId) {
-    text += ` [subagent:${output.subagentId}]`;
-  }
-  if (event.tool === "bash" && typeof output?.exitCode === "number" && output.exitCode !== 0) {
-    text += ` \u2014 exit ${output.exitCode}`;
-  }
-  if (event.tool === "web_search" && Array.isArray(output?.results)) {
-    text += ` \u2014 ${(output.results as unknown[]).length} result${(output.results as unknown[]).length !== 1 ? "s" : ""}`;
-  }
-
-  return text;
-};
-
-const recordStandardTurnEvent = (draft: TurnDraftState, event: AgentEvent): void => {
-  if (event.type === "model:chunk") {
-    if (draft.currentTools.length > 0) {
-      draft.sections.push({ type: "tools", content: draft.currentTools });
-      draft.currentTools = [];
-      if (draft.assistantResponse.length > 0 && !/\s$/.test(draft.assistantResponse)) {
-        draft.assistantResponse += " ";
-      }
-    }
-    draft.assistantResponse += event.content;
-    draft.currentText += event.content;
-    return;
-  }
-  if (event.type === "tool:started") {
-    if (draft.currentText.length > 0) {
-      draft.sections.push({ type: "text", content: draft.currentText });
-      draft.currentText = "";
-    }
-    const input = event.input as Record<string, unknown> | undefined;
-    let startDetail = "";
-    if (event.tool === "bash" && input && typeof input.command === "string") {
-      startDetail = input.command;
-    } else if (event.tool === "web_fetch" && input && typeof input.url === "string") {
-      startDetail = input.url;
-    } else if (event.tool === "web_search" && input && typeof input.query === "string") {
-      startDetail = `"${input.query}"`;
-    } else if (input) {
-      for (const [, v] of Object.entries(input)) {
-        if (typeof v === "string" && v.length > 0) {
-          startDetail = v.length > 80 ? v.slice(0, 77) + "..." : v;
-          break;
-        }
-      }
-    }
-    if (startDetail) startDetail = startDetail.replace(/\n/g, " ");
-    const toolText = `- start \`${event.tool}\`` + (startDetail ? ` (${startDetail})` : "");
-    draft.toolTimeline.push(toolText);
-    draft.currentTools.push(toolText);
-    return;
-  }
-  if (event.type === "tool:completed") {
-    const toolText = buildToolCompletedText(event);
-    draft.toolTimeline.push(toolText);
-    draft.currentTools.push(toolText);
-    return;
-  }
-  if (event.type === "tool:error") {
-    const toolText = `- error \`${event.tool}\`: ${event.error}`;
-    draft.toolTimeline.push(toolText);
-    draft.currentTools.push(toolText);
-  }
-};
-
-const buildAssistantMetadata = (
-  draft: TurnDraftState,
-  sectionsOverride?: TurnSection[],
-): Message["metadata"] | undefined => {
-  const sections = sectionsOverride ?? cloneSections(draft.sections);
-  if (draft.toolTimeline.length === 0 && sections.length === 0) return undefined;
-  return {
-    toolActivity: [...draft.toolTimeline],
-    sections: sections.length > 0 ? sections : undefined,
-  } as Message["metadata"];
-};
-
-const executeConversationTurn = async ({
-  harness,
-  runInput,
-  events,
-  initialContextTokens = 0,
-  initialContextWindow = 0,
-  onEvent,
-}: {
-  harness: AgentHarness;
-  runInput?: Parameters<AgentHarness["runWithTelemetry"]>[0];
-  events?: AsyncIterable<AgentEvent>;
-  initialContextTokens?: number;
-  initialContextWindow?: number;
-  onEvent?: (event: AgentEvent, draft: TurnDraftState) => void | Promise<void>;
-}): Promise<ExecuteTurnResult> => {
-  const draft = createTurnDraftState();
-  let latestRunId = "";
-  let runCancelled = false;
-  let runContinuation = false;
-  let runContinuationMessages: Message[] | undefined;
-  let runHarnessMessages: Message[] | undefined;
-  let runContextTokens = initialContextTokens;
-  let runContextWindow = initialContextWindow;
-  let runSteps = 0;
-  let runMaxSteps: number | undefined;
-
-  const source = events ?? harness.runWithTelemetry(runInput!);
-  for await (const event of source) {
-    recordStandardTurnEvent(draft, event);
-    if (event.type === "run:started") {
-      latestRunId = event.runId;
-    }
-    if (event.type === "run:cancelled") {
-      runCancelled = true;
-    }
-    if (event.type === "run:completed") {
-      runContinuation = event.result.continuation === true;
-      runContinuationMessages = event.result.continuationMessages;
-      runHarnessMessages = event.result.continuationMessages;
-      runContextTokens = event.result.contextTokens ?? runContextTokens;
-      runContextWindow = event.result.contextWindow ?? runContextWindow;
-      runSteps = event.result.steps;
-      if (typeof event.result.maxSteps === "number") {
-        runMaxSteps = event.result.maxSteps;
-      }
-      if (draft.assistantResponse.length === 0 && event.result.response) {
-        draft.assistantResponse = event.result.response;
-      }
-    }
-    if (event.type === "run:error") {
-      draft.assistantResponse = draft.assistantResponse || `[Error: ${event.error.message}]`;
-    }
-    if (onEvent) {
-      await onEvent(event, draft);
-    }
-  }
-
-  return {
-    latestRunId,
-    runCancelled,
-    runContinuation,
-    runContinuationMessages,
-    runHarnessMessages,
-    runContextTokens,
-    runContextWindow,
-    runSteps,
-    runMaxSteps,
-    draft,
-  };
-};
-
-const normalizePendingToolCalls = (value: unknown): PendingToolCall[] => {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((entry): entry is PendingToolCall => {
-      if (!entry || typeof entry !== "object") return false;
-      const row = entry as Record<string, unknown>;
-      return (
-        typeof row.id === "string" &&
-        typeof row.name === "string" &&
-        typeof row.input === "object" &&
-        row.input !== null
-      );
-    })
-    .map((entry) => ({ id: entry.id, name: entry.name, input: entry.input }));
-};
-
-const normalizeApprovalCheckpoint = (
-  approval: StoredApproval,
-  fallbackMessages: Message[],
-): StoredApproval => ({
-  ...approval,
-  checkpointMessages: isMessageArray(approval.checkpointMessages) ? approval.checkpointMessages : [...fallbackMessages],
-  baseMessageCount: typeof approval.baseMessageCount === "number" && approval.baseMessageCount >= 0
-    ? approval.baseMessageCount
-    : 0,
-  pendingToolCalls: normalizePendingToolCalls(approval.pendingToolCalls),
-});
-
-const buildApprovalCheckpoints = ({
-  approvals,
-  runId,
-  checkpointMessages,
-  baseMessageCount,
-  pendingToolCalls,
-}: {
-  approvals: ApprovalEventItem[];
-  runId: string;
-  checkpointMessages: Message[];
-  baseMessageCount: number;
-  pendingToolCalls: PendingToolCall[];
-}): NonNullable<Conversation["pendingApprovals"]> =>
-  approvals.map((approval) => ({
-    approvalId: approval.approvalId,
-    runId,
-    tool: approval.tool,
-    toolCallId: approval.toolCallId,
-    input: approval.input,
-    checkpointMessages,
-    baseMessageCount,
-    pendingToolCalls,
-  }));
-
-const resolveRunRequest = (
-  conversation: Conversation,
-  request: RunRequest,
-): RunOutcome => {
-  const resolved = loadRunHistory(conversation, {
-    preferContinuation: request.preferContinuation,
-  });
-  return {
-    source: resolved.source,
-    shouldRebuildCanonical: resolved.shouldRebuildCanonical,
-    messages: resolved.messages.length > 0 ? resolved.messages : request.messages,
-  };
-};
+// Turn types, helpers, approval checkpoints — imported from @poncho-ai/harness/orchestrator
 
 export const __internalRunOrchestration = {
   isMessageArray,
@@ -718,63 +388,7 @@ export const __internalRunOrchestration = {
   executeConversationTurn,
 };
 
-// ── Shared turn metadata helper ──────────────────────────────────
-// Standardises post-run metadata persistence across all execution paths.
-
-type TurnResultMetadata = {
-  latestRunId: string;
-  contextTokens: number;
-  contextWindow: number;
-  continuation?: boolean;
-  continuationMessages?: Message[];
-  harnessMessages?: Message[];
-  toolResultArchive?: Conversation["_toolResultArchive"];
-};
-
-const applyTurnMetadata = (
-  conv: Conversation,
-  meta: TurnResultMetadata,
-  opts: {
-    clearContinuation?: boolean;
-    clearApprovals?: boolean;
-    setIdle?: boolean;
-    shouldRebuildCanonical?: boolean;
-  } = {},
-): void => {
-  const {
-    clearContinuation = true,
-    clearApprovals = true,
-    setIdle = true,
-    shouldRebuildCanonical = false,
-  } = opts;
-
-  if (meta.continuation && meta.continuationMessages) {
-    conv._continuationMessages = meta.continuationMessages;
-  } else if (clearContinuation) {
-    conv._continuationMessages = undefined;
-    conv._continuationCount = undefined;
-  }
-
-  if (meta.harnessMessages) {
-    conv._harnessMessages = meta.harnessMessages;
-  } else if (shouldRebuildCanonical) {
-    conv._harnessMessages = conv.messages;
-  }
-
-  if (meta.toolResultArchive !== undefined) {
-    conv._toolResultArchive = meta.toolResultArchive;
-  }
-
-  conv.runtimeRunId = meta.latestRunId || conv.runtimeRunId;
-
-  if (clearApprovals) conv.pendingApprovals = [];
-  if (setIdle) conv.runStatus = "idle";
-
-  if (meta.contextTokens > 0) conv.contextTokens = meta.contextTokens;
-  if (meta.contextWindow > 0) conv.contextWindow = meta.contextWindow;
-
-  conv.updatedAt = Date.now();
-};
+// applyTurnMetadata, TurnResultMetadata — imported from @poncho-ai/harness/orchestrator
 
 // ── Shared cron helpers ──────────────────────────────────────────
 // Used by both the HTTP /api/cron endpoint and the local-dev scheduler.
@@ -2111,14 +1725,12 @@ export const createRequestHandler = async (options?: {
       // Cron parsing failure should not block the server
     }
   } catch {}
-  const runOwners = new Map<string, string>();
-  const runConversations = new Map<string, string>();
-  type ActiveConversationRun = {
-    ownerId: string;
-    abortController: AbortController;
-    runId: string | null;
-  };
-  const activeConversationRuns = new Map<string, ActiveConversationRun>();
+  // Runtime state maps — will be replaced with orchestrator's maps after init.
+  // Initialized here so function definitions that reference them don't cause TS errors.
+  // These are reassigned to orchestrator.* below after orchestrator creation.
+  let runOwners = new Map<string, string>();
+  let runConversations = new Map<string, string>();
+  let activeConversationRuns = new Map<string, { ownerId: string; abortController: AbortController; runId: string | null }>();
   // Per-conversation event streaming: buffer events and allow SSE subscribers
   type ConversationEventStream = {
     buffer: AgentEvent[];
@@ -2249,6 +1861,78 @@ export const createRequestHandler = async (options?: {
     ? createConversationStoreFromEngine(harness.storageEngine)
     : createConversationStore(stateConfig, { workingDir, agentId: identity.id });
 
+  // ── Orchestrator ──────────────────────────────────────────────────────────
+  const orchestrator = new AgentOrchestrator({
+    harness,
+    conversationStore,
+    eventSink: (conversationId, event) => broadcastEvent(conversationId, event),
+    telemetry,
+    hooks: {
+      onContinuationStart(conversationId) {
+        const prevStream = conversationEventStreams.get(conversationId);
+        if (prevStream) {
+          prevStream.finished = false;
+          prevStream.buffer = [];
+        } else {
+          conversationEventStreams.set(conversationId, {
+            buffer: [],
+            subscribers: new Set(),
+            finished: false,
+          });
+        }
+      },
+      onContinuationEnd(conversationId) {
+        finishConversationStream(conversationId);
+      },
+      // Subagent continuation is still managed by the CLI (Phase 5 will move it)
+      async *runSubagentContinuation(conversationId, conversation, continuationMessages) {
+        yield* runSubagentContinuation(conversationId, conversation, continuationMessages);
+      },
+      onApprovalCheckpoint(conversationId, approvals) {
+        // Telegram approval notification
+        const conv = conversationStore.get(conversationId).then(c => {
+          if (!c?.channelMeta || c.channelMeta.platform !== "telegram") return;
+          const tgAdapter = messagingAdapters.get("telegram") as TelegramAdapter | undefined;
+          if (!tgAdapter) return;
+          const messageThreadId = parseTelegramMessageThreadIdFromPlatformThreadId(
+            c.channelMeta.platformThreadId,
+            c.channelMeta.channelId,
+          );
+          void tgAdapter.sendApprovalRequest(
+            c.channelMeta.channelId,
+            approvals,
+            { message_thread_id: messageThreadId },
+          ).catch(() => {});
+        });
+        void conv;
+      },
+      onResumeComplete(conversationId, checkpointedRun) {
+        const hadDeferred = pendingCallbackNeeded.delete(conversationId);
+        conversationStore.get(conversationId).then(postConv => {
+          const needsResumeCallback = hadDeferred || !!postConv?.pendingSubagentResults?.length;
+          const hasRunningResumeChildren = Array.from(activeSubagentRuns.values()).some(
+            (run) => run.parentConversationId === conversationId,
+          );
+          if (!needsResumeCallback && !hasRunningResumeChildren) {
+            finishConversationStream(conversationId);
+          }
+          if (needsResumeCallback) {
+            processSubagentCallback(conversationId, true).catch(err =>
+              console.error(`[poncho][subagent-callback] Post-resume callback failed:`, err instanceof Error ? err.message : err),
+            );
+          }
+        });
+      },
+    },
+  });
+  // Redirect local aliases to orchestrator-owned maps/methods
+  runOwners = orchestrator.runOwners;
+  runConversations = orchestrator.runConversations;
+  activeConversationRuns = orchestrator.activeConversationRuns;
+  const approvalDecisionTracker = orchestrator.approvalDecisionTracker;
+  const findPendingApproval = orchestrator.findPendingApproval.bind(orchestrator);
+  const resumeRunFromCheckpoint = orchestrator.resumeRunFromCheckpoint.bind(orchestrator);
+
   // ---------------------------------------------------------------------------
   // Conversation recall parameter builders — shared between main and subagent runs
   // ---------------------------------------------------------------------------
@@ -2357,39 +2041,7 @@ export const createRequestHandler = async (options?: {
   };
   const pendingSubagentApprovals = new Map<string, PendingSubagentApproval>();
 
-  // Tracks approval decisions in memory so parallel batch requests don't
-  // race against the conversation store (each file-store read returns a
-  // separate copy, causing last-writer-wins when decisions overlap).
-  const approvalDecisionTracker = new Map<string, Map<string, boolean>>();
-
-  const findPendingApproval = async (
-    approvalId: string,
-    owner: string,
-  ): Promise<{ conversation: Conversation; approval: StoredApproval } | undefined> => {
-    const searchedConversationIds = new Set<string>();
-    const scan = async (conversations: Conversation[]) => {
-      for (const conv of conversations) {
-        if (searchedConversationIds.has(conv.conversationId)) continue;
-        searchedConversationIds.add(conv.conversationId);
-        if (!Array.isArray(conv.pendingApprovals)) continue;
-        const match = conv.pendingApprovals.find((approval) => approval.approvalId === approvalId);
-        if (match) {
-          return { conversation: conv, approval: match as StoredApproval };
-        }
-      }
-      return undefined;
-    };
-
-    const ownerScoped = await scan(await conversationStore.list(owner));
-    if (ownerScoped) return ownerScoped;
-
-    // In local-owner mode (default dev), historical conversations may exist
-    // with mixed ownership keys; do one global fallback scan.
-    if (owner === "local-owner") {
-      return await scan(await conversationStore.list());
-    }
-    return undefined;
-  };
+  // approvalDecisionTracker, findPendingApproval — aliased from orchestrator above
 
   const hasRunningSubagentsForParent = (
     parentConversationId: string,
@@ -2567,7 +2219,9 @@ export const createRequestHandler = async (options?: {
     let runResult: { status: "completed" | "error" | "cancelled"; response?: string; steps: number; duration: number; continuation?: boolean; continuationMessages?: Message[] } | undefined;
 
     try {
-      const conversation = await conversationStore.get(childConversationId);
+      // getWithArchive — conversation feeds withToolResultArchiveParam below,
+      // which requires _toolResultArchive attached to reseed the harness.
+      const conversation = await conversationStore.getWithArchive(childConversationId);
       if (!conversation) throw new Error("Subagent conversation not found");
 
       if (conversation.subagentMeta?.status === "stopped") return;
@@ -2869,7 +2523,9 @@ export const createRequestHandler = async (options?: {
   const CALLBACK_LOCK_STALE_MS = 5 * 60 * 1000;
 
   const processSubagentCallback = async (conversationId: string, skipLockCheck = false): Promise<void> => {
-    const conversation = await conversationStore.get(conversationId);
+    // getWithArchive — conversation feeds withToolResultArchiveParam when
+    // the callback triggers a parent run continuation.
+    const conversation = await conversationStore.getWithArchive(conversationId);
     if (!conversation) return;
 
     const pendingResults = conversation.pendingSubagentResults ?? [];
@@ -3239,225 +2895,7 @@ export const createRequestHandler = async (options?: {
 
   harness.setSubagentManager(subagentManager);
 
-  // ---------------------------------------------------------------------------
-  // Resume a run from a persisted checkpoint after approval.
-  // Processes events the same way the interactive/messaging runners do.
-  // ---------------------------------------------------------------------------
-  const resumeRunFromCheckpoint = async (
-    conversationId: string,
-    conversation: Conversation,
-    checkpoint: NonNullable<Conversation["pendingApprovals"]>[number],
-    toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }>,
-  ): Promise<void> => {
-    const abortController = new AbortController();
-    activeConversationRuns.set(conversationId, {
-      ownerId: conversation.ownerId,
-      abortController,
-      runId: null,
-    });
-    let latestRunId = conversation.runtimeRunId ?? "";
-    let checkpointedRun = false;
-
-    const normalizedCheckpoint = normalizeApprovalCheckpoint(checkpoint, conversation.messages);
-    const baseMessages = normalizedCheckpoint.baseMessageCount != null
-      ? conversation.messages.slice(0, normalizedCheckpoint.baseMessageCount)
-      : [];
-    const fullCheckpointMessages = [...baseMessages, ...normalizedCheckpoint.checkpointMessages!];
-
-    // Build the tool result message that continueFromToolResult will also
-    // construct internally.  We need it here so that if the resumed run hits
-    // another approval checkpoint, the nested checkpoint includes complete
-    // tool-call/result pairs — otherwise the Vercel AI SDK throws
-    // MissingToolResultsError when converting the history on the next resume.
-    let resumeToolResultMsg: Message | undefined;
-    const lastCpMsg = fullCheckpointMessages[fullCheckpointMessages.length - 1];
-    if (lastCpMsg?.role === "assistant") {
-      try {
-        const parsed = JSON.parse(typeof lastCpMsg.content === "string" ? lastCpMsg.content : "");
-        const cpToolCalls: Array<{ id: string; name: string }> = parsed.tool_calls ?? [];
-        if (cpToolCalls.length > 0) {
-          const providedMap = new Map(toolResults.map(r => [r.callId, r]));
-          resumeToolResultMsg = {
-            role: "tool",
-            content: JSON.stringify(cpToolCalls.map(tc => {
-              const provided = providedMap.get(tc.id);
-              return {
-                type: "tool_result",
-                tool_use_id: tc.id,
-                tool_name: provided?.toolName ?? tc.name,
-                content: provided
-                  ? (provided.error ? `Tool error: ${provided.error}` : JSON.stringify(provided.result ?? null))
-                  : "Tool error: Tool execution deferred (pending approval checkpoint)",
-              };
-            })),
-            metadata: { timestamp: Date.now() },
-          };
-        }
-      } catch { /* last message is not a parseable assistant-with-tools — skip */ }
-    }
-    const fullCheckpointWithResults = resumeToolResultMsg
-      ? [...fullCheckpointMessages, resumeToolResultMsg]
-      : fullCheckpointMessages;
-
-    let draftRef: TurnDraftState | undefined;
-    let execution: ExecuteTurnResult | undefined;
-
-    try {
-      execution = await executeConversationTurn({
-        harness,
-        events: harness.continueFromToolResult({
-          messages: fullCheckpointMessages,
-          toolResults,
-          conversationId,
-          abortSignal: abortController.signal,
-        }),
-        initialContextTokens: conversation.contextTokens ?? 0,
-        initialContextWindow: conversation.contextWindow ?? 0,
-        onEvent: async (event, draft) => {
-          draftRef = draft;
-          if (event.type === "run:started") {
-            latestRunId = event.runId;
-            runOwners.set(event.runId, conversation.ownerId);
-            runConversations.set(event.runId, conversationId);
-            const active = activeConversationRuns.get(conversationId);
-            if (active && active.abortController === abortController) {
-              active.runId = event.runId;
-            }
-          }
-          if (event.type === "tool:approval:required") {
-            const toolText = `- approval required \`${event.tool}\``;
-            draft.toolTimeline.push(toolText);
-            draft.currentTools.push(toolText);
-          }
-          if (event.type === "tool:approval:checkpoint") {
-            const conv = await conversationStore.get(conversationId);
-            if (conv) {
-              conv.pendingApprovals = buildApprovalCheckpoints({
-                approvals: event.approvals,
-                runId: latestRunId,
-                checkpointMessages: [...fullCheckpointWithResults, ...event.checkpointMessages],
-                baseMessageCount: 0,
-                pendingToolCalls: event.pendingToolCalls,
-              });
-              conv.updatedAt = Date.now();
-              await conversationStore.update(conv);
-
-              if (conv.channelMeta?.platform === "telegram") {
-                const tgAdapter = messagingAdapters.get("telegram") as TelegramAdapter | undefined;
-                if (tgAdapter) {
-                  const messageThreadId = parseTelegramMessageThreadIdFromPlatformThreadId(
-                    conv.channelMeta.platformThreadId,
-                    conv.channelMeta.channelId,
-                  );
-                  void tgAdapter.sendApprovalRequest(
-                    conv.channelMeta.channelId,
-                    event.approvals.map(a => ({ approvalId: a.approvalId, tool: a.tool, input: a.input })),
-                    { message_thread_id: messageThreadId },
-                  ).catch(() => {});
-                }
-              }
-            }
-            checkpointedRun = true;
-          }
-          await telemetry.emit(event);
-          broadcastEvent(conversationId, event);
-          emitBrowserStatusIfActive(conversationId, event);
-        },
-      });
-      flushTurnDraft(execution.draft);
-      latestRunId = execution.latestRunId || latestRunId;
-    } catch (err) {
-      console.error("[resume-run] error:", err instanceof Error ? err.message : err);
-      if (draftRef) {
-        draftRef.assistantResponse = draftRef.assistantResponse || `[Error: ${err instanceof Error ? err.message : "Unknown error"}]`;
-        flushTurnDraft(draftRef);
-      }
-    }
-
-    const draft = execution?.draft ?? draftRef ?? createTurnDraftState();
-
-    if (!checkpointedRun) {
-      const conv = await conversationStore.get(conversationId);
-      if (conv) {
-        const hasAssistantContent =
-          draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0 || draft.sections.length > 0;
-        if (hasAssistantContent) {
-          const prevMessages = conv.messages;
-          const lastMsg = prevMessages[prevMessages.length - 1];
-          if (lastMsg && lastMsg.role === "assistant" && lastMsg.metadata) {
-            const existingToolActivity = (lastMsg.metadata as Record<string, unknown>).toolActivity;
-            const existingSections = (lastMsg.metadata as Record<string, unknown>).sections;
-            const mergedTimeline = [
-              ...(Array.isArray(existingToolActivity) ? existingToolActivity as string[] : []),
-              ...draft.toolTimeline,
-            ];
-            const mergedSections = [
-              ...(Array.isArray(existingSections) ? existingSections as Array<{ type: "text" | "tools"; content: string | string[] }> : []),
-              ...draft.sections,
-            ];
-            const mergedText = (typeof lastMsg.content === "string" ? lastMsg.content : "") + draft.assistantResponse;
-            conv.messages = [
-              ...prevMessages.slice(0, -1),
-              {
-                role: "assistant" as const,
-                content: mergedText,
-                metadata: {
-                  toolActivity: mergedTimeline,
-                  sections: mergedSections.length > 0 ? mergedSections : undefined,
-                } as Message["metadata"],
-              },
-            ];
-          } else {
-            conv.messages = [
-              ...prevMessages,
-              {
-                role: "assistant" as const,
-                content: draft.assistantResponse,
-                metadata: buildAssistantMetadata(draft),
-              },
-            ];
-          }
-        }
-        applyTurnMetadata(conv, {
-          latestRunId,
-          contextTokens: execution?.runContextTokens ?? 0,
-          contextWindow: execution?.runContextWindow ?? 0,
-          harnessMessages: execution?.runHarnessMessages,
-        }, { shouldRebuildCanonical: true });
-        await conversationStore.update(conv);
-      }
-    } else {
-      const conv = await conversationStore.get(conversationId);
-      if (conv) {
-        conv.runStatus = "idle";
-        conv.updatedAt = Date.now();
-        await conversationStore.update(conv);
-      }
-    }
-
-    activeConversationRuns.delete(conversationId);
-    if (latestRunId) {
-      runOwners.delete(latestRunId);
-      runConversations.delete(latestRunId);
-    }
-    console.log("[resume-run] complete for", conversationId);
-
-    // Check for pending subagent results that arrived during the run
-    const hadDeferred = pendingCallbackNeeded.delete(conversationId);
-    const postConv = await conversationStore.get(conversationId);
-    const needsResumeCallback = hadDeferred || !!postConv?.pendingSubagentResults?.length;
-    const hasRunningResumeChildren = Array.from(activeSubagentRuns.values()).some(
-      (run) => run.parentConversationId === conversationId,
-    );
-    if (!needsResumeCallback && !hasRunningResumeChildren) {
-      finishConversationStream(conversationId);
-    }
-    if (needsResumeCallback) {
-      processSubagentCallback(conversationId, true).catch(err =>
-        console.error(`[poncho][subagent-callback] Post-resume callback failed:`, err instanceof Error ? err.message : err),
-      );
-    }
-  };
+  // resumeRunFromCheckpoint — aliased from orchestrator above
 
   // ---------------------------------------------------------------------------
   // Messaging adapters (Slack, etc.) — routes bypass Poncho auth; each
@@ -3509,7 +2947,8 @@ export const createRequestHandler = async (options?: {
       return { messages: [] };
     },
     async run(conversationId, input) {
-      const latestConversation = await conversationStore.get(conversationId);
+      // getWithArchive — latestConversation feeds withToolResultArchiveParam.
+      const latestConversation = await conversationStore.getWithArchive(conversationId);
       const canonicalHistory = latestConversation
         ? loadCanonicalHistory(latestConversation)
         : { messages: [...input.messages], source: "messages" as const };
@@ -3916,128 +3355,13 @@ export const createRequestHandler = async (options?: {
   };
 
   // ── Unified continuation ──────────────────────────────────────────────
-  const MAX_CONTINUATION_COUNT = 20;
-
+  // runContinuation and runChatContinuation are now handled by the orchestrator.
+  // This local function delegates to orchestrator.runContinuation().
   async function runContinuation(
     conversationId: string,
     onYield?: (event: AgentEvent) => void | Promise<void>,
   ): Promise<void> {
-    const conversation = await conversationStore.get(conversationId);
-    if (!conversation) return;
-    if (Array.isArray(conversation.pendingApprovals) && conversation.pendingApprovals.length > 0) return;
-    if (!conversation._continuationMessages?.length) return;
-    if (conversation.runStatus === "running") return;
-
-    const count = (conversation._continuationCount ?? 0) + 1;
-    if (count > MAX_CONTINUATION_COUNT) {
-      console.warn(`[poncho][continuation] Max continuation count (${MAX_CONTINUATION_COUNT}) reached for ${conversationId}`);
-      conversation._continuationMessages = undefined;
-      conversation._continuationCount = undefined;
-      await conversationStore.update(conversation);
-      return;
-    }
-
-    const continuationMessages = [...conversation._continuationMessages];
-    conversation._continuationMessages = undefined;
-    conversation._continuationCount = count;
-    conversation.runStatus = "running";
-    await conversationStore.update(conversation);
-
-    const abortController = new AbortController();
-    activeConversationRuns.set(conversationId, {
-      ownerId: conversation.ownerId,
-      abortController,
-      runId: null,
-    });
-
-    const prevStream = conversationEventStreams.get(conversationId);
-    if (prevStream) {
-      prevStream.finished = false;
-      prevStream.buffer = [];
-    } else {
-      conversationEventStreams.set(conversationId, {
-        buffer: [],
-        subscribers: new Set(),
-        finished: false,
-      });
-    }
-
-    try {
-      if (conversation.parentConversationId) {
-        for await (const event of runSubagentContinuation(conversationId, conversation, continuationMessages)) {
-          if (onYield) await onYield(event);
-        }
-      } else {
-        await runChatContinuation(conversationId, conversation, continuationMessages, onYield);
-      }
-    } finally {
-      activeConversationRuns.delete(conversationId);
-      finishConversationStream(conversationId);
-    }
-  }
-
-  async function runChatContinuation(
-    conversationId: string,
-    conversation: Conversation,
-    continuationMessages: Message[],
-    onYield?: (event: AgentEvent) => void | Promise<void>,
-  ): Promise<void> {
-    const execution = await executeConversationTurn({
-      harness,
-      runInput: {
-        conversationId,
-        tenantId: conversation.tenantId ?? undefined,
-        parameters: withToolResultArchiveParam({
-          __activeConversationId: conversationId,
-          __ownerId: conversation.ownerId,
-        }, conversation),
-        messages: continuationMessages,
-        abortSignal: activeConversationRuns.get(conversationId)?.abortController.signal,
-      },
-      initialContextTokens: conversation.contextTokens ?? 0,
-      initialContextWindow: conversation.contextWindow ?? 0,
-      onEvent: async (event) => {
-        if (event.type === "run:started") {
-          runOwners.set(event.runId, conversation.ownerId);
-          runConversations.set(event.runId, conversationId);
-          const active = activeConversationRuns.get(conversationId);
-          if (active) active.runId = event.runId;
-        }
-        await telemetry.emit(event);
-        broadcastEvent(conversationId, event);
-        if (onYield) await onYield(event);
-      },
-    });
-    flushTurnDraft(execution.draft);
-
-    const freshConv = await conversationStore.get(conversationId);
-    if (!freshConv) return;
-
-    const hasContent = execution.draft.assistantResponse.length > 0 || execution.draft.toolTimeline.length > 0;
-    if (hasContent) {
-      freshConv.messages = [
-        ...freshConv.messages,
-        {
-          role: "assistant" as const,
-          content: execution.draft.assistantResponse,
-          metadata: buildAssistantMetadata(execution.draft),
-        },
-      ];
-    }
-
-    applyTurnMetadata(freshConv, {
-      latestRunId: execution.latestRunId,
-      contextTokens: execution.runContextTokens,
-      contextWindow: execution.runContextWindow,
-      continuation: execution.runContinuation,
-      continuationMessages: execution.runContinuationMessages,
-      harnessMessages: execution.runHarnessMessages,
-      toolResultArchive: harness.getToolResultArchive(conversationId),
-    }, { shouldRebuildCanonical: true });
-    if (execution.runContinuation) {
-      freshConv._continuationCount = conversation._continuationCount;
-    }
-    await conversationStore.update(freshConv);
+    return orchestrator.runContinuation(conversationId, onYield);
   }
 
   async function* runSubagentContinuation(
@@ -5491,6 +4815,48 @@ export const createRequestHandler = async (options?: {
       return;
     }
 
+    // Cheap status endpoint — column-only reads + in-memory state. Used by
+    // the web UI poll loop to check whether the full conversation needs to
+    // be refetched. Intentionally kept minimal: returning extra fields here
+    // re-creates the egress problem the endpoint exists to avoid.
+    const conversationStatusMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/status$/);
+    if (conversationStatusMatch && request.method === "GET") {
+      const conversationId = decodeURIComponent(conversationStatusMatch[1] ?? "");
+      const snapshot = await conversationStore.getStatusSnapshot(conversationId);
+      if (!snapshot || !canAccessConversation(snapshot)) {
+        writeJson(response, 404, {
+          code: "CONVERSATION_NOT_FOUND",
+          message: "Conversation not found",
+        });
+        return;
+      }
+      const activeStream = conversationEventStreams.get(conversationId);
+      const hasActiveRun =
+        (!!activeStream && !activeStream.finished) || snapshot.runStatus === "running";
+      const hasRunningSubagents = !snapshot.parentConversationId
+        ? hasRunningSubagentsForParent(conversationId, snapshot.ownerId)
+        : false;
+      let subagentPendingApprovalsCount = 0;
+      if (!snapshot.parentConversationId) {
+        for (const [, pa] of pendingSubagentApprovals) {
+          if (pa.parentConversationId === conversationId) subagentPendingApprovalsCount += 1;
+        }
+      }
+      const needsContinuation =
+        !hasActiveRun && snapshot.hasContinuationMessages && !snapshot.hasPendingApprovals;
+      writeJson(response, 200, {
+        conversationId,
+        updatedAt: snapshot.updatedAt,
+        messageCount: snapshot.messageCount,
+        hasPendingApprovals: snapshot.hasPendingApprovals,
+        subagentPendingApprovalsCount,
+        hasActiveRun,
+        hasRunningSubagents,
+        needsContinuation,
+      });
+      return;
+    }
+
     const conversationPathMatch = pathname.match(/^\/api\/conversations\/([^/]+)$/);
     if (conversationPathMatch) {
       const conversationId = decodeURIComponent(conversationPathMatch[1] ?? "");
@@ -5546,6 +4912,9 @@ export const createRequestHandler = async (options?: {
             pendingApprovals: storedPending,
             _continuationMessages: undefined,
             _harnessMessages: undefined,
+            // The browser has no use for the archive; make sure we never ship
+            // it back even if the conversation was loaded via getWithArchive.
+            _toolResultArchive: undefined,
           },
           subagentPendingApprovals: subagentPending,
           hasActiveRun: hasActiveRun || hasPendingCallbackResults,
@@ -5854,7 +5223,9 @@ export const createRequestHandler = async (options?: {
     const conversationMessageMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
     if (conversationMessageMatch && request.method === "POST") {
       const conversationId = decodeURIComponent(conversationMessageMatch[1] ?? "");
-      const conversation = await conversationStore.get(conversationId);
+      // getWithArchive — conversation feeds withToolResultArchiveParam when
+      // the turn below calls executeConversationTurn.
+      const conversation = await conversationStore.getWithArchive(conversationId);
       if (!conversation || !canAccessConversation(conversation)) {
         writeJson(response, 404, {
           code: "CONVERSATION_NOT_FOUND",
@@ -6311,7 +5682,9 @@ export const createRequestHandler = async (options?: {
 
           const chatResults: Array<{ chatId: string; status: string; steps?: number }> = [];
           for (const [chatId, summary] of targetSummaries) {
-            const conv = await conversationStore.get(summary.conversationId);
+            // getWithArchive — conv feeds runCronAgent below which needs the
+            // archive to reseed the harness.
+            const conv = await conversationStore.getWithArchive(summary.conversationId);
             if (!conv) continue;
 
             const task = `[Scheduled: ${jobName}]\n${cronJob.task}`;
@@ -6514,7 +5887,9 @@ export const createRequestHandler = async (options?: {
           }
 
           const originConv = reminder.conversationId
-            ? await conversationStore.get(reminder.conversationId)
+            // getWithArchive — originConv feeds runCronAgent below which
+            // needs the archive to reseed the harness.
+            ? await conversationStore.getWithArchive(reminder.conversationId)
             : undefined;
           const channelMeta = originConv?.channelMeta;
 
@@ -6728,7 +6103,9 @@ export const startDevServer = async (
 
               let totalChats = 0;
               for (const [chatId, summary] of targetSummaries) {
-                const conversation = await store.get(summary.conversationId);
+                // getWithArchive — conversation feeds runCronAgent below
+                // which needs the archive to reseed the harness.
+                const conversation = await store.getWithArchive(summary.conversationId);
                 if (!conversation) continue;
 
                 const task = `[Scheduled: ${jobName}]\n${config.task}`;

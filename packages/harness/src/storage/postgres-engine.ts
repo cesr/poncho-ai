@@ -66,6 +66,7 @@ export class PostgresEngine extends SqlStorageEngine {
   }
 
   async close(): Promise<void> {
+    this.flushEgressStats();
     await this.sql?.end();
   }
 

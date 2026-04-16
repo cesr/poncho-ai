@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import type {
   Conversation,
   ConversationCreateInit,
+  ConversationStatusSnapshot,
   ConversationSummary,
   PendingSubagentResult,
 } from "../state.js";
@@ -100,6 +101,31 @@ export class InMemoryEngine implements StorageEngine {
 
     get: async (conversationId: string): Promise<Conversation | undefined> => {
       return this.convs.get(conversationId);
+    },
+
+    // In-memory storage has no separate archive blob, so both variants
+    // return the same conversation object.
+    getWithArchive: async (conversationId: string): Promise<Conversation | undefined> => {
+      return this.convs.get(conversationId);
+    },
+
+    getStatusSnapshot: async (
+      conversationId: string,
+    ): Promise<ConversationStatusSnapshot | undefined> => {
+      const c = this.convs.get(conversationId);
+      if (!c) return undefined;
+      return {
+        conversationId: c.conversationId,
+        updatedAt: c.updatedAt,
+        messageCount: c.messages.length,
+        hasPendingApprovals: Array.isArray(c.pendingApprovals) && c.pendingApprovals.length > 0,
+        hasContinuationMessages:
+          Array.isArray(c._continuationMessages) && c._continuationMessages.length > 0,
+        parentConversationId: c.parentConversationId ?? null,
+        ownerId: c.ownerId,
+        tenantId: c.tenantId,
+        runStatus: c.runStatus ?? null,
+      };
     },
 
     create: async (

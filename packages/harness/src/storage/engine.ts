@@ -1,6 +1,7 @@
 import type {
   Conversation,
   ConversationCreateInit,
+  ConversationStatusSnapshot,
   ConversationSummary,
   PendingSubagentResult,
 } from "../state.js";
@@ -40,7 +41,23 @@ export interface StorageEngine {
   // --- Conversations (replaces ConversationStore) ---
   conversations: {
     list(ownerId?: string, tenantId?: string | null): Promise<ConversationSummary[]>;
+    /**
+     * Load a conversation WITHOUT the tool_result_archive blob. Use this on
+     * read paths (UI loads, existence checks, etc.) — the archive can grow
+     * unboundedly as tool calls accumulate, and most callers never touch it.
+     */
     get(conversationId: string): Promise<Conversation | undefined>;
+    /**
+     * Load a conversation WITH the tool_result_archive. Only use this when
+     * starting/resuming a harness run — the archive needs to be reseeded so
+     * the agent can retrieve previously-archived tool results by id.
+     */
+    getWithArchive(conversationId: string): Promise<Conversation | undefined>;
+    /**
+     * Cheap column-level snapshot — no data blob, no heavy columns. For hot
+     * polling paths. Returns undefined if the conversation doesn't exist.
+     */
+    getStatusSnapshot(conversationId: string): Promise<ConversationStatusSnapshot | undefined>;
     create(
       ownerId?: string,
       title?: string,
