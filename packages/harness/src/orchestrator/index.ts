@@ -27,3 +27,9 @@ export {
   type ExecuteTurnResult,
   type TurnResultMetadata,
 } from "./turn.js";
+
+export {
+  TOOL_RESULT_ARCHIVE_PARAM,
+  withToolResultArchiveParam,
+  MAX_CONTINUATION_COUNT,
+} from "./continuation.js";

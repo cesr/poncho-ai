@@ -60,6 +60,9 @@ import {
   type TurnDraftState,
   type ExecuteTurnResult,
   type TurnResultMetadata,
+  TOOL_RESULT_ARCHIVE_PARAM,
+  withToolResultArchiveParam,
+  MAX_CONTINUATION_COUNT,
 } from "@poncho-ai/harness";
 import type { AgentEvent, FileInput, Message, RunInput } from "@poncho-ai/sdk";
 import type {
@@ -135,15 +138,7 @@ const EXT_MIME_MAP: Record<string, string> = {
   json: "application/json", csv: "text/csv", html: "text/html",
 };
 const extToMime = (ext: string): string => EXT_MIME_MAP[ext] ?? "application/octet-stream";
-const TOOL_RESULT_ARCHIVE_PARAM = "__toolResultArchive";
-
-const withToolResultArchiveParam = (
-  parameters: Record<string, unknown> | undefined,
-  conversation: Conversation,
-): Record<string, unknown> => ({
-  ...(parameters ?? {}),
-  [TOOL_RESULT_ARCHIVE_PARAM]: conversation._toolResultArchive ?? {},
-});
+// TOOL_RESULT_ARCHIVE_PARAM, withToolResultArchiveParam — imported from @poncho-ai/harness/orchestrator
 
 const readRequestBody = async (request: IncomingMessage): Promise<unknown> => {
   const chunks: Buffer[] = [];
@@ -3539,7 +3534,7 @@ export const createRequestHandler = async (options?: {
   };
 
   // ── Unified continuation ──────────────────────────────────────────────
-  const MAX_CONTINUATION_COUNT = 20;
+  // MAX_CONTINUATION_COUNT — imported from @poncho-ai/harness/orchestrator
 
   async function runContinuation(
     conversationId: string,
