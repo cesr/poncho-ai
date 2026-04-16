@@ -63,6 +63,7 @@ import {
   TOOL_RESULT_ARCHIVE_PARAM,
   withToolResultArchiveParam,
   MAX_CONTINUATION_COUNT,
+  AgentOrchestrator,
 } from "@poncho-ai/harness";
 import type { AgentEvent, FileInput, Message, RunInput } from "@poncho-ai/sdk";
 import type {
@@ -1724,14 +1725,12 @@ export const createRequestHandler = async (options?: {
       // Cron parsing failure should not block the server
     }
   } catch {}
-  const runOwners = new Map<string, string>();
-  const runConversations = new Map<string, string>();
-  type ActiveConversationRun = {
-    ownerId: string;
-    abortController: AbortController;
-    runId: string | null;
-  };
-  const activeConversationRuns = new Map<string, ActiveConversationRun>();
+  // Runtime state maps — will be replaced with orchestrator's maps after init.
+  // Initialized here so function definitions that reference them don't cause TS errors.
+  // These are reassigned to orchestrator.* below after orchestrator creation.
+  let runOwners = new Map<string, string>();
+  let runConversations = new Map<string, string>();
+  let activeConversationRuns = new Map<string, { ownerId: string; abortController: AbortController; runId: string | null }>();
   // Per-conversation event streaming: buffer events and allow SSE subscribers
   type ConversationEventStream = {
     buffer: AgentEvent[];
@@ -1861,6 +1860,40 @@ export const createRequestHandler = async (options?: {
   const conversationStore = harness.storageEngine
     ? createConversationStoreFromEngine(harness.storageEngine)
     : createConversationStore(stateConfig, { workingDir, agentId: identity.id });
+
+  // ── Orchestrator ──────────────────────────────────────────────────────────
+  const orchestrator = new AgentOrchestrator({
+    harness,
+    conversationStore,
+    eventSink: (conversationId, event) => broadcastEvent(conversationId, event),
+    telemetry,
+    continuationHooks: {
+      onContinuationStart(conversationId) {
+        const prevStream = conversationEventStreams.get(conversationId);
+        if (prevStream) {
+          prevStream.finished = false;
+          prevStream.buffer = [];
+        } else {
+          conversationEventStreams.set(conversationId, {
+            buffer: [],
+            subscribers: new Set(),
+            finished: false,
+          });
+        }
+      },
+      onContinuationEnd(conversationId) {
+        finishConversationStream(conversationId);
+      },
+      // Subagent continuation is still managed by the CLI (Phase 5 will move it)
+      async *runSubagentContinuation(conversationId, conversation, continuationMessages) {
+        yield* runSubagentContinuation(conversationId, conversation, continuationMessages);
+      },
+    },
+  });
+  // Redirect local aliases to orchestrator-owned maps
+  runOwners = orchestrator.runOwners;
+  runConversations = orchestrator.runConversations;
+  activeConversationRuns = orchestrator.activeConversationRuns;
 
   // ---------------------------------------------------------------------------
   // Conversation recall parameter builders — shared between main and subagent runs
@@ -3534,130 +3567,13 @@ export const createRequestHandler = async (options?: {
   };
 
   // ── Unified continuation ──────────────────────────────────────────────
-  // MAX_CONTINUATION_COUNT — imported from @poncho-ai/harness/orchestrator
-
+  // runContinuation and runChatContinuation are now handled by the orchestrator.
+  // This local function delegates to orchestrator.runContinuation().
   async function runContinuation(
     conversationId: string,
     onYield?: (event: AgentEvent) => void | Promise<void>,
   ): Promise<void> {
-    // getWithArchive — conversation feeds withToolResultArchiveParam in
-    // runChatContinuation / runSubagentContinuation below.
-    const conversation = await conversationStore.getWithArchive(conversationId);
-    if (!conversation) return;
-    if (Array.isArray(conversation.pendingApprovals) && conversation.pendingApprovals.length > 0) return;
-    if (!conversation._continuationMessages?.length) return;
-    if (conversation.runStatus === "running") return;
-
-    const count = (conversation._continuationCount ?? 0) + 1;
-    if (count > MAX_CONTINUATION_COUNT) {
-      console.warn(`[poncho][continuation] Max continuation count (${MAX_CONTINUATION_COUNT}) reached for ${conversationId}`);
-      conversation._continuationMessages = undefined;
-      conversation._continuationCount = undefined;
-      await conversationStore.update(conversation);
-      return;
-    }
-
-    const continuationMessages = [...conversation._continuationMessages];
-    conversation._continuationMessages = undefined;
-    conversation._continuationCount = count;
-    conversation.runStatus = "running";
-    await conversationStore.update(conversation);
-
-    const abortController = new AbortController();
-    activeConversationRuns.set(conversationId, {
-      ownerId: conversation.ownerId,
-      abortController,
-      runId: null,
-    });
-
-    const prevStream = conversationEventStreams.get(conversationId);
-    if (prevStream) {
-      prevStream.finished = false;
-      prevStream.buffer = [];
-    } else {
-      conversationEventStreams.set(conversationId, {
-        buffer: [],
-        subscribers: new Set(),
-        finished: false,
-      });
-    }
-
-    try {
-      if (conversation.parentConversationId) {
-        for await (const event of runSubagentContinuation(conversationId, conversation, continuationMessages)) {
-          if (onYield) await onYield(event);
-        }
-      } else {
-        await runChatContinuation(conversationId, conversation, continuationMessages, onYield);
-      }
-    } finally {
-      activeConversationRuns.delete(conversationId);
-      finishConversationStream(conversationId);
-    }
-  }
-
-  async function runChatContinuation(
-    conversationId: string,
-    conversation: Conversation,
-    continuationMessages: Message[],
-    onYield?: (event: AgentEvent) => void | Promise<void>,
-  ): Promise<void> {
-    const execution = await executeConversationTurn({
-      harness,
-      runInput: {
-        conversationId,
-        tenantId: conversation.tenantId ?? undefined,
-        parameters: withToolResultArchiveParam({
-          __activeConversationId: conversationId,
-          __ownerId: conversation.ownerId,
-        }, conversation),
-        messages: continuationMessages,
-        abortSignal: activeConversationRuns.get(conversationId)?.abortController.signal,
-      },
-      initialContextTokens: conversation.contextTokens ?? 0,
-      initialContextWindow: conversation.contextWindow ?? 0,
-      onEvent: async (event) => {
-        if (event.type === "run:started") {
-          runOwners.set(event.runId, conversation.ownerId);
-          runConversations.set(event.runId, conversationId);
-          const active = activeConversationRuns.get(conversationId);
-          if (active) active.runId = event.runId;
-        }
-        await telemetry.emit(event);
-        broadcastEvent(conversationId, event);
-        if (onYield) await onYield(event);
-      },
-    });
-    flushTurnDraft(execution.draft);
-
-    const freshConv = await conversationStore.get(conversationId);
-    if (!freshConv) return;
-
-    const hasContent = execution.draft.assistantResponse.length > 0 || execution.draft.toolTimeline.length > 0;
-    if (hasContent) {
-      freshConv.messages = [
-        ...freshConv.messages,
-        {
-          role: "assistant" as const,
-          content: execution.draft.assistantResponse,
-          metadata: buildAssistantMetadata(execution.draft),
-        },
-      ];
-    }
-
-    applyTurnMetadata(freshConv, {
-      latestRunId: execution.latestRunId,
-      contextTokens: execution.runContextTokens,
-      contextWindow: execution.runContextWindow,
-      continuation: execution.runContinuation,
-      continuationMessages: execution.runContinuationMessages,
-      harnessMessages: execution.runHarnessMessages,
-      toolResultArchive: harness.getToolResultArchive(conversationId),
-    }, { shouldRebuildCanonical: true });
-    if (execution.runContinuation) {
-      freshConv._continuationCount = conversation._continuationCount;
-    }
-    await conversationStore.update(freshConv);
+    return orchestrator.runContinuation(conversationId, onYield);
   }
 
   async function* runSubagentContinuation(

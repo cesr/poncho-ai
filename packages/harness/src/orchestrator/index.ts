@@ -33,3 +33,11 @@ export {
   withToolResultArchiveParam,
   MAX_CONTINUATION_COUNT,
 } from "./continuation.js";
+
+export {
+  AgentOrchestrator,
+  type ActiveConversationRun,
+  type EventSink,
+  type ContinuationHooks,
+  type OrchestratorOptions,
+} from "./orchestrator.js";
