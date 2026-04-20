@@ -1,18 +1,35 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent, Message } from "@poncho-ai/sdk";
-import { __internalRunOrchestration } from "../src/index.js";
+import {
+  loadRunHistory,
+  normalizeApprovalCheckpoint,
+  buildApprovalCheckpoints,
+  resolveRunRequest,
+  createTurnDraftState,
+  recordStandardTurnEvent,
+  executeConversationTurn,
+} from "../src/orchestrator/index.js";
+import type { Conversation } from "../src/state.js";
 
 const baseMessages: Message[] = [{ role: "user", content: "hello" }];
 
-describe("run orchestration helpers", () => {
+const makeConversation = (overrides: Partial<Conversation> & Pick<Conversation, "messages">): Conversation => ({
+  conversationId: "conv_test",
+  title: "test",
+  ownerId: "local-owner",
+  tenantId: null,
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+  ...overrides,
+});
+
+describe("orchestrator helpers", () => {
   it("falls back to user messages when harness history is unavailable", () => {
-    const conversation = {
+    const conversation = makeConversation({
       messages: baseMessages,
-      _harnessMessages: "invalid",
-    };
-    const resolved = __internalRunOrchestration.loadRunHistory(
-      conversation as unknown as { messages: Message[]; _harnessMessages?: unknown; _continuationMessages?: unknown },
-    );
+      _harnessMessages: "invalid" as unknown as Message[],
+    });
+    const resolved = loadRunHistory(conversation);
     expect(resolved.source).toBe("messages");
     expect(resolved.shouldRebuildCanonical).toBe(true);
     expect(resolved.messages).toEqual(baseMessages);
@@ -20,40 +37,30 @@ describe("run orchestration helpers", () => {
 
   it("prefers continuation history when requested", () => {
     const continuation: Message[] = [{ role: "assistant", content: "next" }];
-    const conversation = {
+    const conversation = makeConversation({
       messages: baseMessages,
       _harnessMessages: baseMessages,
       _continuationMessages: continuation,
-    };
-    const resolved = __internalRunOrchestration.loadRunHistory(
-      conversation as unknown as { messages: Message[]; _harnessMessages?: unknown; _continuationMessages?: unknown },
-      { preferContinuation: true },
-    );
+    });
+    const resolved = loadRunHistory(conversation, { preferContinuation: true });
     expect(resolved.source).toBe("continuation");
     expect(resolved.messages).toEqual(continuation);
   });
 
   it("normalizes legacy approval checkpoint payloads", () => {
-    const normalized = __internalRunOrchestration.normalizeApprovalCheckpoint(
+    const normalized = normalizeApprovalCheckpoint(
       {
         approvalId: "approval_1",
         runId: "run_1",
         tool: "read_file",
         toolCallId: "tool_1",
         input: {},
-        checkpointMessages: undefined,
+        checkpointMessages: undefined as unknown as Message[],
         baseMessageCount: -1,
-        pendingToolCalls: [{ id: "t2", name: "list_directory", input: {} }, { foo: "bar" }],
-      } as unknown as {
-        approvalId: string;
-        runId: string;
-        tool: string;
-        toolCallId?: string;
-        input: Record<string, unknown>;
-        checkpointMessages?: Message[];
-        baseMessageCount?: number;
-        pendingToolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }>;
-        decision?: "approved" | "denied";
+        pendingToolCalls: [
+          { id: "t2", name: "list_directory", input: {} },
+          { foo: "bar" } as unknown as { id: string; name: string; input: Record<string, unknown> },
+        ],
       },
       baseMessages,
     );
@@ -63,7 +70,7 @@ describe("run orchestration helpers", () => {
   });
 
   it("builds checkpoint approvals with a canonical shape", () => {
-    const checkpoints = __internalRunOrchestration.buildApprovalCheckpoints({
+    const checkpoints = buildApprovalCheckpoints({
       approvals: [
         {
           approvalId: "approval_1",
@@ -93,36 +100,34 @@ describe("run orchestration helpers", () => {
 
   it("resolves run request by preferring continuation and preserves rebuild signal", () => {
     const continuation: Message[] = [{ role: "assistant", content: "continuation" }];
-    const resolved = __internalRunOrchestration.resolveRunRequest(
-      {
-        messages: baseMessages,
-        _harnessMessages: "invalid",
-        _continuationMessages: continuation,
-      } as unknown as { messages: Message[]; _harnessMessages?: unknown; _continuationMessages?: unknown },
-      {
-        conversationId: "conv_1",
-        messages: baseMessages,
-        preferContinuation: true,
-      },
-    );
+    const conversation = makeConversation({
+      messages: baseMessages,
+      _harnessMessages: "invalid" as unknown as Message[],
+      _continuationMessages: continuation,
+    });
+    const resolved = resolveRunRequest(conversation, {
+      conversationId: "conv_1",
+      messages: baseMessages,
+      preferContinuation: true,
+    });
     expect(resolved.source).toBe("continuation");
     expect(resolved.messages).toEqual(continuation);
     expect(resolved.shouldRebuildCanonical).toBe(true);
   });
 
   it("records standard draft events for tool timeline and text", () => {
-    const draft = __internalRunOrchestration.createTurnDraftState();
-    __internalRunOrchestration.recordStandardTurnEvent(
+    const draft = createTurnDraftState();
+    recordStandardTurnEvent(
       draft,
-      { type: "tool:started", runId: "run_1", step: 1, tool: "read_file", input: {} } as AgentEvent,
+      { type: "tool:started", tool: "read_file", input: {} } as AgentEvent,
     );
-    __internalRunOrchestration.recordStandardTurnEvent(
+    recordStandardTurnEvent(
       draft,
-      { type: "tool:completed", runId: "run_1", step: 1, tool: "read_file", duration: 42, output: {} } as AgentEvent,
+      { type: "tool:completed", tool: "read_file", duration: 42, output: {} } as AgentEvent,
     );
-    __internalRunOrchestration.recordStandardTurnEvent(
+    recordStandardTurnEvent(
       draft,
-      { type: "model:chunk", runId: "run_1", step: 1, content: "done" } as AgentEvent,
+      { type: "model:chunk", content: "done" } as AgentEvent,
     );
     expect(draft.toolTimeline).toEqual(["- start `read_file`", "- done `read_file` (42ms)"]);
     expect(draft.assistantResponse).toBe("done");
@@ -130,20 +135,20 @@ describe("run orchestration helpers", () => {
 
   it("executes a conversation turn through the shared executor", async () => {
     const events: AgentEvent[] = [
-      { type: "run:started", runId: "run_1", startedAt: Date.now() } as AgentEvent,
-      { type: "tool:started", runId: "run_1", step: 1, tool: "list_directory", input: {} } as AgentEvent,
-      { type: "model:chunk", runId: "run_1", step: 1, content: "hello" } as AgentEvent,
+      { type: "run:started", runId: "run_1", agentId: "test" } as AgentEvent,
+      { type: "tool:started", tool: "list_directory", input: {} } as AgentEvent,
+      { type: "model:chunk", content: "hello" } as AgentEvent,
       {
         type: "run:completed",
         runId: "run_1",
         result: {
-          status: "completed",
+          status: "completed" as const,
           response: "hello",
           steps: 2,
           duration: 10,
+          tokens: { input: 1, output: 1, cached: 0 },
           continuation: false,
           continuationMessages: baseMessages,
-          usage: { inputTokens: 1, outputTokens: 1 },
           contextTokens: 321,
           contextWindow: 1000,
         },
@@ -155,7 +160,7 @@ describe("run orchestration helpers", () => {
       },
     };
     const seenTypes: string[] = [];
-    const result = await __internalRunOrchestration.executeConversationTurn({
+    const result = await executeConversationTurn({
       harness: fakeHarness as never,
       runInput: { task: "test", messages: baseMessages, conversationId: "conv_1" } as never,
       onEvent: (event) => {
