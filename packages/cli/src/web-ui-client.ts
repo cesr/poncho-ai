@@ -1785,6 +1785,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
         let lastMessageCount = state.activeMessages ? state.activeMessages.length : 0;
         let lastUpdatedAt = 0;
         let lastPendingSignature = "";
+        let streamingCallback = false;
         const poll = async () => {
           if (state.activeConversationId !== conversationId) {
             delete state.subagentPollInFlight[conversationId];
@@ -1806,7 +1807,38 @@ export const getWebUiClientScript = (markedSource: string): string => `
               await refetchConversationAndRender(conversationId, status.hasActiveRun || status.hasRunningSubagents);
               if (state.activeConversationId !== conversationId) return;
             }
-            if (status.hasActiveRun || status.hasRunningSubagents) {
+            if (status.hasActiveRun && !streamingCallback) {
+              // The parent callback run is active — subscribe to the SSE
+              // event stream so the response streams live instead of only
+              // appearing after the run finishes.
+              streamingCallback = true;
+              // Refetch so the injected subagent result message is visible
+              // before we start streaming the assistant's response.
+              await refetchConversationAndRender(conversationId, true);
+              if (state.activeConversationId !== conversationId) {
+                delete state.subagentPollInFlight[conversationId];
+                return;
+              }
+              lastMessageCount = status.messageCount;
+              lastUpdatedAt = status.updatedAt;
+              setStreaming(true);
+              try {
+                await streamConversationEvents(conversationId, { liveOnly: true });
+              } catch {}
+              streamingCallback = false;
+              // After the stream ends, update counts and resume polling
+              // to catch any remaining subagent work.
+              const fresh = await api("/api/conversations/" + encodeURIComponent(conversationId) + "/status").catch(function() { return null; });
+              if (fresh) {
+                lastMessageCount = fresh.messageCount;
+                lastUpdatedAt = fresh.updatedAt;
+              }
+              if (state.activeConversationId !== conversationId) {
+                delete state.subagentPollInFlight[conversationId];
+                return;
+              }
+              setTimeout(poll, 1000);
+            } else if (status.hasActiveRun || status.hasRunningSubagents) {
               setTimeout(poll, 2000);
             } else {
               renderMessages(state.activeMessages, false);

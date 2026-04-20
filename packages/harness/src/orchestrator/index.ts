@@ -35,6 +35,16 @@ export {
 } from "./continuation.js";
 
 export {
+  type ActiveSubagentRun,
+  type PendingSubagentApproval,
+  MAX_SUBAGENT_NESTING,
+  MAX_CONCURRENT_SUBAGENTS,
+  MAX_SUBAGENT_CALLBACK_COUNT,
+  CALLBACK_LOCK_STALE_MS,
+  STALE_SUBAGENT_THRESHOLD_MS,
+} from "./subagents.js";
+
+export {
   AgentOrchestrator,
   type ActiveConversationRun,
   type EventSink,

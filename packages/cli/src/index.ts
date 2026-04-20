@@ -28,10 +28,6 @@ import {
   type Conversation,
   type ConversationStore,
   type ConversationSummary,
-  type PendingSubagentResult,
-  type SubagentManager,
-  type SubagentResult,
-  type SubagentSpawnResult,
   type UploadStore,
   verifyTenantToken,
   createSecretsStore,
@@ -1867,6 +1863,8 @@ export const createRequestHandler = async (options?: {
     conversationStore,
     eventSink: (conversationId, event) => broadcastEvent(conversationId, event),
     telemetry,
+    agentId: identity.id,
+    workingDir,
     hooks: {
       onContinuationStart(conversationId) {
         const prevStream = conversationEventStreams.get(conversationId);
@@ -1883,10 +1881,6 @@ export const createRequestHandler = async (options?: {
       },
       onContinuationEnd(conversationId) {
         finishConversationStream(conversationId);
-      },
-      // Subagent continuation is still managed by the CLI (Phase 5 will move it)
-      async *runSubagentContinuation(conversationId, conversation, continuationMessages) {
-        yield* runSubagentContinuation(conversationId, conversation, continuationMessages);
       },
       onApprovalCheckpoint(conversationId, approvals) {
         // Telegram approval notification
@@ -1906,21 +1900,58 @@ export const createRequestHandler = async (options?: {
         });
         void conv;
       },
-      onResumeComplete(conversationId, checkpointedRun) {
-        const hadDeferred = pendingCallbackNeeded.delete(conversationId);
-        conversationStore.get(conversationId).then(postConv => {
-          const needsResumeCallback = hadDeferred || !!postConv?.pendingSubagentResults?.length;
-          const hasRunningResumeChildren = Array.from(activeSubagentRuns.values()).some(
-            (run) => run.parentConversationId === conversationId,
+      // ── Subagent hooks ──
+      async createChildHarness() {
+        const childHarness = new AgentHarness({
+          workingDir,
+          environment: resolveHarnessEnvironment(),
+          uploadStore,
+        });
+        await childHarness.initialize();
+        return childHarness;
+      },
+      buildRecallParams: (opts) => buildRecallParams(opts),
+      dispatchBackground(type, conversationId) {
+        const urlMap = {
+          "subagent-run": `/api/internal/subagent/${encodeURIComponent(conversationId)}/run`,
+          "subagent-callback": `/api/internal/conversations/${encodeURIComponent(conversationId)}/subagent-callback`,
+          "continuation": `/api/internal/continue/${encodeURIComponent(conversationId)}`,
+        };
+        const work = selfFetchWithRetry(urlMap[type]).catch(err =>
+          console.error(`[poncho][dispatch] ${type} self-fetch failed for ${conversationId}:`, err instanceof Error ? err.message : err),
+        );
+        doWaitUntil(work);
+      },
+      onStreamEnd(conversationId) {
+        finishConversationStream(conversationId);
+      },
+      onCallbackStreamReset(conversationId) {
+        const prevStream = conversationEventStreams.get(conversationId);
+        if (prevStream) {
+          prevStream.finished = false;
+          prevStream.buffer = [];
+        } else {
+          conversationEventStreams.set(conversationId, {
+            buffer: [],
+            subscribers: new Set(),
+            finished: false,
+          });
+        }
+      },
+      onMessagingNotify(conversationId, text) {
+        conversationStore.get(conversationId).then(conv => {
+          if (!conv?.channelMeta) return;
+          const adapter = messagingAdapters.get(conv.channelMeta.platform);
+          if (!adapter) return;
+          adapter.sendReply(
+            {
+              channelId: conv.channelMeta.channelId,
+              platformThreadId: conv.channelMeta.platformThreadId,
+            },
+            text,
+          ).catch(sendErr =>
+            console.error(`[poncho][subagent-callback] Messaging notify failed:`, sendErr instanceof Error ? sendErr.message : sendErr),
           );
-          if (!needsResumeCallback && !hasRunningResumeChildren) {
-            finishConversationStream(conversationId);
-          }
-          if (needsResumeCallback) {
-            processSubagentCallback(conversationId, true).catch(err =>
-              console.error(`[poncho][subagent-callback] Post-resume callback failed:`, err instanceof Error ? err.message : err),
-            );
-          }
         });
       },
     },
@@ -1932,6 +1963,16 @@ export const createRequestHandler = async (options?: {
   const approvalDecisionTracker = orchestrator.approvalDecisionTracker;
   const findPendingApproval = orchestrator.findPendingApproval.bind(orchestrator);
   const resumeRunFromCheckpoint = orchestrator.resumeRunFromCheckpoint.bind(orchestrator);
+  const activeSubagentRuns = orchestrator.activeSubagentRuns;
+  const pendingSubagentApprovals = orchestrator.pendingSubagentApprovals;
+  const pendingCallbackNeeded = orchestrator.pendingCallbackNeeded;
+  const processSubagentCallback = orchestrator.processSubagentCallback.bind(orchestrator);
+  const hasPendingSubagentWorkForParent = orchestrator.hasPendingSubagentWorkForParent.bind(orchestrator);
+  const hasRunningSubagentsForParent = (parentId: string, _owner: string) => orchestrator.hasRunningSubagentsForParent(parentId);
+
+  // Set up SubagentManager
+  const subagentManager = orchestrator.createSubagentManager();
+  harness.setSubagentManager(subagentManager);
 
   // ---------------------------------------------------------------------------
   // Conversation recall parameter builders — shared between main and subagent runs
@@ -2017,885 +2058,7 @@ export const createRequestHandler = async (options?: {
     };
   };
 
-  // ---------------------------------------------------------------------------
-  // Subagent manager -- allows the agent to spawn child agent conversations.
-  // ---------------------------------------------------------------------------
-  const MAX_SUBAGENT_NESTING = 3; // root → L1 → L2 = 3 levels; L2 cannot spawn further
-  const MAX_CONCURRENT_SUBAGENTS = 2;
-
-  const activeSubagentRuns = new Map<string, { abortController: AbortController; harness: AgentHarness; parentConversationId: string }>();
-  // Track parent IDs that have subagents spawned but not yet registered in
-  // activeSubagentRuns (because runSubagent's async initialization hasn't
-  // completed yet). This ensures hasPendingSubagentWorkForParent returns
-  // true immediately after spawn, before the background task registers.
-  const recentlySpawnedParents = new Map<string, number>(); // parentId → count of pending spawns
-
-  // Pending subagent approvals: when a subagent hits an approval checkpoint,
-  // we store a resolver here so the approval endpoint can signal the waiting runSubagent.
-  type PendingSubagentApproval = {
-    resolve: (decidedApprovals: NonNullable<Conversation["pendingApprovals"]>) => void;
-    childHarness: AgentHarness;
-    checkpoint: NonNullable<Conversation["pendingApprovals"]>[number];
-    childConversationId: string;
-    parentConversationId: string;
-  };
-  const pendingSubagentApprovals = new Map<string, PendingSubagentApproval>();
-
-  // approvalDecisionTracker, findPendingApproval — aliased from orchestrator above
-
-  const hasRunningSubagentsForParent = (
-    parentConversationId: string,
-    _owner: string,
-  ): boolean => {
-    // Use in-memory map only — it's authoritative for running subagents.
-    // The startup recovery code repopulates it after restarts.
-    return Array.from(activeSubagentRuns.values()).some(
-      (run) => run.parentConversationId === parentConversationId,
-    );
-  };
-
-  const hasPendingSubagentWorkForParent = async (
-    parentConversationId: string,
-    owner: string,
-  ): Promise<boolean> => {
-    if (hasRunningSubagentsForParent(parentConversationId, owner)) {
-      return true;
-    }
-    if (recentlySpawnedParents.has(parentConversationId)) {
-      return true;
-    }
-    if (pendingCallbackNeeded.has(parentConversationId)) {
-      return true;
-    }
-    const parentConversation = await conversationStore.get(parentConversationId);
-    if (!parentConversation) return false;
-    if (Array.isArray(parentConversation.pendingSubagentResults) && parentConversation.pendingSubagentResults.length > 0) {
-      return true;
-    }
-    if (typeof parentConversation.runningCallbackSince === "number" && parentConversation.runningCallbackSince > 0) {
-      return true;
-    }
-    return false;
-  };
-
-  const getSubagentDepth = async (conversationId: string): Promise<number> => {
-    let depth = 0;
-    let current = await conversationStore.get(conversationId);
-    while (current?.parentConversationId) {
-      depth += 1;
-      current = await conversationStore.get(current.parentConversationId);
-    }
-    return depth;
-  };
-
-  const getRunningSubagentCountForParent = (parentId: string): number => {
-    let count = 0;
-    for (const run of activeSubagentRuns.values()) {
-      if (run.parentConversationId === parentId) count += 1;
-    }
-    return count;
-  };
-
-  const handleSubagentCompletion = async (subagentId: string): Promise<void> => {
-    const conv = await conversationStore.get(subagentId);
-    if (!conv || !conv.parentConversationId) return;
-    if (conv.subagentMeta?.status === "completed" || conv.subagentMeta?.status === "error") return;
-
-    conv.subagentMeta = { ...conv.subagentMeta!, status: "completed" };
-    conv.updatedAt = Date.now();
-    await conversationStore.update(conv);
-
-    const lastMsg = conv.messages[conv.messages.length - 1];
-    const responseText = lastMsg?.role === "assistant" && typeof lastMsg.content === "string" ? lastMsg.content : "";
-    const pendingResult: PendingSubagentResult = {
-      subagentId,
-      task: conv.subagentMeta?.task ?? conv.title,
-      status: "completed",
-      result: { status: "completed", response: responseText, steps: 0, tokens: { input: 0, output: 0, cached: 0 }, duration: 0 },
-      timestamp: Date.now(),
-    };
-    await conversationStore.appendSubagentResult(conv.parentConversationId, pendingResult);
-
-    broadcastEvent(conv.parentConversationId, {
-      type: "subagent:completed",
-      subagentId,
-      conversationId: subagentId,
-    });
-
-    await triggerParentCallback(conv.parentConversationId);
-  };
-
-  const resumeSubagentFromCheckpoint = async (subagentId: string): Promise<void> => {
-    const conv = await conversationStore.get(subagentId);
-    if (!conv || !conv.parentConversationId) return;
-
-    const allApprovals = (conv.pendingApprovals ?? []).map((approval) =>
-      normalizeApprovalCheckpoint(approval, conv.messages),
-    );
-    if (allApprovals.length === 0) return;
-    const allDecided = allApprovals.every(a => a.decision != null);
-    if (!allDecided) return;
-
-    conv.pendingApprovals = [];
-    conv.subagentMeta = { ...conv.subagentMeta!, status: "running" };
-    await conversationStore.update(conv);
-
-    const checkpointRef = allApprovals[0]!;
-    const toolContext = {
-      runId: checkpointRef.runId,
-      agentId: identity.id,
-      step: 0,
-      workingDir,
-      parameters: {},
-      conversationId: subagentId,
-    };
-
-    const approvalToolCallIds = new Set(allApprovals.map(a => a.toolCallId));
-    const callsToExecute: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
-    const deniedResults: Array<{ callId: string; toolName: string; error: string }> = [];
-
-    for (const a of allApprovals) {
-      if (a.decision === "approved" && a.toolCallId) {
-        callsToExecute.push({ id: a.toolCallId, name: a.tool, input: a.input });
-      } else if (a.decision === "denied" && a.toolCallId) {
-        deniedResults.push({ callId: a.toolCallId, toolName: a.tool, error: "Tool execution denied by user" });
-      }
-    }
-
-    const pendingToolCalls = checkpointRef.pendingToolCalls ?? [];
-    for (const tc of pendingToolCalls) {
-      if (!approvalToolCallIds.has(tc.id)) callsToExecute.push(tc);
-    }
-
-    let toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }> = [...deniedResults];
-    if (callsToExecute.length > 0) {
-      const execResults = await harness.executeTools(callsToExecute, toolContext);
-      toolResults.push(...execResults.map(r => ({
-        callId: r.callId,
-        toolName: r.tool,
-        result: r.output,
-        error: r.error,
-      })));
-    }
-
-    await resumeRunFromCheckpoint(subagentId, conv, checkpointRef, toolResults);
-    await handleSubagentCompletion(subagentId);
-  };
-
-  const runSubagent = async (
-    childConversationId: string,
-    parentConversationId: string,
-    task: string,
-    ownerId: string,
-    _isContinuation = false,
-  ): Promise<void> => {
-    const childHarness = new AgentHarness({
-      workingDir,
-      environment: resolveHarnessEnvironment(),
-      uploadStore,
-    });
-    await childHarness.initialize();
-
-    const childAbortController = new AbortController();
-    activeSubagentRuns.set(childConversationId, { abortController: childAbortController, harness: childHarness, parentConversationId });
-    activeConversationRuns.set(childConversationId, {
-      ownerId,
-      abortController: childAbortController,
-      runId: null,
-    });
-    // Now that we're registered in activeSubagentRuns, decrement the
-    // temporary spawn counter (used to bridge the gap before registration).
-    const spawnCount = recentlySpawnedParents.get(parentConversationId) ?? 0;
-    if (spawnCount <= 1) {
-      recentlySpawnedParents.delete(parentConversationId);
-    } else {
-      recentlySpawnedParents.set(parentConversationId, spawnCount - 1);
-    }
-
-    childHarness.unregisterTools(["memory_main_write", "memory_main_edit"]);
-
-    const draft = createTurnDraftState();
-    let latestRunId = "";
-    let runResult: { status: "completed" | "error" | "cancelled"; response?: string; steps: number; duration: number; continuation?: boolean; continuationMessages?: Message[] } | undefined;
-
-    try {
-      // getWithArchive — conversation feeds withToolResultArchiveParam below,
-      // which requires _toolResultArchive attached to reseed the harness.
-      const conversation = await conversationStore.getWithArchive(childConversationId);
-      if (!conversation) throw new Error("Subagent conversation not found");
-
-      if (conversation.subagentMeta?.status === "stopped") return;
-
-      conversation.lastActivityAt = Date.now();
-      await conversationStore.update(conversation);
-
-      const runOutcome = resolveRunRequest(conversation, {
-        conversationId: childConversationId,
-        messages: conversation.messages,
-      });
-      const harnessMessages = [...runOutcome.messages];
-
-      for await (const event of childHarness.runWithTelemetry({
-        task,
-        conversationId: childConversationId,
-        tenantId: conversation.tenantId ?? undefined,
-        parameters: withToolResultArchiveParam({
-          ...buildRecallParams({ ownerId, tenantId: conversation.tenantId, excludeConversationId: childConversationId }),
-          __activeConversationId: childConversationId,
-          __ownerId: ownerId,
-        }, conversation),
-        messages: harnessMessages,
-        abortSignal: childAbortController.signal,
-      })) {
-        if (event.type === "run:started") {
-          latestRunId = event.runId;
-          const active = activeConversationRuns.get(childConversationId);
-          if (active) active.runId = event.runId;
-        }
-        recordStandardTurnEvent(draft, event);
-        if (event.type === "tool:approval:required") {
-          const toolText = `- approval required \`${event.tool}\``;
-          draft.toolTimeline.push(toolText);
-          draft.currentTools.push(toolText);
-          broadcastEvent(parentConversationId, {
-            type: "subagent:approval_needed",
-            subagentId: childConversationId,
-            conversationId: childConversationId,
-            tool: event.tool,
-            approvalId: event.approvalId,
-            input: event.input as Record<string, unknown> | undefined,
-          });
-        }
-        if (event.type === "tool:approval:checkpoint") {
-          const cpConv = await conversationStore.get(childConversationId);
-          if (cpConv) {
-            const allCpData = buildApprovalCheckpoints({
-              approvals: event.approvals,
-              runId: latestRunId,
-              checkpointMessages: [...harnessMessages, ...event.checkpointMessages],
-              baseMessageCount: 0,
-              pendingToolCalls: event.pendingToolCalls,
-            });
-            cpConv.pendingApprovals = allCpData;
-            cpConv.updatedAt = Date.now();
-            await conversationStore.update(cpConv);
-
-            const decidedApprovals = await new Promise<NonNullable<Conversation["pendingApprovals"]>>((resolve) => {
-              for (const cpData of allCpData) {
-                pendingSubagentApprovals.set(cpData.approvalId, {
-                  resolve,
-                  childHarness,
-                  checkpoint: cpData,
-                  childConversationId,
-                  parentConversationId,
-                });
-              }
-            });
-
-            const checkpointRef = normalizeApprovalCheckpoint(allCpData[0]!, [...harnessMessages]);
-            const toolContext = {
-              runId: checkpointRef.runId,
-              agentId: identity.id,
-              step: 0,
-              workingDir,
-              parameters: {},
-              conversationId: childConversationId,
-            };
-
-            const approvalToolCallIds = new Set(decidedApprovals.map(a => a.toolCallId));
-            const callsToExecute: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
-            const deniedResults: Array<{ callId: string; toolName: string; error: string }> = [];
-
-            for (const a of decidedApprovals) {
-              if (a.decision === "approved" && a.toolCallId) {
-                callsToExecute.push({ id: a.toolCallId, name: a.tool, input: a.input });
-                const toolText = `- done \`${a.tool}\``;
-                draft.toolTimeline.push(toolText);
-                draft.currentTools.push(toolText);
-              } else if (a.toolCallId) {
-                deniedResults.push({ callId: a.toolCallId, toolName: a.tool, error: "Tool execution denied by user" });
-                const toolText = `- denied \`${a.tool}\``;
-                draft.toolTimeline.push(toolText);
-                draft.currentTools.push(toolText);
-              }
-            }
-
-            const pendingToolCalls = checkpointRef.pendingToolCalls ?? [];
-            for (const tc of pendingToolCalls) {
-              if (!approvalToolCallIds.has(tc.id)) {
-                callsToExecute.push(tc);
-              }
-            }
-
-            let toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }> = [...deniedResults];
-            if (callsToExecute.length > 0) {
-              const execResults = await childHarness.executeTools(callsToExecute, toolContext);
-              toolResults.push(...execResults.map(r => ({
-                callId: r.callId,
-                toolName: r.tool,
-                result: r.output,
-                error: r.error,
-              })));
-            }
-
-            const resumeMessages = [...checkpointRef.checkpointMessages!];
-            for await (const resumeEvent of childHarness.continueFromToolResult({
-              messages: resumeMessages,
-              toolResults,
-              conversationId: childConversationId,
-              abortSignal: childAbortController.signal,
-            })) {
-              recordStandardTurnEvent(draft, resumeEvent);
-              if (resumeEvent.type === "run:completed") {
-                runResult = { status: resumeEvent.result.status, response: resumeEvent.result.response, steps: resumeEvent.result.steps, duration: resumeEvent.result.duration };
-                if (draft.assistantResponse.length === 0 && resumeEvent.result.response) {
-                  draft.assistantResponse = resumeEvent.result.response;
-                }
-              }
-              if (resumeEvent.type === "run:error") {
-                draft.assistantResponse = draft.assistantResponse || `[Error: ${resumeEvent.error.message}]`;
-              }
-              broadcastEvent(childConversationId, resumeEvent);
-            }
-          }
-        }
-        if (event.type === "run:completed") {
-          runResult = { status: event.result.status, response: event.result.response, steps: event.result.steps, duration: event.result.duration, continuation: event.result.continuation, continuationMessages: event.result.continuationMessages };
-          if (draft.assistantResponse.length === 0 && event.result.response) {
-            draft.assistantResponse = event.result.response;
-          }
-        }
-        if (event.type === "run:error") {
-          draft.assistantResponse = draft.assistantResponse || `[Error: ${event.error.message}]`;
-        }
-        broadcastEvent(childConversationId, event);
-      }
-
-      // Persist assistant turn
-      flushTurnDraft(draft);
-
-      const conv = await conversationStore.get(childConversationId);
-      if (conv) {
-        const hasContent = draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0;
-        // Always persist intermediate messages so progress is visible
-        if (hasContent) {
-          conv.messages.push({
-            role: "assistant",
-            content: draft.assistantResponse,
-            metadata: buildAssistantMetadata(draft),
-          });
-        }
-        if (runResult?.continuation && runResult.continuationMessages) {
-          conv._continuationMessages = runResult.continuationMessages;
-        } else {
-          conv._continuationMessages = undefined;
-          conv._continuationCount = undefined;
-        }
-        if (runResult?.continuationMessages) {
-          conv._harnessMessages = runResult.continuationMessages;
-        } else if (runOutcome.shouldRebuildCanonical) {
-          conv._harnessMessages = conv.messages;
-        }
-        conv._toolResultArchive = childHarness.getToolResultArchive(childConversationId);
-        conv.lastActivityAt = Date.now();
-        conv.updatedAt = Date.now();
-
-        if (runResult?.continuation) {
-          await conversationStore.update(conv);
-          finishConversationStream(childConversationId);
-          activeSubagentRuns.delete(childConversationId);
-          activeConversationRuns.delete(childConversationId);
-          try { await childHarness.shutdown(); } catch {}
-
-          const work = selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(childConversationId)}`).catch(err =>
-            console.error(`[poncho][subagent] Continuation self-fetch failed:`, err instanceof Error ? err.message : err),
-          );
-          doWaitUntil(work);
-          if (!waitUntilHook) await work;
-          return;
-        }
-
-        conv.subagentMeta = { ...conv.subagentMeta!, status: "completed" };
-        await conversationStore.update(conv);
-      }
-
-      finishConversationStream(childConversationId);
-      broadcastEvent(parentConversationId, {
-        type: "subagent:completed",
-        subagentId: childConversationId,
-        conversationId: childConversationId,
-      });
-
-      // Extract the full response from conversation messages — runResult.response
-      // only has text from the final continuation run, which may be empty.
-      let subagentResponse = runResult?.response ?? draft.assistantResponse;
-      if (!subagentResponse) {
-        const freshSubConv = await conversationStore.get(childConversationId);
-        if (freshSubConv) {
-          const lastAssistant = [...freshSubConv.messages].reverse().find(m => m.role === "assistant");
-          if (lastAssistant && typeof lastAssistant.content === "string") {
-            subagentResponse = lastAssistant.content;
-          }
-        }
-      }
-      const pendingResult: PendingSubagentResult = {
-        subagentId: childConversationId,
-        task,
-        status: "completed",
-        result: runResult ? { status: runResult.status, response: subagentResponse, steps: runResult.steps, tokens: { input: 0, output: 0, cached: 0 }, duration: runResult.duration } : undefined,
-        timestamp: Date.now(),
-      };
-      await conversationStore.appendSubagentResult(parentConversationId, pendingResult);
-      triggerParentCallback(parentConversationId).catch(err =>
-        console.error(`[poncho][subagent] Parent callback failed:`, err instanceof Error ? err.message : err),
-      );
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[poncho][subagent] Error in subagent ${childConversationId}:`, errMsg);
-
-      const conv = await conversationStore.get(childConversationId);
-      if (conv) {
-        conv.subagentMeta = {
-          ...conv.subagentMeta!,
-          status: "error",
-          error: { code: "SUBAGENT_ERROR", message: errMsg },
-        };
-        conv.updatedAt = Date.now();
-        await conversationStore.update(conv);
-      }
-
-      finishConversationStream(childConversationId);
-      broadcastEvent(parentConversationId, {
-        type: "subagent:error",
-        subagentId: childConversationId,
-        conversationId: childConversationId,
-        error: errMsg,
-      });
-
-      const pendingResult: PendingSubagentResult = {
-        subagentId: childConversationId,
-        task,
-        status: "error",
-        error: { code: "SUBAGENT_ERROR", message: errMsg },
-        timestamp: Date.now(),
-      };
-      await conversationStore.appendSubagentResult(parentConversationId, pendingResult).catch(() => {});
-      triggerParentCallback(parentConversationId).catch(err2 =>
-        console.error(`[poncho][subagent] Parent callback failed:`, err2 instanceof Error ? err2.message : err2),
-      );
-    } finally {
-      for (const [aid, pa] of pendingSubagentApprovals) {
-        if (pa.childHarness === childHarness) {
-          pendingSubagentApprovals.delete(aid);
-        }
-      }
-      activeSubagentRuns.delete(childConversationId);
-      activeConversationRuns.delete(childConversationId);
-      try { await childHarness.shutdown(); } catch {}
-    }
-  };
-
-  // ---------------------------------------------------------------------------
-  // Parent callback: process subagent results autonomously
-  // ---------------------------------------------------------------------------
-  const MAX_SUBAGENT_CALLBACK_COUNT = 20;
-
-  // Track conversations that received subagent results while a run was active.
-  // processSubagentCallback's finally block checks this to reliably re-trigger
-  // even if the store-level pendingSubagentResults was clobbered by a concurrent
-  // read-modify-write.
-  const pendingCallbackNeeded = new Set<string>();
-
-  const triggerParentCallback = async (parentConversationId: string): Promise<void> => {
-    if (activeConversationRuns.has(parentConversationId)) {
-      pendingCallbackNeeded.add(parentConversationId);
-      return;
-    }
-    if (isServerless) {
-      await selfFetchWithRetry(
-        `/api/internal/conversations/${encodeURIComponent(parentConversationId)}/subagent-callback`,
-      );
-      return;
-    }
-    await processSubagentCallback(parentConversationId);
-  };
-
-  const CALLBACK_LOCK_STALE_MS = 5 * 60 * 1000;
-
-  const processSubagentCallback = async (conversationId: string, skipLockCheck = false): Promise<void> => {
-    // getWithArchive — conversation feeds withToolResultArchiveParam when
-    // the callback triggers a parent run continuation.
-    const conversation = await conversationStore.getWithArchive(conversationId);
-    if (!conversation) return;
-
-    const pendingResults = conversation.pendingSubagentResults ?? [];
-    const hasOrphanedContinuation = pendingResults.length === 0
-      && Array.isArray(conversation._continuationMessages)
-      && conversation._continuationMessages.length > 0
-      && !activeConversationRuns.has(conversationId);
-    if (pendingResults.length === 0 && !hasOrphanedContinuation) return;
-
-    // Store-based lock for serverless: skip if another invocation is processing.
-    // When re-triggered from a previous callback's finally block, skipLockCheck
-    // is true because we know the previous callback has finished.
-    if (!skipLockCheck && conversation.runningCallbackSince) {
-      const elapsed = Date.now() - conversation.runningCallbackSince;
-      if (elapsed < CALLBACK_LOCK_STALE_MS) {
-        return;
-      }
-      console.warn(`[poncho][subagent-callback] Stale lock detected (${elapsed}ms) for ${conversationId}, proceeding`);
-    }
-
-    // Acquire lock and clear pending
-    conversation.pendingSubagentResults = [];
-    conversation.runningCallbackSince = Date.now();
-    conversation.runStatus = "running";
-    const callbackCount = (conversation.subagentCallbackCount ?? 0) + 1;
-    conversation.subagentCallbackCount = callbackCount;
-
-    for (const pr of pendingResults) {
-      const resultBody = pr.result
-        ? `Status: ${pr.result.status}\nResponse: ${pr.result.response ?? "(no response)"}\nSteps: ${pr.result.steps}, Duration: ${pr.result.duration}ms`
-        : pr.error
-          ? `Error: ${pr.error.message}`
-          : "(no result)";
-      conversation.messages.push({
-        role: "user",
-        content: `[Subagent Result] Subagent "${pr.task}" (${pr.subagentId}) ${pr.status}:\n\n${resultBody}`,
-        metadata: { _subagentCallback: true, subagentId: pr.subagentId, task: pr.task, timestamp: pr.timestamp } as Message["metadata"],
-      });
-    }
-    // Callback-injected result messages must be visible to the next parent turn.
-    // Keep canonical transcript in sync before resolving callback run history.
-    // Re-read pendingSubagentResults to preserve any results that were appended
-    // by concurrently completing subagents since our snapshot read.
-    const processedIds = new Set(pendingResults.map(pr => pr.subagentId));
-    const freshForPending = await conversationStore.get(conversationId);
-    const arrivedDuringCallback = (freshForPending?.pendingSubagentResults ?? [])
-      .filter(pr => !processedIds.has(pr.subagentId));
-    conversation.pendingSubagentResults = arrivedDuringCallback;
-    conversation._harnessMessages = [...conversation.messages];
-    conversation.updatedAt = Date.now();
-    await conversationStore.update(conversation);
-
-    if (callbackCount > MAX_SUBAGENT_CALLBACK_COUNT) {
-      console.warn(`[poncho][subagent-callback] Circuit breaker: ${callbackCount} callbacks for ${conversationId}, skipping re-run`);
-      conversation.runningCallbackSince = undefined;
-      conversation.runStatus = "idle";
-      await conversationStore.update(conversation);
-      return;
-    }
-
-    const isContinuationResume = hasOrphanedContinuation && pendingResults.length === 0;
-    console.log(`[poncho][subagent-callback] Processing ${pendingResults.length} result(s) for ${conversationId} (callback #${callbackCount})${isContinuationResume ? " (continuation resume)" : ""}`);
-
-    const abortController = new AbortController();
-    activeConversationRuns.set(conversationId, {
-      ownerId: conversation.ownerId,
-      abortController,
-      runId: null,
-    });
-    // Reopen/reset the parent stream for this callback run so clients that stay
-    // on the main conversation can subscribe to live callback events.
-    const prevStream = conversationEventStreams.get(conversationId);
-    if (prevStream) {
-      prevStream.finished = false;
-      prevStream.buffer = [];
-    } else {
-      conversationEventStreams.set(conversationId, {
-        buffer: [],
-        subscribers: new Set(),
-        finished: false,
-      });
-    }
-
-    const historySelection = resolveRunRequest(conversation, {
-      conversationId,
-      messages: conversation.messages,
-      preferContinuation: isContinuationResume,
-    });
-    const historyMessages = [...historySelection.messages];
-    console.info(
-      `[poncho][subagent-callback] conversation="${conversationId}" history_source=${historySelection.source}`,
-    );
-    let execution: ExecuteTurnResult | undefined;
-
-    try {
-      execution = await executeConversationTurn({
-        harness,
-        runInput: {
-          task: undefined,
-          conversationId,
-          tenantId: conversation.tenantId ?? undefined,
-          parameters: withToolResultArchiveParam({
-            __activeConversationId: conversationId,
-            __ownerId: conversation.ownerId,
-          }, conversation),
-          messages: historyMessages,
-          abortSignal: abortController.signal,
-        },
-        initialContextTokens: conversation.contextTokens ?? 0,
-        initialContextWindow: conversation.contextWindow ?? 0,
-        onEvent: (event) => {
-          if (event.type === "run:started") {
-            const active = activeConversationRuns.get(conversationId);
-            if (active) active.runId = event.runId;
-          }
-          broadcastEvent(conversationId, event);
-        },
-      });
-      flushTurnDraft(execution.draft);
-
-      const callbackNeedsContinuation = execution.runContinuation && execution.runContinuationMessages;
-      if (callbackNeedsContinuation || execution.draft.assistantResponse.length > 0 || execution.draft.toolTimeline.length > 0) {
-        const freshConv = await conversationStore.get(conversationId);
-        if (freshConv) {
-          if (!callbackNeedsContinuation) {
-            freshConv.messages.push({
-              role: "assistant",
-              content: execution.draft.assistantResponse,
-              metadata: buildAssistantMetadata(execution.draft),
-            });
-          }
-          applyTurnMetadata(freshConv, {
-            latestRunId: execution.latestRunId,
-            contextTokens: execution.runContextTokens,
-            contextWindow: execution.runContextWindow,
-            continuation: !!callbackNeedsContinuation,
-            continuationMessages: execution.runContinuationMessages,
-            harnessMessages: callbackNeedsContinuation ? execution.runHarnessMessages : undefined,
-            toolResultArchive: harness.getToolResultArchive(conversationId),
-          }, { shouldRebuildCanonical: true, clearApprovals: false });
-          freshConv.runningCallbackSince = undefined;
-          await conversationStore.update(freshConv);
-
-          // Proactive messaging notification if conversation has a messaging channel
-          if (freshConv.channelMeta && execution.draft.assistantResponse.length > 0) {
-            const adapter = messagingAdapters.get(freshConv.channelMeta.platform);
-            if (adapter) {
-              try {
-                await adapter.sendReply(
-                  {
-                    channelId: freshConv.channelMeta.channelId,
-                    platformThreadId: freshConv.channelMeta.platformThreadId,
-                  },
-                  execution.draft.assistantResponse,
-                );
-              } catch (sendErr) {
-                console.error(`[poncho][subagent-callback] Messaging notify failed:`, sendErr instanceof Error ? sendErr.message : sendErr);
-              }
-            }
-          }
-        }
-      }
-
-      // Handle continuation for the callback run itself
-      if (execution.runContinuation) {
-        if (isServerless) {
-          const work = selfFetchWithRetry(`/api/internal/conversations/${encodeURIComponent(conversationId)}/subagent-callback`).catch(err =>
-            console.error(`[poncho][subagent-callback] Continuation self-fetch failed:`, err instanceof Error ? err.message : err),
-          );
-          doWaitUntil(work);
-        } else {
-          processSubagentCallback(conversationId, true).catch(err =>
-            console.error(`[poncho][subagent-callback] Continuation failed:`, err instanceof Error ? err.message : err),
-          );
-        }
-      }
-    } catch (err) {
-      console.error(`[poncho][subagent-callback] Error during parent re-run for ${conversationId}:`, err instanceof Error ? err.message : err);
-      const errConv = await conversationStore.get(conversationId);
-      if (errConv) {
-        errConv.runningCallbackSince = undefined;
-        errConv.runStatus = "idle";
-        await conversationStore.update(errConv);
-      }
-    } finally {
-      activeConversationRuns.delete(conversationId);
-
-      // Check both the in-memory flag (always reliable) and the store.
-      // We drain the flag first so a concurrent triggerParentCallback that
-      // sets it right after our delete above is still caught on the next
-      // iteration.
-      const hadDeferredTrigger = pendingCallbackNeeded.delete(conversationId);
-      const freshConv = await conversationStore.get(conversationId);
-      const hasPendingInStore = !!freshConv?.pendingSubagentResults?.length;
-      const hasRunningCallbackChildren = Array.from(activeSubagentRuns.values()).some(
-        (run) => run.parentConversationId === conversationId,
-      );
-
-      // Only close the event stream when no further subagent work is pending.
-      // If more callbacks are about to run, the stream stays alive so clients
-      // receive the next callback's events through the same SSE connection.
-      if (!hadDeferredTrigger && !hasPendingInStore && !hasRunningCallbackChildren) {
-        finishConversationStream(conversationId);
-      }
-
-      if (hadDeferredTrigger || hasPendingInStore) {
-        // Re-trigger immediately. Skip the runningCallbackSince lock check
-        // because we know this callback just finished. The re-triggered
-        // callback will overwrite runningCallbackSince with its own timestamp.
-        if (isServerless) {
-          selfFetchWithRetry(`/api/internal/conversations/${encodeURIComponent(conversationId)}/subagent-callback`).catch(err =>
-            console.error(`[poncho][subagent-callback] Recursive callback self-fetch failed:`, err instanceof Error ? err.message : err),
-          );
-        } else {
-          processSubagentCallback(conversationId, true).catch(err =>
-            console.error(`[poncho][subagent-callback] Recursive callback failed:`, err instanceof Error ? err.message : err),
-          );
-        }
-      } else if (freshConv?.runningCallbackSince) {
-        // No re-trigger needed. Use the atomic clearCallbackLock to avoid
-        // clobbering concurrent appendSubagentResult writes.
-        const afterClear = await conversationStore.clearCallbackLock(conversationId);
-        // Double-check: an append may have raced even the atomic clear
-        if (afterClear?.pendingSubagentResults?.length) {
-          if (isServerless) {
-            selfFetchWithRetry(`/api/internal/conversations/${encodeURIComponent(conversationId)}/subagent-callback`).catch(err =>
-              console.error(`[poncho][subagent-callback] Post-clear callback self-fetch failed:`, err instanceof Error ? err.message : err),
-            );
-          } else {
-            processSubagentCallback(conversationId, true).catch(err =>
-              console.error(`[poncho][subagent-callback] Post-clear callback failed:`, err instanceof Error ? err.message : err),
-            );
-          }
-        }
-      }
-    }
-  };
-
-  const subagentManager: SubagentManager = {
-    async spawn(opts): Promise<SubagentSpawnResult> {
-      const depth = await getSubagentDepth(opts.parentConversationId);
-      if (depth >= MAX_SUBAGENT_NESTING - 1) {
-        throw new Error(`Maximum subagent nesting (${MAX_SUBAGENT_NESTING} levels) reached. Cannot spawn deeper subagents.`);
-      }
-      if (getRunningSubagentCountForParent(opts.parentConversationId) >= MAX_CONCURRENT_SUBAGENTS) {
-        throw new Error(`Maximum concurrent subagents (${MAX_CONCURRENT_SUBAGENTS}) per parent reached. Wait for running subagents to complete or stop some first.`);
-      }
-
-      // Atomic create: parent_conversation_id and initial state are persisted
-      // in the single INSERT. This prevents orphaned top-level-looking
-      // subagents if a follow-up update is interrupted.
-      const conversation = await conversationStore.create(
-        opts.ownerId,
-        opts.task.slice(0, 80),
-        opts.tenantId ?? null,
-        {
-          parentConversationId: opts.parentConversationId,
-          subagentMeta: { task: opts.task, status: "running" },
-          messages: [{ role: "user", content: opts.task }],
-        },
-      );
-
-      // Register this parent as having a pending spawn BEFORE the async
-      // runSubagent starts, so hasPendingSubagentWorkForParent sees it
-      // immediately when the parent's run:completed event fires.
-      recentlySpawnedParents.set(
-        opts.parentConversationId,
-        (recentlySpawnedParents.get(opts.parentConversationId) ?? 0) + 1,
-      );
-
-      broadcastEvent(opts.parentConversationId, {
-        type: "subagent:spawned",
-        subagentId: conversation.conversationId,
-        conversationId: conversation.conversationId,
-        task: opts.task,
-      });
-
-      if (isServerless) {
-        const work = selfFetchWithRetry(
-          `/api/internal/subagent/${encodeURIComponent(conversation.conversationId)}/run`,
-        );
-        doWaitUntil(work as Promise<unknown>);
-      } else {
-        runSubagent(
-          conversation.conversationId,
-          opts.parentConversationId,
-          opts.task,
-          opts.ownerId,
-        ).catch(err => console.error(`[poncho][subagent] Background spawn failed:`, err instanceof Error ? err.message : err));
-      }
-
-      return { subagentId: conversation.conversationId };
-    },
-
-    async sendMessage(subagentId, message): Promise<SubagentSpawnResult> {
-      const conversation = await conversationStore.get(subagentId);
-      if (!conversation) {
-        console.error(`[poncho][subagent] sendMessage: conversation "${subagentId}" not found in store`);
-        throw new Error(`Subagent "${subagentId}" not found.`);
-      }
-      if (!conversation.parentConversationId) {
-        throw new Error(`Conversation "${subagentId}" is not a subagent.`);
-      }
-      if (!conversation.subagentMeta) {
-        console.warn(`[poncho][subagent] sendMessage: conversation "${subagentId}" missing subagentMeta, recovering`);
-        conversation.subagentMeta = { task: conversation.title, status: "stopped" };
-        await conversationStore.update(conversation);
-      }
-      if (conversation.subagentMeta.status === "running") {
-        throw new Error(`Subagent "${subagentId}" is currently running. Wait for it to complete before sending a new message.`);
-      }
-
-      conversation.messages.push({ role: "user", content: message });
-      conversation.subagentMeta.status = "running";
-      conversation.updatedAt = Date.now();
-      await conversationStore.update(conversation);
-
-      if (isServerless) {
-        const work = selfFetchWithRetry(
-          `/api/internal/subagent/${encodeURIComponent(subagentId)}/run`,
-        );
-        doWaitUntil(work as Promise<unknown>);
-      } else {
-        runSubagent(
-          subagentId,
-          conversation.parentConversationId,
-          message,
-          conversation.ownerId,
-        ).catch(err => console.error(`[poncho][subagent] Background sendMessage failed:`, err instanceof Error ? err.message : err));
-      }
-
-      return { subagentId };
-    },
-
-    async stop(subagentId) {
-      const active = activeSubagentRuns.get(subagentId);
-      if (active) {
-        active.abortController.abort();
-      }
-      const conversation = await conversationStore.get(subagentId);
-      if (conversation?.subagentMeta && conversation.subagentMeta.status === "running") {
-        conversation.subagentMeta.status = "stopped";
-        conversation.updatedAt = Date.now();
-        await conversationStore.update(conversation);
-      }
-    },
-
-    async list(parentConversationId) {
-      const parentConv = await conversationStore.get(parentConversationId);
-      const summaries = await conversationStore.listSummaries(parentConv?.ownerId ?? "local-owner");
-      const childSummaries = summaries.filter((s) => s.parentConversationId === parentConversationId);
-      const results: Array<{ subagentId: string; task: string; status: string; messageCount: number }> = [];
-      for (const s of childSummaries) {
-        const c = await conversationStore.get(s.conversationId);
-        if (c) {
-          results.push({
-            subagentId: c.conversationId,
-            task: c.subagentMeta?.task ?? c.title,
-            status: c.subagentMeta?.status ?? "stopped",
-            messageCount: c.messages.length,
-          });
-        }
-      }
-      return results;
-    },
-  };
-
-  harness.setSubagentManager(subagentManager);
-
-  // resumeRunFromCheckpoint — aliased from orchestrator above
+  // Subagent lifecycle extracted to AgentOrchestrator (Phase 5).
 
   // ---------------------------------------------------------------------------
   // Messaging adapters (Slack, etc.) — routes bypass Poncho auth; each
@@ -3228,6 +2391,11 @@ export const createRequestHandler = async (options?: {
   }
 
   const isServerless = !!waitUntilHook;
+  // Only provide dispatchBackground in serverless mode so the orchestrator
+  // calls methods directly in long-lived mode.
+  if (!isServerless && orchestrator.hooks) {
+    orchestrator.hooks.dispatchBackground = undefined;
+  }
   const configuredInternalSecret = process.env.PONCHO_INTERNAL_SECRET?.trim();
   const vercelDeploymentSecret = process.env.VERCEL_DEPLOYMENT_ID?.trim();
   const fallbackInternalSecret = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
@@ -3364,192 +2532,6 @@ export const createRequestHandler = async (options?: {
     return orchestrator.runContinuation(conversationId, onYield);
   }
 
-  async function* runSubagentContinuation(
-    conversationId: string,
-    conversation: Conversation,
-    continuationMessages: Message[],
-  ): AsyncGenerator<AgentEvent> {
-    const parentConversationId = conversation.parentConversationId!;
-    const task = conversation.subagentMeta?.task ?? "";
-    const ownerId = conversation.ownerId;
-
-    const childHarness = new AgentHarness({
-      workingDir,
-      environment: resolveHarnessEnvironment(),
-      uploadStore,
-    });
-    await childHarness.initialize();
-    childHarness.unregisterTools(["memory_main_write", "memory_main_edit"]);
-
-    const childAbortController = activeConversationRuns.get(conversationId)?.abortController ?? new AbortController();
-    activeSubagentRuns.set(conversationId, { abortController: childAbortController, harness: childHarness, parentConversationId });
-
-    const draft = createTurnDraftState();
-    let runResult: { status: string; response?: string; steps: number; duration: number; continuation?: boolean; continuationMessages?: Message[] } | undefined;
-
-    try {
-      for await (const event of childHarness.runWithTelemetry({
-        conversationId,
-        tenantId: conversation.tenantId ?? undefined,
-        parameters: withToolResultArchiveParam({
-          ...buildRecallParams({ ownerId, tenantId: conversation.tenantId, excludeConversationId: conversationId }),
-          __activeConversationId: conversationId,
-          __ownerId: ownerId,
-        }, conversation),
-        messages: continuationMessages,
-        abortSignal: childAbortController.signal,
-      })) {
-        if (event.type === "run:started") {
-          const active = activeConversationRuns.get(conversationId);
-          if (active) active.runId = event.runId;
-        }
-        recordStandardTurnEvent(draft, event);
-        if (event.type === "run:completed") {
-          runResult = {
-            status: event.result.status,
-            response: event.result.response,
-            steps: event.result.steps,
-            duration: event.result.duration,
-            continuation: event.result.continuation,
-            continuationMessages: event.result.continuationMessages,
-          };
-          if (!draft.assistantResponse && event.result.response) {
-            draft.assistantResponse = event.result.response;
-          }
-        }
-        if (event.type === "run:error") {
-          draft.assistantResponse = draft.assistantResponse || `[Error: ${event.error.message}]`;
-        }
-        broadcastEvent(conversationId, event);
-        yield event;
-      }
-
-      flushTurnDraft(draft);
-
-      const conv = await conversationStore.get(conversationId);
-      if (conv) {
-        const hasContent = draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0;
-        if (runResult?.continuation && runResult.continuationMessages) {
-          if (hasContent) {
-            conv.messages.push({
-              role: "assistant",
-              content: draft.assistantResponse,
-              metadata: buildAssistantMetadata(draft),
-            });
-          }
-          conv._continuationMessages = runResult.continuationMessages;
-          conv._continuationCount = conversation._continuationCount;
-        } else {
-          conv._continuationMessages = undefined;
-          conv._continuationCount = undefined;
-          if (hasContent) {
-            conv.messages.push({
-              role: "assistant",
-              content: draft.assistantResponse,
-              metadata: buildAssistantMetadata(draft),
-            });
-          }
-        }
-        if (runResult?.continuationMessages) {
-          conv._harnessMessages = runResult.continuationMessages;
-        } else {
-          conv._harnessMessages = conv.messages;
-        }
-        conv._toolResultArchive = childHarness.getToolResultArchive(conversationId);
-        conv.lastActivityAt = Date.now();
-        conv.runStatus = "idle";
-        conv.updatedAt = Date.now();
-
-        if (runResult?.continuation) {
-          await conversationStore.update(conv);
-          activeSubagentRuns.delete(conversationId);
-          try { await childHarness.shutdown(); } catch {}
-          return;
-        }
-
-        conv.subagentMeta = { ...conv.subagentMeta!, status: "completed" };
-        await conversationStore.update(conv);
-      }
-
-      activeSubagentRuns.delete(conversationId);
-      broadcastEvent(parentConversationId, {
-        type: "subagent:completed",
-        subagentId: conversationId,
-        conversationId,
-      });
-
-      let subagentResponse = runResult?.response ?? draft.assistantResponse;
-      if (!subagentResponse) {
-        const freshSubConv = await conversationStore.get(conversationId);
-        if (freshSubConv) {
-          const lastAssistant = [...freshSubConv.messages].reverse().find(m => m.role === "assistant");
-          if (lastAssistant) {
-            subagentResponse = typeof lastAssistant.content === "string" ? lastAssistant.content : "";
-          }
-        }
-      }
-
-      const parentConv = await conversationStore.get(parentConversationId);
-      if (parentConv) {
-        const result: PendingSubagentResult = {
-          subagentId: conversationId,
-          task,
-          status: "completed",
-          result: { status: "completed", response: subagentResponse, steps: runResult?.steps ?? 0, tokens: { input: 0, output: 0, cached: 0 }, duration: runResult?.duration ?? 0 },
-          timestamp: Date.now(),
-        };
-        await conversationStore.appendSubagentResult(parentConversationId, result);
-
-        if (isServerless) {
-          selfFetchWithRetry(`/api/internal/conversations/${encodeURIComponent(parentConversationId)}/subagent-callback`).catch(err =>
-            console.error(`[poncho][subagent] Callback self-fetch failed:`, err instanceof Error ? err.message : err),
-          );
-        } else {
-          processSubagentCallback(parentConversationId).catch(err =>
-            console.error(`[poncho][subagent] Callback failed:`, err instanceof Error ? err.message : err),
-          );
-        }
-      }
-
-      try { await childHarness.shutdown(); } catch {}
-    } catch (err) {
-      activeSubagentRuns.delete(conversationId);
-      try { await childHarness.shutdown(); } catch {}
-
-      const conv = await conversationStore.get(conversationId);
-      if (conv) {
-        conv.subagentMeta = { ...conv.subagentMeta!, status: "error", error: { code: "CONTINUATION_ERROR", message: err instanceof Error ? err.message : String(err) } };
-        conv.runStatus = "idle";
-        conv._continuationMessages = undefined;
-        conv._continuationCount = undefined;
-        conv.updatedAt = Date.now();
-        await conversationStore.update(conv);
-      }
-
-      broadcastEvent(conversation.parentConversationId!, {
-        type: "subagent:completed",
-        subagentId: conversationId,
-        conversationId,
-      });
-
-      const parentConv = await conversationStore.get(conversation.parentConversationId!);
-      if (parentConv) {
-        const result: PendingSubagentResult = {
-          subagentId: conversationId,
-          task,
-          status: "error",
-          error: { code: "CONTINUATION_ERROR", message: err instanceof Error ? err.message : String(err) },
-          timestamp: Date.now(),
-        };
-        await conversationStore.appendSubagentResult(conversation.parentConversationId!, result);
-        if (isServerless) {
-          selfFetchWithRetry(`/api/internal/conversations/${encodeURIComponent(conversation.parentConversationId!)}/subagent-callback`).catch(() => {});
-        } else {
-          processSubagentCallback(conversation.parentConversationId!).catch(() => {});
-        }
-      }
-    }
-  }
 
   const messagingAdapters = new Map<string, MessagingAdapter>();
   const messagingBridges: AgentBridge[] = [];
@@ -3626,29 +2608,8 @@ export const createRequestHandler = async (options?: {
           // Check subagent approvals first
           const pendingSubagent = pendingSubagentApprovals.get(approvalId);
           if (pendingSubagent) {
-            pendingSubagent.checkpoint.decision = approved ? "approved" : "denied";
             await adapter.updateApprovalMessage(approvalId, approved ? "approved" : "denied", pendingSubagent.checkpoint.tool);
-
-            broadcastEvent(pendingSubagent.childConversationId,
-              approved
-                ? { type: "tool:approval:granted", approvalId }
-                : { type: "tool:approval:denied", approvalId },
-            );
-
-            const childConv = await conversationStore.get(pendingSubagent.childConversationId);
-            const allApprovals = childConv?.pendingApprovals ?? [];
-            const allDecided = allApprovals.length > 0 && allApprovals.every(pa => pa.decision != null);
-
-            if (allDecided) {
-              for (const pa of allApprovals) pendingSubagentApprovals.delete(pa.approvalId);
-              if (childConv) {
-                childConv.pendingApprovals = [];
-                await conversationStore.update(childConv);
-              }
-              pendingSubagent.resolve(allApprovals);
-            } else if (childConv) {
-              await conversationStore.update(childConv);
-            }
+            await orchestrator.submitSubagentApprovalDecision(approvalId, approved);
             return;
           }
 
@@ -3921,12 +2882,12 @@ export const createRequestHandler = async (options?: {
             if (conv.subagentMeta?.status === "stopped") return;
 
             if (body?.resume) {
-              await resumeSubagentFromCheckpoint(subagentId);
+              await orchestrator.resumeSubagentFromCheckpoint(subagentId);
               return;
             }
 
             const task = (conv.messages.find(m => m.role === "user")?.content as string) ?? conv.subagentMeta?.task ?? "";
-            await runSubagent(subagentId, conv.parentConversationId, task, conv.ownerId, false);
+            await orchestrator.runSubagent(subagentId, conv.parentConversationId, task, conv.ownerId);
           } catch (err) {
             console.error(`[poncho][internal] subagent run error for ${subagentId}:`, err instanceof Error ? err.message : err);
           }
@@ -4495,34 +3456,8 @@ export const createRequestHandler = async (options?: {
         : undefined;
 
       // Check if this is a pending subagent approval (handled inline by runSubagent)
-      const pendingSubagent = pendingSubagentApprovals.get(approvalId);
-      if (pendingSubagent) {
-        pendingSubagent.checkpoint.decision = approved ? "approved" : "denied";
-
-        broadcastEvent(pendingSubagent.childConversationId,
-          approved
-            ? { type: "tool:approval:granted", approvalId }
-            : { type: "tool:approval:denied", approvalId },
-        );
-
-        const childConv = await conversationStore.get(pendingSubagent.childConversationId);
-        const allApprovals = childConv?.pendingApprovals ?? [];
-        const allDecided = allApprovals.length > 0 && allApprovals.every(pa => pa.decision != null);
-
-        if (allDecided) {
-          // All approvals in the batch are decided — resolve the subagent
-          for (const pa of allApprovals) {
-            pendingSubagentApprovals.delete(pa.approvalId);
-          }
-          if (childConv) {
-            childConv.pendingApprovals = [];
-            await conversationStore.update(childConv);
-          }
-          pendingSubagent.resolve(allApprovals);
-        } else if (childConv) {
-          await conversationStore.update(childConv);
-        }
-
+      const subagentResult = await orchestrator.submitSubagentApprovalDecision(approvalId, approved);
+      if (subagentResult.found) {
         writeJson(response, 200, { ok: true, approvalId, approved } satisfies ApiApprovalResponse);
         return;
       }
@@ -4706,7 +3641,7 @@ export const createRequestHandler = async (options?: {
 
           // If this conversation is a subagent, handle completion (write result to parent)
           if (foundConversation!.parentConversationId) {
-            await handleSubagentCompletion(conversationId);
+            await orchestrator.handleSubagentCompletion(conversationId);
           }
         } catch (err) {
           console.error("[approval-resume] failed:", err instanceof Error ? err.message : err);
@@ -5984,50 +4919,9 @@ export const createRequestHandler = async (options?: {
   handler._reminderPollIntervalMs = reminderPollWindowMs;
 
   // Recover stale subagent runs that were "running" when the server last stopped
-  // or that have been inactive longer than the staleness threshold.
-  // Run this async so it doesn't block startup.
-  const STALE_SUBAGENT_THRESHOLD_MS = 5 * 60 * 1000;
-  (async () => { try {
-    const allSummaries = await conversationStore.listSummaries();
-    const subagentSummaries = allSummaries.filter((s) => s.parentConversationId);
-    if (subagentSummaries.length === 0) return;
-    const parentsToCallback = new Set<string>();
-    // Fetch subagent conversations concurrently (bounded)
-    const CONCURRENCY = 10;
-    for (let i = 0; i < subagentSummaries.length; i += CONCURRENCY) {
-      const batch = subagentSummaries.slice(i, i + CONCURRENCY);
-      const convs = await Promise.all(batch.map((s) => conversationStore.get(s.conversationId)));
-      for (const conv of convs) {
-        if (conv?.subagentMeta?.status === "running" && conv.parentConversationId) {
-          const lastActivity = conv.lastActivityAt ?? conv.updatedAt;
-          const elapsed = Date.now() - lastActivity;
-          if (elapsed < STALE_SUBAGENT_THRESHOLD_MS) continue;
-
-          conv.subagentMeta.status = "error";
-          conv.subagentMeta.error = { code: "STALE_SUBAGENT", message: `Subagent inactive for ${Math.round(elapsed / 1000)}s (threshold: ${STALE_SUBAGENT_THRESHOLD_MS / 1000}s)` };
-          conv.updatedAt = Date.now();
-          await conversationStore.update(conv);
-
-          const pendingResult: PendingSubagentResult = {
-            subagentId: conv.conversationId,
-            task: conv.subagentMeta.task,
-            status: "error",
-            error: conv.subagentMeta.error,
-            timestamp: Date.now(),
-          };
-          await conversationStore.appendSubagentResult(conv.parentConversationId, pendingResult);
-          parentsToCallback.add(conv.parentConversationId);
-        }
-      }
-    }
-    for (const parentId of parentsToCallback) {
-      processSubagentCallback(parentId).catch(err2 =>
-        console.error(`[poncho][subagent] Recovery callback failed for ${parentId}:`, err2 instanceof Error ? err2.message : err2),
-      );
-    }
-  } catch (err) {
-    console.warn("[poncho][subagent] Failed to recover stale subagent runs:", err);
-  } })();
+  orchestrator.recoverStaleSubagents().catch(err =>
+    console.warn("[poncho][subagent] Failed to recover stale subagent runs:", err),
+  );
 
   return handler;
 };
