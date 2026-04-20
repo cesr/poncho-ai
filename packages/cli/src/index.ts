@@ -28,37 +28,21 @@ import {
   type Conversation,
   type ConversationStore,
   type ConversationSummary,
-  type UploadStore,
   verifyTenantToken,
   createSecretsStore,
   computeNextOccurrence,
-  isMessageArray,
   loadCanonicalHistory,
-  loadRunHistory,
   resolveRunRequest,
   createTurnDraftState,
   cloneSections,
   flushTurnDraft,
-  buildToolCompletedText,
-  recordStandardTurnEvent,
   buildAssistantMetadata,
   executeConversationTurn,
   normalizeApprovalCheckpoint,
   buildApprovalCheckpoints,
   applyTurnMetadata,
-  type HistorySource,
-  type RunRequest,
-  type RunOutcome,
-  type StoredApproval,
-  type PendingToolCall,
-  type ApprovalEventItem,
-  type TurnSection,
-  type TurnDraftState,
-  type ExecuteTurnResult,
-  type TurnResultMetadata,
   TOOL_RESULT_ARCHIVE_PARAM,
   withToolResultArchiveParam,
-  MAX_CONTINUATION_COUNT,
   AgentOrchestrator,
 } from "@poncho-ai/harness";
 import type { AgentEvent, FileInput, Message, RunInput } from "@poncho-ai/sdk";
@@ -371,20 +355,6 @@ const normalizeMessageForClient = (message: Message): Message | null => {
 // isMessageArray, loadCanonicalHistory, loadRunHistory — imported from @poncho-ai/harness/orchestrator
 
 // Turn types, helpers, approval checkpoints — imported from @poncho-ai/harness/orchestrator
-
-export const __internalRunOrchestration = {
-  isMessageArray,
-  loadCanonicalHistory,
-  loadRunHistory,
-  normalizeApprovalCheckpoint,
-  buildApprovalCheckpoints,
-  resolveRunRequest,
-  createTurnDraftState,
-  recordStandardTurnEvent,
-  executeConversationTurn,
-};
-
-// applyTurnMetadata, TurnResultMetadata — imported from @poncho-ai/harness/orchestrator
 
 // ── Shared cron helpers ──────────────────────────────────────────
 // Used by both the HTTP /api/cron endpoint and the local-dev scheduler.
