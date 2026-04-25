@@ -1855,8 +1855,6 @@ export const createRequestHandler = async (options?: {
       });
       response.flushHeaders();
 
-      let frameCount = 0;
-      let droppedFrames = 0;
       let draining = false;
       let pendingFrame: { data: string; width: number; height: number; timestamp: number } | null = null;
 
@@ -1869,7 +1867,6 @@ export const createRequestHandler = async (options?: {
         if (response.destroyed) return;
         if (draining) {
           pendingFrame = frame;
-          droppedFrames++;
           return;
         }
         const ok = response.write(`event: browser:frame\ndata: ${JSON.stringify(frame)}\n\n`);
@@ -1893,10 +1890,6 @@ export const createRequestHandler = async (options?: {
       });
 
       const removeFrame = streamSession.onFrame(cid, (frame) => {
-        frameCount++;
-        if (frameCount <= 3 || frameCount % 50 === 0) {
-          console.log(`[poncho][browser-sse] Frame ${frameCount}: ${frame.width}x${frame.height}, data bytes: ${frame.data?.length ?? 0}${droppedFrames > 0 ? `, dropped: ${droppedFrames}` : ""}`);
-        }
         sendFrame(frame);
       });
       const removeStatus = streamSession.onStatus(cid, (status) => {

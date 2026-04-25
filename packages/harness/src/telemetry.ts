@@ -70,8 +70,9 @@ export class TelemetryEmitter {
       await this.sendOtlp(event, otlp);
     }
     // Default behavior in local dev: print concise structured logs.
-    // Skip per-token stream logs to keep console output readable.
-    if (event.type === "model:chunk") {
+    // Skip per-token stream logs and browser screencast frames — both are
+    // high-volume and would drown the log.
+    if (event.type === "model:chunk" || event.type === "browser:frame") {
       return;
     }
     // Strip large binary payloads (e.g. base64 images) to keep logs readable.
