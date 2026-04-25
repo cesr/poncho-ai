@@ -1272,12 +1272,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
               (!Array.isArray(m._currentTools) || m._currentTools.length === 0) &&
               !hasPendingApprovals;
 
-            if (m._error) {
-              const errorEl = document.createElement("div");
-              errorEl.className = "message-error";
-              errorEl.innerHTML = "<strong>Error</strong><br>" + escapeHtml(m._error);
-              content.appendChild(errorEl);
-            } else if (shouldRenderEmptyStreamingIndicator) {
+            if (shouldRenderEmptyStreamingIndicator && !m._error) {
               content.appendChild(createThinkingIndicator(getThinkingStatusLabel(m)));
             } else {
               // Merge stored sections (persisted) with live sections (from
@@ -1340,11 +1335,17 @@ export const getWebUiClientScript = (markedSource: string): string => `
                   renderToolActivity([], pendingApprovals, m._toolImages || []),
                 );
               }
-              if (isStreaming && isLastAssistant && !hasPendingApprovals) {
+              if (isStreaming && isLastAssistant && !hasPendingApprovals && !m._error) {
                 const waitIndicator = document.createElement("div");
                 waitIndicator.appendChild(createThinkingIndicator(getThinkingStatusLabel(m)));
                 content.appendChild(waitIndicator);
               }
+            }
+            if (m._error) {
+              const errorEl = document.createElement("div");
+              errorEl.className = "message-error";
+              errorEl.innerHTML = "<strong>Error</strong><br>" + escapeHtml(m._error);
+              content.appendChild(errorEl);
             }
             wrap.appendChild(content);
             row.appendChild(wrap);
