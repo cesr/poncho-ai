@@ -302,7 +302,12 @@ export const createRequestHandler = async (options?: {
       stream = { buffer: [], subscribers: new Set(), finished: false };
       conversationEventStreams.set(conversationId, stream);
     }
-    stream.buffer.push(event);
+    // browser:frame events carry base64 screenshots (~100KB each) at 10+ fps.
+    // Buffering them for reconnect replay grew to multi-GB and OOM'd the process;
+    // they're ephemeral like browser:status and should never replay.
+    if (event.type !== "browser:frame") {
+      stream.buffer.push(event);
+    }
     for (const subscriber of stream.subscribers) {
       try {
         subscriber.write(formatSseEvent(event));
