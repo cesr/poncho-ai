@@ -1,5 +1,11 @@
 import type { AgentEvent } from "@poncho-ai/sdk";
-import type { ApiCompactResponse, ApiStopRunResponse } from "@poncho-ai/sdk";
+import type {
+  ApiCompactResponse,
+  ApiCreateThreadResponse,
+  ApiStopRunResponse,
+  ApiThreadListResponse,
+  ApiThreadSummary,
+} from "@poncho-ai/sdk";
 import type { BaseClient } from "./base.js";
 import type { ConversationRecord, ConversationSummary } from "./types.js";
 
@@ -106,6 +112,30 @@ export async function listTodos(
   return this.json<{ todos: unknown[] }>(
     `/api/conversations/${encodeURIComponent(conversationId)}/todos`,
   ).then((p) => p.todos);
+}
+
+export async function listThreads(
+  this: BaseClient,
+  conversationId: string,
+): Promise<ApiThreadSummary[]> {
+  return this.json<ApiThreadListResponse>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/threads`,
+  ).then((p) => p.threads);
+}
+
+export async function createThread(
+  this: BaseClient,
+  conversationId: string,
+  parentMessageId: string,
+  title?: string,
+): Promise<ApiCreateThreadResponse> {
+  return this.json<ApiCreateThreadResponse>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/threads`,
+    {
+      method: "POST",
+      body: JSON.stringify({ parentMessageId, title }),
+    },
+  );
 }
 
 export async function* subscribeToEvents(

@@ -14,6 +14,8 @@ import {
   stopRun,
   compactConversation,
   listTodos,
+  listThreads,
+  createThread,
   subscribeToEvents,
 } from "./conversations.js";
 import { submitApproval } from "./approvals.js";
@@ -39,6 +41,10 @@ export type {
   ApiSubagentSummary,
   ApiSecretEntry,
   ApiSlashCommand,
+  ApiThreadSummary,
+  ApiThreadListResponse,
+  ApiCreateThreadRequest,
+  ApiCreateThreadResponse,
 } from "@poncho-ai/sdk";
 
 export interface CreateTenantTokenOptions {
@@ -87,6 +93,8 @@ export class AgentClient extends BaseClient {
   stopRun = stopRun;
   compactConversation = compactConversation;
   listTodos = listTodos;
+  listThreads = listThreads;
+  createThread = createThread;
   subscribeToEvents = subscribeToEvents;
 
   // --- Approvals (from approvals.ts) ---

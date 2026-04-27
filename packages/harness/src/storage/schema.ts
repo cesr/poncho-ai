@@ -185,4 +185,14 @@ export const migrations: Migration[] = [
       ];
     },
   },
+  {
+    version: 6,
+    name: "add_thread_anchor",
+    up: () => [
+      `ALTER TABLE conversations ADD COLUMN parent_message_id TEXT`,
+      `CREATE INDEX IF NOT EXISTS idx_conversations_thread_anchor
+         ON conversations (parent_conversation_id, parent_message_id)
+         WHERE parent_message_id IS NOT NULL`,
+    ],
+  },
 ];

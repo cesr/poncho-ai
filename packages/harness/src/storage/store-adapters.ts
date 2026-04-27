@@ -56,6 +56,8 @@ export function createConversationStoreFromEngine(
       engine.conversations.appendSubagentResult(conversationId, result),
     clearCallbackLock: (conversationId: string) =>
       engine.conversations.clearCallbackLock(conversationId),
+    listThreads: (parentConversationId: string) =>
+      engine.conversations.listThreads(parentConversationId),
   };
 }
 

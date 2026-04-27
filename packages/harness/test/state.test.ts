@@ -47,4 +47,25 @@ describe("conversation store factory", () => {
     const found = await store.get(created.conversationId);
     expect(found?.title).toBe("layout");
   });
+
+  it("listThreads filters to children with parentMessageId set", async () => {
+    const store = createConversationStore();
+    const parent = await store.create("o", "Parent");
+    // Subagent — parentConversationId set, no parentMessageId
+    await store.create("o", "Subagent", null, {
+      parentConversationId: parent.conversationId,
+      subagentMeta: { task: "x", status: "running" },
+    });
+    // Thread — both set
+    const thread = await store.create("o", "Thread", null, {
+      parentConversationId: parent.conversationId,
+      parentMessageId: "anchor",
+      threadMeta: { snapshotLength: 1 },
+    });
+
+    const threads = await store.listThreads(parent.conversationId);
+    expect(threads).toHaveLength(1);
+    expect(threads[0].conversationId).toBe(thread.conversationId);
+    expect(threads[0].parentMessageId).toBe("anchor");
+  });
 });

@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { watch as fsWatch } from "node:fs";
+import { randomUUID } from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
@@ -46,9 +47,12 @@ import type { AgentEvent, FileInput, Message, RunInput } from "@poncho-ai/sdk";
 import type {
   ApiApprovalResponse,
   ApiCompactResponse,
+  ApiCreateThreadResponse,
   ApiSlashCommand,
   ApiStopRunResponse,
   ApiSubagentSummary,
+  ApiThreadListResponse,
+  ApiThreadSummary,
 } from "@poncho-ai/sdk";
 import { getTextContent } from "@poncho-ai/sdk";
 import {
@@ -89,6 +93,47 @@ const browserLog = createLogger("browser");
 const selfFetchLog = createLogger("self-fetch");
 const csrfLog = createLogger("csrf");
 const uploadLog = createLogger("upload");
+
+/**
+ * Walk a sequence of harness messages and collect all tool-call ids that
+ * appear, either as `tool_calls[].id` inside an assistant message's JSON
+ * content, or as `toolCallId` inside the rich tool-result entries that make
+ * up a tool-role message's JSON content.
+ *
+ * Used by the thread-fork path to filter `_toolResultArchive` down to entries
+ * actually referenced by the snapshot.
+ */
+const collectToolCallIds = (msgs: Message[]): Set<string> => {
+  const ids = new Set<string>();
+  for (const m of msgs) {
+    if (typeof m.content !== "string") continue;
+    if (m.role === "assistant") {
+      try {
+        const parsed = JSON.parse(m.content) as { tool_calls?: unknown };
+        if (Array.isArray(parsed.tool_calls)) {
+          for (const tc of parsed.tool_calls) {
+            const id = (tc as { id?: unknown } | null)?.id;
+            if (typeof id === "string") ids.add(id);
+          }
+        }
+      } catch {
+        /* plain text assistant content */
+      }
+    } else if (m.role === "tool") {
+      try {
+        const parsed = JSON.parse(m.content);
+        const items = Array.isArray(parsed) ? parsed : [];
+        for (const it of items) {
+          const id = (it as { toolCallId?: unknown } | null)?.toolCallId;
+          if (typeof id === "string") ids.add(id);
+        }
+      } catch {
+        /* unparseable tool content */
+      }
+    }
+  }
+  return ids;
+};
 const serverlessLog = createLogger("serverless");
 import {
   type DeployTarget,
@@ -706,6 +751,18 @@ export const createRequestHandler = async (options?: {
       const preRunMessages = [...canonicalHistory.messages];
       const userContent = input.task;
 
+      // Hoist stable ids for this turn — reused across every buildMessages()
+      // call so the in-flight assistant message has a stable metadata.id.
+      const turnTimestamp = Date.now();
+      const userMessage: Message | undefined = userContent != null
+        ? {
+            role: "user" as const,
+            content: userContent,
+            metadata: { id: randomUUID(), timestamp: turnTimestamp },
+          }
+        : undefined;
+      const assistantId = randomUUID();
+
       // Read-modify-write helper: always fetches the latest version from
       // the store before writing, so concurrent writers don't get clobbered.
       const updateConversation = async (
@@ -720,7 +777,7 @@ export const createRequestHandler = async (options?: {
 
       await updateConversation((c) => {
         if (!isContinuation) {
-          c.messages = [...historyMessages, { role: "user" as const, content: userContent! }];
+          c.messages = [...historyMessages, ...(userMessage ? [userMessage] : [])];
         }
         c.runStatus = "running";
       });
@@ -744,9 +801,7 @@ export const createRequestHandler = async (options?: {
         if (draft.currentText.length > 0) {
           draftSections.push({ type: "text", content: draft.currentText });
         }
-        const userTurn: Message[] = userContent != null
-          ? [{ role: "user" as const, content: userContent }]
-          : [];
+        const userTurn: Message[] = userMessage ? [userMessage] : [];
         const hasDraftContent =
           draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0 || draftSections.length > 0;
         if (!hasDraftContent) {
@@ -758,7 +813,7 @@ export const createRequestHandler = async (options?: {
           {
             role: "assistant" as const,
             content: draft.assistantResponse,
-            metadata: buildAssistantMetadata(draft, draftSections),
+            metadata: buildAssistantMetadata(draft, draftSections, { id: assistantId, timestamp: turnTimestamp }),
           },
         ];
       };
@@ -2301,6 +2356,197 @@ export const createRequestHandler = async (options?: {
       return;
     }
 
+    const threadsMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/threads$/);
+    if (threadsMatch && request.method === "GET") {
+      const parentId = decodeURIComponent(threadsMatch[1] ?? "");
+      const parent = await conversationStore.get(parentId);
+      if (!parent || !canAccessConversation(parent)) {
+        writeJson(response, 404, { code: "CONVERSATION_NOT_FOUND", message: "Conversation not found" });
+        return;
+      }
+      const summaries = await conversationStore.listThreads(parentId);
+      const threads: ApiThreadSummary[] = [];
+      for (const s of summaries) {
+        const child = await conversationStore.get(s.conversationId);
+        if (!child || !child.parentMessageId) continue;
+        const snapshotLength = child.threadMeta?.snapshotLength ?? child.messages.length;
+        const replyCount = Math.max(0, child.messages.length - snapshotLength);
+        threads.push({
+          conversationId: child.conversationId,
+          parentConversationId: parentId,
+          parentMessageId: child.parentMessageId,
+          title: child.title,
+          parentMessageSummary: child.threadMeta?.parentMessageSummary,
+          messageCount: child.messages.length,
+          replyCount,
+          snapshotLength,
+          createdAt: child.createdAt,
+          updatedAt: child.updatedAt,
+          lastReplyAt: child.updatedAt,
+        });
+      }
+      const payload: ApiThreadListResponse = { threads };
+      writeJson(response, 200, payload);
+      return;
+    }
+
+    if (threadsMatch && request.method === "POST") {
+      const parentId = decodeURIComponent(threadsMatch[1] ?? "");
+      const parent = await conversationStore.getWithArchive(parentId);
+      if (!parent || !canAccessConversation(parent)) {
+        writeJson(response, 404, { code: "CONVERSATION_NOT_FOUND", message: "Conversation not found" });
+        return;
+      }
+      const body = (await readRequestBody(request)) as { parentMessageId?: string; title?: string } | undefined;
+      const parentMessageId = body?.parentMessageId;
+      if (typeof parentMessageId !== "string" || parentMessageId.length === 0) {
+        writeJson(response, 400, { code: "BAD_REQUEST", message: "parentMessageId is required" });
+        return;
+      }
+
+      // Reconstruct the user-visible sequence: pre-compaction history +
+      // current messages (drop the model-facing compactionSummary).
+      const compactedHistory = parent.compactedHistory ?? [];
+      const visibleFromMessages = parent.messages.filter(
+        (m) => !m.metadata?.isCompactionSummary,
+      );
+      const visible: Message[] = compactedHistory.length > 0
+        ? [...compactedHistory, ...visibleFromMessages]
+        : visibleFromMessages;
+
+      const idx = visible.findIndex((m) => m.metadata?.id === parentMessageId);
+      if (idx < 0) {
+        // Distinguish "we found a message at that array slot but it has no id"
+        // from "no such id exists at all". Both are 4xx but the SPA renders
+        // them differently.
+        const anyMissingId = visible.some((m) => !m.metadata?.id);
+        if (anyMissingId) {
+          writeJson(response, 409, {
+            code: "MESSAGE_ID_REQUIRED",
+            message: "Anchor message lacks a stable id (legacy row).",
+          });
+        } else {
+          writeJson(response, 404, {
+            code: "PARENT_MESSAGE_NOT_FOUND",
+            message: "parentMessageId not found in parent conversation",
+          });
+        }
+        return;
+      }
+
+      // Block forking on the actively-streaming tail message of a live run.
+      // Prior messages are already persisted and stable.
+      if (parent.runStatus === "running") {
+        const isInFlightTail =
+          idx === visible.length - 1 &&
+          visible[idx]?.role === "assistant" &&
+          visible[idx]?.metadata?.id === parentMessageId;
+        if (isInFlightTail) {
+          writeJson(response, 409, {
+            code: "ANCHOR_IN_FLIGHT",
+            message: "Cannot fork on the currently-streaming message",
+          });
+          return;
+        }
+      }
+
+      const anchor = visible[idx]!;
+      const anchorIsPreCompaction = idx < compactedHistory.length;
+      const snapshot: Message[] = visible.slice(0, idx + 1).map((m) => structuredClone(m));
+      const anchorText = getTextContent(anchor);
+      const derivedTitle = (body?.title?.trim()) ||
+        (anchorText.trim().length > 0
+          ? `Thread: ${anchorText.slice(0, 60).replace(/\s+/g, " ").trim()}`
+          : "Thread");
+
+      const thread = await conversationStore.create(
+        parent.ownerId,
+        derivedTitle,
+        parent.tenantId,
+        {
+          parentConversationId: parent.conversationId,
+          parentMessageId,
+          messages: snapshot,
+          threadMeta: {
+            parentMessageSummary: anchorText.slice(0, 200),
+            snapshotLength: snapshot.length,
+          },
+        },
+      );
+
+      // Trim _harnessMessages by id-match. Pre-compaction anchors get
+      // _harnessMessages=undefined so the harness rebuilds from `messages`.
+      if (anchorIsPreCompaction) {
+        thread._harnessMessages = undefined;
+      } else {
+        const snapshotIds = new Set(
+          snapshot.map((m) => m.metadata?.id).filter((x): x is string => typeof x === "string"),
+        );
+        const parentHarness = parent._harnessMessages ?? [];
+        let cutoff = -1;
+        for (let i = 0; i < parentHarness.length; i++) {
+          const id = parentHarness[i]?.metadata?.id;
+          if (id && snapshotIds.has(id)) cutoff = i;
+        }
+        thread._harnessMessages = cutoff >= 0
+          ? parentHarness.slice(0, cutoff + 1).map((m) => structuredClone(m))
+          : undefined;
+      }
+
+      // Filter _toolResultArchive by toolCallIds referenced in the (already
+      // trimmed) thread._harnessMessages — that is where tool-call ids live,
+      // since `messages` carries only display-friendly assistant text.
+      const referencedToolCallIds = collectToolCallIds(thread._harnessMessages ?? []);
+      const parentArchive = parent._toolResultArchive;
+      if (parentArchive && referencedToolCallIds.size > 0) {
+        const filtered: NonNullable<Conversation["_toolResultArchive"]> = {};
+        for (const [k, v] of Object.entries(parentArchive)) {
+          if (v && referencedToolCallIds.has(v.toolCallId)) {
+            filtered[k] = structuredClone(v);
+          }
+        }
+        thread._toolResultArchive = Object.keys(filtered).length > 0 ? filtered : undefined;
+      } else {
+        thread._toolResultArchive = undefined;
+      }
+
+      // Reset all run-specific state so the thread starts clean.
+      thread._continuationMessages = undefined;
+      thread.runtimeRunId = undefined;
+      thread.runStatus = "idle";
+      thread.pendingApprovals = undefined;
+      thread.pendingSubagentResults = undefined;
+      thread.subagentCallbackCount = undefined;
+      thread.runningCallbackSince = undefined;
+      thread.lastActivityAt = Date.now();
+      thread.channelMeta = undefined;
+      thread.subagentMeta = undefined;
+      thread.contextTokens = anchorIsPreCompaction ? undefined : parent.contextTokens;
+      thread.contextWindow = parent.contextWindow;
+
+      await conversationStore.update(thread);
+
+      const summary: ApiThreadSummary = {
+        conversationId: thread.conversationId,
+        parentConversationId: parent.conversationId,
+        parentMessageId,
+        title: thread.title,
+        parentMessageSummary: thread.threadMeta?.parentMessageSummary,
+        messageCount: thread.messages.length,
+        replyCount: 0,
+        snapshotLength: snapshot.length,
+        createdAt: thread.createdAt,
+        updatedAt: thread.updatedAt,
+        lastReplyAt: thread.updatedAt,
+      };
+      const payload: ApiCreateThreadResponse = {
+        thread: summary,
+        conversationId: thread.conversationId,
+      };
+      writeJson(response, 201, payload);
+      return;
+    }
+
     const todosMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/todos$/);
     if (todosMatch && request.method === "GET") {
       const conversationId = decodeURIComponent(todosMatch[1] ?? "");
@@ -2648,7 +2894,7 @@ export const createRequestHandler = async (options?: {
         });
         return;
       }
-      if (conversation.parentConversationId) {
+      if (conversation.subagentMeta) {
         writeJson(response, 403, {
           code: "SUBAGENT_READ_ONLY",
           message: "Subagent conversations are read-only.",
@@ -2732,7 +2978,7 @@ export const createRequestHandler = async (options?: {
         });
         return;
       }
-      if (conversation.parentConversationId) {
+      if (conversation.subagentMeta) {
         writeJson(response, 403, {
           code: "SUBAGENT_READ_ONLY",
           message: "Subagent conversations are read-only. Only the parent agent can send messages.",
@@ -2859,6 +3105,19 @@ export const createRequestHandler = async (options?: {
       let runCancelled = false;
       let runContinuationMessages: Message[] | undefined;
 
+      // Hoist stable ids for this turn. The same userMessage / assistantId is
+      // reused across every buildMessages() call so the in-flight assistant
+      // bubble keeps a stable metadata.id from its very first persisted byte.
+      const turnTimestamp = Date.now();
+      const userMessage: Message | undefined = userContent != null
+        ? {
+            role: "user" as const,
+            content: userContent,
+            metadata: { id: randomUUID(), timestamp: turnTimestamp },
+          }
+        : undefined;
+      const assistantId = randomUUID();
+
       const buildMessages = (): Message[] => {
         const draftSections = cloneSections(draft.sections);
         if (draft.currentTools.length > 0) {
@@ -2867,9 +3126,7 @@ export const createRequestHandler = async (options?: {
         if (draft.currentText.length > 0) {
           draftSections.push({ type: "text", content: draft.currentText });
         }
-        const userTurn: Message[] = userContent != null
-          ? [{ role: "user" as const, content: userContent }]
-          : [];
+        const userTurn: Message[] = userMessage ? [userMessage] : [];
         const hasDraftContent =
           draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0 || draftSections.length > 0;
         if (!hasDraftContent) {
@@ -2881,7 +3138,7 @@ export const createRequestHandler = async (options?: {
           {
             role: "assistant" as const,
             content: draft.assistantResponse,
-            metadata: buildAssistantMetadata(draft, draftSections),
+            metadata: buildAssistantMetadata(draft, draftSections, { id: assistantId, timestamp: turnTimestamp }),
           },
         ];
       };
@@ -2895,7 +3152,10 @@ export const createRequestHandler = async (options?: {
 
       try {
         {
-          conversation.messages = [...historyMessages, { role: "user", content: userContent! }];
+          conversation.messages = [
+            ...historyMessages,
+            ...(userMessage ? [userMessage] : []),
+          ];
           conversation.subagentCallbackCount = 0;
           conversation._continuationCount = undefined;
           conversation.updatedAt = Date.now();

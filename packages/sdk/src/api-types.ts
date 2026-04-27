@@ -34,6 +34,36 @@ export interface ApiSubagentSummary {
   updatedAt: string;
 }
 
+export interface ApiThreadSummary {
+  conversationId: string;
+  parentConversationId: string;
+  parentMessageId: string;
+  title: string;
+  parentMessageSummary?: string;
+  messageCount: number;
+  /** messageCount - snapshotLength: number of replies posted into the thread. */
+  replyCount: number;
+  snapshotLength: number;
+  createdAt: number;
+  updatedAt: number;
+  /** Same as updatedAt; named for the inline-row UI. */
+  lastReplyAt: number;
+}
+
+export interface ApiThreadListResponse {
+  threads: ApiThreadSummary[];
+}
+
+export interface ApiCreateThreadRequest {
+  parentMessageId: string;
+  title?: string;
+}
+
+export interface ApiCreateThreadResponse {
+  thread: ApiThreadSummary;
+  conversationId: string;
+}
+
 export interface ApiSecretEntry {
   name: string;
   label?: string;
