@@ -146,6 +146,12 @@ export class InMemoryEngine implements StorageEngine {
         ...(init?.parentConversationId !== undefined
           ? { parentConversationId: init.parentConversationId }
           : {}),
+        ...(init?.parentMessageId !== undefined
+          ? { parentMessageId: init.parentMessageId }
+          : {}),
+        ...(init?.threadMeta !== undefined
+          ? { threadMeta: init.threadMeta }
+          : {}),
         ...(init?.subagentMeta !== undefined
           ? { subagentMeta: init.subagentMeta }
           : {}),
@@ -216,6 +222,22 @@ export class InMemoryEngine implements StorageEngine {
       if (!conv) return undefined;
       conv.runningCallbackSince = undefined;
       return conv;
+    },
+
+    listThreads: async (
+      parentConversationId: string,
+    ): Promise<ConversationSummary[]> => {
+      const results: ConversationSummary[] = [];
+      for (const c of this.convs.values()) {
+        if (
+          c.parentConversationId === parentConversationId &&
+          typeof c.parentMessageId === "string"
+        ) {
+          results.push(this.toSummary(c));
+        }
+      }
+      results.sort((a, b) => b.updatedAt - a.updatedAt);
+      return results;
     },
   };
 
@@ -585,6 +607,7 @@ export class InMemoryEngine implements StorageEngine {
       messageCount: c.messages.length,
       hasPendingApprovals: (c.pendingApprovals?.length ?? 0) > 0,
       parentConversationId: c.parentConversationId,
+      parentMessageId: c.parentMessageId,
       channelMeta: c.channelMeta,
     };
   }

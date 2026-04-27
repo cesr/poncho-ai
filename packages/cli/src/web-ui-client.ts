@@ -53,6 +53,18 @@ export const getWebUiClientScript = (markedSource: string): string => `
         subagentPollInFlight: {},
         slashCommands: null,
         slashMenuIndex: 0,
+        threadsByParent: {},
+        confirmDeleteThreadId: null,
+        threadPanel: {
+          open: false,
+          threadId: null,
+          parentMessageId: null,
+          parentMessage: null,
+          messages: [],
+          isStreaming: false,
+          abortController: null,
+          pendingFiles: [],
+        },
       };
 
       const agentInitial = document.body.dataset.agentInitial || "A";
@@ -91,6 +103,17 @@ export const getWebUiClientScript = (markedSource: string): string => `
         browserPanelClose: $("browser-panel-close"),
         browserNavBack: $("browser-nav-back"),
         browserNavForward: $("browser-nav-forward"),
+        threadPanel: $("thread-panel"),
+        threadPanelResize: $("thread-panel-resize"),
+        threadPanelClose: $("thread-panel-close"),
+        threadPanelParent: $("thread-panel-parent"),
+        threadPanelMessages: $("thread-panel-messages"),
+        threadComposer: $("thread-composer"),
+        threadAttachBtn: $("thread-attach-btn"),
+        threadFileInput: $("thread-file-input"),
+        threadAttachmentPreview: $("thread-attachment-preview"),
+        threadPrompt: $("thread-prompt"),
+        threadSend: $("thread-send"),
       };
       const sendIconMarkup =
         '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 12V4M4 7l4-4 4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -1186,32 +1209,558 @@ export const getWebUiClientScript = (markedSource: string): string => `
         );
       };
 
+      const formatRelativeTime = (ts) => {
+        if (!ts) return "";
+        const diff = Math.max(0, Date.now() - ts);
+        if (diff < 60_000) return "just now";
+        if (diff < 3_600_000) return Math.floor(diff / 60_000) + "m ago";
+        if (diff < 86_400_000) return Math.floor(diff / 3_600_000) + "h ago";
+        return Math.floor(diff / 86_400_000) + "d ago";
+      };
+
+      const REPLY_ICON_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12V8a4 4 0 0 1 4-4h6"/><path d="M10 1l3 3-3 3"/></svg>';
+
+      const isThreadAffordanceCandidate = (m) => {
+        if (!m || !m.metadata || typeof m.metadata.id !== "string") return false;
+        if (m.role === "system") return false;
+        if (m.metadata.isCompactionSummary) return false;
+        if (m.metadata._subagentCallback) return false;
+        return true;
+      };
+
+      const deleteThreadConfirmed = (threadId, parentMessageId) => {
+        if (!threadId) return;
+        // Optimistic removal — fire DELETE in the background, mirrors the
+        // sidebar conversation-delete pattern at line ~798.
+        if (parentMessageId && state.threadsByParent[parentMessageId]) {
+          state.threadsByParent[parentMessageId] = state.threadsByParent[parentMessageId]
+            .filter((t) => t.conversationId !== threadId);
+          if (state.threadsByParent[parentMessageId].length === 0) {
+            delete state.threadsByParent[parentMessageId];
+          }
+        }
+        if (state.threadPanel.threadId === threadId) {
+          closeThreadPanel();
+        }
+        state.confirmDeleteThreadId = null;
+        renderMessages(state.activeMessages, state.isStreaming);
+        api(
+          "/api/conversations/" + encodeURIComponent(threadId),
+          { method: "DELETE" },
+        ).catch(() => {});
+      };
+
+      // Single absolute-positioned wrap on each message row. Behaves as:
+      //   - no threads: hover-only "Reply in thread" pill (creates a thread)
+      //   - >=1 thread: always-visible badge per thread (opens that thread)
+      // Position (bottom-offset overlapping the message) is identical in both
+      // states so the badge sits exactly where the hover pill would.
+      const appendThreadAffordances = (row, m) => {
+        if (!isThreadAffordanceCandidate(m)) return;
+        const messageId = m.metadata.id;
+        const threads = state.threadsByParent[messageId] || [];
+        const wrap = document.createElement("span");
+        wrap.className = "reply-pill-wrap" + (threads.length > 0 ? " has-threads" : "");
+
+        if (threads.length === 0) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "reply-icon-btn";
+          btn.title = "Reply in thread";
+          btn.innerHTML = REPLY_ICON_SVG + '<span>Reply in thread</span>';
+          btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            createAndOpenNewThread(messageId);
+          });
+          wrap.appendChild(btn);
+          row.appendChild(wrap);
+          return;
+        }
+
+        threads.forEach((t) => {
+          const pair = document.createElement("span");
+          pair.className = "thread-pill-pair";
+          const pill = document.createElement("button");
+          pill.type = "button";
+          pill.className = "reply-icon-btn thread-pill";
+          pill.title = "Open thread";
+          const replies = t.replyCount || 0;
+          const repliesLabel = replies === 1 ? "1 reply" : replies + " replies";
+          const meta = t.lastReplyAt ? formatRelativeTime(t.lastReplyAt) : "";
+          pill.innerHTML = '<span class="thread-pill-count">' + repliesLabel + '</span>'
+            + (meta ? '<span class="thread-pill-meta">' + meta + '</span>' : '');
+          pill.addEventListener("click", (e) => {
+            e.stopPropagation();
+            openThread(t.conversationId, t);
+          });
+          pair.appendChild(pill);
+
+          const isConfirming = state.confirmDeleteThreadId === t.conversationId;
+          const del = document.createElement("button");
+          del.type = "button";
+          del.className = "thread-row-delete" + (isConfirming ? " confirming" : "");
+          del.title = isConfirming ? "Click again to confirm" : "Delete thread";
+          del.textContent = isConfirming ? "sure?" : "×";
+          del.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if (!isConfirming) {
+              state.confirmDeleteThreadId = t.conversationId;
+              renderMessages(state.activeMessages, state.isStreaming);
+              return;
+            }
+            deleteThreadConfirmed(t.conversationId, messageId);
+          });
+          pair.appendChild(del);
+          wrap.appendChild(pair);
+        });
+        row.appendChild(wrap);
+      };
+
+      // Hoisted so both renderMessages and buildSimpleMessageRow can use it.
+      const createThinkingIndicator = (label) => {
+        const status = document.createElement("div");
+        status.className = "thinking-status";
+        const spinner = document.createElement("span");
+        spinner.className = "thinking-indicator";
+        const starFrames = ["✶", "✸", "✹", "✺", "✹", "✷"];
+        let frame = 0;
+        spinner.textContent = starFrames[0];
+        spinner._interval = setInterval(() => {
+          frame = (frame + 1) % starFrames.length;
+          spinner.textContent = starFrames[frame];
+        }, 70);
+        status.appendChild(spinner);
+        if (label) {
+          const text = document.createElement("span");
+          text.className = "thinking-status-label";
+          text.textContent = label;
+          status.appendChild(text);
+        }
+        return status;
+      };
+
+      // Render a single message into a target column. Mirrors the assistant /
+      // user branches of renderMessages but without the streaming-specific bits.
+      const buildSimpleMessageRow = (m) => {
+        const r = document.createElement("div");
+        r.className = "message-row " + m.role;
+        if (m.role === "assistant") {
+          const wrap = document.createElement("div");
+          wrap.className = "assistant-wrap";
+          wrap.innerHTML = '<div class="assistant-avatar">' + agentInitial + '</div>';
+          const content = document.createElement("div");
+          content.className = "assistant-content";
+          const sections = (m.metadata && m.metadata.sections) || null;
+          const text = typeof m.content === "string" ? m.content : "";
+          if (sections && sections.length > 0) {
+            sections.forEach((section) => {
+              if (section.type === "text") {
+                const textDiv = document.createElement("div");
+                textDiv.innerHTML = renderAssistantMarkdown(section.content);
+                content.appendChild(textDiv);
+              } else if (section.type === "tools") {
+                content.insertAdjacentHTML(
+                  "beforeend",
+                  renderToolActivity(section.content, [], []),
+                );
+              }
+            });
+          } else if (m._streaming && !text) {
+            // Empty + streaming → show a thinking indicator until the first
+            // model:chunk lands.
+            content.appendChild(createThinkingIndicator(""));
+          } else {
+            content.innerHTML = renderAssistantMarkdown(text);
+          }
+          wrap.appendChild(content);
+          r.appendChild(wrap);
+        } else {
+          const bubble = document.createElement("div");
+          bubble.className = "user-bubble";
+          if (typeof m.content === "string") {
+            bubble.textContent = m.content;
+          } else if (Array.isArray(m.content)) {
+            const textParts = m.content.filter((p) => p.type === "text").map((p) => p.text).join("");
+            if (textParts) {
+              const textEl = document.createElement("div");
+              textEl.textContent = textParts;
+              bubble.appendChild(textEl);
+            }
+            // File attachments — same logic as the main renderer
+            const fileParts = m.content.filter((p) => p.type === "file");
+            if (fileParts.length > 0) {
+              const filesEl = document.createElement("div");
+              filesEl.className = "user-file-attachments";
+              fileParts.forEach((fp) => {
+                if (fp.mediaType && fp.mediaType.startsWith("image/")) {
+                  const img = document.createElement("img");
+                  if (fp.data && fp.data.startsWith("poncho-upload://")) {
+                    img.src = "/api/uploads/" + encodeURIComponent(fp.data.replace("poncho-upload://", ""));
+                  } else if (fp.data && (fp.data.startsWith("http://") || fp.data.startsWith("https://"))) {
+                    img.src = fp.data;
+                  } else if (fp.data) {
+                    img.src = "data:" + fp.mediaType + ";base64," + fp.data;
+                  }
+                  img.alt = fp.filename || "image";
+                  filesEl.appendChild(img);
+                } else {
+                  const badge = document.createElement("span");
+                  badge.className = "user-file-badge";
+                  badge.textContent = "📎 " + (fp.filename || "file");
+                  filesEl.appendChild(badge);
+                }
+              });
+              bubble.appendChild(filesEl);
+            }
+          }
+          r.appendChild(bubble);
+        }
+        return r;
+      };
+
+      const renderThreadPanelMessages = () => {
+        const root = elements.threadPanelMessages;
+        if (!root) return;
+        root.innerHTML = "";
+        const msgs = state.threadPanel.messages || [];
+        if (msgs.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "thread-panel-parent-empty";
+          empty.textContent = "No replies yet — send the first one below.";
+          root.appendChild(empty);
+        } else {
+          const col = document.createElement("div");
+          col.className = "messages-column";
+          msgs.forEach((m) => col.appendChild(buildSimpleMessageRow(m)));
+          root.appendChild(col);
+        }
+        root.scrollTop = root.scrollHeight;
+      };
+
+      const renderThreadPanelParent = () => {
+        const root = elements.threadPanelParent;
+        if (!root) return;
+        root.innerHTML = "";
+        const parent = state.threadPanel.parentMessage;
+        if (!parent) {
+          const empty = document.createElement("div");
+          empty.className = "thread-panel-parent-empty";
+          empty.textContent = "No parent context";
+          root.appendChild(empty);
+          return;
+        }
+        const col = document.createElement("div");
+        col.className = "messages-column";
+        col.appendChild(buildSimpleMessageRow(parent));
+        root.appendChild(col);
+      };
+
+      const closeThreadPanel = () => {
+        if (state.threadPanel.abortController) {
+          try { state.threadPanel.abortController.abort(); } catch (e) {}
+        }
+        state.threadPanel.open = false;
+        state.threadPanel.threadId = null;
+        state.threadPanel.parentMessageId = null;
+        state.threadPanel.parentMessage = null;
+        state.threadPanel.messages = [];
+        state.threadPanel.isStreaming = false;
+        state.threadPanel.abortController = null;
+        state.threadPanel.pendingFiles = [];
+        renderThreadAttachmentPreview();
+        if (elements.threadPrompt) elements.threadPrompt.value = "";
+        if (elements.threadPanel) {
+          elements.threadPanel.style.display = "none";
+          // Clear inline flex set by drag-resize so next open starts fresh.
+          elements.threadPanel.style.flex = "";
+        }
+        if (elements.threadPanelResize) elements.threadPanelResize.style.display = "none";
+        const mainEl = document.querySelector(".main-chat");
+        if (mainEl) {
+          mainEl.classList.remove("has-thread");
+          // Same fix on the main pane.
+          mainEl.style.flex = "";
+        }
+        try {
+          if (window.location.hash.indexOf("thread=") >= 0) {
+            history.replaceState(null, "", window.location.pathname + window.location.search);
+          }
+        } catch (e) {}
+      };
+
+      const renderActiveTopForThreadPanel = (payload) => {
+        const conv = payload.conversation || {};
+        const allMsgs = Array.isArray(conv.messages) ? conv.messages : [];
+        const snapshotLength = (conv.threadMeta && typeof conv.threadMeta.snapshotLength === "number")
+          ? conv.threadMeta.snapshotLength
+          : allMsgs.length;
+        const parent = allMsgs[snapshotLength - 1] || null;
+        const replies = allMsgs.slice(snapshotLength);
+        state.threadPanel.parentMessage = parent;
+        state.threadPanel.messages = replies;
+        renderThreadPanelParent();
+        renderThreadPanelMessages();
+      };
+
+      const buildAuthHeaders = () => {
+        const headers = {};
+        if (state.tenantToken) {
+          headers["Authorization"] = "Bearer " + state.tenantToken;
+        } else if (state.csrfToken) {
+          headers["x-csrf-token"] = state.csrfToken;
+        }
+        return headers;
+      };
+
+      const subscribeThreadPanelStream = (threadId) => {
+        // Scoped, duplicated SSE handler — independent of the main-pane
+        // subscription so a regression here can't break the main conversation.
+        if (state.threadPanel.abortController) {
+          try { state.threadPanel.abortController.abort(); } catch (e) {}
+        }
+        const ac = new AbortController();
+        state.threadPanel.abortController = ac;
+        const url = "/api/conversations/" + encodeURIComponent(threadId) + "/events?live_only=true";
+        fetch(url, {
+          headers: buildAuthHeaders(),
+          signal: ac.signal,
+          credentials: state.tenantToken ? "omit" : "include",
+        }).then(async (resp) => {
+          if (!resp.ok || !resp.body) return;
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = "";
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            const events = buf.split("\\n\\n");
+            buf = events.pop() || "";
+            for (const block of events) {
+              if (!block) continue;
+              const dataLine = block.split("\\n").find((l) => l.startsWith("data: "));
+              if (!dataLine) continue;
+              if (state.threadPanel.threadId !== threadId) continue;
+              try {
+                const evt = JSON.parse(dataLine.slice(6));
+                if (evt.type === "run:completed" || evt.type === "messages:updated" || evt.type === "messages:appended" || evt.type === "run:cancelled") {
+                  const fresh = await api("/api/conversations/" + encodeURIComponent(threadId)).catch(() => null);
+                  if (fresh && state.threadPanel.threadId === threadId) {
+                    renderActiveTopForThreadPanel(fresh);
+                  }
+                }
+              } catch (e) { /* ignore parse errors */ }
+            }
+          }
+        }).catch(() => { /* aborted or failed; no-op */ });
+      };
+
+      const openThread = async (threadId, summary) => {
+        try {
+          const payload = await api("/api/conversations/" + encodeURIComponent(threadId));
+          state.threadPanel.open = true;
+          state.threadPanel.threadId = threadId;
+          state.threadPanel.parentMessageId = (summary && summary.parentMessageId) || null;
+          renderActiveTopForThreadPanel(payload);
+          if (elements.threadPanel) elements.threadPanel.style.display = "flex";
+          if (elements.threadPanelResize) elements.threadPanelResize.style.display = "block";
+          const mainEl = document.querySelector(".main-chat");
+          if (mainEl) mainEl.classList.add("has-thread");
+          if (elements.threadPrompt) elements.threadPrompt.focus();
+          try {
+            history.replaceState(null, "", window.location.pathname + window.location.search + "#thread=" + encodeURIComponent(threadId));
+          } catch (e) {}
+          subscribeThreadPanelStream(threadId);
+        } catch (e) {
+          alert("Failed to load thread: " + (e && e.message ? e.message : "unknown"));
+        }
+      };
+
+      const createAndOpenNewThread = async (parentMessageId) => {
+        const conversationId = state.activeConversationId;
+        if (!conversationId) return;
+        try {
+          const resp = await api(
+            "/api/conversations/" + encodeURIComponent(conversationId) + "/threads",
+            { method: "POST", body: JSON.stringify({ parentMessageId }) },
+          );
+          const summary = resp.thread;
+          const list = state.threadsByParent[parentMessageId] || [];
+          state.threadsByParent[parentMessageId] = list.concat([summary]);
+          renderMessages(state.activeMessages, state.isStreaming);
+          await openThread(summary.conversationId, summary);
+        } catch (e) {
+          const code = e && e.payload && e.payload.code;
+          const msg = code || (e && e.message ? e.message : "unknown");
+          alert("Failed to create thread: " + msg);
+        }
+      };
+
+      const refreshThreads = async () => {
+        const conversationId = state.activeConversationId;
+        if (!conversationId) {
+          state.threadsByParent = {};
+          return;
+        }
+        try {
+          const data = await api("/api/conversations/" + encodeURIComponent(conversationId) + "/threads");
+          const grouped = {};
+          (data.threads || []).forEach((t) => {
+            if (!t.parentMessageId) return;
+            (grouped[t.parentMessageId] = grouped[t.parentMessageId] || []).push(t);
+          });
+          state.threadsByParent = grouped;
+        } catch (e) { /* keep existing */ }
+      };
+
+      const refreshActiveMessagesFromServer = async (conversationId) => {
+        if (!conversationId) return;
+        try {
+          const payload = await api("/api/conversations/" + encodeURIComponent(conversationId));
+          if (state.activeConversationId !== conversationId) return;
+          let displayMessages = (payload.conversation && payload.conversation.messages) || [];
+          const compactedHistory = payload.conversation && payload.conversation.compactedHistory;
+          if (Array.isArray(compactedHistory) && compactedHistory.length > 0) {
+            let dividerMsg = { role: "user", content: "", metadata: { isCompactionSummary: true } };
+            const summaryMsg = displayMessages.find((m) => m.metadata && m.metadata.isCompactionSummary);
+            if (summaryMsg) {
+              dividerMsg = summaryMsg;
+              displayMessages = displayMessages.filter((m) => m !== summaryMsg);
+            }
+            displayMessages = [].concat(compactedHistory, [dividerMsg], displayMessages);
+          }
+          state.activeMessages = displayMessages;
+          await refreshThreads();
+          renderMessages(state.activeMessages, false);
+        } catch (e) {
+          // Best-effort refresh — silent on failure
+        }
+      };
+
+      const submitThreadReply = async (text, files) => {
+        const threadId = state.threadPanel.threadId;
+        const messageText = (text || "").trim();
+        const filesToSend = Array.isArray(files) ? files : [];
+        if (!threadId || (!messageText && filesToSend.length === 0)) return;
+
+        // Build the optimistic user message with file ContentParts so the
+        // panel can show attachments immediately, matching the main pane.
+        let optimisticContent;
+        if (filesToSend.length > 0) {
+          optimisticContent = [{ type: "text", text: messageText }];
+          for (const f of filesToSend) {
+            optimisticContent.push({
+              type: "file",
+              data: URL.createObjectURL(f),
+              mediaType: f.type,
+              filename: f.name,
+              _localBlob: f,
+            });
+          }
+        } else {
+          optimisticContent = messageText;
+        }
+        // Optimistic user + empty assistant placeholder — model:chunk events
+        // from the POST /messages SSE stream will fill the assistant content.
+        const optimisticAssistant = { role: "assistant", content: "", _streaming: true };
+        state.threadPanel.messages = (state.threadPanel.messages || []).concat([
+          { role: "user", content: optimisticContent },
+          optimisticAssistant,
+        ]);
+        renderThreadPanelMessages();
+
+        // Optimistic bump on the inline thread-row reply count in the main pane.
+        if (state.threadPanel.parentMessageId) {
+          const list = state.threadsByParent[state.threadPanel.parentMessageId] || [];
+          const idx = list.findIndex((t) => t.conversationId === threadId);
+          if (idx >= 0) {
+            list[idx] = { ...list[idx], replyCount: (list[idx].replyCount || 0) + 1, lastReplyAt: Date.now() };
+            state.threadsByParent[state.threadPanel.parentMessageId] = list;
+            renderMessages(state.activeMessages, state.isStreaming);
+          }
+        }
+
+        // Build the request body — FormData when files are present, JSON otherwise.
+        let fetchOpts;
+        if (filesToSend.length > 0) {
+          const formData = new FormData();
+          formData.append("message", messageText);
+          for (const f of filesToSend) {
+            formData.append("files", f, f.name);
+          }
+          fetchOpts = {
+            method: "POST",
+            headers: buildAuthHeaders(),
+            credentials: state.tenantToken ? "omit" : "include",
+            body: formData,
+          };
+        } else {
+          fetchOpts = {
+            method: "POST",
+            headers: { ...buildAuthHeaders(), "Content-Type": "application/json" },
+            credentials: state.tenantToken ? "omit" : "include",
+            body: JSON.stringify({ message: messageText }),
+          };
+        }
+
+        try {
+          const resp = await fetch(
+            "/api/conversations/" + encodeURIComponent(threadId) + "/messages",
+            fetchOpts,
+          );
+          if (!resp.ok) throw new Error("HTTP " + resp.status);
+          // Stream the SSE body — incrementally append model:chunk text to the
+          // optimistic assistant message so the user sees tokens land live.
+          if (resp.body) {
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            let chunkCount = 0;
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              buffer = parseSseChunk(buffer, (eventName, payload) => {
+                if (state.threadPanel.threadId !== threadId) return;
+                if (eventName === "model:chunk") {
+                  const chunk = String((payload && payload.content) || "");
+                  if (!chunk) return;
+                  chunkCount += 1;
+                  optimisticAssistant._streaming = true;
+                  optimisticAssistant.content = String(optimisticAssistant.content || "") + chunk;
+                  renderThreadPanelMessages();
+                }
+              });
+            }
+            if (chunkCount === 0) {
+              console.warn("[thread] no model:chunk events received — server may be buffering the response");
+            } else {
+              console.debug("[thread] streamed " + chunkCount + " chunks");
+            }
+          }
+          // After the run completes, refetch so the panel reflects canonical
+          // server state (including any tool sections/metadata we didn't
+          // incrementally render here).
+          const fresh = await api("/api/conversations/" + encodeURIComponent(threadId)).catch(() => null);
+          if (fresh && state.threadPanel.threadId === threadId) {
+            renderActiveTopForThreadPanel(fresh);
+          }
+        } catch (e) {
+          // Drop the streaming placeholder if the post failed before producing any text.
+          if (!optimisticAssistant.content) {
+            state.threadPanel.messages = (state.threadPanel.messages || []).filter(
+              (m) => m !== optimisticAssistant,
+            );
+            renderThreadPanelMessages();
+          }
+          alert("Failed to send reply: " + (e && e.message ? e.message : "unknown"));
+        }
+      };
+
       const renderMessages = (messages, isStreaming = false, options = {}) => {
         const previousScrollTop = elements.messages.scrollTop;
         const shouldStickToBottom =
           options.forceScrollBottom === true || state.isMessagesPinnedToBottom;
-
-        const createThinkingIndicator = (label) => {
-          const status = document.createElement("div");
-          status.className = "thinking-status";
-          const spinner = document.createElement("span");
-          spinner.className = "thinking-indicator";
-          const starFrames = ["✶", "✸", "✹", "✺", "✹", "✷"];
-          let frame = 0;
-          spinner.textContent = starFrames[0];
-          spinner._interval = setInterval(() => {
-            frame = (frame + 1) % starFrames.length;
-            spinner.textContent = starFrames[frame];
-          }, 70);
-          status.appendChild(spinner);
-          if (label) {
-            const text = document.createElement("span");
-            text.className = "thinking-status-label";
-            text.textContent = label;
-            status.appendChild(text);
-          }
-          return status;
-        };
 
         // Preserve open state of tool-activity disclosures across re-renders.
         // Track by message row index + disclosure index within the row.
@@ -1424,6 +1973,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
             }
             row.appendChild(bubble);
           }
+          appendThreadAffordances(row, m);
           col.appendChild(row);
         });
         elements.messages.appendChild(col);
@@ -1460,11 +2010,15 @@ export const getWebUiClientScript = (markedSource: string): string => `
 
       const loadConversation = async (conversationId) => {
         if (window._resetBrowserPanel) window._resetBrowserPanel();
-        // Kick off conversation + todos fetches in parallel — todos only needs
-        // the id, so there's no reason to wait for the conversation response.
+        // Switching conversations always closes any open thread panel.
+        closeThreadPanel();
+        // Kick off conversation + todos + threads fetches in parallel — they
+        // only need the id, so there's no reason to wait for the conversation.
         const conversationPromise = api("/api/conversations/" + encodeURIComponent(conversationId));
         const todosPromise = api("/api/conversations/" + encodeURIComponent(conversationId) + "/todos")
           .catch(() => ({ todos: [] }));
+        const threadsPromise = api("/api/conversations/" + encodeURIComponent(conversationId) + "/threads")
+          .catch(() => ({ threads: [] }));
         const payload = await conversationPromise;
         elements.chatTitle.textContent = payload.conversation.title;
         // Merge own pending approvals + subagent pending approvals
@@ -1518,6 +2072,19 @@ export const getWebUiClientScript = (markedSource: string): string => `
         _autoCollapseTodos();
         renderTodoPanel();
 
+        // Group thread summaries by parentMessageId for inline rendering.
+        try {
+          const threadsPayload = await threadsPromise;
+          const grouped = {};
+          (threadsPayload.threads || []).forEach((t) => {
+            if (!t.parentMessageId) return;
+            (grouped[t.parentMessageId] = grouped[t.parentMessageId] || []).push(t);
+          });
+          state.threadsByParent = grouped;
+        } catch (e) {
+          state.threadsByParent = {};
+        }
+
         updateContextRing();
         var willStream = !!payload.hasActiveRun;
         var hasSendMessageStream = state.activeStreamConversationId === conversationId && state._activeStreamMessages;
@@ -1527,6 +2094,21 @@ export const getWebUiClientScript = (markedSource: string): string => `
         } else {
           renderMessages(state.activeMessages, willStream, { forceScrollBottom: true });
         }
+        // If the URL has #thread=<id>, reopen that thread panel after main render.
+        try {
+          const hash = window.location.hash || "";
+          const m = hash.match(/thread=([^&]+)/);
+          if (m && m[1]) {
+            const threadId = decodeURIComponent(m[1]);
+            // Find the matching summary so we can pin parentMessageId.
+            let summary = null;
+            for (const k of Object.keys(state.threadsByParent)) {
+              const found = (state.threadsByParent[k] || []).find((t) => t.conversationId === threadId);
+              if (found) { summary = found; break; }
+            }
+            if (summary) openThread(threadId, summary);
+          }
+        } catch (e) { /* ignore */ }
         if (!state.viewingSubagentId) {
           elements.prompt.focus();
         }
@@ -3214,6 +3796,11 @@ export const getWebUiClientScript = (markedSource: string): string => `
           setStreaming(false);
           if (didCompact && conversationId) {
             loadConversation(conversationId).catch(function() {});
+          } else if (conversationId) {
+            // After a normal turn, replace the locally-built activeMessages
+            // (which lack metadata.id) with the server's persisted version so
+            // the "Reply in thread" affordance and other id-based features work.
+            refreshActiveMessagesFromServer(conversationId).catch(function() {});
           }
           elements.prompt.focus();
         }
@@ -3562,6 +4149,146 @@ export const getWebUiClientScript = (markedSource: string): string => `
         }
       });
 
+      if (elements.threadPanelClose) {
+        elements.threadPanelClose.addEventListener("click", () => {
+          closeThreadPanel();
+        });
+      }
+
+      // ── Thread composer (separate from the main composer) ──
+      const renderThreadAttachmentPreview = () => {
+        const el = elements.threadAttachmentPreview;
+        if (!el) return;
+        const files = state.threadPanel.pendingFiles || [];
+        if (files.length === 0) {
+          el.style.display = "none";
+          el.innerHTML = "";
+          return;
+        }
+        el.style.display = "";
+        el.innerHTML = files.map((f, i) => {
+          const isImage = f.type && f.type.startsWith("image/");
+          const preview = isImage
+            ? '<img src="' + URL.createObjectURL(f) + '" />'
+            : '<span class="user-file-badge">📎 ' + escapeHtml(f.name) + '</span>';
+          return '<div class="attachment-item">' + preview
+            + '<button type="button" class="remove-attachment" data-idx="' + i + '">×</button></div>';
+        }).join("");
+      };
+
+      const addThreadFiles = (fileList) => {
+        const arr = Array.from(fileList || []);
+        for (const f of arr) {
+          if (f.size > 25 * 1024 * 1024) {
+            alert("File too large: " + f.name + " (max 25MB)");
+            continue;
+          }
+          state.threadPanel.pendingFiles.push(f);
+        }
+        renderThreadAttachmentPreview();
+      };
+
+      const autoResizeThreadPrompt = () => {
+        const el = elements.threadPrompt;
+        if (!el) return;
+        el.style.height = "auto";
+        el.style.height = Math.min(el.scrollHeight, 200) + "px";
+      };
+
+      if (elements.threadAttachBtn && elements.threadFileInput) {
+        elements.threadAttachBtn.addEventListener("click", () => elements.threadFileInput.click());
+        elements.threadFileInput.addEventListener("change", () => {
+          if (elements.threadFileInput.files && elements.threadFileInput.files.length > 0) {
+            addThreadFiles(elements.threadFileInput.files);
+            elements.threadFileInput.value = "";
+          }
+        });
+      }
+      if (elements.threadAttachmentPreview) {
+        elements.threadAttachmentPreview.addEventListener("click", (e) => {
+          const rm = e.target.closest(".remove-attachment");
+          if (rm) {
+            const idx = parseInt(rm.dataset.idx, 10);
+            state.threadPanel.pendingFiles.splice(idx, 1);
+            renderThreadAttachmentPreview();
+          }
+        });
+      }
+      if (elements.threadPrompt) {
+        elements.threadPrompt.addEventListener("input", autoResizeThreadPrompt);
+        elements.threadPrompt.addEventListener("paste", (e) => {
+          const items = e.clipboardData && e.clipboardData.items;
+          if (!items) return;
+          const files = [];
+          for (let i = 0; i < items.length; i++) {
+            if (items[i].kind === "file") {
+              const f = items[i].getAsFile();
+              if (f) files.push(f);
+            }
+          }
+          if (files.length > 0) {
+            e.preventDefault();
+            addThreadFiles(files);
+          }
+        });
+        elements.threadPrompt.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            elements.threadComposer.requestSubmit();
+          }
+        });
+      }
+      if (elements.threadComposer) {
+        elements.threadComposer.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          if (!state.threadPanel.open || !state.threadPanel.threadId) return;
+          const value = elements.threadPrompt.value;
+          const filesToSend = [...state.threadPanel.pendingFiles];
+          if (!value.trim() && filesToSend.length === 0) return;
+          elements.threadPrompt.value = "";
+          state.threadPanel.pendingFiles = [];
+          renderThreadAttachmentPreview();
+          autoResizeThreadPrompt();
+          await submitThreadReply(value, filesToSend);
+        });
+      }
+
+      // Drag-to-resize between main pane and thread panel — mirrors the
+      // browser-panel resize pattern.
+      (function () {
+        const handle = elements.threadPanelResize;
+        const panel = elements.threadPanel;
+        const mainEl = document.querySelector(".main-chat");
+        if (!handle || !panel || !mainEl) return;
+        let dragging = false;
+        handle.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          dragging = true;
+          handle.classList.add("dragging");
+          document.body.style.cursor = "col-resize";
+          document.body.style.userSelect = "none";
+        });
+        document.addEventListener("mousemove", (e) => {
+          if (!dragging) return;
+          const body = mainEl.parentElement;
+          if (!body) return;
+          const bodyRect = body.getBoundingClientRect();
+          const available = bodyRect.width - 1;
+          let chatW = e.clientX - bodyRect.left;
+          chatW = Math.max(280, Math.min(chatW, available - 320));
+          const panelW = available - chatW;
+          mainEl.style.flex = "0 0 " + chatW + "px";
+          panel.style.flex = "0 0 " + panelW + "px";
+        });
+        document.addEventListener("mouseup", () => {
+          if (!dragging) return;
+          dragging = false;
+          handle.classList.remove("dragging");
+          document.body.style.cursor = "";
+          document.body.style.userSelect = "";
+        });
+      })();
+
       elements.composer.addEventListener("submit", async (event) => {
         event.preventDefault();
         if (state.isStreaming) {
@@ -3859,6 +4586,10 @@ export const getWebUiClientScript = (markedSource: string): string => `
         if (!event.target.closest(".conversation-item") && state.confirmDeleteId) {
           state.confirmDeleteId = null;
           renderConversationList();
+        }
+        if (!event.target.closest(".thread-row") && state.confirmDeleteThreadId) {
+          state.confirmDeleteThreadId = null;
+          renderMessages(state.activeMessages, state.isStreaming);
         }
       });
 

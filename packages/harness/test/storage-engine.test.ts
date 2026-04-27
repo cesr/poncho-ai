@@ -89,6 +89,61 @@ function runEngineTests(name: string, factory: () => Promise<{ engine: StorageEn
         expect(reloaded?.subagentMeta?.task).toBe("do thing");
         expect(reloaded?.messages).toHaveLength(1);
       });
+
+      it("persists thread anchor (parentMessageId + threadMeta) and lists threads", async () => {
+        const parent = await engine.conversations.create("o", "Parent");
+        const anchorId = "msg-anchor-1";
+        const thread = await engine.conversations.create("o", "Thread A", null, {
+          parentConversationId: parent.conversationId,
+          parentMessageId: anchorId,
+          messages: [
+            { role: "user", content: "hi", metadata: { id: "m0" } },
+            { role: "assistant", content: "hello", metadata: { id: anchorId } },
+          ],
+          threadMeta: {
+            parentMessageSummary: "hello",
+            snapshotLength: 2,
+          },
+        });
+        expect(thread.parentMessageId).toBe(anchorId);
+        expect(thread.threadMeta?.snapshotLength).toBe(2);
+
+        // Summary surfaces the column
+        const summary = (await engine.conversations.list("o")).find(
+          (s) => s.conversationId === thread.conversationId,
+        );
+        expect(summary?.parentMessageId).toBe(anchorId);
+
+        // get() round-trips threadMeta from the JSON blob
+        const reloaded = await engine.conversations.get(thread.conversationId);
+        expect(reloaded?.parentMessageId).toBe(anchorId);
+        expect(reloaded?.threadMeta?.parentMessageSummary).toBe("hello");
+
+        // listThreads filters to children with parent_message_id set
+        const threads = await engine.conversations.listThreads(parent.conversationId);
+        expect(threads.length).toBe(1);
+        expect(threads[0].conversationId).toBe(thread.conversationId);
+        expect(threads[0].parentMessageId).toBe(anchorId);
+      });
+
+      it("listThreads excludes subagent-only children (no parentMessageId)", async () => {
+        const parent = await engine.conversations.create("o", "Parent");
+        // Subagent: parentConversationId set but no parentMessageId
+        await engine.conversations.create("o", "Subagent", null, {
+          parentConversationId: parent.conversationId,
+          subagentMeta: { task: "x", status: "completed" },
+        });
+        // Thread: both set
+        const thread = await engine.conversations.create("o", "Thread", null, {
+          parentConversationId: parent.conversationId,
+          parentMessageId: "anchor",
+          threadMeta: { snapshotLength: 1 },
+        });
+
+        const threads = await engine.conversations.listThreads(parent.conversationId);
+        expect(threads).toHaveLength(1);
+        expect(threads[0].conversationId).toBe(thread.conversationId);
+      });
     });
 
     // -- Memory --

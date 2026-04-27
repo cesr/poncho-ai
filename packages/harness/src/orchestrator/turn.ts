@@ -179,13 +179,17 @@ export const recordStandardTurnEvent = (draft: TurnDraftState, event: AgentEvent
 export const buildAssistantMetadata = (
   draft: TurnDraftState,
   sectionsOverride?: TurnSection[],
+  opts?: { id?: string; timestamp?: number },
 ): Message["metadata"] | undefined => {
   const sections = sectionsOverride ?? cloneSections(draft.sections);
-  if (draft.toolTimeline.length === 0 && sections.length === 0) return undefined;
-  return {
-    toolActivity: [...draft.toolTimeline],
-    sections: sections.length > 0 ? sections : undefined,
-  } as Message["metadata"];
+  const hasContent = draft.toolTimeline.length > 0 || sections.length > 0;
+  if (!hasContent && !opts?.id) return undefined;
+  const meta: Message["metadata"] = {};
+  if (opts?.id) meta.id = opts.id;
+  if (opts?.timestamp) meta.timestamp = opts.timestamp;
+  if (draft.toolTimeline.length > 0) meta.toolActivity = [...draft.toolTimeline];
+  if (sections.length > 0) meta.sections = sections;
+  return meta;
 };
 
 // ── Turn executor ──

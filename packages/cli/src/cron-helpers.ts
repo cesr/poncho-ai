@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   executeConversationTurn,
   flushTurnDraft,
@@ -62,6 +63,10 @@ export type CronRunResult = {
   latestRunId: string;
   continuation: boolean;
   continuationMessages?: Message[];
+  /** Stable id for the user-turn message persisted by buildCronMessages/appendCronTurn. */
+  userMessageId: string;
+  /** Timestamp shared by user and assistant messages of this turn. */
+  turnTimestamp: number;
 };
 
 export const runCronAgent = async (
@@ -72,6 +77,9 @@ export const runCronAgent = async (
   toolResultArchive?: Conversation["_toolResultArchive"],
   onEvent?: (event: AgentEvent) => void | Promise<void>,
 ): Promise<CronRunResult> => {
+  const turnTimestamp = Date.now();
+  const userMessageId = randomUUID();
+  const assistantId = randomUUID();
   const execution = await executeConversationTurn({
     harness: harnessRef,
     runInput: {
@@ -87,7 +95,10 @@ export const runCronAgent = async (
   });
   flushTurnDraft(execution.draft);
   const hasContent = execution.draft.assistantResponse.length > 0 || execution.draft.toolTimeline.length > 0;
-  const assistantMetadata = buildAssistantMetadata(execution.draft);
+  const assistantMetadata = buildAssistantMetadata(execution.draft, undefined, {
+    id: assistantId,
+    timestamp: turnTimestamp,
+  });
   return {
     response: execution.draft.assistantResponse,
     steps: execution.runSteps,
@@ -100,6 +111,8 @@ export const runCronAgent = async (
     latestRunId: execution.latestRunId,
     continuation: execution.runContinuation,
     continuationMessages: execution.runContinuationMessages,
+    userMessageId,
+    turnTimestamp,
   };
 };
 
@@ -109,7 +122,11 @@ export const buildCronMessages = (
   result: CronRunResult,
 ): Message[] => [
   ...historyMessages,
-  { role: "user" as const, content: task },
+  {
+    role: "user" as const,
+    content: task,
+    metadata: { id: result.userMessageId, timestamp: result.turnTimestamp },
+  },
   ...(result.hasContent
     ? [{ role: "assistant" as const, content: result.response, metadata: result.assistantMetadata }]
     : []),
@@ -118,7 +135,11 @@ export const buildCronMessages = (
 /** Append a cron turn to a freshly-fetched conversation (avoids overwriting concurrent writes). */
 export const appendCronTurn = (conv: Conversation, task: string, result: CronRunResult): void => {
   conv.messages.push(
-    { role: "user" as const, content: task },
+    {
+      role: "user" as const,
+      content: task,
+      metadata: { id: result.userMessageId, timestamp: result.turnTimestamp },
+    },
     ...(result.hasContent
       ? [{ role: "assistant" as const, content: result.response, metadata: result.assistantMetadata }]
       : []),

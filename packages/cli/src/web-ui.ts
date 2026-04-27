@@ -205,6 +205,30 @@ ${WEB_UI_STYLES}
             <div id="browser-panel-placeholder" class="browser-panel-placeholder">No active browser session</div>
           </div>
         </aside>
+        <div id="thread-panel-resize" class="thread-panel-resize" style="display:none"></div>
+        <aside id="thread-panel" class="thread-panel" style="display:none">
+          <div class="thread-panel-header">
+            <span class="thread-panel-title">Thread</span>
+            <button id="thread-panel-close" class="thread-panel-close" title="Close thread">&times;</button>
+          </div>
+          <div id="thread-panel-parent" class="thread-panel-parent"></div>
+          <div id="thread-panel-messages" class="thread-panel-messages messages"></div>
+          <form id="thread-composer" class="composer thread-composer">
+            <div class="composer-inner">
+              <div id="thread-attachment-preview" class="attachment-preview" style="display:none"></div>
+              <div class="composer-shell">
+                <button id="thread-attach-btn" class="attach-btn" type="button" title="Attach files">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                </button>
+                <input id="thread-file-input" type="file" multiple accept="image/*,video/*,application/pdf,.txt,.csv,.json,.html" style="display:none" />
+                <textarea id="thread-prompt" class="composer-input" placeholder="Reply in thread..." rows="1"></textarea>
+                <button id="thread-send" class="send-btn" type="submit">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 12V4M4 7l4-4 4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+              </div>
+            </div>
+          </form>
+        </aside>
       </div>
     </main>
   </div>

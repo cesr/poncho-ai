@@ -22,6 +22,8 @@ export interface ConversationSummary {
   createdAt: number;
   updatedAt: number;
   messageCount: number;
+  parentConversationId?: string;
+  parentMessageId?: string;
 }
 
 export interface FileAttachment {

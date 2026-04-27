@@ -226,3 +226,13 @@ export type AgentEvent =
     }
   | { type: "subagents:pending" }
   | { type: "compaction:warning"; reason: string };
+
+export {
+  createLogger,
+  setLogLevel,
+  formatError,
+  url,
+  muted,
+  num,
+  type Logger,
+} from "./logger.js";

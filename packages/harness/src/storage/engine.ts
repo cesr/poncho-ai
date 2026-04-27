@@ -73,6 +73,8 @@ export interface StorageEngine {
       result: PendingSubagentResult,
     ): Promise<void>;
     clearCallbackLock(conversationId: string): Promise<Conversation | undefined>;
+    /** List thread conversations anchored under `parentConversationId`. */
+    listThreads(parentConversationId: string): Promise<ConversationSummary[]>;
   };
 
   // --- Memory (replaces MemoryStore) ---

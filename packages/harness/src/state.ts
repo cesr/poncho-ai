@@ -54,6 +54,13 @@ export interface Conversation {
   contextTokens?: number;
   contextWindow?: number;
   parentConversationId?: string;
+  parentMessageId?: string;
+  threadMeta?: {
+    /** First ~200 chars of the anchor message text, cached for cheap rendering. */
+    parentMessageSummary?: string;
+    /** Length of the snapshot at fork time. messages[snapshotLength-1] is the anchor. */
+    snapshotLength: number;
+  };
   subagentMeta?: {
     task: string;
     status: "running" | "completed" | "error" | "stopped";
@@ -79,6 +86,8 @@ export interface Conversation {
 
 export interface ConversationCreateInit {
   parentConversationId?: string;
+  parentMessageId?: string;
+  threadMeta?: Conversation["threadMeta"];
   subagentMeta?: Conversation["subagentMeta"];
   messages?: Message[];
   channelMeta?: Conversation["channelMeta"];
@@ -115,6 +124,8 @@ export interface ConversationStore {
   delete(conversationId: string): Promise<boolean>;
   appendSubagentResult(conversationId: string, result: PendingSubagentResult): Promise<void>;
   clearCallbackLock(conversationId: string): Promise<Conversation | undefined>;
+  /** List thread conversations anchored under `parentConversationId`. */
+  listThreads(parentConversationId: string): Promise<ConversationSummary[]>;
 }
 
 export type StateProviderName =
@@ -214,6 +225,7 @@ export class InMemoryConversationStore implements ConversationStore {
         ownerId: c.ownerId,
         tenantId: c.tenantId,
         parentConversationId: c.parentConversationId,
+        parentMessageId: c.parentMessageId,
         messageCount: c.messages.length,
         hasPendingApprovals: Array.isArray(c.pendingApprovals) && c.pendingApprovals.length > 0,
         channelMeta: c.channelMeta,
@@ -265,6 +277,12 @@ export class InMemoryConversationStore implements ConversationStore {
       ...(init?.parentConversationId !== undefined
         ? { parentConversationId: init.parentConversationId }
         : {}),
+      ...(init?.parentMessageId !== undefined
+        ? { parentMessageId: init.parentMessageId }
+        : {}),
+      ...(init?.threadMeta !== undefined
+        ? { threadMeta: init.threadMeta }
+        : {}),
       ...(init?.subagentMeta !== undefined
         ? { subagentMeta: init.subagentMeta }
         : {}),
@@ -314,6 +332,30 @@ export class InMemoryConversationStore implements ConversationStore {
     conversation.updatedAt = Date.now();
     return conversation;
   }
+
+  async listThreads(parentConversationId: string): Promise<ConversationSummary[]> {
+    this.purgeExpired();
+    return Array.from(this.conversations.values())
+      .filter(
+        (c) =>
+          c.parentConversationId === parentConversationId &&
+          typeof c.parentMessageId === "string",
+      )
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((c) => ({
+        conversationId: c.conversationId,
+        title: c.title,
+        updatedAt: c.updatedAt,
+        createdAt: c.createdAt,
+        ownerId: c.ownerId,
+        tenantId: c.tenantId,
+        parentConversationId: c.parentConversationId,
+        parentMessageId: c.parentMessageId,
+        messageCount: c.messages.length,
+        hasPendingApprovals: Array.isArray(c.pendingApprovals) && c.pendingApprovals.length > 0,
+        channelMeta: c.channelMeta,
+      }));
+  }
 }
 
 export type ConversationSummary = {
@@ -324,6 +366,7 @@ export type ConversationSummary = {
   ownerId: string;
   tenantId?: string | null;
   parentConversationId?: string;
+  parentMessageId?: string;
   messageCount?: number;
   hasPendingApprovals?: boolean;
   channelMeta?: {

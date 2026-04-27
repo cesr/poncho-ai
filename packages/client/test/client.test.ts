@@ -517,4 +517,80 @@ describe("AgentClient", () => {
 
     await expect(client.readFile("/missing.txt")).rejects.toThrow("VFS read failed");
   });
+
+  it("listThreads GETs /threads and returns the array", async () => {
+    let calledUrl: string | undefined;
+    let calledMethod: string | undefined;
+    const client = new AgentClient({
+      url: "http://localhost:3000",
+      fetchImpl: async (input, init) => {
+        calledUrl = typeof input === "string" ? input : (input as URL).href;
+        calledMethod = (init?.method ?? "GET").toUpperCase();
+        return jsonResponse({
+          threads: [
+            {
+              conversationId: "thread_1",
+              parentConversationId: "conv_1",
+              parentMessageId: "msg_a",
+              title: "Thread 1",
+              messageCount: 3,
+              replyCount: 1,
+              snapshotLength: 2,
+              createdAt: 1,
+              updatedAt: 2,
+              lastReplyAt: 2,
+            },
+          ],
+        });
+      },
+    });
+
+    const threads = await client.listThreads("conv_1");
+    expect(calledUrl).toContain("/api/conversations/conv_1/threads");
+    expect(calledMethod).toBe("GET");
+    expect(threads).toHaveLength(1);
+    expect(threads[0].parentMessageId).toBe("msg_a");
+  });
+
+  it("createThread POSTs to /threads with parentMessageId in the body", async () => {
+    let calledUrl: string | undefined;
+    let calledMethod: string | undefined;
+    let calledBody: string | undefined;
+    const client = new AgentClient({
+      url: "http://localhost:3000",
+      fetchImpl: async (input, init) => {
+        calledUrl = typeof input === "string" ? input : (input as URL).href;
+        calledMethod = (init?.method ?? "GET").toUpperCase();
+        calledBody = init?.body as string | undefined;
+        return jsonResponse(
+          {
+            thread: {
+              conversationId: "thread_new",
+              parentConversationId: "conv_1",
+              parentMessageId: "msg_a",
+              title: "Thread: hi",
+              messageCount: 1,
+              replyCount: 0,
+              snapshotLength: 1,
+              createdAt: 1,
+              updatedAt: 1,
+              lastReplyAt: 1,
+            },
+            conversationId: "thread_new",
+          },
+          201,
+        );
+      },
+    });
+
+    const resp = await client.createThread("conv_1", "msg_a", "Custom title");
+    expect(calledUrl).toContain("/api/conversations/conv_1/threads");
+    expect(calledMethod).toBe("POST");
+    expect(calledBody && JSON.parse(calledBody)).toEqual({
+      parentMessageId: "msg_a",
+      title: "Custom title",
+    });
+    expect(resp.conversationId).toBe("thread_new");
+    expect(resp.thread.parentMessageId).toBe("msg_a");
+  });
 });

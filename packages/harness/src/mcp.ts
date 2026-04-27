@@ -1,8 +1,11 @@
 import type { ToolDefinition } from "@poncho-ai/sdk";
+import { createLogger } from "@poncho-ai/sdk";
 import {
   matchesSlashPattern,
   validateMcpPattern,
 } from "./tool-policy.js";
+
+const mcpLog = createLogger("mcp");
 
 export interface RemoteMcpServerConfig {
   name?: string;
@@ -317,12 +320,12 @@ export class LocalMcpBridge {
   }
 
   private log(level: "info" | "warn", event: string, payload: Record<string, unknown>): void {
-    const line = JSON.stringify({ event, ...payload });
-    if (level === "warn") {
-      console.warn(`[poncho][mcp] ${line}`);
-      return;
-    }
-    console.info(`[poncho][mcp] ${line}`);
+    const summary = Object.entries(payload)
+      .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+      .join(" ");
+    const msg = summary ? `${event} ${summary}` : event;
+    if (level === "warn") mcpLog.warn(msg);
+    else mcpLog.debug(msg);
   }
 
   /** Set of servers where discovery was deferred (no default token, has env resolver). */

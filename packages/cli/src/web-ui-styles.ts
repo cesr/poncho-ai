@@ -631,7 +631,7 @@ export const WEB_UI_STYLES = `
     /* Messages */
     .messages { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 24px 24px; }
     .messages-column { max-width: 680px; margin: 0 auto; }
-    .message-row { margin-bottom: 24px; display: flex; max-width: 100%; }
+    .message-row { margin-bottom: 24px; display: flex; max-width: 100%; position: relative; }
     .message-row.user { justify-content: flex-end; }
     .assistant-wrap { display: flex; gap: 12px; width: 100%; min-width: 0; }
     .assistant-avatar {
@@ -1988,6 +1988,283 @@ export const WEB_UI_STYLES = `
     .todo-priority-low {
       color: var(--fg-5);
       background: var(--surface-1);
+    }
+
+    /* Thread affordances rendered as their own block in the messages column,
+       tucked tight beneath the parent message — Slack-style indicator. */
+    .thread-affordance-block {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      /* Negative top margin compensates for .message-row's 24px bottom
+         margin so the indicator sits right under the message it belongs to. */
+      margin: -18px 0 8px 30px;
+    }
+    .message-row.user + .thread-affordance-block {
+      margin-left: 0;
+      margin-right: 12px;
+      align-items: flex-end;
+    }
+    .thread-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 6px 4px 8px;
+      border: 0;
+      background: transparent;
+      font: inherit;
+      color: var(--fg-3);
+      cursor: pointer;
+      text-align: left;
+      border-radius: 8px;
+      transition: color 0.1s, background 0.1s;
+      width: 100%;
+      max-width: 100%;
+    }
+    .thread-row:hover {
+      color: var(--fg);
+      background: var(--bg-bubble-user, rgba(0,0,0,0.04));
+    }
+    /* Under user messages, reuse the "Reply in thread" pill design. */
+    .message-row.user + .thread-affordance-block .thread-row {
+      width: auto;
+      max-width: 100%;
+      padding: 4px 6px 4px 12px;
+      border: 1px solid var(--border, rgba(0,0,0,0.12));
+      background: var(--bg, #fff);
+      border-radius: 999px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .message-row.user + .thread-affordance-block .thread-row:hover {
+      background: var(--bg, #fff);
+      border-color: var(--accent, var(--border));
+      color: var(--accent, var(--fg));
+    }
+    .message-row.user + .thread-affordance-block .thread-row-count {
+      color: inherit;
+    }
+    .thread-row-count {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--accent, #3b82f6);
+    }
+    .thread-row-meta {
+      font-size: 12px;
+      color: var(--fg-3);
+    }
+    .thread-row-delete {
+      margin-left: auto;
+      padding: 0 6px;
+      border: 0;
+      background: transparent;
+      color: var(--fg-7, var(--fg-3));
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      opacity: 0;
+      transition: opacity 0.15s, color 0.15s;
+    }
+    .thread-row:hover .thread-row-delete,
+    .thread-pill-pair:hover .thread-row-delete,
+    .reply-pill-wrap:hover .thread-row-delete {
+      opacity: 1;
+    }
+    .thread-row-delete:hover {
+      color: var(--fg-2);
+      background: transparent;
+    }
+
+    /* Reply-in-thread pill — absolutely positioned so it floats below the
+       message row without pushing content. Position differs by role. */
+    .reply-pill-wrap {
+      position: absolute;
+      z-index: 5;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      opacity: 0;
+      visibility: hidden;
+      /* Hide is delayed so the user has time to move the mouse from the
+         message bubble down to the pill without the pill disappearing or
+         losing interactivity in the gap between them. */
+      transition: opacity 0.12s 0.2s, visibility 0s 0.32s;
+      /* Default: assistant placement (overridden for user below). */
+      bottom: -36px;
+      left: 36px;
+      right: auto;
+    }
+    .message-row.user .reply-pill-wrap {
+      bottom: -20px;
+      right: 0;
+      left: auto;
+    }
+    .message-row:hover .reply-pill-wrap,
+    .reply-pill-wrap:hover {
+      opacity: 1;
+      visibility: visible;
+      transition: opacity 0.12s 0s, visibility 0s 0s;
+    }
+    /* When the message has at least one thread, the badge stays visible at
+       all times (no hover required) and stacks vertically when there are
+       multiple threads. */
+    .reply-pill-wrap.has-threads {
+      opacity: 1;
+      visibility: visible;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+      transition: none;
+    }
+    .message-row.user .reply-pill-wrap.has-threads {
+      align-items: flex-end;
+    }
+    .thread-pill-pair {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+    }
+    .thread-pill-pair .thread-row-delete {
+      position: absolute;
+      left: 100%;
+      top: 0;
+      bottom: 0;
+      margin: 0 0 0 4px;
+      padding: 0 6px;
+      display: grid;
+      place-items: center;
+      background: transparent;
+    }
+    .reply-icon-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 10px;
+      border: 1px solid var(--border, rgba(0,0,0,0.12));
+      background: var(--bg, #fff);
+      cursor: pointer;
+      color: var(--fg-3);
+      font-size: 12px;
+      border-radius: 999px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      transition: color 0.1s, background 0.1s, border-color 0.1s;
+    }
+    .reply-icon-btn:hover {
+      color: var(--accent, var(--fg));
+      border-color: var(--accent, var(--border));
+      /* Keep an opaque background — the var(--bg-bubble-user) fallback can
+         be transparent in some themes which makes the pill see-through. */
+      background: var(--bg, #fff);
+    }
+    .reply-icon-btn svg { width: 13px; height: 13px; }
+    .thread-pill .thread-pill-count {
+      font-weight: 500;
+    }
+    .thread-pill .thread-pill-meta {
+      margin-left: 2px;
+      color: var(--fg-3);
+      font-weight: 400;
+    }
+
+    /* Thread panel — flex sibling matching the browser-panel pattern */
+    .thread-panel-resize {
+      width: 1px;
+      cursor: col-resize;
+      background: var(--border-1);
+      flex-shrink: 0;
+      position: relative;
+      z-index: 10;
+    }
+    .thread-panel-resize::after {
+      content: "";
+      position: absolute;
+      inset: 0 -3px;
+    }
+    .thread-panel-resize:hover,
+    .thread-panel-resize.dragging {
+      background: var(--fg-5);
+    }
+    .thread-panel {
+      flex: 1 1 0%;
+      min-width: 320px;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .main-chat.has-thread {
+      flex: 1 1 0%;
+      min-width: 280px;
+    }
+    .thread-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      min-height: 40px;
+    }
+    .thread-panel-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--fg-tool);
+      white-space: nowrap;
+    }
+    .thread-panel-close {
+      background: none;
+      border: none;
+      color: var(--fg-3);
+      font-size: 18px;
+      cursor: pointer;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      line-height: 1;
+      border-radius: 4px;
+    }
+    .thread-panel-close:hover { color: var(--fg); }
+    .thread-panel-parent {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-bubble-user, rgba(0,0,0,0.02));
+      font-size: 13px;
+    }
+    .thread-panel-parent .message-row {
+      margin: 0;
+    }
+    .thread-panel-parent-empty {
+      color: var(--fg-3);
+      font-style: italic;
+    }
+    .thread-panel-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 16px;
+    }
+    /* Match the main composer's vertical padding so both chatboxes align
+       at the same baseline. Horizontal padding is reduced because the panel
+       is narrower than the main pane. */
+    .thread-composer {
+      padding: 12px 12px 24px;
+    }
+    .thread-composer .composer-inner {
+      margin: 0;
+    }
+    /* Thread-row delete button — matches the sidebar conversation-item delete UX */
+    .thread-row-delete.confirming {
+      opacity: 1 !important;
+      padding: 0 8px;
+      font-size: 11px;
+      color: var(--error, #e44);
+      background: transparent;
+    }
+    .thread-row-delete.confirming:hover {
+      color: var(--error-alt, #c33);
+      background: transparent;
     }
 
     /* Reduced motion */
