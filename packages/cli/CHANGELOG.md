@@ -1,5 +1,230 @@
 # @poncho-ai/cli
 
+## 0.38.0
+
+### Minor Changes
+
+- [#95](https://github.com/cesr/poncho-ai/pull/95) [`21ee02a`](https://github.com/cesr/poncho-ai/commit/21ee02a577cd0a85823cc3922dd0dc54c630f417) Thanks [@cesr](https://github.com/cesr)! - perf: eliminate per-conversation archive egress on the hot read path
+
+  Three related fixes that together dramatically reduce database and
+  server→browser egress for any long-lived conversation:
+  - `conversationStore.get()` no longer loads the `tool_result_archive`
+    column. Callers that actually need to reseed the harness archive —
+    run entry points, cron runs, reminder firings — must now use the new
+    `conversationStore.getWithArchive()` method instead.
+  - The `GET /api/conversations/:id` response strips `_toolResultArchive`
+    alongside the already-stripped `_continuationMessages` and
+    `_harnessMessages`, so the browser never receives the archive payload.
+  - Adds a cheap `GET /api/conversations/:id/status` endpoint backed by a
+    new `getStatusSnapshot()` method that reads only summary columns (no
+    `data` blob). The web UI poll loops now hit this endpoint every 2s
+    and only refetch the full conversation when `updatedAt`,
+    `messageCount`, or the pending-approval counts actually change.
+
+  The SQL upsert was also updated to preserve `tool_result_archive` via
+  `COALESCE(excluded, conversations.tool_result_archive)` so that updates
+  on conversations loaded via the light `get()` do not clobber the
+  existing archive.
+
+- [#100](https://github.com/cesr/poncho-ai/pull/100) [`ef4fe5d`](https://github.com/cesr/poncho-ai/commit/ef4fe5d1fd4bb31c201fd240f4524b64f01e3e6d) Thanks [@cesr](https://github.com/cesr)! - feat: Slack-style message threads
+
+  Users can now fork any persisted message into one or more threads. Each
+  thread is a new conversation whose initial history is a snapshot of the
+  parent up to and including the anchor message; replies in the thread
+  evolve independently of the parent. Multiple threads per parent message
+  are supported.
+
+  ## Web UI
+  - Hover any message in the main pane to reveal a "Reply in thread" pill
+    positioned just below the bubble (offset varies by role). The pill is
+    invisible by default and only appears on hover; a delayed-hide bridges
+    the empty space between message and pill so the user can move the
+    mouse onto it without it flickering off.
+  - Once a thread exists on a message, the pill is replaced by an
+    always-visible badge (`"N replies · 5m ago"`, count bold + meta muted).
+    Multiple threads stack vertically under the message, each with its own
+    badge. Hovering a badge reveals an outside-positioned `×` delete with
+    the same two-step "× → sure?" confirmation as the sidebar
+    conversation-delete.
+  - Clicking a badge opens the thread in a right-side panel that mirrors
+    the existing browser-panel pattern: a flex sibling of `.main-chat`
+    with a 1px drag-resize handle. The panel has its own composer
+    (independent file uploads, paste-to-attach, attachment preview)
+    rendered alongside the main composer so users can keep typing in the
+    parent conversation. Vertical padding matches the main composer so
+    both chatboxes line up at the same baseline.
+  - The pinned parent message and replies inside the panel render through
+    the same DOM construction logic as the main pane (assistant avatar +
+    markdown, user bubble + file thumbnails). Reply submissions stream
+    token-by-token via SSE (parsed model:chunk events feed an optimistic
+    assistant placeholder; a thinking-indicator shows until the first
+    chunk lands).
+  - The open thread is reflected in the URL hash (`#thread=<id>`) so a
+    page reload restores the panel. Switching conversations or closing
+    the panel clears the hash and any sticky drag-resize widths.
+
+  ## DB
+  - New `parent_message_id TEXT` column on `conversations` (migration 6)
+    plus a partial index on `(parent_conversation_id, parent_message_id)
+WHERE parent_message_id IS NOT NULL`.
+  - The existing `parent_conversation_id` plumbing is reused; subagents
+    and threads coexist on that column, discriminated by whether
+    `parent_message_id` is set (subagents leave it `NULL`).
+  - `threadMeta` (snapshot length + cached parent-message summary)
+    round-trips inside the conversation `data` blob.
+
+  ## API
+  - `GET /api/conversations/:id/threads` → `{ threads: ApiThreadSummary[] }`
+  - `POST /api/conversations/:id/threads { parentMessageId, title? }` →
+    201 `{ thread, conversationId }` |
+    404 `PARENT_MESSAGE_NOT_FOUND` |
+    409 `MESSAGE_ID_REQUIRED` (anchor lacks a stable id) |
+    409 `ANCHOR_IN_FLIGHT` (anchor is the streaming tail of a live run)
+  - The two `SUBAGENT_READ_ONLY` gates on `/messages` and `/continue` are
+    now keyed on `subagentMeta` rather than `parentConversationId` so
+    threads remain writable.
+  - New `ApiThreadSummary`, `ApiThreadListResponse`,
+    `ApiCreateThreadRequest`, `ApiCreateThreadResponse` types in
+    `@poncho-ai/sdk`. New `AgentClient.listThreads` /
+    `AgentClient.createThread` wrappers in `@poncho-ai/client`.
+
+  ## Storage interface
+  - `ConversationStore.listThreads(parentConversationId)` and the
+    matching `StorageEngine.conversations.listThreads(...)`. External
+    implementers of these interfaces will need to add the method.
+  - `Conversation` / `ConversationCreateInit` / `ConversationSummary`
+    gained optional `parentMessageId` and `threadMeta` fields.
+
+  ## Fork semantics
+  - Stable `metadata.id` on every persisted message: `randomUUID()` is
+    hoisted once per turn and reused for both the user message and the
+    in-flight assistant message across all persist sites (cli messaging
+    run, cli `/messages` handler, cron path). `buildAssistantMetadata`
+    takes an optional `{ id, timestamp }` opt-arg.
+  - No DB backfill of legacy id-less messages; the SPA hides the
+    "Reply in thread" affordance on rows whose `metadata.id` is missing.
+  - The visible-sequence used for the anchor lookup is reconstructed as
+    `[...compactedHistory, ...messages.filter(notCompactionSummary)]`,
+    so pre-compaction anchors are supported. For pre-compaction anchors,
+    `_harnessMessages` is reset to `undefined` so the harness rebuilds
+    canonical history from `messages` on the thread's first run.
+  - Forking on the actively-streaming tail message of a live run returns
+    409 `ANCHOR_IN_FLIGHT`; any prior, already-persisted message is
+    fork-able even while the parent is mid-run.
+  - Tool-result archive entries are filtered to only those referenced by
+    tool calls in the trimmed `_harnessMessages` (no whole-archive clones).
+  - All run-specific state is reset on the new thread:
+    `runtimeRunId`, `pendingApprovals`, `runStatus`,
+    `pendingSubagentResults`, `subagentCallbackCount`,
+    `runningCallbackSince`, `_continuationMessages`. `channelMeta` and
+    `subagentMeta` are explicitly NOT inherited so threads aren't bound
+    to the parent's Slack/Telegram thread and aren't subagent runs.
+  - Thread conversations stay out of the sidebar list (already-existing
+    `!c.parentConversationId` filter) and are cascade-deleted with their
+    parent.
+
+### Patch Changes
+
+- [#100](https://github.com/cesr/poncho-ai/pull/100) [`ef4fe5d`](https://github.com/cesr/poncho-ai/commit/ef4fe5d1fd4bb31c201fd240f4524b64f01e3e6d) Thanks [@cesr](https://github.com/cesr)! - feat(logging): readable, scoped, level-aware dev server logs
+
+  `poncho dev` output is now formatted consistently across the CLI and
+  harness:
+
+  ```
+  20:23:45 ✓ poncho     dev server ready at http://localhost:3000
+  20:23:45 • slack      enabled at /api/messaging/slack
+  20:23:45 • cron       scheduled 2 jobs: hourly_check, nightly_summary
+  20:24:15 → cron:hourly_check  started
+  20:24:17 ✓ cron:hourly_check  completed in 1.2s (3 chats)
+  20:25:00 ⚠ telegram   approval not found: req-7f42a
+  20:25:01 ✗ poncho     internal error: ECONNREFUSED
+  ```
+
+  Format: `HH:mm:ss <symbol> <scope> <message>`. Scopes (`poncho`, `cron`,
+  `reminder`, `messaging`, `slack`, `telegram`, `resend`, `subagent`,
+  `approval`, `browser`, `csrf`, `upload`, `serverless`, `self-fetch`,
+  `mcp`, `telemetry`, `cost`, `model`, `harness`, `event`, `tools`)
+  replace the previous mix of `[poncho]`, `[poncho][cost]`, `[cron]`,
+  `[messaging-runner]`, `[event] ...`, etc.
+  - New `createLogger(scope)` exported from `@poncho-ai/sdk` with
+    `.debug/.info/.warn/.error/.success/.ready/.item/.child(sub)` and
+    helpers `formatError`, `url`, `muted`, `num`.
+  - Honors `NO_COLOR` / `FORCE_COLOR` and `LOG_LEVEL=debug|info|warn|error|silent`.
+    Verbose telemetry/cost/event lines now log at `debug` and are silent
+    by default.
+  - `poncho dev` gains `-v`/`--verbose` (debug), `-q`/`--quiet` (warn+),
+    and `--log-level <level>` flags.
+  - Each scope tag is colored with a stable pastel hue (truecolor), with
+    256-color and 16-color fallbacks. Children (`cron:hourly_check`)
+    inherit their parent's color.
+  - TTY-aware: ANSI color is stripped when stdout is piped.
+  - Conversation-egress logging (`[poncho][egress] read: …`) is now opt-in
+    via `PONCHO_LOG_EGRESS=1` (matching the documented behavior; it had
+    been logging unconditionally).
+  - No behavior changes to which events are emitted — only formatting.
+
+- [`fcf6a02`](https://github.com/cesr/poncho-ai/commit/fcf6a027880ac94ada2e3fd732b11eed9f5f15b8) Thanks [@cesr](https://github.com/cesr)! - chore: drop browser-frame noise from the dev log
+
+  Two sources of per-frame log noise during interactive browser use
+  are now silenced:
+  - `TelemetryEmitter.emit` skips `browser:frame` events alongside the
+    already-skipped `model:chunk`. OTLP forwarding and custom handlers
+    still receive every event unchanged.
+  - The CLI's browser SSE endpoint no longer prints the
+    `[poncho][browser-sse] Frame N: WxH, data bytes: ...` counter
+    (which fired for the first 3 frames and every 50th). Related
+    `frameCount` / `droppedFrames` state dropped with it.
+
+- [#97](https://github.com/cesr/poncho-ai/pull/97) [`1eb1b1e`](https://github.com/cesr/poncho-ai/commit/1eb1b1e71641f79aa089a967811dcfe2de59be8d) Thanks [@cesr](https://github.com/cesr)! - refactor: extract subagent lifecycle into AgentOrchestrator (phase 5)
+
+  Move subagent orchestration (~1100 lines) from the CLI into the
+  AgentOrchestrator class in the harness package. The orchestrator now
+  owns all subagent state (activeSubagentRuns, pendingSubagentApprovals,
+  pendingCallbackNeeded), lifecycle methods (runSubagent,
+  processSubagentCallback, triggerParentCallback), SubagentManager
+  creation, approval handling, and stale recovery.
+
+  New hooks on OrchestratorHooks allow transport-specific concerns
+  (child harness creation, serverless dispatch, SSE stream lifecycle,
+  messaging notifications) to stay in the CLI while the orchestrator
+  handles all orchestration logic.
+
+  Also fixes subagent approval persistence (decisions now explicitly
+  written to the conversation store) and adds live SSE streaming for
+  parent callback runs in the web UI.
+
+- [`33eaf9f`](https://github.com/cesr/poncho-ai/commit/33eaf9fcc57bab916ae8a25c942912eb5d6396cc) Thanks [@cesr](https://github.com/cesr)! - fix: stop buffering `browser:frame` events for SSE replay
+
+  Every `browser:frame` carries a base64 screenshot (~100 KB) and they
+  stream at 10+ fps. `broadcastEvent` was pushing them into the
+  per-conversation replay buffer (`ConversationEventStream.buffer`)
+  alongside real conversation events. In a long interactive browser
+  session this grew to multiple GB (observed: ~51k frames ≈ 4.4 GB of
+  retained base64 strings) and eventually crashed the dev server with
+  `FATAL ERROR: Reached heap limit - JavaScript heap out of memory`
+  inside V8's `JsonStringify`.
+
+  Frames are now excluded from the replay buffer — they still reach
+  live SSE subscribers, they just don't accumulate for late joiners,
+  matching the existing treatment of `browser:status`.
+
+- [`a843130`](https://github.com/cesr/poncho-ai/commit/a8431303992381f338d6a90feeba03273734fd81) Thanks [@cesr](https://github.com/cesr)! - fix(web-ui): show assistant content alongside run errors
+
+  When a run ended with `run:error` (most visibly `MAX_STEPS_EXCEEDED`),
+  the web UI renderer replaced the entire assistant turn with just the
+  error banner. All the text and tool activity the agent had already
+  produced — which the server correctly persists — was hidden because
+  the render branch was `if (_error) { only error } else { content }`.
+
+  The renderer now renders the content first (sections, streaming tools
+  and text, pending approvals) and appends the error banner at the end.
+  The "waiting" spinner is also suppressed when an error is present.
+
+- Updated dependencies [[`ef4fe5d`](https://github.com/cesr/poncho-ai/commit/ef4fe5d1fd4bb31c201fd240f4524b64f01e3e6d), [`fcf6a02`](https://github.com/cesr/poncho-ai/commit/fcf6a027880ac94ada2e3fd732b11eed9f5f15b8), [`1eb1b1e`](https://github.com/cesr/poncho-ai/commit/1eb1b1e71641f79aa089a967811dcfe2de59be8d), [`21ee02a`](https://github.com/cesr/poncho-ai/commit/21ee02a577cd0a85823cc3922dd0dc54c630f417), [`ef4fe5d`](https://github.com/cesr/poncho-ai/commit/ef4fe5d1fd4bb31c201fd240f4524b64f01e3e6d)]:
+  - @poncho-ai/sdk@1.9.0
+  - @poncho-ai/harness@0.39.0
+  - @poncho-ai/messaging@0.8.4
+
 ## 0.37.0
 
 ### Minor Changes
