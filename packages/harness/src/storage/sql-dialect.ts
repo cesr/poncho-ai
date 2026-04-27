@@ -8,6 +8,7 @@
 // ---------------------------------------------------------------------------
 
 import { randomUUID } from "node:crypto";
+import { createLogger } from "@poncho-ai/sdk";
 import type {
   Conversation,
   ConversationCreateInit,
@@ -15,6 +16,8 @@ import type {
   ConversationSummary,
   PendingSubagentResult,
 } from "../state.js";
+
+const egressLog = createLogger("egress");
 import type { MainMemory } from "../memory.js";
 import type { TodoItem } from "../todo-tools.js";
 import type { Reminder, ReminderCreateInput, ReminderStatus } from "../reminder-store.js";
@@ -126,7 +129,7 @@ class ConversationEgressMeter {
 
   constructor(logIntervalMs = 60_000) {
     this.logIntervalMs = logIntervalMs;
-    this.enabled = true;
+    this.enabled = process.env.PONCHO_LOG_EGRESS === "1";
   }
 
   trackRead(method: string, bytes: number): void {
@@ -152,6 +155,7 @@ class ConversationEgressMeter {
   }
 
   flush(): void {
+    if (!this.enabled) return;
     const fmt = (buckets: Record<string, EgressBucket>) =>
       Object.entries(buckets)
         .filter(([, b]) => b.calls > 0)
@@ -160,9 +164,7 @@ class ConversationEgressMeter {
     const r = fmt(this.read);
     const w = fmt(this.write);
     if (r || w) {
-      process.stderr.write(
-        `[poncho][egress] read: ${r || "(none)"} | write: ${w || "(none)"}\n`,
-      );
+      egressLog.debug(`read: ${r || "(none)"} | write: ${w || "(none)"}`);
     }
     // Reset after logging.
     for (const b of Object.values(this.read)) { b.calls = 0; b.bytes = 0; }

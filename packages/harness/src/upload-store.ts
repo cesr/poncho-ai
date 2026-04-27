@@ -3,7 +3,10 @@ import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { createLogger } from "@poncho-ai/sdk";
 import type { UploadsConfig } from "./config.js";
+
+const uploadLog = createLogger("upload");
 
 /**
  * Try to dynamically import a module, first from the harness's own
@@ -62,7 +65,7 @@ class CachedUploadStore implements UploadStore {
 
     // Fire off the real upload in the background — don't block the caller.
     this.inner.put(key, data, mediaType).catch((err) => {
-      console.error("[poncho] background upload failed:", err instanceof Error ? err.message : err);
+      uploadLog.error(`background upload failed: ${err instanceof Error ? err.message : err}`);
     });
 
     return ref;
@@ -343,7 +346,7 @@ export class S3UploadStore implements UploadStore {
 // ---------------------------------------------------------------------------
 
 const warn = (msg: string) => {
-  console.warn(`[poncho] ⚠ ${msg}`);
+  uploadLog.warn(msg);
 };
 
 export const createUploadStore = async (
@@ -363,7 +366,7 @@ export const createUploadStore = async (
     const store = new VercelBlobUploadStore(workingDir, config?.access ?? "public");
     try {
       await store.loadSdk();
-      console.log("[poncho] uploads: using vercel-blob store");
+      uploadLog.item("using vercel-blob store");
       return new CachedUploadStore(store);
     } catch {
       warn(
@@ -393,7 +396,7 @@ export const createUploadStore = async (
     );
     try {
       await store.ensureClient();
-      console.log(`[poncho] uploads: using s3 store (bucket: ${bucket})`);
+      uploadLog.item(`using s3 store (bucket: ${bucket})`);
       return new CachedUploadStore(store);
     } catch {
       warn(

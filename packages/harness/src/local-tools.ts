@@ -3,7 +3,10 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createJiti } from "jiti";
 import type { ToolDefinition } from "@poncho-ai/sdk";
+import { createLogger } from "@poncho-ai/sdk";
 import { resolveSkillDirs } from "./skill-context.js";
+
+const toolsLog = createLogger("tools");
 
 const TOOL_FILE_PATTERN = /\.(?:[cm]?js|[cm]?ts)$/i;
 
@@ -94,9 +97,7 @@ export const loadLocalSkillTools = async (
       tools.push(...normalizeToolExports(loaded));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(
-        `[poncho] Skipping skill tool module ${filePath}: ${message}\n`,
-      );
+      toolsLog.warn(`skipping skill tool module ${filePath}: ${message}`);
     }
   }
 

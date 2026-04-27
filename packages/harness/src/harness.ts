@@ -12,7 +12,13 @@ import type {
   ToolContext,
   ToolDefinition,
 } from "@poncho-ai/sdk";
-import { defineTool, getTextContent } from "@poncho-ai/sdk";
+import { defineTool, getTextContent, createLogger, formatError as fmtErr, url as urlColor } from "@poncho-ai/sdk";
+
+const harnessLog = createLogger("harness");
+const telemetryLog = createLogger("telemetry");
+const costLog = createLogger("cost");
+const mcpLog = createLogger("mcp");
+const modelLog = createLogger("model");
 import type { UploadStore } from "./upload-store.js";
 import { PONCHO_UPLOAD_SCHEME, VFS_SCHEME, deriveUploadKey } from "./upload-store.js";
 import type { StorageEngine } from "./storage/engine.js";
@@ -812,8 +818,8 @@ export class AgentHarness {
         const toolResultId = typeof input.toolResultId === "string" ? input.toolResultId : "";
         const record = archive[toolResultId];
         if (!record) {
-          console.info(
-            `[poncho][cost] Archived tool result lookup miss: id="${toolResultId}" conversation="${conversationId}"`,
+          costLog.debug(
+            `archived tool result miss: id="${toolResultId}" conv=${conversationId.slice(0, 8)}`,
           );
           return {
             error: `No archived tool result found for id "${toolResultId}" in this conversation.`,
@@ -823,8 +829,8 @@ export class AgentHarness {
         const limit = Math.min(Math.max(Number(input.limit) || 6000, 1), 20_000);
         const end = Math.min(record.payload.length, offset + limit);
         const chunk = record.payload.slice(offset, end);
-        console.info(
-          `[poncho][cost] Archived tool result lookup hit: id="${toolResultId}" conversation="${conversationId}" ` +
+        costLog.debug(
+          `archived tool result hit: id="${toolResultId}" conv=${conversationId.slice(0, 8)} ` +
           `offset=${offset} returned=${chunk.length} total=${record.payload.length}`,
         );
         return {
@@ -1267,9 +1273,7 @@ export class AgentHarness {
     this.dispatcher.unregisterMany(this.registeredMcpToolNames);
     this.registeredMcpToolNames.clear();
     if (requestedPatterns.length === 0) {
-      console.info(
-        `[poncho][mcp] ${JSON.stringify({ event: "tools.cleared", reason, requestedPatterns })}`,
-      );
+      mcpLog.debug(`tools cleared (reason=${reason})`);
       return;
     }
     const tools = await this.mcpBridge.loadTools(requestedPatterns);
@@ -1277,14 +1281,8 @@ export class AgentHarness {
     for (const tool of tools) {
       this.registeredMcpToolNames.add(tool.name);
     }
-    console.info(
-      `[poncho][mcp] ${JSON.stringify({
-        event: "tools.refreshed",
-        reason,
-        requestedPatterns,
-        registeredCount: tools.length,
-        activeSkills: this.listActiveSkills(),
-      })}`,
+    mcpLog.debug(
+      `tools refreshed (reason=${reason}, registered=${tools.length}, patterns=${requestedPatterns.length})`,
     );
   }
 
@@ -1358,11 +1356,7 @@ export class AgentHarness {
       this.agentFileFingerprint = rawContent;
       return true;
     } catch (error) {
-      console.warn(
-        `[poncho][agent] Failed to refresh AGENT.md in development mode: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+      createLogger("agent").warn(`failed to refresh AGENT.md in dev: ${fmtErr(error)}`);
       return false;
     }
   }
@@ -1417,11 +1411,7 @@ export class AgentHarness {
       await this.refreshMcpTools("skills:changed");
       return true;
     } catch (error) {
-      console.warn(
-        `[poncho][skills] Failed to refresh skills in development mode: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+      createLogger("skills").warn(`failed to refresh skills in dev: ${fmtErr(error)}`);
       return false;
     }
   }
@@ -1532,9 +1522,7 @@ export class AgentHarness {
     if (config?.browser) {
       await this.initBrowserTools(config)
         .catch((e) => {
-          console.warn(
-            `[poncho][browser] Failed to load browser tools: ${e instanceof Error ? e.message : String(e)}`,
-          );
+          createLogger("browser").warn(`failed to load browser tools: ${fmtErr(e)}`);
         });
     }
 
@@ -1569,7 +1557,7 @@ export class AgentHarness {
       provider.register();
       this.otlpTracerProvider = provider;
       this.hasOtlpExporter = true;
-      console.info(`[poncho][telemetry] OTLP trace exporter active → ${otlpConfig.url}`);
+      telemetryLog.item(`OTLP trace exporter active → ${urlColor(otlpConfig.url)}`);
     }
   }
 
@@ -1696,13 +1684,13 @@ export class AgentHarness {
     await this.mcpBridge?.stopLocalServers();
     if (this.otlpSpanProcessor) {
       await this.otlpSpanProcessor.shutdown().catch((err) => {
-        console.warn(`[poncho][telemetry] OTLP span processor shutdown error: ${formatOtlpError(err)}`);
+        telemetryLog.warn(`OTLP span processor shutdown error: ${formatOtlpError(err)}`);
       });
       this.otlpSpanProcessor = undefined;
     }
     if (this.otlpTracerProvider) {
       await this.otlpTracerProvider.shutdown().catch((err) => {
-        console.warn(`[poncho][telemetry] OTLP tracer provider shutdown error: ${formatOtlpError(err)}`);
+        telemetryLog.warn(`OTLP tracer provider shutdown error: ${formatOtlpError(err)}`);
       });
       this.otlpTracerProvider = undefined;
     }
@@ -1762,7 +1750,7 @@ export class AgentHarness {
           await this.otlpSpanProcessor?.forceFlush();
         } catch (err: unknown) {
           const detail = formatOtlpError(err);
-          console.warn(`[poncho][telemetry] OTLP span flush failed: ${detail}`);
+          telemetryLog.warn(`OTLP span flush failed: ${detail}`);
         }
       }
     } else {
@@ -1826,23 +1814,17 @@ export class AgentHarness {
     this.seedToolResultArchive(conversationId, input.parameters);
     const truncationSummary = this.truncateHistoricalToolResults(messages, conversationId);
     if (truncationSummary.changed) {
-      console.info(
-        `[poncho][cost] Truncated ${truncationSummary.truncatedCount} historical tool result(s) ` +
-        `(archived_new=${truncationSummary.archivedCount}, omitted_chars=${truncationSummary.omittedChars}) ` +
-        `for conversation="${conversationId}"`,
+      costLog.debug(
+        `truncated ${truncationSummary.truncatedCount} historical tool result(s) ` +
+        `(archived=${truncationSummary.archivedCount}, omitted=${truncationSummary.omittedChars} chars) ` +
+        `conv=${conversationId.slice(0, 8)}`,
       );
     }
     const hasFullToolResults = hasUntruncatedToolResults(messages);
     if (hasFullToolResults) {
-      console.info(
-        `[poncho][cost] Prompt cache breakpoint will be placed before untruncated ` +
-        `tool results for run "${runId}" (stable prefix only).`,
-      );
+      costLog.debug(`cache breakpoint before untruncated tool results (run=${runId.slice(0, 12)})`);
     } else {
-      console.info(
-        `[poncho][cost] Prompt cache breakpoint will be placed at history tail ` +
-        `for run "${runId}" (no untruncated tool results).`,
-      );
+      costLog.debug(`cache breakpoint at history tail (run=${runId.slice(0, 12)})`);
     }
     const inputMessageCount = messages.length;
     const events: AgentEvent[] = [];
@@ -2423,7 +2405,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
 
         const modelName = agent.frontmatter.model?.name ?? "claude-opus-4-5";
         if (step === 1) {
-          console.info(`[poncho] model="${modelName}" provider="${agent.frontmatter.model?.provider ?? "anthropic"}"`);
+          modelLog.item(`${modelName} (provider=${agent.frontmatter.model?.provider ?? "anthropic"})`);
         }
         const modelInstance = this.modelProvider(modelName);
 
@@ -2551,8 +2533,8 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
                     message: `Model "${modelName}" did not respond within the ${Math.floor(timeoutMs / 1000)}s run timeout.`,
                   },
                 });
-                console.error(
-                  `[poncho][harness] Stream timeout: model="${modelName}", step=${step}, elapsed=${now() - start}ms`,
+                harnessLog.error(
+                  `stream timeout: model=${modelName} step=${step} elapsed=${now() - start}ms`,
                 );
                 return;
               }
@@ -2588,8 +2570,8 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
                 break;
               }
               const isFirstChunk = chunkCount === 0;
-              console.error(
-                `[poncho][harness] Stream timeout waiting for ${isFirstChunk ? "first" : "next"} chunk: model="${modelName}", step=${step}, chunks=${chunkCount}, elapsed=${now() - start}ms`,
+              harnessLog.error(
+                `stream timeout waiting for ${isFirstChunk ? "first" : "next"} chunk: model=${modelName} step=${step} chunks=${chunkCount} elapsed=${now() - start}ms`,
               );
               if (isFirstChunk) {
                 throw new FirstChunkTimeoutError(modelName, FIRST_CHUNK_TIMEOUT_MS);
@@ -2646,7 +2628,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
             contextTokens: latestContextTokens + toolOutputEstimateSinceModel,
             contextWindow,
           };
-          console.info(`[poncho][harness] Soft deadline fired mid-stream at step ${step} (${(now() - start).toFixed(0)}ms). Checkpointing with ${fullText.length} chars of partial text.`);
+          harnessLog.info(`soft deadline fired mid-stream at step ${step} (${(now() - start).toFixed(0)}ms); checkpointing with ${fullText.length} chars of partial text`);
           yield pushEvent({ type: "run:completed", runId, result: result_ });
           return;
         }
@@ -2699,9 +2681,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
             message: `Model "${modelName}" returned an error. This may indicate the model is not supported by the current provider SDK version, or the API returned an error response.`,
           },
         });
-        console.error(
-          `[poncho][harness] Model error: finishReason="error", model="${modelName}", step=${step}`,
-        );
+        harnessLog.error(`model error: finishReason="error" model=${modelName} step=${step}`);
         return;
       }
 
@@ -2750,11 +2730,10 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
           cacheWrite: stepCacheWriteTokens,
         },
       });
-      console.info(
-        `[poncho][cost] model="${modelName}" step=${step} ` +
-        `input=${stepInputTokens} output=${usage.outputTokens ?? 0} ` +
-        `cached=${stepCachedTokens} cacheWrite=${stepCacheWriteTokens} ` +
-        `totals(input=${totalInputTokens}, output=${totalOutputTokens}, cached=${totalCachedTokens}, cacheWrite=${totalCacheWriteTokens})`,
+      costLog.debug(
+        `step=${step} in=${stepInputTokens} out=${usage.outputTokens ?? 0} ` +
+        `cached=${stepCachedTokens} cw=${stepCacheWriteTokens} ` +
+        `totals(in=${totalInputTokens} out=${totalOutputTokens} cached=${totalCachedTokens} cw=${totalCacheWriteTokens})`,
       );
 
       // Extract tool calls
@@ -2779,14 +2758,10 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
                 message: `Model "${modelName}" returned no content (finish reason: ${finishReason}). The model may not be supported by the current provider SDK version.`,
               },
             });
-            console.error(
-              `[poncho][harness] Empty response: finishReason="${finishReason}", model="${modelName}", step=${step}`,
-            );
+            harnessLog.error(`empty response: finishReason="${finishReason}" model=${modelName} step=${step}`);
             return;
           }
-          console.warn(
-            `[poncho][harness] Model "${modelName}" returned an empty response with finishReason="stop" on step ${step}.`,
-          );
+          harnessLog.warn(`model "${modelName}" returned empty response with finishReason="stop" on step ${step}`);
         }
         if (fullText.length > 0) {
           messages.push({
@@ -3218,10 +3193,10 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
         if (isRetryableModelError(error) && transientStepRetryCount < MAX_TRANSIENT_STEP_RETRIES) {
           transientStepRetryCount += 1;
           const statusCode = getErrorStatusCode(error);
-          console.warn(
-            `[poncho][harness] Retrying step ${step} after transient model error (attempt ${transientStepRetryCount}/${MAX_TRANSIENT_STEP_RETRIES})${
+          harnessLog.warn(
+            `retrying step ${step} after transient model error (attempt ${transientStepRetryCount}/${MAX_TRANSIENT_STEP_RETRIES})${
               typeof statusCode === "number" ? ` status=${statusCode}` : ""
-            }: ${error instanceof Error ? error.message : String(error)}`,
+            }: ${fmtErr(error)}`,
           );
           step -= 1;
           continue;
@@ -3232,7 +3207,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
           runId,
           error: runError,
         });
-        console.error(`[poncho][harness] Step ${step} error:`, error);
+        harnessLog.error(`step ${step} error: ${fmtErr(error)}`);
         return;
       }
     }

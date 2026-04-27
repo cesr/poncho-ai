@@ -76,6 +76,20 @@ import {
   verifyPassphrase,
 } from "./web-ui.js";
 import { buildOpenApiSpec, renderApiDocsHtml } from "./api-docs.js";
+import { createLogger, formatError, setLogLevel, url, num } from "./logger.js";
+import { getMascotLines } from "./mascot.js";
+
+const log = createLogger("poncho");
+const cronLog = createLogger("cron");
+const reminderLog = createLogger("reminder");
+const messagingLog = createLogger("messaging");
+const subagentLog = createLogger("subagent");
+const approvalLog = createLogger("approval");
+const browserLog = createLogger("browser");
+const selfFetchLog = createLogger("self-fetch");
+const csrfLog = createLogger("csrf");
+const uploadLog = createLogger("upload");
+const serverlessLog = createLogger("serverless");
 import {
   type DeployTarget,
 } from "./init-onboarding.js";
@@ -411,12 +425,11 @@ export const createRequestHandler = async (options?: {
   const identity = await ensureAgentIdentity(workingDir);
   const stateConfig = resolveStateConfig(config);
   if (!harness.storageEngine) {
-    process.stderr.write(
-      "[poncho] WARNING: harness.storageEngine is undefined. " +
-        "This usually means an outdated @poncho-ai/harness (< 0.37.0) is installed. " +
-        "Falling back to in-memory storage — conversations will NOT be persisted. " +
-        "Fix: `pnpm up @poncho-ai/harness@latest` or add a pnpm.overrides entry to force resolution.\n",
+    log.warn(
+      "harness.storageEngine is undefined — outdated @poncho-ai/harness (< 0.37.0) likely installed.",
     );
+    log.warn("falling back to in-memory storage — conversations will NOT be persisted.");
+    log.warn("fix: `pnpm up @poncho-ai/harness@latest` or add a pnpm.overrides entry.");
   }
   const conversationStore = harness.storageEngine
     ? createConversationStoreFromEngine(harness.storageEngine)
@@ -483,7 +496,7 @@ export const createRequestHandler = async (options?: {
           "continuation": `/api/internal/continue/${encodeURIComponent(conversationId)}`,
         };
         const work = selfFetchWithRetry(urlMap[type]).catch(err =>
-          console.error(`[poncho][dispatch] ${type} self-fetch failed for ${conversationId}:`, err instanceof Error ? err.message : err),
+          createLogger("dispatch").error(`${type} self-fetch failed for ${conversationId.slice(0, 8)}: ${formatError(err)}`),
         );
         doWaitUntil(work);
       },
@@ -515,7 +528,7 @@ export const createRequestHandler = async (options?: {
             },
             text,
           ).catch(sendErr =>
-            console.error(`[poncho][subagent-callback] Messaging notify failed:`, sendErr instanceof Error ? sendErr.message : sendErr),
+            subagentLog.error(`callback messaging notify failed: ${formatError(sendErr)}`),
           );
         });
       },
@@ -572,7 +585,7 @@ export const createRequestHandler = async (options?: {
             .slice(0, 2000),
         }))
         .filter((item) => item.content.length > 0);
-      console.info(`[poncho] recall corpus fetched lazily (${cachedRecallCorpus.length} items, ${(performance.now() - _rc0).toFixed(1)}ms)`);
+      log.debug(`recall corpus fetched lazily (${cachedRecallCorpus.length} items, ${(performance.now() - _rc0).toFixed(1)}ms)`);
       return cachedRecallCorpus;
     };
 
@@ -683,10 +696,10 @@ export const createRequestHandler = async (options?: {
       const shouldRebuildCanonical = canonicalHistory.source !== "harness";
 
       const isContinuation = input.task == null;
-      console.log(
-        `[messaging-runner] starting run for ${conversationId} ` +
-        `${isContinuation ? "(continuation)" : `task: ${input.task!.slice(0, 80)}`} ` +
-        `history_source=${canonicalHistory.source}`,
+      messagingLog.info(
+        `run start ${conversationId.slice(0, 8)} ` +
+        `${isContinuation ? "(continuation)" : `task="${input.task!.slice(0, 60)}"`} ` +
+        `history=${canonicalHistory.source}`,
       );
 
       const historyMessages = [...canonicalHistory.messages];
@@ -827,7 +840,7 @@ export const createRequestHandler = async (options?: {
                     await tgAdapter.sendReply(threadRef, pendingText);
                     checkpointTextAlreadySent = true;
                   } catch (err: unknown) {
-                    console.error("[messaging-runner] failed to send pre-approval text:", err instanceof Error ? err.message : err);
+                    messagingLog.error(`failed to send pre-approval text: ${formatError(err)}`);
                   }
                 }
 
@@ -845,7 +858,7 @@ export const createRequestHandler = async (options?: {
                   approvals,
                   { message_thread_id: messageThreadId },
                 ).catch((err: unknown) => {
-                  console.error("[messaging-runner] failed to send Telegram approval request:", err instanceof Error ? err.message : err);
+                  messagingLog.error(`failed to send telegram approval request: ${formatError(err)}`);
                 });
               }
             }
@@ -877,7 +890,7 @@ export const createRequestHandler = async (options?: {
         runContextWindow = execution.runContextWindow;
         latestRunId = execution.latestRunId || latestRunId;
       } catch (err) {
-        console.error("[messaging-runner] run failed:", err instanceof Error ? err.message : err);
+        messagingLog.error(`run failed: ${formatError(err)}`);
         draft.assistantResponse = draft.assistantResponse || `[Error: ${err instanceof Error ? err.message : "Unknown error"}]`;
       }
 
@@ -919,7 +932,13 @@ export const createRequestHandler = async (options?: {
       }
 
       const response = checkpointTextAlreadySent ? "" : draft.assistantResponse;
-      console.log("[messaging-runner] run complete, response length:", response.length, checkpointTextAlreadySent ? "(text sent at checkpoint)" : "", runContinuation ? "(continuation)" : "");
+      const flags = [
+        checkpointTextAlreadySent ? "checkpoint-sent" : null,
+        runContinuation ? "continuation" : null,
+      ].filter(Boolean).join(", ");
+      messagingLog.success(
+        `run complete (response ${response.length} chars${flags ? `, ${flags}` : ""})`,
+      );
 
       return {
         response,
@@ -940,7 +959,7 @@ export const createRequestHandler = async (options?: {
       archived.updatedAt = Date.now();
       await conversationStore.update(archived);
       await conversationStore.delete(conversationId);
-      console.log(`[messaging-runner] conversation archived: ${conversationId} → ${archiveId}`);
+      messagingLog.item(`conversation archived: ${conversationId.slice(0, 8)} → ${archiveId.slice(0, 16)}`);
     },
   };
 
@@ -978,19 +997,19 @@ export const createRequestHandler = async (options?: {
   }
 
   if (isServerless && isUsingEphemeralInternalSecret) {
-    console.warn(
-      "[poncho][serverless] No stable internal secret found. Set PONCHO_INTERNAL_SECRET to avoid intermittent internal callback failures across instances.",
+    serverlessLog.warn(
+      "no stable internal secret. Set PONCHO_INTERNAL_SECRET to avoid intermittent internal callback failures.",
     );
   }
   if (isServerless && !selfBaseUrl) {
-    console.warn(
-      "[poncho][serverless] No self base URL available. Set PONCHO_SELF_BASE_URL if internal background callbacks fail.",
+    serverlessLog.warn(
+      "no self base URL available. Set PONCHO_SELF_BASE_URL if internal background callbacks fail.",
     );
   }
   const stateProvider = stateConfig?.provider ?? "local";
   if (isServerless && (stateProvider === "local" || stateProvider === "memory")) {
-    console.warn(
-      `[poncho][serverless] state.provider="${stateProvider}" may lose cross-invocation state. Prefer "upstash", "redis", or "dynamodb" for subagents/reliability.`,
+    serverlessLog.warn(
+      `state.provider="${stateProvider}" may lose cross-invocation state. Prefer "upstash", "redis", or "dynamodb".`,
     );
   }
 
@@ -1000,27 +1019,21 @@ export const createRequestHandler = async (options?: {
 
   const vercelBypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim();
   if (process.env.VERCEL && !vercelBypassSecret) {
-    console.warn(
-      "\n[poncho] Vercel Deployment Protection will block subagents and auto-continuation." +
-      "\n  Enable 'Protection Bypass for Automation' in your Vercel project settings:" +
-      "\n  -> Project Settings > Deployment Protection > Protection Bypass for Automation" +
-      "\n  The secret is auto-provisioned as VERCEL_AUTOMATION_BYPASS_SECRET.\n",
-    );
+    log.warn("Vercel Deployment Protection will block subagents and auto-continuation.");
+    log.warn("  enable 'Protection Bypass for Automation' in Project Settings > Deployment Protection.");
+    log.warn("  the secret is auto-provisioned as VERCEL_AUTOMATION_BYPASS_SECRET.");
   }
   const hasCronJobs = Object.keys(cronJobs).length > 0;
   const authTokenConfigured = !!(process.env[config?.auth?.tokenEnv ?? "PONCHO_AUTH_TOKEN"]) && (config?.auth?.required ?? false);
   if (process.env.VERCEL && hasCronJobs && authTokenConfigured && !process.env.CRON_SECRET) {
-    console.warn(
-      "\n[poncho] Cron jobs are configured but CRON_SECRET is not set." +
-      "\n  Vercel sends CRON_SECRET as a Bearer token when invoking cron endpoints." +
-      "\n  Set CRON_SECRET to the same value as PONCHO_AUTH_TOKEN in your Vercel env vars," +
-      "\n  otherwise cron invocations will be rejected with 401.\n",
-    );
+    cronLog.warn("CRON_SECRET is not set but cron jobs are configured.");
+    cronLog.warn("  Vercel sends CRON_SECRET as a Bearer token when invoking cron endpoints.");
+    cronLog.warn("  set CRON_SECRET to match PONCHO_AUTH_TOKEN, or invocations will be rejected with 401.");
   }
 
   const selfFetchWithRetry = async (path: string, body?: Record<string, unknown>, retries = 3): Promise<Response | void> => {
     if (!selfBaseUrl) {
-      console.error(`[poncho][self-fetch] Missing self base URL for ${path}`);
+      selfFetchLog.error(`missing self base URL for ${path}`);
       return;
     }
     let lastError: unknown;
@@ -1054,26 +1067,25 @@ export const createRequestHandler = async (options?: {
       await new Promise((resolveSleep) => setTimeout(resolveSleep, 1000 * (attempt + 1)));
     }
     if (lastError) {
-      console.error(
-        `[poncho][self-fetch] Failed ${path} after ${retries} attempt(s):`,
-        lastError instanceof Error ? lastError.message : String(lastError),
+      selfFetchLog.error(
+        `failed ${path} after ${retries} attempt(s): ${formatError(lastError)}`,
       );
       if (
         lastError instanceof Error
         && (lastError.message.includes("HTTP 403") || lastError.message.includes("HTTP 401"))
       ) {
         if (lastError.message.includes("HTTP 401") && lastError.message.includes("<!doctype")) {
-          console.error(
-            "[poncho][self-fetch] Blocked by Vercel Deployment Protection. Set VERCEL_AUTOMATION_BYPASS_SECRET in your Vercel project settings and env vars.",
+          selfFetchLog.error(
+            "blocked by Vercel Deployment Protection. Set VERCEL_AUTOMATION_BYPASS_SECRET in your Vercel project.",
           );
         } else {
-          console.error(
-            "[poncho][self-fetch] Internal auth failed. Ensure all serverless instances share PONCHO_INTERNAL_SECRET.",
+          selfFetchLog.error(
+            "internal auth failed. Ensure all serverless instances share PONCHO_INTERNAL_SECRET.",
           );
         }
       }
     } else {
-      console.error(`[poncho][self-fetch] Failed ${path} after ${retries} attempt(s).`);
+      selfFetchLog.error(`failed ${path} after ${retries} attempt(s)`);
     }
   };
 
@@ -1118,11 +1130,9 @@ export const createRequestHandler = async (options?: {
           adapter.registerRoutes(messagingRouteRegistrar);
           messagingBridges.push(bridge);
           messagingAdapters.set("slack", adapter);
-          console.log(`  Slack messaging enabled at /api/messaging/slack`);
+          createLogger("slack").item("enabled at /api/messaging/slack");
         } catch (err) {
-          console.warn(
-            `  Slack messaging disabled: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          createLogger("slack").warn(`disabled: ${formatError(err)}`);
         }
       } else if (channelConfig.platform === "resend") {
         const adapter = new ResendAdapter({
@@ -1151,11 +1161,9 @@ export const createRequestHandler = async (options?: {
             harness.registerTools(adapterTools);
           }
           const modeLabel = channelConfig.mode === "tool" ? "tool" : "auto-reply";
-          console.log(`  Resend email messaging enabled at /api/messaging/resend (mode: ${modeLabel})`);
+          createLogger("resend").item(`enabled at /api/messaging/resend (mode: ${modeLabel})`);
         } catch (err) {
-          console.warn(
-            `  Resend email messaging disabled: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          createLogger("resend").warn(`disabled: ${formatError(err)}`);
         }
       } else if (channelConfig.platform === "telegram") {
         const adapter = new TelegramAdapter({
@@ -1184,7 +1192,7 @@ export const createRequestHandler = async (options?: {
           const foundApproval = found?.approval;
 
           if (!foundConversation || !foundApproval) {
-            console.warn("[telegram-approval] approval not found:", approvalId);
+            approvalLog.warn(`telegram approval not found: ${approvalId}`);
             return;
           }
 
@@ -1306,7 +1314,7 @@ export const createRequestHandler = async (options?: {
                 }
               }
             } catch (err) {
-              console.error("[telegram-approval-resume] failed:", err instanceof Error ? err.message : err);
+              approvalLog.error(`telegram approval resume failed: ${formatError(err)}`);
               const conv = await conversationStore.get(conversationId);
               if (conv) {
                 conv.runStatus = "idle";
@@ -1327,11 +1335,9 @@ export const createRequestHandler = async (options?: {
           adapter.registerRoutes(messagingRouteRegistrar);
           messagingBridges.push(bridge);
           messagingAdapters.set("telegram", adapter);
-          console.log(`  Telegram messaging enabled at /api/messaging/telegram`);
+          createLogger("telegram").item("enabled at /api/messaging/telegram");
         } catch (err) {
-          console.warn(
-            `  Telegram messaging disabled: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          createLogger("telegram").warn(`disabled: ${formatError(err)}`);
         }
       }
     }
@@ -1454,7 +1460,7 @@ export const createRequestHandler = async (options?: {
             const task = (conv.messages.find(m => m.role === "user")?.content as string) ?? conv.subagentMeta?.task ?? "";
             await orchestrator.runSubagent(subagentId, conv.parentConversationId, task, conv.ownerId);
           } catch (err) {
-            console.error(`[poncho][internal] subagent run error for ${subagentId}:`, err instanceof Error ? err.message : err);
+            subagentLog.error(`run error for ${subagentId}: ${formatError(err)}`);
           }
         })();
         doWaitUntil(work);
@@ -1485,7 +1491,7 @@ export const createRequestHandler = async (options?: {
               await selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(conversationId)}`);
             }
           } catch (err) {
-            console.error(`[poncho][internal-continue] Error for ${conversationId}:`, err instanceof Error ? err.message : err);
+            createLogger("continuation").error(`error for ${conversationId.slice(0, 8)}: ${formatError(err)}`);
           }
         })();
         doWaitUntil(work);
@@ -1686,8 +1692,8 @@ export const createRequestHandler = async (options?: {
         pathname !== "/api/auth/logout" &&
         request.headers["x-csrf-token"] !== session?.csrfToken
       ) {
-        console.warn(
-          `[poncho][csrf] blocked request method=${request.method} path="${pathname}" session=${session.sessionId}`,
+        csrfLog.warn(
+          `blocked ${request.method} ${pathname} (session=${session.sessionId.slice(0, 8)})`,
         );
         writeJson(response, 403, {
           code: "CSRF_ERROR",
@@ -1903,7 +1909,7 @@ export const createRequestHandler = async (options?: {
           }
           return streamSession.startScreencast(cid);
         }).catch((err: unknown) => {
-          console.error("[poncho][browser-sse] initial frame/screencast failed:", (err as Error)?.message ?? err);
+          browserLog.error(`initial frame/screencast failed: ${formatError(err)}`);
         });
       }
 
@@ -2191,7 +2197,7 @@ export const createRequestHandler = async (options?: {
                     newText,
                   );
                 } catch (sendErr) {
-                  console.error("[approval-resume] messaging notify failed:", sendErr instanceof Error ? sendErr.message : sendErr);
+                  approvalLog.error(`resume messaging notify failed: ${formatError(sendErr)}`);
                 }
               }
             }
@@ -2202,7 +2208,7 @@ export const createRequestHandler = async (options?: {
             await orchestrator.handleSubagentCompletion(conversationId);
           }
         } catch (err) {
-          console.error("[approval-resume] failed:", err instanceof Error ? err.message : err);
+          approvalLog.error(`resume failed: ${formatError(err)}`);
           const conv = await conversationStore.get(conversationId);
           if (conv) {
             conv.runStatus = "idle";
@@ -2803,8 +2809,8 @@ export const createRequestHandler = async (options?: {
       const harnessMessages = [...canonicalHistory.messages];
       const historyMessages = [...conversation.messages];
       const preRunMessages = [...conversation.messages];
-      console.info(
-        `[poncho] conversation="${conversationId}" history_source=${canonicalHistory.source}`,
+      log.debug(
+        `conversation=${conversationId.slice(0, 8)} history=${canonicalHistory.source}`,
       );
       let latestRunId = conversation.runtimeRunId ?? "";
       let userContent: Message["content"] | undefined = messageText;
@@ -2829,7 +2835,7 @@ export const createRequestHandler = async (options?: {
           ];
         } catch (uploadErr) {
           const errMsg = uploadErr instanceof Error ? uploadErr.message : String(uploadErr);
-          console.error("[poncho] File upload failed:", errMsg);
+          uploadLog.error(`file upload failed: ${errMsg}`);
           const errorEvent: AgentEvent = {
             type: "run:error",
             runId: "",
@@ -2894,7 +2900,7 @@ export const createRequestHandler = async (options?: {
           conversation._continuationCount = undefined;
           conversation.updatedAt = Date.now();
           conversationStore.update(conversation).catch((err) => {
-            console.error("[poncho] Failed to persist user turn:", err);
+            log.error(`failed to persist user turn: ${formatError(err)}`);
           });
         }
 
@@ -3116,7 +3122,7 @@ export const createRequestHandler = async (options?: {
         }
         if (needsCallback) {
           processSubagentCallback(conversationId, true).catch(err =>
-            console.error(`[poncho][subagent-callback] Post-run callback failed:`, err instanceof Error ? err.message : err),
+            subagentLog.error(`post-run callback failed: ${formatError(err)}`),
           );
         }
       }
@@ -3214,13 +3220,13 @@ export const createRequestHandler = async (options?: {
                     result.response,
                   );
                 } catch (sendError) {
-                  console.error(`[cron] ${jobName}: send to ${chatId} failed:`, sendError instanceof Error ? sendError.message : sendError);
+                  cronLog.child(jobName).error(`send to ${chatId} failed: ${formatError(sendError)}`);
                 }
               }
               chatResults.push({ chatId, status: "completed", steps: result.steps });
             } catch (runError) {
               chatResults.push({ chatId, status: "error" });
-              console.error(`[cron] ${jobName}: run for chat ${chatId} failed:`, runError instanceof Error ? runError.message : runError);
+              cronLog.child(jobName).error(`run for chat ${chatId} failed: ${formatError(runError)}`);
             }
           }
 
@@ -3276,15 +3282,15 @@ export const createRequestHandler = async (options?: {
           const pruneWork = pruneCronConversations(
             conversationStore, cronOwnerId, jobName, cronJob.maxRuns ?? 5,
           ).then(n => {
-            if (n > 0) process.stdout.write(`[cron] ${jobName}: pruned ${n} old conversation${n === 1 ? "" : "s"}\n`);
+            if (n > 0) cronLog.child(jobName).item(`pruned ${n} old conversation${n === 1 ? "" : "s"}`);
           }).catch(err =>
-            console.error(`[cron] ${jobName}: prune failed:`, err instanceof Error ? err.message : err),
+            cronLog.child(jobName).error(`prune failed: ${formatError(err)}`),
           );
           doWaitUntil(pruneWork);
 
           if (result.continuation) {
             const work = selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(convId)}`).catch(err =>
-              console.error(`[poncho][cron] Continuation self-fetch failed:`, err instanceof Error ? err.message : err),
+              cronLog.child(jobName).error(`continuation self-fetch failed: ${formatError(err)}`),
             );
             doWaitUntil(work);
             writeJson(response, 200, {
@@ -3309,11 +3315,11 @@ export const createRequestHandler = async (options?: {
           if (hadDeferred || checkConv?.pendingSubagentResults?.length) {
             if (isServerless) {
               selfFetchWithRetry(`/api/internal/conversations/${encodeURIComponent(convId)}/subagent-callback`).catch(err =>
-                console.error(`[cron] subagent callback self-fetch failed:`, err instanceof Error ? err.message : err),
+                cronLog.error(`subagent callback self-fetch failed: ${formatError(err)}`),
               );
             } else {
               processSubagentCallback(convId, true).catch(err =>
-                console.error(`[cron] subagent callback failed:`, err instanceof Error ? err.message : err),
+                cronLog.error(`subagent callback failed: ${formatError(err)}`),
               );
             }
           }
@@ -3418,7 +3424,7 @@ export const createRequestHandler = async (options?: {
                     result.response,
                   );
                 } catch (sendError) {
-                  console.error(`[reminder] Send to ${channelMeta.platform} failed:`, sendError instanceof Error ? sendError.message : sendError);
+                  reminderLog.error(`send to ${channelMeta.platform} failed: ${formatError(sendError)}`);
                 }
               }
               const freshConv = await conversationStore.get(originConv.conversationId);
@@ -3454,11 +3460,11 @@ export const createRequestHandler = async (options?: {
 
           firedIds.push(reminder.id);
         } catch (err) {
-          console.error(`[reminder] Failed to fire reminder "${reminder.id}":`, err instanceof Error ? err.message : err);
+          reminderLog.error(`failed to fire reminder "${reminder.id}": ${formatError(err)}`);
         }
       }
     } catch (err) {
-      console.error("[reminder] Error checking reminders:", err instanceof Error ? err.message : err);
+      reminderLog.error(`error checking reminders: ${formatError(err)}`);
     }
 
     return { fired: firedIds, count: firedIds.length, duration: Date.now() - start };
@@ -3478,7 +3484,7 @@ export const createRequestHandler = async (options?: {
 
   // Recover stale subagent runs that were "running" when the server last stopped
   orchestrator.recoverStaleSubagents().catch(err =>
-    console.warn("[poncho][subagent] Failed to recover stale subagent runs:", err),
+    subagentLog.warn(`failed to recover stale subagent runs: ${formatError(err)}`),
   );
 
   return handler;
@@ -3493,9 +3499,9 @@ export const startDevServer = async (
   const server = createServer(handler);
   const actualPort = await listenOnAvailablePort(server, port);
   if (actualPort !== port) {
-    process.stdout.write(`Port ${port} is in use, switched to ${actualPort}.\n`);
+    log.warn(`port ${port} in use, switched to ${num(actualPort)}`);
   }
-  process.stdout.write(`Poncho dev server running at http://localhost:${actualPort}\n`);
+  log.ready(`dev server ready at ${url(`http://localhost:${actualPort}`)}`);
 
   await checkVercelCronDrift(workingDir);
 
@@ -3526,14 +3532,15 @@ export const startDevServer = async (
         config.schedule,
         { timezone: config.timezone ?? "UTC" },
         async () => {
+          const jobLog = cronLog.child(jobName);
           const timestamp = new Date().toISOString();
-          process.stdout.write(`[cron] ${jobName} started at ${timestamp}\n`);
+          jobLog.info(`started`);
           const start = Date.now();
 
           if (config.channel) {
             const adapter = adapters?.get(config.channel);
             if (!adapter) {
-              process.stderr.write(`[cron] ${jobName}: ${config.channel} adapter not available, skipping\n`);
+              jobLog.warn(`${config.channel} adapter not available, skipping`);
               return;
             }
             try {
@@ -3549,7 +3556,7 @@ export const startDevServer = async (
               }
 
               if (targetSummaries.size === 0) {
-                process.stdout.write(`[cron] ${jobName}: no known ${config.channel} chats, skipping\n`);
+                jobLog.item(`no known ${config.channel} chats, skipping`);
                 return;
               }
 
@@ -3602,33 +3609,30 @@ export const startDevServer = async (
                           result.response,
                         );
                       } catch (sendError) {
-                        const sendMsg = sendError instanceof Error ? sendError.message : String(sendError);
-                        process.stderr.write(`[cron] ${jobName}: send to ${chatId} failed: ${sendMsg}\n`);
+                        jobLog.error(`send to ${chatId} failed: ${formatError(sendError)}`);
                       }
                     }
                   }
                   totalChats++;
                 } catch (runError) {
-                  const runMsg = runError instanceof Error ? runError.message : String(runError);
-                  process.stderr.write(`[cron] ${jobName}: run for chat ${chatId} failed: ${runMsg}\n`);
+                  jobLog.error(`run for chat ${chatId} failed: ${formatError(runError)}`);
                 } finally {
                   activeRuns?.delete(convId);
                   const hadDeferred = deferredCallbacks?.delete(convId) ?? false;
                   const checkConv = await store.get(convId);
                   if (hadDeferred || checkConv?.pendingSubagentResults?.length) {
                     runCallback?.(convId, true).catch((err: unknown) =>
-                      console.error(`[cron] ${jobName}: subagent callback for ${chatId} failed:`, err instanceof Error ? err.message : err),
+                      jobLog.error(`subagent callback for ${chatId} failed: ${formatError(err)}`),
                     );
                   }
                 }
               }
 
               const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-              process.stdout.write(`[cron] ${jobName} completed in ${elapsed}s (${totalChats} chats)\n`);
+              jobLog.success(`completed in ${elapsed}s (${totalChats} chats)`);
             } catch (error) {
               const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-              const msg = error instanceof Error ? error.message : String(error);
-              process.stderr.write(`[cron] ${jobName} failed after ${elapsed}s: ${msg}\n`);
+              jobLog.error(`failed after ${elapsed}s: ${formatError(error)}`);
             }
             return;
           }
@@ -3662,20 +3666,15 @@ export const startDevServer = async (
               await store.update(freshConv);
             }
             pruneCronConversations(store, "local-owner", jobName, config.maxRuns ?? 5).then(n => {
-              if (n > 0) process.stdout.write(`[cron] ${jobName}: pruned ${n} old conversation${n === 1 ? "" : "s"}\n`);
+              if (n > 0) jobLog.item(`pruned ${n} old conversation${n === 1 ? "" : "s"}`);
             }).catch(err =>
-              console.error(`[cron] ${jobName}: prune failed:`, err instanceof Error ? err.message : err),
+              jobLog.error(`prune failed: ${formatError(err)}`),
             );
             const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-            process.stdout.write(
-              `[cron] ${jobName} completed in ${elapsed}s (${result.steps} steps)\n`,
-            );
+            jobLog.success(`completed in ${elapsed}s (${result.steps} steps)`);
           } catch (error) {
             const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-            const msg = error instanceof Error ? error.message : String(error);
-            process.stderr.write(
-              `[cron] ${jobName} failed after ${elapsed}s: ${msg}\n`,
-            );
+            jobLog.error(`failed after ${elapsed}s: ${formatError(error)}`);
           } finally {
             if (cronConvId) {
               activeRuns?.delete(cronConvId);
@@ -3683,7 +3682,7 @@ export const startDevServer = async (
               const checkConv = await store.get(cronConvId);
               if (hadDeferred || checkConv?.pendingSubagentResults?.length) {
                 runCallback?.(cronConvId, true).catch((err: unknown) =>
-                  console.error(`[cron] ${jobName}: subagent callback failed:`, err instanceof Error ? err.message : err),
+                  jobLog.error(`subagent callback failed: ${formatError(err)}`),
                 );
               }
             }
@@ -3692,8 +3691,8 @@ export const startDevServer = async (
       );
       activeJobs.push(job);
     }
-    process.stdout.write(
-      `[cron] Scheduled ${entries.length} job${entries.length === 1 ? "" : "s"}: ${entries.map(([n]) => n).join(", ")}\n`,
+    cronLog.item(
+      `scheduled ${entries.length} job${entries.length === 1 ? "" : "s"}: ${entries.map(([n]) => n).join(", ")}`,
     );
   };
 
@@ -3712,7 +3711,7 @@ export const startDevServer = async (
         const newJobs = parsed.frontmatter.cron ?? {};
         handler._cronJobs = newJobs;
         scheduleCronJobs(newJobs);
-        process.stdout.write(`[cron] Reloaded: ${Object.keys(newJobs).length} jobs scheduled\n`);
+        cronLog.item(`reloaded: ${Object.keys(newJobs).length} jobs scheduled`);
       } catch {
         // Parse errors during editing are expected; ignore
       }
@@ -3728,15 +3727,15 @@ export const startDevServer = async (
       try {
         const result = await check();
         if (result.count > 0) {
-          process.stdout.write(
-            `[reminder] Fired ${result.count} reminder${result.count === 1 ? "" : "s"} (${result.duration}ms)\n`,
+          reminderLog.success(
+            `fired ${result.count} reminder${result.count === 1 ? "" : "s"} (${result.duration}ms)`,
           );
         }
       } catch (err) {
-        console.error("[reminder] Poll error:", err instanceof Error ? err.message : err);
+        reminderLog.error(`poll error: ${formatError(err)}`);
       }
     }, pollMs);
-    process.stdout.write(`[reminder] Polling every ${Math.round(pollMs / 1000)}s\n`);
+    reminderLog.item(`polling every ${Math.round(pollMs / 1000)}s`);
   }
 
   const shutdown = () => {
@@ -3782,7 +3781,24 @@ export const buildCli = (): Command => {
     .command("dev")
     .description("Run local development server")
     .option("--port <port>", "server port", "3000")
-    .action(async (options: { port: string }) => {
+    .option("-v, --verbose", "show debug logs (model:chunk events, per-step cost, MCP catalogs, etc.)")
+    .option("-q, --quiet", "only show warnings and errors")
+    .option("--log-level <level>", "explicit log level (debug|info|warn|error|silent)")
+    .action(async (options: { port: string; verbose?: boolean; quiet?: boolean; logLevel?: string }) => {
+      const level = options.logLevel
+        ?? (options.verbose ? "debug" : options.quiet ? "warn" : undefined);
+      if (level) {
+        const valid = ["debug", "info", "warn", "error", "silent"] as const;
+        if (!valid.includes(level as typeof valid[number])) {
+          throw new Error(`Invalid --log-level "${level}". Use one of: ${valid.join(", ")}.`);
+        }
+        setLogLevel(level as typeof valid[number]);
+      }
+      if (process.stdout.isTTY && !process.env.NO_COLOR) {
+        process.stdout.write("\n");
+        for (const line of getMascotLines()) process.stdout.write(`${line}\n`);
+        process.stdout.write(`\x1b[1m\x1b[36m                             poncho\x1b[0m\n\n`);
+      }
       const port = Number.parseInt(options.port, 10);
       await startDevServer(Number.isNaN(port) ? 3000 : port);
     });

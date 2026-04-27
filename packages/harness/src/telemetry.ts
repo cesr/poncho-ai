@@ -1,4 +1,8 @@
 import type { AgentEvent } from "@poncho-ai/sdk";
+import { createLogger } from "@poncho-ai/sdk";
+
+const eventLog = createLogger("event");
+const telemetryLog = createLogger("telemetry");
 
 const MAX_FIELD_LENGTH = 200;
 const OMIT_FROM_LOG = new Set(["continuationMessages", "_harnessMessages", "messages", "compactedHistory"]);
@@ -76,7 +80,7 @@ export class TelemetryEmitter {
       return;
     }
     // Strip large binary payloads (e.g. base64 images) to keep logs readable.
-    process.stdout.write(`[event] ${event.type} ${sanitizeEventForLog(event)}\n`);
+    eventLog.debug(`${event.type} ${sanitizeEventForLog(event)}`);
   }
 
   private async sendOtlp(event: AgentEvent, otlp: OtlpConfig): Promise<void> {
@@ -109,10 +113,8 @@ export class TelemetryEmitter {
         }),
       });
     } catch (err) {
-      console.warn(
-        `[poncho][telemetry] OTLP log delivery failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+      telemetryLog.warn(
+        `OTLP log delivery failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
