@@ -1470,9 +1470,15 @@ export const getWebUiClientScript = (markedSource: string): string => `
       const renderActiveTopForThreadPanel = (payload) => {
         const conv = payload.conversation || {};
         const allMsgs = Array.isArray(conv.messages) ? conv.messages : [];
-        // Render the entire thread conversation (snapshot + replies) as one
-        // continuous scrollable list — no pinned parent, no split.
-        state.threadPanel.messages = allMsgs;
+        // Show the anchor message + replies. The earlier snapshot is still
+        // part of the thread's context server-side, but the panel only
+        // displays what's relevant: the message you forked on, plus what
+        // came after.
+        const snapshotLength = (conv.threadMeta && typeof conv.threadMeta.snapshotLength === "number")
+          ? conv.threadMeta.snapshotLength
+          : allMsgs.length;
+        const startIdx = Math.max(0, snapshotLength - 1);
+        state.threadPanel.messages = allMsgs.slice(startIdx);
         renderThreadPanelMessages();
       };
 
