@@ -59,7 +59,6 @@ export const getWebUiClientScript = (markedSource: string): string => `
           open: false,
           threadId: null,
           parentMessageId: null,
-          parentMessage: null,
           messages: [],
           isStreaming: false,
           abortController: null,
@@ -106,7 +105,6 @@ export const getWebUiClientScript = (markedSource: string): string => `
         threadPanel: $("thread-panel"),
         threadPanelResize: $("thread-panel-resize"),
         threadPanelClose: $("thread-panel-close"),
-        threadPanelParent: $("thread-panel-parent"),
         threadPanelMessages: $("thread-panel-messages"),
         threadComposer: $("thread-composer"),
         threadAttachBtn: $("thread-attach-btn"),
@@ -1437,24 +1435,6 @@ export const getWebUiClientScript = (markedSource: string): string => `
         root.scrollTop = root.scrollHeight;
       };
 
-      const renderThreadPanelParent = () => {
-        const root = elements.threadPanelParent;
-        if (!root) return;
-        root.innerHTML = "";
-        const parent = state.threadPanel.parentMessage;
-        if (!parent) {
-          const empty = document.createElement("div");
-          empty.className = "thread-panel-parent-empty";
-          empty.textContent = "No parent context";
-          root.appendChild(empty);
-          return;
-        }
-        const col = document.createElement("div");
-        col.className = "messages-column";
-        col.appendChild(buildSimpleMessageRow(parent));
-        root.appendChild(col);
-      };
-
       const closeThreadPanel = () => {
         if (state.threadPanel.abortController) {
           try { state.threadPanel.abortController.abort(); } catch (e) {}
@@ -1462,7 +1442,6 @@ export const getWebUiClientScript = (markedSource: string): string => `
         state.threadPanel.open = false;
         state.threadPanel.threadId = null;
         state.threadPanel.parentMessageId = null;
-        state.threadPanel.parentMessage = null;
         state.threadPanel.messages = [];
         state.threadPanel.isStreaming = false;
         state.threadPanel.abortController = null;
@@ -1491,14 +1470,15 @@ export const getWebUiClientScript = (markedSource: string): string => `
       const renderActiveTopForThreadPanel = (payload) => {
         const conv = payload.conversation || {};
         const allMsgs = Array.isArray(conv.messages) ? conv.messages : [];
+        // Show the anchor message + replies. The earlier snapshot is still
+        // part of the thread's context server-side, but the panel only
+        // displays what's relevant: the message you forked on, plus what
+        // came after.
         const snapshotLength = (conv.threadMeta && typeof conv.threadMeta.snapshotLength === "number")
           ? conv.threadMeta.snapshotLength
           : allMsgs.length;
-        const parent = allMsgs[snapshotLength - 1] || null;
-        const replies = allMsgs.slice(snapshotLength);
-        state.threadPanel.parentMessage = parent;
-        state.threadPanel.messages = replies;
-        renderThreadPanelParent();
+        const startIdx = Math.max(0, snapshotLength - 1);
+        state.threadPanel.messages = allMsgs.slice(startIdx);
         renderThreadPanelMessages();
       };
 

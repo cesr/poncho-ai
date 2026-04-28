@@ -2227,21 +2227,12 @@ export const WEB_UI_STYLES = `
       border-radius: 4px;
     }
     .thread-panel-close:hover { color: var(--fg); }
-    .thread-panel-parent {
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--border);
-      background: var(--bg-bubble-user, rgba(0,0,0,0.02));
-      font-size: 13px;
-    }
-    .thread-panel-parent .message-row {
-      margin: 0;
-    }
-    .thread-panel-parent-empty {
-      color: var(--fg-3);
-      font-style: italic;
-    }
     .thread-panel-messages {
-      flex: 1;
+      flex: 1 1 0;
+      /* min-height: 0 is required so this flex item can shrink below its
+         content size — without it, overflow-y:auto never engages because
+         the element grows to fit all messages instead of scrolling. */
+      min-height: 0;
       overflow-y: auto;
       padding: 12px 16px;
     }

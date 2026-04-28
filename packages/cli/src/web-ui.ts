@@ -211,7 +211,6 @@ ${WEB_UI_STYLES}
             <span class="thread-panel-title">Thread</span>
             <button id="thread-panel-close" class="thread-panel-close" title="Close thread">&times;</button>
           </div>
-          <div id="thread-panel-parent" class="thread-panel-parent"></div>
           <div id="thread-panel-messages" class="thread-panel-messages messages"></div>
           <form id="thread-composer" class="composer thread-composer">
             <div class="composer-inner">
