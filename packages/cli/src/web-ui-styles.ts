@@ -2227,24 +2227,6 @@ export const WEB_UI_STYLES = `
       border-radius: 4px;
     }
     .thread-panel-close:hover { color: var(--fg); }
-    .thread-panel-parent {
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--border);
-      background: var(--bg-bubble-user, rgba(0,0,0,0.02));
-      font-size: 13px;
-      /* Cap the pinned-parent area so a very long anchor message doesn't
-         eat the entire panel height — it gets its own scroll instead. */
-      flex: 0 0 auto;
-      max-height: 30%;
-      overflow-y: auto;
-    }
-    .thread-panel-parent .message-row {
-      margin: 0;
-    }
-    .thread-panel-parent-empty {
-      color: var(--fg-3);
-      font-style: italic;
-    }
     .thread-panel-messages {
       flex: 1 1 0;
       /* min-height: 0 is required so this flex item can shrink below its
