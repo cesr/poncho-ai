@@ -152,7 +152,6 @@ ${WEB_UI_STYLES}
       <div class="topbar">
         <button id="sidebar-toggle" class="sidebar-toggle">&#9776;</button>
         <div id="chat-title" class="topbar-title"></div>
-        <button id="view-toggle" class="topbar-view-toggle" hidden title="Toggle between user-facing messages and raw harness messages (dev -v only)">user</button>
         <button id="topbar-new-chat" class="topbar-new-chat">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
         </button>
@@ -234,6 +233,7 @@ ${WEB_UI_STYLES}
   </div>
   <div id="drag-overlay" class="drag-overlay"><div class="drag-overlay-inner">Drop files to attach</div></div>
   <div id="lightbox" class="lightbox" style="display:none"><img /></div>
+  <button id="view-toggle" class="dev-view-toggle" hidden title="Toggle between user-facing messages and raw harness messages (dev -v only)">user view</button>
 
     <script>
 ${getWebUiClientScript(markedSource)}

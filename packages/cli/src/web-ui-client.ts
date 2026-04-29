@@ -1781,7 +1781,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
           return;
         }
         elements.viewToggle.hidden = false;
-        elements.viewToggle.textContent = state.viewMode === "harness" ? "harness" : "user";
+        elements.viewToggle.textContent = state.viewMode === "harness" ? "harness view" : "user view";
         elements.viewToggle.classList.toggle("is-harness", state.viewMode === "harness");
       };
 

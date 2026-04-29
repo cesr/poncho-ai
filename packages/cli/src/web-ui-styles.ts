@@ -627,23 +627,25 @@ export const WEB_UI_STYLES = `
     }
     .topbar-new-chat:hover { color: var(--fg); }
     .topbar-new-chat svg { width: 16px; height: 16px; }
-    .topbar-view-toggle {
-      position: absolute;
-      right: 64px;
-      bottom: 10px;
-      background: transparent;
-      border: 1px solid var(--fg-5);
-      color: var(--fg-5);
+    .dev-view-toggle {
+      position: fixed;
+      left: 12px;
+      bottom: 12px;
+      background: var(--chip-bg);
+      border: 1px solid var(--border-4);
+      color: var(--fg-4);
       font-size: 11px;
-      text-transform: lowercase;
       letter-spacing: 0.04em;
-      padding: 2px 8px;
+      padding: 4px 10px;
       border-radius: 999px;
       cursor: pointer;
-      z-index: 10;
+      z-index: 1000;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
     }
-    .topbar-view-toggle:hover { color: var(--fg); border-color: var(--fg); }
-    .topbar-view-toggle.is-harness { color: var(--fg); border-color: var(--fg); }
+    .dev-view-toggle:hover { color: var(--fg); border-color: var(--border-hover); background: var(--chip-bg-hover); }
+    .dev-view-toggle.is-harness { color: var(--fg); border-color: var(--fg); }
     .harness-debug-view {
       padding: 16px 20px;
       font-family: var(--mono, ui-monospace, SFMono-Regular, Consolas, monospace);
