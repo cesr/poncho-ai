@@ -1,5 +1,44 @@
 # @poncho-ai/cli
 
+## 0.38.1
+
+### Patch Changes
+
+- [`d6248c8`](https://github.com/cesr/poncho-ai/commit/d6248c8b6d22e0fd0becde9e31dff7c12c724d84) Thanks [@cesr](https://github.com/cesr)! - fix(cli, harness): unify turn-parameter assembly so `conversation_recall` works everywhere
+
+  The recall tool relies on three context parameters (`__conversationRecallCorpus`,
+  `__conversationListFn`, `__conversationFetchFn`) that were only injected for
+  user-initiated HTTP turns. Cron, reminder, messaging-adapter, chat-continuation,
+  subagent-callback, and tool-approval-resume runs all built their own
+  `runInput.parameters` object and silently omitted these — causing
+  `conversation_recall` to throw "not available in this environment" or return
+  empty results depending on the call mode.
+
+  Introduces a single `buildTurnParameters(conversation, opts)` helper in the CLI
+  that owns context-parameter assembly (recall functions, `__activeConversationId`,
+  `__ownerId`, messaging metadata, tool-result archive). HTTP, messaging, and
+  cron/reminder paths now go through it. The harness orchestrator's three
+  internal turn sites (chat continuation, subagent-callback resume, tool-approval
+  resume) now call the existing `hooks.buildRecallParams` so they pick up the
+  recall functions too.
+
+- [#101](https://github.com/cesr/poncho-ai/pull/101) [`7cc2fb5`](https://github.com/cesr/poncho-ai/commit/7cc2fb592bf11b79916df5831598a991f1ac9c0c) Thanks [@cesr](https://github.com/cesr)! - fix(web-ui): thread panel displays anchor message + replies, not full snapshot
+
+  Shows the anchor message you forked on, plus any replies — and that's it.
+  The earlier snapshot is still part of the thread's context server-side
+  (the agent sees the full prior conversation), but the panel only
+  displays what's relevant: the message you replied to, and what came
+  after.
+
+  Also fixes the underlying scroll bug: `.thread-panel-messages` had
+  `flex: 1; overflow-y: auto` but no `min-height: 0`. In flex children
+  the default `min-height: auto` lets the item grow to fit content, so
+  the messages area never shrank below its content size and the scrollbar
+  never engaged.
+
+- Updated dependencies [[`244a3a3`](https://github.com/cesr/poncho-ai/commit/244a3a310c6c52f9e8535b28fb25d77829583d3f), [`d6248c8`](https://github.com/cesr/poncho-ai/commit/d6248c8b6d22e0fd0becde9e31dff7c12c724d84)]:
+  - @poncho-ai/harness@0.39.1
+
 ## 0.38.0
 
 ### Minor Changes
