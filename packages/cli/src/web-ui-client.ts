@@ -1743,10 +1743,6 @@ export const getWebUiClientScript = (markedSource: string): string => `
         }
       };
 
-      const escapeHtml = (s) => String(s == null ? "" : s)
-        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-
       const renderHarnessView = () => {
         const msgs = Array.isArray(state.harnessMessages) ? state.harnessMessages : [];
         if (msgs.length === 0) {
