@@ -31,6 +31,11 @@ export const getWebUiClientScript = (markedSource: string): string => `
         conversations: [],
         activeConversationId: null,
         activeMessages: [],
+        // Verbose dev (-v) only: mirror of conversation._harnessMessages plus
+        // the current view mode the user toggled to.
+        verboseDev: false,
+        viewMode: "user", // "user" | "harness"
+        harnessMessages: null,
         isStreaming: false,
         activeStreamAbortController: null,
         activeStreamConversationId: null,
@@ -79,6 +84,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
         topbarNewChat: $("topbar-new-chat"),
         messages: $("messages"),
         chatTitle: $("chat-title"),
+        viewToggle: $("view-toggle"),
         logout: $("logout"),
         composer: $("composer"),
         prompt: $("prompt"),
@@ -1737,7 +1743,70 @@ export const getWebUiClientScript = (markedSource: string): string => `
         }
       };
 
+      const escapeHtml = (s) => String(s == null ? "" : s)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+      const renderHarnessView = () => {
+        const msgs = Array.isArray(state.harnessMessages) ? state.harnessMessages : [];
+        if (msgs.length === 0) {
+          elements.messages.innerHTML = '<div class="harness-debug-view"><em>No harness messages yet — they appear after the first assistant turn.</em></div>';
+          return;
+        }
+        const rows = msgs.map((m, i) => {
+          const role = String(m.role || "?");
+          const meta = m.metadata && typeof m.metadata === "object" ? m.metadata : null;
+          const metaLine = meta
+            ? "step=" + (meta.step != null ? meta.step : "-") +
+              " runId=" + (meta.runId ? String(meta.runId).slice(0, 16) : "-") +
+              " id=" + (meta.id ? String(meta.id).slice(0, 12) : "-")
+            : "";
+          let content = m.content;
+          if (typeof content !== "string") content = JSON.stringify(content, null, 2);
+          // Pretty-print JSON content where possible (assistant tool calls,
+          // tool result arrays, etc.) so it's actually readable.
+          const trimmed = content.trim();
+          if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+            try { content = JSON.stringify(JSON.parse(trimmed), null, 2); } catch (_e) { /* leave as-is */ }
+          }
+          return '<div class="hd-msg role-' + escapeHtml(role) + '">' +
+            '<div class="hd-role">#' + i + ' · ' + escapeHtml(role) + '</div>' +
+            (metaLine ? '<div class="hd-meta">' + escapeHtml(metaLine) + '</div>' : '') +
+            '<div>' + escapeHtml(content) + '</div>' +
+            '</div>';
+        }).join("");
+        elements.messages.innerHTML = '<div class="harness-debug-view">' + rows + '</div>';
+      };
+
+      const updateViewToggleVisibility = () => {
+        if (!elements.viewToggle) return;
+        if (!state.verboseDev) {
+          elements.viewToggle.hidden = true;
+          return;
+        }
+        elements.viewToggle.hidden = false;
+        elements.viewToggle.textContent = state.viewMode === "harness" ? "harness" : "user";
+        elements.viewToggle.classList.toggle("is-harness", state.viewMode === "harness");
+      };
+
+      if (elements.viewToggle) {
+        elements.viewToggle.addEventListener("click", () => {
+          state.viewMode = state.viewMode === "harness" ? "user" : "harness";
+          updateViewToggleVisibility();
+          if (state.viewMode === "harness") {
+            renderHarnessView();
+          } else {
+            renderMessages(state.activeMessages, state.isStreaming);
+          }
+        });
+      }
+
       const renderMessages = (messages, isStreaming = false, options = {}) => {
+        // In harness debug view, the user-facing renderer is bypassed.
+        if (state.viewMode === "harness") {
+          renderHarnessView();
+          return;
+        }
         const previousScrollTop = elements.messages.scrollTop;
         const shouldStickToBottom =
           options.forceScrollBottom === true || state.isMessagesPinnedToBottom;
@@ -2001,6 +2070,13 @@ export const getWebUiClientScript = (markedSource: string): string => `
           .catch(() => ({ threads: [] }));
         const payload = await conversationPromise;
         elements.chatTitle.textContent = payload.conversation.title;
+        // Verbose dev (-v) only — server includes verboseDev: true and the
+        // raw harness-message stream so we can offer a debug toggle.
+        state.verboseDev = payload.verboseDev === true;
+        state.harnessMessages = state.verboseDev && Array.isArray(payload.conversation._harnessMessages)
+          ? payload.conversation._harnessMessages
+          : null;
+        updateViewToggleVisibility();
         // Merge own pending approvals + subagent pending approvals
         var allPendingApprovals = [].concat(
           payload.conversation.pendingApprovals || payload.pendingApprovals || [],
@@ -2299,6 +2375,12 @@ export const getWebUiClientScript = (markedSource: string): string => `
         if (typeof payload.conversation.contextWindow === "number" && payload.conversation.contextWindow > 0) {
           state.contextWindow = payload.conversation.contextWindow;
         }
+        // Keep harness debug view fresh on refetches in -v mode.
+        state.verboseDev = payload.verboseDev === true;
+        state.harnessMessages = state.verboseDev && Array.isArray(payload.conversation._harnessMessages)
+          ? payload.conversation._harnessMessages
+          : null;
+        updateViewToggleVisibility();
         updateContextRing();
         renderMessages(state.activeMessages, streaming);
         return payload;

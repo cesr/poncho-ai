@@ -2725,13 +2725,16 @@ export const createRequestHandler = async (options?: {
           && Array.isArray(conversation._continuationMessages)
           && conversation._continuationMessages.length > 0
           && !hasPendingApprovals;
+        const verboseDev = process.env.PONCHO_DEV_VERBOSE === "1";
         writeJson(response, 200, {
           conversation: {
             ...conversation,
             messages: conversation.messages.map(normalizeMessageForClient).filter((m): m is Message => m !== null),
             pendingApprovals: storedPending,
             _continuationMessages: undefined,
-            _harnessMessages: undefined,
+            // In verbose dev mode the web UI exposes a toggle to inspect the
+            // raw harness messages sent to the model API. Strip it otherwise.
+            _harnessMessages: verboseDev ? conversation._harnessMessages : undefined,
             // The browser has no use for the archive; make sure we never ship
             // it back even if the conversation was loaded via getWithArchive.
             _toolResultArchive: undefined,
@@ -2740,6 +2743,7 @@ export const createRequestHandler = async (options?: {
           hasActiveRun: hasActiveRun || hasPendingCallbackResults,
           hasRunningSubagents,
           needsContinuation,
+          verboseDev,
         });
         return;
       }
@@ -4169,6 +4173,12 @@ export const buildCli = (): Command => {
           throw new Error(`Invalid --log-level "${level}". Use one of: ${valid.join(", ")}.`);
         }
         setLogLevel(level as typeof valid[number]);
+      }
+      if (options.verbose) {
+        // Surfaced to the request handler so the web UI can offer a toggle
+        // between user-facing messages and the raw harness-message stream
+        // sent to the model API.
+        process.env.PONCHO_DEV_VERBOSE = "1";
       }
       if (process.stdout.isTTY && !process.env.NO_COLOR) {
         process.stdout.write("\n");

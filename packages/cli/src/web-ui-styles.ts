@@ -627,6 +627,38 @@ export const WEB_UI_STYLES = `
     }
     .topbar-new-chat:hover { color: var(--fg); }
     .topbar-new-chat svg { width: 16px; height: 16px; }
+    .topbar-view-toggle {
+      position: absolute;
+      right: 64px;
+      bottom: 10px;
+      background: transparent;
+      border: 1px solid var(--fg-5);
+      color: var(--fg-5);
+      font-size: 11px;
+      text-transform: lowercase;
+      letter-spacing: 0.04em;
+      padding: 2px 8px;
+      border-radius: 999px;
+      cursor: pointer;
+      z-index: 10;
+    }
+    .topbar-view-toggle:hover { color: var(--fg); border-color: var(--fg); }
+    .topbar-view-toggle.is-harness { color: var(--fg); border-color: var(--fg); }
+    .harness-debug-view {
+      padding: 16px 20px;
+      font-family: var(--mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      font-size: 11px;
+      color: var(--fg);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .harness-debug-view .hd-msg { margin-bottom: 16px; padding: 8px 10px; border-left: 3px solid var(--fg-5); background: var(--bg-2, rgba(255,255,255,0.02)); }
+    .harness-debug-view .hd-msg.role-user { border-left-color: #6ea8fe; }
+    .harness-debug-view .hd-msg.role-assistant { border-left-color: #22c55e; }
+    .harness-debug-view .hd-msg.role-tool { border-left-color: #f59e0b; }
+    .harness-debug-view .hd-msg.role-system { border-left-color: #9ca3af; }
+    .harness-debug-view .hd-role { font-weight: 600; opacity: 0.7; margin-bottom: 4px; text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em; }
+    .harness-debug-view .hd-meta { opacity: 0.5; font-size: 10px; margin-bottom: 6px; }
 
     /* Messages */
     .messages { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 24px 24px; }
