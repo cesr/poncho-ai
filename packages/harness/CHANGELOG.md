@@ -1,5 +1,38 @@
 # @poncho-ai/harness
 
+## 0.39.1
+
+### Patch Changes
+
+- [`244a3a3`](https://github.com/cesr/poncho-ai/commit/244a3a310c6c52f9e8535b28fb25d77829583d3f) Thanks [@cesr](https://github.com/cesr)! - fix(harness): don't archive `browser_screenshot` / `browser_snapshot` payloads
+
+  The per-conversation `_toolResultArchive` had no size cap or eviction, and
+  browser tool results were being archived in full — base64 JPEG screenshots
+  (~50-500KB each) and accessibility-tree snapshots accumulated for the lifetime
+  of a conversation. Heavy browser sessions OOM'd `poncho dev` after ~80 minutes.
+
+  Skip archiving for view-once tool results (`browser_screenshot`,
+  `browser_snapshot`). The model consumes them in-step; they're never retrieved
+  after-the-fact, so archiving them only burns memory.
+
+- [`d6248c8`](https://github.com/cesr/poncho-ai/commit/d6248c8b6d22e0fd0becde9e31dff7c12c724d84) Thanks [@cesr](https://github.com/cesr)! - fix(cli, harness): unify turn-parameter assembly so `conversation_recall` works everywhere
+
+  The recall tool relies on three context parameters (`__conversationRecallCorpus`,
+  `__conversationListFn`, `__conversationFetchFn`) that were only injected for
+  user-initiated HTTP turns. Cron, reminder, messaging-adapter, chat-continuation,
+  subagent-callback, and tool-approval-resume runs all built their own
+  `runInput.parameters` object and silently omitted these — causing
+  `conversation_recall` to throw "not available in this environment" or return
+  empty results depending on the call mode.
+
+  Introduces a single `buildTurnParameters(conversation, opts)` helper in the CLI
+  that owns context-parameter assembly (recall functions, `__activeConversationId`,
+  `__ownerId`, messaging metadata, tool-result archive). HTTP, messaging, and
+  cron/reminder paths now go through it. The harness orchestrator's three
+  internal turn sites (chat continuation, subagent-callback resume, tool-approval
+  resume) now call the existing `hooks.buildRecallParams` so they pick up the
+  recall functions too.
+
 ## 0.39.0
 
 ### Minor Changes
