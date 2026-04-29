@@ -362,6 +362,32 @@ export const createRequestHandler = async (options?: {
   const conversationEventStreams = new Map<string, ConversationEventStream>();
   type EventCallback = (event: AgentEvent) => void;
   const conversationEventCallbacks = new Map<string, Set<EventCallback>>();
+  // Per-conversation replay-buffer cap. Live subscribers get full events; the
+  // buffer is just so a reconnecting client can catch up. Keep the most recent
+  // N events to bound memory.
+  const MAX_BUFFERED_EVENTS_PER_CONVERSATION = 1000;
+  // Deep-clone an event with any string > 4 KB replaced by a placeholder. Used
+  // when buffering for replay: a reconnecting client doesn't need fresh
+  // screenshots/large blobs (they're persisted in the conversation), and
+  // accumulating them caused OOMs (e.g. tool:completed for browser_screenshot
+  // carries a ~134 KB base64 JPEG per call).
+  const STRIP_LARGE_STRING_BYTES = 4096;
+  const stripLargeStringsForBuffer = (value: unknown): unknown => {
+    if (typeof value === "string") {
+      return value.length > STRIP_LARGE_STRING_BYTES
+        ? `[stripped-for-replay len=${value.length}]`
+        : value;
+    }
+    if (Array.isArray(value)) return value.map(stripLargeStringsForBuffer);
+    if (value && typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = stripLargeStringsForBuffer(v);
+      }
+      return out;
+    }
+    return value;
+  };
   const broadcastEvent = (conversationId: string, event: AgentEvent): void => {
     let stream = conversationEventStreams.get(conversationId);
     if (!stream) {
@@ -372,7 +398,10 @@ export const createRequestHandler = async (options?: {
     // Buffering them for reconnect replay grew to multi-GB and OOM'd the process;
     // they're ephemeral like browser:status and should never replay.
     if (event.type !== "browser:frame") {
-      stream.buffer.push(event);
+      stream.buffer.push(stripLargeStringsForBuffer(event) as AgentEvent);
+      if (stream.buffer.length > MAX_BUFFERED_EVENTS_PER_CONVERSATION) {
+        stream.buffer.splice(0, stream.buffer.length - MAX_BUFFERED_EVENTS_PER_CONVERSATION);
+      }
     }
     for (const subscriber of stream.subscribers) {
       try {
