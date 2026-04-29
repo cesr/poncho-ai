@@ -142,6 +142,15 @@ const SKILL_TOOL_NAMES = [
   "run_skill_script",
 ] as const;
 
+// Tools whose results are "view-once" — the model consumes the payload in the
+// step where it's returned and never needs it retrieved later. Archiving them
+// caused unbounded heap growth on browser-heavy sessions (each screenshot
+// is ~50-500KB base64 and accumulated for the lifetime of the conversation).
+const NON_ARCHIVABLE_TOOL_NAMES = new Set<string>([
+  "browser_screenshot",
+  "browser_snapshot",
+]);
+
 const isAbortError = (error: unknown): boolean => {
   if (!error || typeof error !== "object") {
     return false;
@@ -969,7 +978,7 @@ export class AgentHarness {
         if (row.content.startsWith(TOOL_RESULT_TRUNCATED_PREFIX)) return row;
         if (this.shouldPreserveSkillToolResult(row)) return row;
         const toolResultId = row.tool_use_id;
-        if (!archive[toolResultId]) {
+        if (!archive[toolResultId] && !NON_ARCHIVABLE_TOOL_NAMES.has(row.tool_name)) {
           archive[toolResultId] = {
             toolResultId,
             conversationId,
@@ -3068,7 +3077,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
           });
           {
             const archive = this.archivedToolResultsByConversation.get(conversationId);
-            if (archive) {
+            if (archive && !NON_ARCHIVABLE_TOOL_NAMES.has(result.tool)) {
               const payload = JSON.stringify(result.output ?? null);
               archive[result.callId] = {
                 toolResultId: result.callId,
