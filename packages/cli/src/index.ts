@@ -4176,6 +4176,37 @@ export const buildCli = (): Command => {
         process.stdout.write(`\x1b[1m\x1b[36m                             poncho\x1b[0m\n\n`);
         process.stdout.write(`\x1b[2mheap snapshot on OOM enabled — dumps Heap.<ts>.heapsnapshot to ${process.cwd()}\x1b[0m\n\n`);
       }
+
+      // Heap watchdog: --heapsnapshot-near-heap-limit can fail to fire when
+      // V8 is so memory-starved it can't allocate the snapshot buffer. Take
+      // proactive snapshots when heapUsed crosses thresholds so we get
+      // evidence BEFORE the process is doomed. SIGUSR2 also dumps on demand.
+      const v8mod = await import("node:v8");
+      const dumpHeap = (label: string): void => {
+        try {
+          const ts = new Date().toISOString().replace(/[:.]/g, "-");
+          const filename = `${process.cwd()}/poncho-heap-${label}-${ts}.heapsnapshot`;
+          v8mod.writeHeapSnapshot(filename);
+          // eslint-disable-next-line no-console
+          console.warn(`\n[poncho][heap] dumped snapshot to ${filename}\n`);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(`[poncho][heap] snapshot failed: ${(err as Error).message}`);
+        }
+      };
+      const dumpedThresholds = new Set<number>();
+      const thresholdsMb = [1500, 2500, 3300]; // dump as we climb past 1.5/2.5/3.3 GB
+      setInterval(() => {
+        const heapUsedMb = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+        for (const t of thresholdsMb) {
+          if (heapUsedMb >= t && !dumpedThresholds.has(t)) {
+            dumpedThresholds.add(t);
+            dumpHeap(`auto-${t}mb`);
+          }
+        }
+      }, 15_000).unref();
+      process.on("SIGUSR2", () => dumpHeap("sigusr2"));
+
       const port = Number.parseInt(options.port, 10);
       await startDevServer(Number.isNaN(port) ? 3000 : port);
     });
