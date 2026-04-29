@@ -190,12 +190,18 @@ export class AgentOrchestrator {
     continuationMessages: Message[],
     onYield?: (event: AgentEvent) => void | Promise<void>,
   ): Promise<void> {
+    const recallParams = this.hooks?.buildRecallParams?.({
+      ownerId: conversation.ownerId,
+      tenantId: conversation.tenantId,
+      excludeConversationId: conversationId,
+    }) ?? {};
     const execution = await executeConversationTurn({
       harness: this.harness,
       runInput: {
         conversationId,
         tenantId: conversation.tenantId ?? undefined,
         parameters: withToolResultArchiveParam({
+          ...recallParams,
           __activeConversationId: conversationId,
           __ownerId: conversation.ownerId,
         }, conversation),
@@ -332,6 +338,11 @@ export class AgentOrchestrator {
 
     let draftRef: TurnDraftState | undefined;
     let execution: ExecuteTurnResult | undefined;
+    const resumeRecallParams = this.hooks?.buildRecallParams?.({
+      ownerId: conversation.ownerId,
+      tenantId: conversation.tenantId,
+      excludeConversationId: conversationId,
+    }) ?? {};
 
     try {
       execution = await executeConversationTurn({
@@ -340,6 +351,11 @@ export class AgentOrchestrator {
           messages: fullCheckpointMessages,
           toolResults,
           conversationId,
+          parameters: withToolResultArchiveParam({
+            ...resumeRecallParams,
+            __activeConversationId: conversationId,
+            __ownerId: conversation.ownerId,
+          }, conversation),
           abortSignal: abortController.signal,
         }),
         initialContextTokens: conversation.contextTokens ?? 0,
@@ -1073,6 +1089,11 @@ export class AgentOrchestrator {
       `[poncho][subagent-callback] conversation="${conversationId}" history_source=${historySelection.source}`,
     );
     let execution: ExecuteTurnResult | undefined;
+    const recallParams = this.hooks?.buildRecallParams?.({
+      ownerId: conversation.ownerId,
+      tenantId: conversation.tenantId,
+      excludeConversationId: conversationId,
+    }) ?? {};
 
     try {
       execution = await executeConversationTurn({
@@ -1082,6 +1103,7 @@ export class AgentOrchestrator {
           conversationId,
           tenantId: conversation.tenantId ?? undefined,
           parameters: withToolResultArchiveParam({
+            ...recallParams,
             __activeConversationId: conversationId,
             __ownerId: conversation.ownerId,
           }, conversation),

@@ -76,19 +76,28 @@ export const runCronAgent = async (
   historyMessages: Message[],
   toolResultArchive?: Conversation["_toolResultArchive"],
   onEvent?: (event: AgentEvent) => void | Promise<void>,
+  parameters?: Record<string, unknown>,
+  tenantId?: string | null,
 ): Promise<CronRunResult> => {
   const turnTimestamp = Date.now();
   const userMessageId = randomUUID();
   const assistantId = randomUUID();
+  // Callers normally build `parameters` via buildTurnParameters() which
+  // already merges the tool-result archive. The `toolResultArchive` arg is a
+  // fallback for callers that don't (legacy / minimal callers).
+  const finalParameters = {
+    ...(parameters ?? {}),
+    __activeConversationId: conversationId,
+    [TOOL_RESULT_ARCHIVE_PARAM]:
+      parameters?.[TOOL_RESULT_ARCHIVE_PARAM] ?? toolResultArchive ?? {},
+  };
   const execution = await executeConversationTurn({
     harness: harnessRef,
     runInput: {
       task,
       conversationId,
-      parameters: {
-        __activeConversationId: conversationId,
-        [TOOL_RESULT_ARCHIVE_PARAM]: toolResultArchive ?? {},
-      },
+      tenantId: tenantId ?? undefined,
+      parameters: finalParameters,
       messages: historyMessages,
     },
     onEvent,

@@ -307,6 +307,13 @@ export type RequestHandler = ((
   _finishConversationStream?: (conversationId: string) => void;
   _checkAndFireReminders?: () => Promise<{ fired: string[]; count: number; duration: number }>;
   _reminderPollIntervalMs?: number;
+  _buildTurnParameters?: (
+    conversation: Conversation,
+    opts?: {
+      bodyParameters?: Record<string, unknown>;
+      messagingMetadata?: { platform: string; sender: { id: string; name?: string | null }; threadId?: string };
+    },
+  ) => Record<string, unknown>;
 };
 
 export const createRequestHandler = async (options?: {
@@ -681,6 +688,40 @@ export const createRequestHandler = async (options?: {
     };
   };
 
+  // ---------------------------------------------------------------------------
+  // Single helper for assembling runInput.parameters across every turn entry
+  // point (HTTP route, messaging adapter, cron, reminder). All `__`-prefixed
+  // context params live here so adding a new one only requires one edit.
+  // ---------------------------------------------------------------------------
+  const buildTurnParameters = (
+    conversation: Conversation,
+    opts: {
+      bodyParameters?: Record<string, unknown>;
+      messagingMetadata?: {
+        platform: string;
+        sender: { id: string; name?: string | null };
+        threadId?: string;
+      };
+    } = {},
+  ): Record<string, unknown> => {
+    return withToolResultArchiveParam({
+      ...(opts.bodyParameters ?? {}),
+      ...buildRecallParams({
+        ownerId: conversation.ownerId,
+        tenantId: conversation.tenantId,
+        excludeConversationId: conversation.conversationId,
+      }),
+      ...(opts.messagingMetadata ? {
+        __messaging_platform: opts.messagingMetadata.platform,
+        __messaging_sender_id: opts.messagingMetadata.sender.id,
+        __messaging_sender_name: opts.messagingMetadata.sender.name ?? "",
+        __messaging_thread_id: opts.messagingMetadata.threadId,
+      } : {}),
+      __activeConversationId: conversation.conversationId,
+      __ownerId: conversation.ownerId,
+    }, conversation);
+  };
+
   // Subagent lifecycle extracted to AgentOrchestrator (Phase 5).
 
   // ---------------------------------------------------------------------------
@@ -828,17 +869,22 @@ export const createRequestHandler = async (options?: {
       const runInput = {
         task: input.task,
         conversationId,
+        tenantId: latestConversation?.tenantId ?? undefined,
         messages: historyMessages,
         files: input.files,
-        parameters: withToolResultArchiveParam({
-          ...(input.metadata ? {
-            __messaging_platform: input.metadata.platform,
-            __messaging_sender_id: input.metadata.sender.id,
-            __messaging_sender_name: input.metadata.sender.name ?? "",
-            __messaging_thread_id: input.metadata.threadId,
-          } : {}),
-          __activeConversationId: conversationId,
-        }, latestConversation ?? { _toolResultArchive: {} } as Conversation),
+        parameters: latestConversation
+          ? buildTurnParameters(latestConversation, {
+              messagingMetadata: input.metadata,
+            })
+          : withToolResultArchiveParam({
+              ...(input.metadata ? {
+                __messaging_platform: input.metadata.platform,
+                __messaging_sender_id: input.metadata.sender.id,
+                __messaging_sender_name: input.metadata.sender.name ?? "",
+                __messaging_thread_id: input.metadata.threadId,
+              } : {}),
+              __activeConversationId: conversationId,
+            }, { _toolResultArchive: {} } as Conversation),
       };
 
       try {
@@ -3170,12 +3216,7 @@ export const createRequestHandler = async (options?: {
             task: messageText,
             conversationId,
             tenantId: ctx.tenantId ?? undefined,
-            parameters: withToolResultArchiveParam({
-              ...(bodyParameters ?? {}),
-              ...buildRecallParams({ ownerId, tenantId: ctx.tenantId, excludeConversationId: conversationId }),
-              __activeConversationId: conversationId,
-              __ownerId: ownerId,
-            }, conversation),
+            parameters: buildTurnParameters(conversation, { bodyParameters }),
             messages: harnessMessages,
             files: files.length > 0 ? files : undefined,
             abortSignal: abortController.signal,
@@ -3456,6 +3497,8 @@ export const createRequestHandler = async (options?: {
               const result = await runCronAgent(harness, task, conv.conversationId, historyMessages,
                 conv._toolResultArchive,
                 async (event) => { await telemetry.emit(event); },
+                buildTurnParameters(conv),
+                conv.tenantId,
               );
 
               const freshConv = await conversationStore.get(conv.conversationId);
@@ -3526,6 +3569,8 @@ export const createRequestHandler = async (options?: {
               broadcastEvent(convId, event);
               await telemetry.emit(event);
             },
+            buildTurnParameters(conversation),
+            conversation.tenantId,
           );
           finishConversationStream(convId);
 
@@ -3673,6 +3718,9 @@ export const createRequestHandler = async (options?: {
                 harness, framedMessage, originConv.conversationId,
                 originConv.messages ?? [],
                 originConv._toolResultArchive,
+                undefined,
+                buildTurnParameters(originConv),
+                originConv.tenantId,
               );
               if (result.response) {
                 try {
@@ -3705,7 +3753,13 @@ export const createRequestHandler = async (options?: {
               `[reminder] ${reminder.task.slice(0, 80)} ${timestamp}`,
             );
             const convId = conversation.conversationId;
-            const result = await runCronAgent(harness, framedMessage, convId, []);
+            const result = await runCronAgent(
+              harness, framedMessage, convId, [],
+              undefined,
+              undefined,
+              buildTurnParameters(conversation),
+              conversation.tenantId,
+            );
             const freshConv = await conversationStore.get(convId);
             if (freshConv) {
               freshConv.messages = buildCronMessages(framedMessage, [], result);
@@ -3741,6 +3795,7 @@ export const createRequestHandler = async (options?: {
   handler._finishConversationStream = finishConversationStream;
   handler._checkAndFireReminders = checkAndFireReminders;
   handler._reminderPollIntervalMs = reminderPollWindowMs;
+  handler._buildTurnParameters = buildTurnParameters;
 
   // Recover stale subagent runs that were "running" when the server last stopped
   orchestrator.recoverStaleSubagents().catch(err =>
@@ -3785,6 +3840,7 @@ export const startDevServer = async (
     const activeRuns = handler._activeConversationRuns;
     const deferredCallbacks = handler._pendingCallbackNeeded;
     const runCallback = handler._processSubagentCallback;
+    const buildParams = handler._buildTurnParameters;
     if (!harnessRef || !store) return;
 
     for (const [jobName, config] of entries) {
@@ -3845,6 +3901,8 @@ export const startDevServer = async (
                   const result = await runCronAgent(harnessRef, task, convId, historyMessages,
                     conversation._toolResultArchive,
                     broadcastCh ? (ev) => broadcastCh(convId, ev) : undefined,
+                    buildParams?.(conversation),
+                    conversation.tenantId,
                   );
                   handler._finishConversationStream?.(convId);
 
@@ -3913,6 +3971,8 @@ export const startDevServer = async (
             const result = await runCronAgent(harnessRef, config.task, cronConvId, [],
               conversation._toolResultArchive,
               broadcast ? (ev) => broadcast(cronConvId!, ev) : undefined,
+              buildParams?.(conversation),
+              conversation.tenantId,
             );
             handler._finishConversationStream?.(cronConvId);
             const freshConv = await store.get(cronConvId);
