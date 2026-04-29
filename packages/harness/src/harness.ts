@@ -151,6 +151,35 @@ const NON_ARCHIVABLE_TOOL_NAMES = new Set<string>([
   "browser_snapshot",
 ]);
 
+// Per-conversation byte cap on the tool-result archive. Browser/web tools
+// frequently return ~50-500KB payloads (page text/HTML/extracts); without a
+// cap, long sessions accumulate hundreds of MB just in archived results,
+// each retained as a string in heap. Once over the cap, evict oldest by
+// `createdAt`. Configurable via PONCHO_TOOL_ARCHIVE_MAX_MB (default 25 MB).
+const TOOL_ARCHIVE_MAX_BYTES = (() => {
+  const env = process.env.PONCHO_TOOL_ARCHIVE_MAX_MB;
+  const parsed = env ? Number.parseInt(env, 10) : NaN;
+  const mb = Number.isFinite(parsed) && parsed > 0 ? parsed : 25;
+  return mb * 1024 * 1024;
+})();
+const enforceArchiveCap = (
+  archive: Record<string, ArchivedToolResult>,
+): number => {
+  let total = 0;
+  for (const id in archive) total += archive[id]?.sizeBytes ?? 0;
+  if (total <= TOOL_ARCHIVE_MAX_BYTES) return 0;
+  // Sort entries by createdAt ascending and drop oldest until we're under cap.
+  const entries = Object.values(archive).sort((a, b) => a.createdAt - b.createdAt);
+  let evicted = 0;
+  for (const entry of entries) {
+    if (total <= TOOL_ARCHIVE_MAX_BYTES) break;
+    delete archive[entry.toolResultId];
+    total -= entry.sizeBytes;
+    evicted += 1;
+  }
+  return evicted;
+};
+
 const isAbortError = (error: unknown): boolean => {
   if (!error || typeof error !== "object") {
     return false;
@@ -989,6 +1018,7 @@ export class AgentHarness {
             payload: row.content,
           };
           archivedCount += 1;
+          enforceArchiveCap(archive);
         }
         const omitted = Math.max(0, row.content.length - TOOL_RESULT_PREVIEW_CHARS);
         omittedChars += omitted;
@@ -3088,6 +3118,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
                 sizeBytes: Buffer.byteLength(payload, "utf8"),
                 payload,
               };
+              enforceArchiveCap(archive);
             }
           }
 
