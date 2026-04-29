@@ -4134,6 +4134,33 @@ export const buildCli = (): Command => {
     .option("-q, --quiet", "only show warnings and errors")
     .option("--log-level <level>", "explicit log level (debug|info|warn|error|silent)")
     .action(async (options: { port: string; verbose?: boolean; quiet?: boolean; logLevel?: string }) => {
+      // Re-exec ourselves with V8 flags that capture a heap snapshot on OOM
+      // and bump the max heap, so OOMs in `poncho dev` produce evidence
+      // rather than just a stack trace. Skips if the user already set
+      // NODE_OPTIONS, or after one re-exec hop (PONCHO_DEV_REEXECED guard).
+      const wantedNodeOpts = ["--heapsnapshot-near-heap-limit=2", "--max-old-space-size=4096"];
+      const currentNodeOpts = (process.env.NODE_OPTIONS ?? "").trim();
+      const hasHeapSnap = currentNodeOpts.includes("--heapsnapshot-near-heap-limit");
+      const hasMaxOld = currentNodeOpts.includes("--max-old-space-size");
+      const needsReexec = !process.env.PONCHO_DEV_REEXECED && (!hasHeapSnap || !hasMaxOld);
+      if (needsReexec) {
+        const merged = [
+          currentNodeOpts,
+          ...(hasHeapSnap ? [] : [wantedNodeOpts[0]]),
+          ...(hasMaxOld ? [] : [wantedNodeOpts[1]]),
+        ].filter(Boolean).join(" ");
+        const { spawn } = await import("node:child_process");
+        const child = spawn(process.execPath, process.argv.slice(1), {
+          stdio: "inherit",
+          env: { ...process.env, NODE_OPTIONS: merged, PONCHO_DEV_REEXECED: "1" },
+        });
+        child.on("exit", (code, signal) => {
+          if (signal) process.kill(process.pid, signal);
+          else process.exit(code ?? 0);
+        });
+        return;
+      }
+
       const level = options.logLevel
         ?? (options.verbose ? "debug" : options.quiet ? "warn" : undefined);
       if (level) {
@@ -4147,6 +4174,7 @@ export const buildCli = (): Command => {
         process.stdout.write("\n");
         for (const line of getMascotLines()) process.stdout.write(`${line}\n`);
         process.stdout.write(`\x1b[1m\x1b[36m                             poncho\x1b[0m\n\n`);
+        process.stdout.write(`\x1b[2mheap snapshot on OOM enabled — dumps Heap.<ts>.heapsnapshot to ${process.cwd()}\x1b[0m\n\n`);
       }
       const port = Number.parseInt(options.port, 10);
       await startDevServer(Number.isNaN(port) ? 3000 : port);
