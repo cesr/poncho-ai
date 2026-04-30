@@ -1,5 +1,54 @@
 # @poncho-ai/harness
 
+## 0.39.2
+
+### Patch Changes
+
+- [`d24c152`](https://github.com/cesr/poncho-ai/commit/d24c152c1ecb9bfe59b086cb1f18a5ab43688223) Thanks [@cesr](https://github.com/cesr)! - fix(harness): cap `_toolResultArchive` size per conversation, FIFO-evict oldest
+
+  Heap-snapshot evidence from a 3.7 GB OOM showed 147,448 retained strings,
+  including 8 exact duplicates (~239 KB each) of the same browser-extracted
+  page text. The browser screenshot/snapshot skip-list from a prior fix
+  didn't help because page-text/web-extract tools still archived their
+  full payloads in `_toolResultArchive`, with no eviction across the
+  session.
+
+  Add a per-conversation archive byte cap (default 25 MB, configurable via
+  `PONCHO_TOOL_ARCHIVE_MAX_MB`). When a new archive write would push the
+  total over the cap, evict oldest entries (by `createdAt`) until we're
+  back under. Tool-name-agnostic, so it bounds memory regardless of which
+  tool returned the large payload.
+
+- [`8de45a7`](https://github.com/cesr/poncho-ai/commit/8de45a7ac434fa928ae3b83deec52727073d4658) Thanks [@cesr](https://github.com/cesr)! - fix(harness): browser status/frame listeners no longer pin runInput across runs
+
+  Heap-snapshot evidence pointed to the actual leak: `BrowserSession.tabs[cid].statusListeners`
+  was retaining ~3.4 GB on a long browser session. Each `harness.run()`
+  registered two arrow-function listeners (frame + status) whose lexical
+  scope captured the entire run scope, including `input.parameters.__toolResultArchive`.
+  V8 captures the full enclosing scope into the closure's Context object
+  even for variables the listener body doesn't reference, so the runInput
+  was reachable through every listener.
+
+  Two fixes:
+  1. The listeners are now produced by module-scope factories
+     (`makeBrowserFrameListener`, `makeBrowserStatusListener`) whose only
+     captured variable is the target event queue. The runInput is no longer
+     in scope when the closure is created.
+  2. The listener cleanup at the end of `run()` is now in a `try/finally`,
+     so listeners are always removed — even when the run errors or the
+     consumer abandons the generator. Previously a thrown run would leave
+     listeners pinned forever.
+
+- [`8e410a1`](https://github.com/cesr/poncho-ai/commit/8e410a15b246a2b129fded8d1c06b98878e5fd07) Thanks [@cesr](https://github.com/cesr)! - fix(harness): surface real `isolated-vm` load error instead of generic message
+
+  The previous error told users "Run: pnpm add isolated-vm" even when the
+  package was installed but the native binary couldn't be loaded — typically
+  because a Node upgrade left the installed prebuilds with the wrong ABI
+  version (e.g. Node 25 reports ABI 141 but `isolated-vm@6.1.2` only ships
+  abi127/abi137 prebuilds). Now the error includes the underlying load
+  message, the current Node version + ABI, and a hint to rebuild rather
+  than reinstall when the cause is a binary mismatch.
+
 ## 0.39.1
 
 ### Patch Changes
