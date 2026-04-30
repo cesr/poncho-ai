@@ -41,9 +41,22 @@ async function loadIvm(): Promise<typeof import("isolated-vm")> {
     // CJS native module: handle both ESM interop shapes
     ivmModule = mod.default ?? mod;
     return ivmModule;
-  } catch {
+  } catch (err) {
+    // Surface the underlying load error — `isolated-vm` is a native module
+    // that frequently fails for non-MODULE_NOT_FOUND reasons (no prebuilt
+    // binary for the current Node version, ABI mismatch after a Node
+    // upgrade, build-from-source failure, etc.). Hiding the real error
+    // wastes hours.
+    const cause = err instanceof Error ? err : new Error(String(err));
+    const hint = cause.message.includes("Cannot find module") ||
+      (cause as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND"
+      ? "Install with: pnpm add isolated-vm"
+      : "Likely native build/ABI mismatch — try: pnpm rebuild isolated-vm " +
+        "(or `cd node_modules/.pnpm/isolated-vm@*/node_modules/isolated-vm && npm rebuild`). " +
+        `Node ${process.version} is on V8 ABI ${process.versions.modules}.`;
     throw new Error(
-      "Code execution requires isolated-vm. Run: pnpm add isolated-vm",
+      `Code execution requires isolated-vm. ${hint}\nUnderlying error: ${cause.message}`,
+      { cause },
     );
   }
 }
