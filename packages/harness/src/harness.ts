@@ -180,6 +180,22 @@ const enforceArchiveCap = (
   return evicted;
 };
 
+// Factories that produce browser event listeners whose only captured variable
+// is the target queue. Keep these at module scope: defining them inside run()
+// would cause V8 to capture the entire run scope (including the runInput's
+// __toolResultArchive) into the closure's Context object, leaking it via
+// BrowserSession.tabs[cid].statusListeners across runs.
+const makeBrowserFrameListener =
+  (queue: AgentEvent[]) =>
+  (frame: { data: string; width: number; height: number }): void => {
+    queue.push({ type: "browser:frame", data: frame.data, width: frame.width, height: frame.height });
+  };
+const makeBrowserStatusListener =
+  (queue: AgentEvent[]) =>
+  (status: { active: boolean; url?: string; interactionAllowed: boolean }): void => {
+    queue.push({ type: "browser:status", ...status });
+  };
+
 const isAbortError = (error: unknown): boolean => {
   if (!error || typeof error !== "object") {
     return false;
@@ -355,6 +371,53 @@ const makeTruncatedToolResultNotice = (
   const preview = payload.slice(0, TOOL_RESULT_PREVIEW_CHARS);
   const omittedChars = Math.max(0, payload.length - preview.length);
   return `${TOOL_RESULT_TRUNCATED_PREFIX} id="${toolResultId}" tool="${toolName}" omittedChars=${omittedChars}\n${preview}${omittedChars > 0 ? "\n...[truncated]" : ""}`;
+};
+
+/**
+ * Drop trailing messages that would be rejected by the model API:
+ * - tool messages with no preceding assistant tool_use
+ * - assistant messages whose serialized content carries `tool_calls` but
+ *   has no following tool message
+ *
+ * Used at cancellation time to produce a snapshot that's safe to use as the
+ * canonical history on the next turn.
+ */
+const trimToValidPrefix = (messages: Message[]): Message[] => {
+  const out = [...messages];
+  while (out.length > 0) {
+    const tail = out[out.length - 1]!;
+    if (tail.role === "tool") {
+      // A tool message at the tail without a preceding assistant tool_use
+      // is invalid; an assistant tool_use without a following tool message
+      // is also invalid. The pair is pushed together in the run loop, so a
+      // bare trailing "tool" only happens if the assistant message was lost
+      // somehow — drop it defensively.
+      const prev = out[out.length - 2];
+      if (!prev || prev.role !== "assistant") {
+        out.pop();
+        continue;
+      }
+      break;
+    }
+    if (tail.role === "assistant") {
+      // Assistant message with serialized tool_calls but no matching tool
+      // message after it — drop it.
+      if (typeof tail.content === "string" && tail.content.includes('"tool_calls"')) {
+        try {
+          const parsed = JSON.parse(tail.content) as { tool_calls?: unknown };
+          if (Array.isArray(parsed.tool_calls) && parsed.tool_calls.length > 0) {
+            out.pop();
+            continue;
+          }
+        } catch {
+          // Not JSON — plain text assistant message is fine.
+        }
+      }
+      break;
+    }
+    break;
+  }
+  return out;
 };
 
 const hasUntruncatedToolResults = (messages: Message[]): boolean => {
@@ -1996,7 +2059,12 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
     let cancellationEmitted = false;
     const emitCancellation = (): AgentEvent => {
       cancellationEmitted = true;
-      return pushEvent({ type: "run:cancelled", runId });
+      // Snapshot the in-flight messages so the orchestrator can persist them
+      // as the canonical history. Drop a trailing assistant tool_use message
+      // that has no matching tool result — sending that to the API on the next
+      // turn would be rejected.
+      const snapshot = trimToValidPrefix([...messages]);
+      return pushEvent({ type: "run:cancelled", runId, messages: snapshot });
     };
 
     const resolvedModelName = agent.frontmatter.model?.name ?? "claude-opus-4-5";
@@ -2011,6 +2079,14 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
     });
 
     // Subscribe to browser frame/status events for this conversation's tab.
+    //
+    // CRITICAL: build the listener closures via a factory whose only captured
+    // variable is `browserEventQueue`. Inlining the arrow functions here would
+    // make V8 capture the entire run() scope into the closures' Context object
+    // — including `input.parameters.__toolResultArchive`, which can be tens
+    // of MB. If a listener fails to be removed (run errors, generator abandoned)
+    // the runInput snapshot stays pinned on BrowserSession.tabs[cid].statusListeners.
+    // We saw this leak retain ~3.4 GB across runs in production.
     const browserEventQueue: AgentEvent[] = [];
     const browserCleanups: Array<() => void> = [];
     const browserSession = this._browserSession as
@@ -2023,12 +2099,8 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
       | undefined;
     if (browserSession) {
       browserCleanups.push(
-        browserSession.onFrame(conversationId, (frame) => {
-          browserEventQueue.push({ type: "browser:frame", data: frame.data, width: frame.width, height: frame.height });
-        }),
-        browserSession.onStatus(conversationId, (status) => {
-          browserEventQueue.push({ type: "browser:status", ...status });
-        }),
+        browserSession.onFrame(conversationId, makeBrowserFrameListener(browserEventQueue)),
+        browserSession.onStatus(conversationId, makeBrowserStatusListener(browserEventQueue)),
       );
     }
     const drainBrowserEvents = function* (): Generator<AgentEvent> {
@@ -2037,6 +2109,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
       }
     };
 
+    try {
     if (input.task != null) {
       if (input.files && input.files.length > 0) {
         const parts: ContentPart[] = [
@@ -3282,9 +3355,18 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
       });
     }
 
-    // Drain any remaining browser events and clean up subscriptions
+    // Drain any remaining browser events
     yield* drainBrowserEvents();
-    for (const cleanup of browserCleanups) cleanup();
+    } finally {
+      // Clean up subscriptions even if the run errored or the consumer
+      // abandoned the generator. Listeners on BrowserSession.tabs[cid]
+      // capture the runInput; leaving them registered pins the
+      // __toolResultArchive across runs and was the root of a multi-GB
+      // heap leak.
+      for (const cleanup of browserCleanups) {
+        try { cleanup(); } catch { /* best-effort */ }
+      }
+    }
   }
 
   async executeTools(
