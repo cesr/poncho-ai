@@ -1,5 +1,60 @@
 # @poncho-ai/cli
 
+## 0.38.2
+
+### Patch Changes
+
+- [`fe55b69`](https://github.com/cesr/poncho-ai/commit/fe55b69a348f530e30d9f6998ddb00666b65a983) Thanks [@cesr](https://github.com/cesr)! - dev: add a `user ↔ harness` message toggle to the web UI in verbose mode
+
+  When `poncho dev` is run with `-v`, the web UI now shows a small `user`
+  toggle button in the topbar. Clicking it switches the message area
+  between the user-facing rendering and a raw view of `_harnessMessages` —
+  the actual message stream sent to the model API, with role,
+  runId/step/id metadata, and pretty-printed JSON content. Useful for
+  debugging context construction, tool-call shape, and what the model
+  actually sees turn-by-turn. Hidden entirely outside `-v` mode.
+
+- [`1040285`](https://github.com/cesr/poncho-ai/commit/1040285496caf02bde413006d8d8324c7c5ec92d) Thanks [@cesr](https://github.com/cesr)! - dev: capture heap snapshot on OOM in `poncho dev`
+
+  `poncho dev` now re-execs itself with `NODE_OPTIONS=--heapsnapshot-near-heap-limit=2 --max-old-space-size=4096`
+  so that when the dev server hits the heap limit, V8 writes a
+  `Heap.<ts>.heapsnapshot` file to the working directory before terminating.
+  Open it in Chrome DevTools → Memory to inspect retainers when investigating
+  memory leaks. Skipped if the user already set `NODE_OPTIONS`.
+
+- [`8a985dc`](https://github.com/cesr/poncho-ai/commit/8a985dc5bbf027894c92d27c113fb3c4a96a500e) Thanks [@cesr](https://github.com/cesr)! - dev: add proactive heap-snapshot watchdog and SIGUSR2 trigger
+
+  `--heapsnapshot-near-heap-limit` can fail to fire on real OOMs because V8 is
+  too memory-starved to allocate the snapshot buffer by the time the hook
+  runs. `poncho dev` now also runs a watchdog that calls
+  `v8.writeHeapSnapshot()` proactively when `heapUsed` crosses 1.5 GB, 2.5 GB,
+  and 3.3 GB — so we get evidence before the process is doomed. Snapshots
+  land in cwd as `poncho-heap-auto-<threshold>mb-<ts>.heapsnapshot`.
+
+  Also handles SIGUSR2: `kill -USR2 <pid>` writes a snapshot on demand for
+  when you want to grab one without waiting for a threshold.
+
+- [`45c71dc`](https://github.com/cesr/poncho-ai/commit/45c71dcc7ef6af24039c1302769a519671da59c2) Thanks [@cesr](https://github.com/cesr)! - fix(cli): strip large payloads and cap size on the SSE replay buffer
+
+  The per-conversation event buffer in `broadcastEvent` only excluded
+  `browser:frame` events from being retained for replay. But `tool:completed`
+  events for `browser_screenshot` carry the full ~134KB base64 JPEG in
+  `output.screenshot.data`, and `step:completed` / large tool outputs can be
+  similarly heavy. Across a long browser-heavy session these accumulated in
+  `stream.buffer` until the dev server OOM'd at ~3.7-3.8 GB heap.
+
+  Two changes:
+  1. Before pushing into the replay buffer, deep-strip any string > 4 KB
+     (replaced with `[stripped-for-replay len=N]`). Live SSE subscribers still
+     get the full event in real-time; only the replay buffer (used when a
+     client reconnects mid-conversation) holds the stripped copy. A
+     reconnecting client that wants the full screenshot can refetch the
+     conversation from disk.
+  2. Cap the buffer at the most recent 1000 events per conversation.
+
+- Updated dependencies [[`d24c152`](https://github.com/cesr/poncho-ai/commit/d24c152c1ecb9bfe59b086cb1f18a5ab43688223), [`8de45a7`](https://github.com/cesr/poncho-ai/commit/8de45a7ac434fa928ae3b83deec52727073d4658), [`8e410a1`](https://github.com/cesr/poncho-ai/commit/8e410a15b246a2b129fded8d1c06b98878e5fd07)]:
+  - @poncho-ai/harness@0.39.2
+
 ## 0.38.1
 
 ### Patch Changes
