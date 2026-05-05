@@ -2041,7 +2041,8 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
       const hourlyTime = (() => {
         const d = new Date();
         d.setUTCMinutes(0, 0, 0);
-        return d.toISOString();
+        const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getUTCDay()];
+        return `${weekday} ${d.toISOString()}`;
       })();
       const timeContext = this.reminderStore
         ? `\n\nCurrent UTC time (hour precision): ${hourlyTime}`
