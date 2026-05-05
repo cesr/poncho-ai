@@ -34,3 +34,9 @@ tmp/
 
 # Internal specs (not user-facing docs)
 docs/SPEC*.md
+
+# Claude Code runtime artifacts. Tracked plans under .claude/plans/
+# are intentionally NOT ignored.
+.claude/scheduled_tasks.lock
+.claude/projects/
+.claude/settings.local.json
