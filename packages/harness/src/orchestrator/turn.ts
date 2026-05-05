@@ -228,6 +228,9 @@ export const executeConversationTurn = async ({
     }
     if (event.type === "run:cancelled") {
       runCancelled = true;
+      if (event.messages) {
+        runHarnessMessages = event.messages;
+      }
     }
     if (event.type === "run:completed") {
       runContinuation = event.result.continuation === true;

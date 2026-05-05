@@ -860,6 +860,7 @@ export const createRequestHandler = async (options?: {
       let runContextWindow = 0;
       let runContinuation = false;
       let runContinuationMessages: Message[] | undefined;
+      let runHarnessMessages: Message[] | undefined;
       let runSteps = 0;
       let runMaxSteps: number | undefined;
 
@@ -1014,6 +1015,7 @@ export const createRequestHandler = async (options?: {
         });
         runContinuation = execution.runContinuation;
         runContinuationMessages = execution.runContinuationMessages;
+        runHarnessMessages = execution.runHarnessMessages;
         runSteps = execution.runSteps;
         runMaxSteps = execution.runMaxSteps;
         runContextTokens = execution.runContextTokens;
@@ -1037,7 +1039,11 @@ export const createRequestHandler = async (options?: {
             contextWindow: runContextWindow,
             continuation: runContinuation,
             continuationMessages: runContinuationMessages,
-            harnessMessages: runContinuationMessages,
+            // Prefer the cancellation/end-of-run snapshot from the harness so
+            // _harnessMessages stays in sync with what the model just saw,
+            // even on aborted runs. Falls back to continuationMessages when
+            // the run completed via continuation.
+            harnessMessages: runHarnessMessages ?? runContinuationMessages,
             toolResultArchive: harness.getToolResultArchive(conversationId),
           }, { shouldRebuildCanonical: true });
         });
@@ -3183,6 +3189,10 @@ export const createRequestHandler = async (options?: {
       let checkpointedRun = false;
       let runCancelled = false;
       let runContinuationMessages: Message[] | undefined;
+      // Snapshot of the harness's in-flight messages emitted with run:cancelled,
+      // so the catch-path (executeConversationTurn threw) can still persist a
+      // canonical history that includes the cancelled work.
+      let cancelHarnessMessages: Message[] | undefined;
 
       // Hoist stable ids for this turn. The same userMessage / assistantId is
       // reused across every buildMessages() call so the in-flight assistant
@@ -3274,6 +3284,7 @@ export const createRequestHandler = async (options?: {
             }
             if (event.type === "run:cancelled") {
               runCancelled = true;
+              if (event.messages) cancelHarnessMessages = event.messages;
             }
             if (event.type === "compaction:completed") {
               if (event.compactedMessages) {
@@ -3401,7 +3412,17 @@ export const createRequestHandler = async (options?: {
         if (abortController.signal.aborted || runCancelled) {
           if (draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0 || draft.sections.length > 0) {
             conversation.messages = buildMessages();
-            conversation.updatedAt = Date.now();
+            // Keep _harnessMessages aligned with what the model just saw.
+            // Without this, loadCanonicalHistory will hand the next turn a
+            // pre-cancellation snapshot and the agent will have no memory of
+            // the work it just did.
+            applyTurnMetadata(conversation, {
+              latestRunId,
+              contextTokens: 0,
+              contextWindow: 0,
+              harnessMessages: cancelHarnessMessages,
+              toolResultArchive: harness.getToolResultArchive(conversationId),
+            }, { shouldRebuildCanonical: true });
             await conversationStore.update(conversation);
           }
           if (!checkpointedRun) {

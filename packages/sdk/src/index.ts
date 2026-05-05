@@ -166,7 +166,7 @@ export interface AgentFailure {
 export type AgentEvent =
   | { type: "run:started"; runId: string; agentId: string; contextWindow?: number }
   | { type: "run:completed"; runId: string; result: RunResult; pendingSubagents?: boolean }
-  | { type: "run:cancelled"; runId: string }
+  | { type: "run:cancelled"; runId: string; messages?: Message[] }
   | { type: "run:error"; runId: string; error: AgentFailure }
   | { type: "step:started"; step: number }
   | { type: "step:completed"; step: number; duration: number }
