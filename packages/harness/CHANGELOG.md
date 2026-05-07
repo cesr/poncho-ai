@@ -1,5 +1,117 @@
 # @poncho-ai/harness
 
+## 0.40.0
+
+### Minor Changes
+
+- [#105](https://github.com/cesr/poncho-ai/pull/105) [`e127174`](https://github.com/cesr/poncho-ai/commit/e12717415b1114c5e9a58e7c51fcf9e038218f9f) Thanks [@cesr](https://github.com/cesr)! - feat: tenant-authored skills in the VFS
+
+  Tenants can now author skills in their VFS at `/skills/<name>/SKILL.md`
+  (plus sibling files such as `scripts/*.ts` and `references/*.md`). VFS
+  skills are merged with the agent's repo skills per-tenant when building
+  the `<available_skills>` block in the system prompt; repo skills win on
+  name collision (a warning is logged for the dropped VFS skill).
+
+  VFS skills can ship runnable scripts in their tree (`scripts/foo.ts`
+  etc.); the agent runs them via the existing `run_code` tool with
+  `file: "/skills/<name>/scripts/foo.ts"`, which executes in the sandboxed
+  isolated-vm runtime. `run_skill_script` remains for repo-shipped skills
+  only (jiti, full Node access), and returns a clear redirect when
+  called against a VFS skill. The agent's tool-policy lookups still
+  resolve against repo skills only, so tenants cannot grant themselves
+  new MCP tools by uploading a SKILL.md (security boundary).
+
+  `run_code` is enhanced so skill-authored scripts feel natural:
+  - Accepts top-level `export const run = ...`, `export default function ...`,
+    and `export default <expr>;` (the keyword is stripped at strip-TypeScript
+    time; `export default <expr>` becomes a `__default` binding).
+  - New optional `input` parameter, exposed inside the script as the global
+    `__input`.
+  - If the script defines a top-level `run` / `default` / `main` / `handler`
+    function and doesn't `return` on its own, the dispatcher invokes that
+    function with `__input` and returns its result. Existing
+    return-style scripts are unaffected.
+
+  The CLI Files sidebar already exposes the VFS, so creating a tenant
+  skill is just writing to `/skills/...` from the UI or via the agent's
+  own VFS write tools — the harness invalidates its per-tenant skill
+  cache on writes under `/skills/`.
+
+### Patch Changes
+
+- [`d24c152`](https://github.com/cesr/poncho-ai/commit/d24c152c1ecb9bfe59b086cb1f18a5ab43688223) Thanks [@cesr](https://github.com/cesr)! - fix(harness): cap `_toolResultArchive` size per conversation, FIFO-evict oldest
+
+  Heap-snapshot evidence from a 3.7 GB OOM showed 147,448 retained strings,
+  including 8 exact duplicates (~239 KB each) of the same browser-extracted
+  page text. The browser screenshot/snapshot skip-list from a prior fix
+  didn't help because page-text/web-extract tools still archived their
+  full payloads in `_toolResultArchive`, with no eviction across the
+  session.
+
+  Add a per-conversation archive byte cap (default 25 MB, configurable via
+  `PONCHO_TOOL_ARCHIVE_MAX_MB`). When a new archive write would push the
+  total over the cap, evict oldest entries (by `createdAt`) until we're
+  back under. Tool-name-agnostic, so it bounds memory regardless of which
+  tool returned the large payload.
+
+- [`8de45a7`](https://github.com/cesr/poncho-ai/commit/8de45a7ac434fa928ae3b83deec52727073d4658) Thanks [@cesr](https://github.com/cesr)! - fix(harness): browser status/frame listeners no longer pin runInput across runs
+
+  Heap-snapshot evidence pointed to the actual leak: `BrowserSession.tabs[cid].statusListeners`
+  was retaining ~3.4 GB on a long browser session. Each `harness.run()`
+  registered two arrow-function listeners (frame + status) whose lexical
+  scope captured the entire run scope, including `input.parameters.__toolResultArchive`.
+  V8 captures the full enclosing scope into the closure's Context object
+  even for variables the listener body doesn't reference, so the runInput
+  was reachable through every listener.
+
+  Two fixes:
+  1. The listeners are now produced by module-scope factories
+     (`makeBrowserFrameListener`, `makeBrowserStatusListener`) whose only
+     captured variable is the target event queue. The runInput is no longer
+     in scope when the closure is created.
+  2. The listener cleanup at the end of `run()` is now in a `try/finally`,
+     so listeners are always removed — even when the run errors or the
+     consumer abandons the generator. Previously a thrown run would leave
+     listeners pinned forever.
+
+- [`524df41`](https://github.com/cesr/poncho-ai/commit/524df411904bd00c07901695eda6d4dd07dde972) Thanks [@cesr](https://github.com/cesr)! - fix: persist harness messages on cancelled runs so the agent doesn't lose context
+
+  When a run was cancelled (Stop button, abort signal), `conversation.messages`
+  was updated with the partial assistant turn but `conversation._harnessMessages`
+  — the canonical history `loadCanonicalHistory` hands to the model on the next
+  turn — was left holding a snapshot from the _previous_ successful run. The
+  agent had no memory of the cancelled work, even though the user-facing UI
+  still showed it. The new verbose-mode harness toggle made this divergence
+  directly visible.
+
+  The fix plumbs an in-flight `messages` snapshot through the `run:cancelled`
+  event, trims it to a model-valid prefix (no orphan `tool_use`), and persists
+  it as `_harnessMessages` on every cancel path in the CLI.
+
+- [`8e410a1`](https://github.com/cesr/poncho-ai/commit/8e410a15b246a2b129fded8d1c06b98878e5fd07) Thanks [@cesr](https://github.com/cesr)! - fix(harness): surface real `isolated-vm` load error instead of generic message
+
+  The previous error told users "Run: pnpm add isolated-vm" even when the
+  package was installed but the native binary couldn't be loaded — typically
+  because a Node upgrade left the installed prebuilds with the wrong ABI
+  version (e.g. Node 25 reports ABI 141 but `isolated-vm@6.1.2` only ships
+  abi127/abi137 prebuilds). Now the error includes the underlying load
+  message, the current Node version + ABI, and a hint to rebuild rather
+  than reinstall when the cause is a binary mismatch.
+
+- [#105](https://github.com/cesr/poncho-ai/pull/105) [`e127174`](https://github.com/cesr/poncho-ai/commit/e12717415b1114c5e9a58e7c51fcf9e038218f9f) Thanks [@cesr](https://github.com/cesr)! - chore(harness): declare `engines.node` as `>=20.0.0 <25.0.0`
+
+  `isolated-vm@6.1.2` (the version harness uses for sandboxed code execution)
+  ships V8-ABI-specific prebuilt binaries up to ABI 137 (Node 24). Node 25
+  reports ABI 141 and has no matching prebuild, so the native module fails
+  to load. Declaring the upper bound makes pnpm/npm warn (or hard-fail with
+  `engine-strict`) at install time on Node 25, instead of surfacing as a
+  runtime error the first time `run_code` is invoked.
+
+- [`2792d84`](https://github.com/cesr/poncho-ai/commit/2792d8448b304bf748f926ce42a91c76f37edf79) Thanks [@cesr](https://github.com/cesr)! - Include weekday (Mon/Tue/...) alongside the UTC date in the system prompt's time context, so models stop misidentifying the day of the week.
+
+- Updated dependencies [[`524df41`](https://github.com/cesr/poncho-ai/commit/524df411904bd00c07901695eda6d4dd07dde972), [`9616060`](https://github.com/cesr/poncho-ai/commit/96160607502c2c0b05bc60b67b8fc012f4052ef1)]:
+  - @poncho-ai/sdk@1.10.0
+
 ## 0.39.1
 
 ### Patch Changes
