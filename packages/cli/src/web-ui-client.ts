@@ -69,6 +69,14 @@ export const getWebUiClientScript = (markedSource: string): string => `
           abortController: null,
           pendingFiles: [],
         },
+        sidebarMode: "conversations",
+        expandedDirs: new Set(["/"]),
+        dirCache: new Map(),
+        activeFilePath: null,
+        pendingUploads: 0,
+        fileExplorerError: null,
+        fileExplorerUsage: null,
+        confirmDeletePath: null,
       };
 
       const agentInitial = document.body.dataset.agentInitial || "A";
@@ -118,6 +126,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
         threadAttachmentPreview: $("thread-attachment-preview"),
         threadPrompt: $("thread-prompt"),
         threadSend: $("thread-send"),
+        fileExplorer: $("file-explorer"),
       };
       const sendIconMarkup =
         '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 12V4M4 7l4-4 4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -166,6 +175,25 @@ export const getWebUiClientScript = (markedSource: string): string => `
 
       const getConversationIdFromUrl = () => {
         const match = window.location.pathname.match(/^\\/c\\/([^\\/]+)/);
+        return match ? decodeURIComponent(match[1]) : null;
+      };
+
+      const pushFileUrl = (filePath) => {
+        const target = filePath ? "/f/" + encodeURIComponent(filePath) : "/";
+        if (window.location.pathname !== target) {
+          history.pushState({ filePath: filePath || null }, "", target);
+        }
+      };
+
+      const replaceFileUrl = (filePath) => {
+        const target = filePath ? "/f/" + encodeURIComponent(filePath) : "/";
+        if (window.location.pathname !== target) {
+          history.replaceState({ filePath: filePath || null }, "", target);
+        }
+      };
+
+      const getFilePathFromUrl = () => {
+        const match = window.location.pathname.match(/^\\/f\\/(.+)/);
         return match ? decodeURIComponent(match[1]) : null;
       };
 
@@ -837,6 +865,8 @@ export const getWebUiClientScript = (markedSource: string): string => `
           }
           var switchingFamily = state.subagentsParentId !== c.conversationId;
           state.activeConversationId = c.conversationId;
+          state.activeFilePath = null;
+          if (elements.composer) elements.composer.classList.remove("hidden");
           state.viewingSubagentId = null;
           state.parentConversationId = null;
           if (switchingFamily) {
@@ -4041,6 +4071,8 @@ export const getWebUiClientScript = (markedSource: string): string => `
       const startNewChat = () => {
         if (window._resetBrowserPanel) window._resetBrowserPanel();
         state.activeConversationId = null;
+        state.activeFilePath = null;
+        if (elements.composer) elements.composer.classList.remove("hidden");
         state.activeMessages = [];
         state.confirmDeleteId = null;
         state.contextTokens = 0;
@@ -4379,13 +4411,17 @@ export const getWebUiClientScript = (markedSource: string): string => `
       });
 
       let dragCounter = 0;
+      const _inFileExplorer = (target) =>
+        elements.fileExplorer && target instanceof Node && elements.fileExplorer.contains(target);
       document.addEventListener("dragenter", (e) => {
         e.preventDefault();
+        if (_inFileExplorer(e.target)) return;
         dragCounter++;
         if (dragCounter === 1) elements.dragOverlay.classList.add("active");
       });
       document.addEventListener("dragleave", (e) => {
         e.preventDefault();
+        if (_inFileExplorer(e.target)) return;
         dragCounter--;
         if (dragCounter <= 0) { dragCounter = 0; elements.dragOverlay.classList.remove("active"); }
       });
@@ -4394,6 +4430,7 @@ export const getWebUiClientScript = (markedSource: string): string => `
         e.preventDefault();
         dragCounter = 0;
         elements.dragOverlay.classList.remove("active");
+        if (_inFileExplorer(e.target)) return;
         if (e.dataTransfer && e.dataTransfer.files.length > 0) {
           addFiles(e.dataTransfer.files);
         }
@@ -4656,6 +4693,8 @@ export const getWebUiClientScript = (markedSource: string): string => `
       });
 
       const navigateToConversation = async (conversationId) => {
+        state.activeFilePath = null;
+        if (elements.composer) elements.composer.classList.remove("hidden");
         if (conversationId) {
           state.activeConversationId = conversationId;
           renderConversationList();
@@ -4682,8 +4721,893 @@ export const getWebUiClientScript = (markedSource: string): string => `
         }
       };
 
+      // ----- File explorer (sidebar Files mode) -----
+
+      const formatBytes = (n) => {
+        if (typeof n !== "number" || !isFinite(n)) return "";
+        if (n < 1024) return n + " B";
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+        if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
+        return (n / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+      };
+
+      const joinPath = (parent, name) => {
+        if (parent === "/") return "/" + name;
+        return parent + "/" + name;
+      };
+
+      const parentPath = (p) => {
+        if (!p || p === "/") return "/";
+        const idx = p.lastIndexOf("/");
+        if (idx <= 0) return "/";
+        return p.slice(0, idx);
+      };
+
+      const TEXT_LIKE_MIME_PREFIXES = ["text/"];
+      const TEXT_LIKE_MIME_EXACT = new Set([
+        "application/json",
+        "application/javascript",
+        "application/xml",
+        "application/x-sh",
+        "application/x-yaml",
+        "application/yaml",
+        "application/toml",
+        "application/x-www-form-urlencoded",
+      ]);
+      const TEXT_LIKE_EXTENSIONS = new Set([
+        "md","txt","log","csv","tsv","js","mjs","cjs","jsx","ts","tsx","json","yaml","yml","toml",
+        "xml","html","htm","css","scss","sass","less","sh","bash","zsh","py","rb","go","rs","java",
+        "kt","swift","c","cpp","h","hpp","sql","env","ini","conf","cfg","gitignore","editorconfig",
+      ]);
+
+      const categorizePreview = (mime, name) => {
+        const m = (mime || "").toLowerCase();
+        const ext = (name.split(".").pop() || "").toLowerCase();
+        if (m === "text/html" || ext === "html" || ext === "htm") return "html";
+        if (m.startsWith("image/")) return "image";
+        if (m === "application/pdf") return "pdf";
+        if (m.startsWith("audio/")) return "audio";
+        if (m.startsWith("video/")) return "video";
+        for (const p of TEXT_LIKE_MIME_PREFIXES) if (m.startsWith(p)) return "text";
+        if (TEXT_LIKE_MIME_EXACT.has(m)) return "text";
+        if (TEXT_LIKE_EXTENSIONS.has(ext)) return "text";
+        if (!m && (ext === "" || /^[a-z0-9]+$/i.test(ext))) return "text-maybe";
+        return "binary";
+      };
+
+      const TEXT_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
+
+      const folderIconSvg = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 4.5a1 1 0 0 1 1-1h3l1.5 1.5h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-10.5a1 1 0 0 1-1-1v-7.5z"/></svg>';
+      const fileIconSvg = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 1.5H3.5a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V6L9 1.5z"/><path d="M9 1.5V6h4.5"/></svg>';
+      const downloadIconSvg = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v8M5 7l3 3 3-3M2.5 12.5v.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-.5"/></svg>';
+      const refreshIconSvg = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8a6 6 0 0 1 10.5-4M14 8a6 6 0 0 1-10.5 4"/><path d="M12.5 1.5v3h-3M3.5 14.5v-3h3"/></svg>';
+      const closeIconSvg = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+      const caretIconSvg = '<svg viewBox="0 0 12 12" fill="none" width="10" height="10"><path d="M4.5 2.75L8 6L4.5 9.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
+      const uploadIconSvg = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 11V3M5 6l3-3 3 3M2.5 12.5v.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-.5"/></svg>';
+      const fetchDirEntries = async (dirPath) => {
+        const qs = "?path=" + encodeURIComponent(dirPath);
+        const data = await api("/api/vfs-list" + qs);
+        state.dirCache.set(dirPath, data.entries || []);
+        if (data.usage) state.fileExplorerUsage = data.usage;
+        return data.entries || [];
+      };
+
+      const ensureDirLoaded = async (dirPath) => {
+        if (state.dirCache.has(dirPath)) return;
+        try {
+          await fetchDirEntries(dirPath);
+          state.fileExplorerError = null;
+        } catch (err) {
+          state.fileExplorerError = err.message || "Failed to load directory";
+        }
+      };
+
+      const renderFileExplorer = () => {
+        const root = elements.fileExplorer;
+        if (!root) return;
+        root.innerHTML = "";
+
+        // Pending uploads spinner row
+        if (state.pendingUploads > 0) {
+          const row = document.createElement("div");
+          row.className = "file-upload-row";
+          row.innerHTML = '<span class="file-upload-spinner"></span><span>Uploading ' + state.pendingUploads + (state.pendingUploads === 1 ? ' file…' : ' files…') + '</span>';
+          root.appendChild(row);
+        }
+
+        // Error row
+        if (state.fileExplorerError) {
+          const err = document.createElement("div");
+          err.className = "file-explorer-error";
+          err.textContent = state.fileExplorerError;
+          const retry = document.createElement("button");
+          retry.textContent = "Retry";
+          retry.onclick = async () => {
+            state.fileExplorerError = null;
+            state.dirCache.clear();
+            for (const dir of Array.from(state.expandedDirs)) {
+              try { await fetchDirEntries(dir); } catch {}
+            }
+            renderFileExplorer();
+          };
+          err.appendChild(document.createElement("br"));
+          err.appendChild(retry);
+          root.appendChild(err);
+        }
+
+        // Tree
+        const tree = document.createElement("div");
+        tree.className = "file-children";
+        tree.dataset.dir = "/";
+        renderDirInto(tree, "/", 0);
+        root.appendChild(tree);
+
+        // Footer (status bar with usage + upload)
+        const footer = document.createElement("div");
+        footer.className = "file-explorer-footer";
+        const usageEl = document.createElement("div");
+        usageEl.className = "file-explorer-usage";
+        if (state.fileExplorerUsage) {
+          const u = state.fileExplorerUsage;
+          const countEl = document.createElement("span");
+          countEl.textContent = u.fileCount + " file" + (u.fileCount === 1 ? "" : "s");
+          const sizeEl = document.createElement("span");
+          sizeEl.textContent = formatBytes(u.totalBytes);
+          usageEl.append(countEl, sizeEl);
+        }
+        const refreshBtn = document.createElement("button");
+        refreshBtn.className = "file-explorer-icon-btn";
+        refreshBtn.title = "Refresh";
+        refreshBtn.innerHTML = refreshIconSvg;
+        refreshBtn.onclick = async () => {
+          state.dirCache.clear();
+          for (const dir of Array.from(state.expandedDirs)) {
+            try { await fetchDirEntries(dir); } catch {}
+          }
+          renderFileExplorer();
+        };
+        const uploadBtn = document.createElement("button");
+        uploadBtn.className = "file-explorer-upload";
+        uploadBtn.title = "Upload files";
+        uploadBtn.innerHTML = uploadIconSvg + '<span>Upload</span>';
+        uploadBtn.onclick = () => triggerUploadPicker("/");
+        footer.append(usageEl, refreshBtn, uploadBtn);
+        root.appendChild(footer);
+      };
+
+      const renderDirInto = (container, dirPath, depth) => {
+        const entries = state.dirCache.get(dirPath);
+        if (!entries) {
+          // Lazy fetch for newly expanded dir
+          ensureDirLoaded(dirPath).then(() => renderFileExplorer());
+          if (dirPath !== "/") {
+            const loading = document.createElement("div");
+            loading.className = "file-explorer-empty";
+            loading.style.paddingLeft = (16 + depth * 14) + "px";
+            loading.textContent = "Loading…";
+            container.appendChild(loading);
+          }
+          return;
+        }
+        if (entries.length === 0 && dirPath === "/") {
+          const empty = document.createElement("div");
+          empty.className = "file-explorer-empty";
+          empty.innerHTML = "No files yet. Tools like " + _TK + "write_file" + _TK + " and " + _TK + "bash" + _TK + " will populate this.";
+          container.appendChild(empty);
+          return;
+        }
+        for (const entry of entries) {
+          const childPath = joinPath(dirPath, entry.name);
+          const row = document.createElement("div");
+          row.className = "file-row" + (entry.type === "directory" ? " is-dir" : "") + (state.activeFilePath === childPath ? " active" : "");
+          row.style.paddingLeft = (8 + depth * 14) + "px";
+          row.dataset.path = childPath;
+          row.dataset.type = entry.type;
+
+          const caret = document.createElement("span");
+          caret.className = "file-caret" + (entry.type === "directory" ? "" : " empty") + (state.expandedDirs.has(childPath) ? " open" : "");
+          caret.innerHTML = caretIconSvg;
+          row.appendChild(caret);
+
+          const icon = document.createElement("span");
+          icon.className = "file-icon";
+          icon.innerHTML = entry.type === "directory" ? folderIconSvg : fileIconSvg;
+          row.appendChild(icon);
+
+          const name = document.createElement("span");
+          name.className = "file-name";
+          name.textContent = entry.name;
+          row.appendChild(name);
+
+          if (entry.type === "directory") {
+            row.onclick = (e) => {
+              e.stopPropagation();
+              if (state.confirmDeletePath) { state.confirmDeletePath = null; renderFileExplorer(); return; }
+              if (state.expandedDirs.has(childPath)) {
+                state.expandedDirs.delete(childPath);
+              } else {
+                state.expandedDirs.add(childPath);
+              }
+              renderFileExplorer();
+            };
+          } else {
+            row.onclick = (e) => {
+              e.stopPropagation();
+              if (state.confirmDeletePath) { state.confirmDeletePath = null; renderFileExplorer(); return; }
+              selectFile(childPath);
+            };
+          }
+
+          const isConfirming = state.confirmDeletePath === childPath;
+          const actions = document.createElement("div");
+          actions.className = "file-row-actions" + (isConfirming ? " confirming" : "");
+
+          const dl = document.createElement("a");
+          dl.className = "file-row-action";
+          if (entry.type === "directory") {
+            dl.href = "/api/vfs-archive?path=" + encodeURIComponent(childPath);
+            dl.title = "Download as zip";
+            dl.setAttribute("download", entry.name + ".zip");
+          } else {
+            dl.href = "/api/vfs/" + encodeURI(childPath.replace(/^\\//, ""));
+            dl.title = "Download";
+            dl.setAttribute("download", entry.name);
+          }
+          dl.innerHTML = downloadIconSvg;
+          dl.onclick = (e) => { e.stopPropagation(); };
+          actions.appendChild(dl);
+
+          const del = document.createElement("button");
+          del.className = "file-row-action file-delete" + (isConfirming ? " confirming" : "");
+          if (isConfirming) del.textContent = "sure?";
+          else del.innerHTML = closeIconSvg;
+          del.title = "Delete";
+          del.onclick = async (e) => {
+            e.stopPropagation();
+            if (!isConfirming) {
+              state.confirmDeletePath = childPath;
+              renderFileExplorer();
+              return;
+            }
+            state.confirmDeletePath = null;
+            await deleteEntry(childPath, entry.type, dirPath);
+          };
+          actions.appendChild(del);
+          row.appendChild(actions);
+
+          container.appendChild(row);
+
+          if (entry.type === "directory" && state.expandedDirs.has(childPath)) {
+            const childWrap = document.createElement("div");
+            childWrap.className = "file-children";
+            childWrap.dataset.dir = childPath;
+            renderDirInto(childWrap, childPath, depth + 1);
+            container.appendChild(childWrap);
+          }
+        }
+      };
+
+      const selectFile = async (filePath) => {
+        state.activeFilePath = filePath;
+        state.activeConversationId = null;
+        pushFileUrl(filePath);
+        updateComposerVisibility();
+        renderFileExplorer();
+        await renderFilePreview(filePath);
+      };
+
+      const renderFilePreview = async (filePath) => {
+        const messages = elements.messages;
+        if (!messages) return;
+        const filename = filePath.split("/").pop() || filePath;
+        elements.chatTitle.textContent = filename;
+        messages.innerHTML = '<div class="file-preview"><div class="file-explorer-empty">Loading…</div></div>';
+        let response;
+        try {
+          response = await fetch("/api/vfs/" + encodeURI(filePath.replace(/^\\//, "")), {
+            credentials: state.tenantToken ? "omit" : "include",
+            headers: buildAuthHeaders(),
+          });
+        } catch (err) {
+          renderPreviewError(filePath, "Network error");
+          return;
+        }
+        if (!response.ok) {
+          renderPreviewError(filePath, "HTTP " + response.status);
+          return;
+        }
+        const mime = (response.headers.get("content-type") || "").split(";")[0].trim();
+        const sizeHeader = response.headers.get("content-length");
+        const size = sizeHeader ? parseInt(sizeHeader, 10) : 0;
+        const category = categorizePreview(mime, filename);
+
+        if (category === "text" || category === "text-maybe") {
+          if (size && size > TEXT_PREVIEW_MAX_BYTES) {
+            renderPreviewPlaceholder(filePath, mime, size, "Text file too large to preview inline.");
+            return;
+          }
+          const buf = await response.arrayBuffer();
+          if (buf.byteLength > TEXT_PREVIEW_MAX_BYTES) {
+            renderPreviewPlaceholder(filePath, mime, buf.byteLength, "Text file too large to preview inline.");
+            return;
+          }
+          let text;
+          try {
+            text = new TextDecoder("utf-8", { fatal: category === "text-maybe" }).decode(buf);
+          } catch {
+            renderPreviewPlaceholder(filePath, mime, buf.byteLength, "Not a text file.");
+            return;
+          }
+          renderTextView(filePath, text, mime || "text/plain");
+          return;
+        }
+        if (category === "image") {
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          const wrap = document.createElement("div");
+          wrap.className = "file-preview";
+          const inner = document.createElement("div");
+          inner.className = "file-preview-image";
+          const img = document.createElement("img");
+          img.src = url;
+          img.alt = filename;
+          img.onload = () => URL.revokeObjectURL(url);
+          inner.appendChild(img);
+          wrap.append(buildPreviewActions(filePath), inner);
+          messages.innerHTML = "";
+          messages.appendChild(wrap);
+          return;
+        }
+        if (category === "pdf") {
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          const wrap = document.createElement("div");
+          wrap.className = "file-preview";
+          const inner = document.createElement("div");
+          inner.className = "file-preview-pdf";
+          const iframe = document.createElement("iframe");
+          iframe.src = url;
+          iframe.title = filename;
+          inner.appendChild(iframe);
+          wrap.append(buildPreviewActions(filePath), inner);
+          messages.innerHTML = "";
+          messages.appendChild(wrap);
+          return;
+        }
+        if (category === "html") {
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          const wrap = document.createElement("div");
+          wrap.className = "file-preview";
+          const inner = document.createElement("div");
+          inner.className = "file-preview-pdf";
+          const iframe = document.createElement("iframe");
+          iframe.src = url;
+          iframe.title = filename;
+          iframe.setAttribute("sandbox", "");
+          inner.appendChild(iframe);
+          wrap.append(buildPreviewActions(filePath), inner);
+          messages.innerHTML = "";
+          messages.appendChild(wrap);
+          return;
+        }
+        if (category === "audio" || category === "video") {
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          const wrap = document.createElement("div");
+          wrap.className = "file-preview";
+          const inner = document.createElement("div");
+          inner.className = "file-preview-media";
+          const media = document.createElement(category);
+          media.src = url;
+          media.controls = true;
+          media.style.maxWidth = "100%";
+          media.style.maxHeight = "100%";
+          inner.appendChild(media);
+          wrap.append(buildPreviewActions(filePath), inner);
+          messages.innerHTML = "";
+          messages.appendChild(wrap);
+          return;
+        }
+        renderPreviewPlaceholder(filePath, mime, size, "This file type can't be previewed.");
+      };
+
+      const buildDownloadLink = (filePath) => {
+        const filename = filePath.split("/").pop() || "download";
+        const a = document.createElement("a");
+        a.className = "file-preview-action-btn";
+        a.href = "/api/vfs/" + encodeURI(filePath.replace(/^\\//, ""));
+        a.textContent = "Download";
+        a.setAttribute("download", filename);
+        return a;
+      };
+
+      const buildPreviewActions = (filePath, leftExtras = [], rightExtras = []) => {
+        const actions = document.createElement("div");
+        actions.className = "file-preview-actions";
+        const left = document.createElement("div");
+        left.className = "file-preview-actions-group";
+        left.appendChild(buildDownloadLink(filePath));
+        left.appendChild(buildCopyLinkButton(filePath));
+        for (const el of leftExtras) left.appendChild(el);
+        const right = document.createElement("div");
+        right.className = "file-preview-actions-group";
+        for (const el of rightExtras) right.appendChild(el);
+        actions.append(left, right);
+        return actions;
+      };
+
+      const csvDelimiter = (mime, name) => {
+        const m = (mime || "").toLowerCase();
+        const ext = (name.split(".").pop() || "").toLowerCase();
+        if (m === "text/csv" || ext === "csv") return ",";
+        if (m === "text/tab-separated-values" || ext === "tsv") return "\\t";
+        return null;
+      };
+
+      const parseDelimited = (text, delimiter) => {
+        const rows = [];
+        let row = [];
+        let field = "";
+        let inQuotes = false;
+        for (let i = 0; i < text.length; i++) {
+          const c = text[i];
+          if (inQuotes) {
+            if (c === '"') {
+              if (text[i + 1] === '"') { field += '"'; i++; }
+              else inQuotes = false;
+            } else {
+              field += c;
+            }
+            continue;
+          }
+          if (c === '"') { inQuotes = true; continue; }
+          if (c === delimiter) { row.push(field); field = ""; continue; }
+          if (c === "\\n" || c === "\\r") {
+            if (c === "\\r" && text[i + 1] === "\\n") i++;
+            row.push(field);
+            field = "";
+            rows.push(row);
+            row = [];
+            continue;
+          }
+          field += c;
+        }
+        if (field.length > 0 || row.length > 0) {
+          row.push(field);
+          rows.push(row);
+        }
+        return rows;
+      };
+
+      const TABLE_PREVIEW_MAX_ROWS = 5000;
+
+      const isMarkdownFile = (mime, name) => {
+        const m = (mime || "").toLowerCase();
+        if (m.startsWith("text/markdown") || m === "text/x-markdown") return true;
+        const ext = (name.split(".").pop() || "").toLowerCase();
+        return ext === "md" || ext === "markdown" || ext === "mdx";
+      };
+
+      const flashLabel = (btn, label, durationMs) => {
+        const original = btn.dataset.label || btn.textContent;
+        btn.dataset.label = original;
+        btn.textContent = label;
+        if (btn._flashTimer) clearTimeout(btn._flashTimer);
+        btn._flashTimer = setTimeout(() => { btn.textContent = original; }, durationMs);
+      };
+
+      const buildCopyTextButton = (text) => {
+        const btn = document.createElement("button");
+        btn.className = "file-preview-action-btn";
+        btn.textContent = "Copy";
+        btn.onclick = async () => {
+          try {
+            await navigator.clipboard.writeText(text);
+            flashLabel(btn, "Copied", 1500);
+          } catch (err) {
+            window.alert("Failed to copy: " + (err.message || "clipboard unavailable"));
+          }
+        };
+        return btn;
+      };
+
+      const buildCopyLinkButton = (filePath) => {
+        const btn = document.createElement("button");
+        btn.className = "file-preview-action-btn";
+        btn.textContent = "Copy link";
+        btn.onclick = async () => {
+          const url = window.location.origin + "/api/vfs/" + encodeURI(filePath.replace(/^\\//, ""));
+          try {
+            await navigator.clipboard.writeText(url);
+            flashLabel(btn, "Copied", 1500);
+          } catch (err) {
+            window.alert("Failed to copy: " + (err.message || "clipboard unavailable"));
+          }
+        };
+        return btn;
+      };
+
+      const renderTextView = (filePath, text, mime) => {
+        const messages = elements.messages;
+        const filename = filePath.split("/").pop() || filePath;
+        const wrap = document.createElement("div");
+        wrap.className = "file-preview";
+        const copyBtn = buildCopyTextButton(text);
+        const editBtn = document.createElement("button");
+        editBtn.className = "file-preview-action-btn";
+        editBtn.textContent = "Edit";
+        editBtn.onclick = () => renderTextEditor(filePath, text, mime);
+
+        let body;
+        const delimiter = csvDelimiter(mime, filename);
+        if (delimiter) {
+          body = document.createElement("div");
+          body.className = "file-preview-table-wrap";
+          const rows = parseDelimited(text, delimiter);
+          if (rows.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "file-explorer-empty";
+            empty.textContent = "Empty file";
+            body.appendChild(empty);
+          } else {
+            const truncated = rows.length > TABLE_PREVIEW_MAX_ROWS;
+            const visibleRows = truncated ? rows.slice(0, TABLE_PREVIEW_MAX_ROWS) : rows;
+            const table = document.createElement("table");
+            table.className = "file-preview-table";
+            const thead = document.createElement("thead");
+            const headTr = document.createElement("tr");
+            for (const cell of visibleRows[0]) {
+              const th = document.createElement("th");
+              th.textContent = cell;
+              headTr.appendChild(th);
+            }
+            thead.appendChild(headTr);
+            table.appendChild(thead);
+            const tbody = document.createElement("tbody");
+            for (let r = 1; r < visibleRows.length; r++) {
+              const tr = document.createElement("tr");
+              for (const cell of visibleRows[r]) {
+                const td = document.createElement("td");
+                td.textContent = cell;
+                tr.appendChild(td);
+              }
+              tbody.appendChild(tr);
+            }
+            table.appendChild(tbody);
+            body.appendChild(table);
+            if (truncated) {
+              const note = document.createElement("div");
+              note.className = "file-preview-table-truncated";
+              note.textContent = "Showing first " + TABLE_PREVIEW_MAX_ROWS + " of " + rows.length + " rows. Click Edit to see the raw file.";
+              body.appendChild(note);
+            }
+          }
+        } else if (isMarkdownFile(mime, filename)) {
+          body = document.createElement("div");
+          body.className = "file-preview-markdown";
+          const inner = document.createElement("div");
+          inner.className = "assistant-content";
+          inner.innerHTML = renderAssistantMarkdown(text);
+          body.appendChild(inner);
+        } else {
+          body = document.createElement("pre");
+          body.className = "file-preview-text";
+          body.textContent = text;
+        }
+        wrap.append(buildPreviewActions(filePath, [copyBtn], [editBtn]), body);
+        messages.innerHTML = "";
+        messages.appendChild(wrap);
+      };
+
+      const renderTextEditor = (filePath, originalText, mime) => {
+        const messages = elements.messages;
+        const wrap = document.createElement("div");
+        wrap.className = "file-preview";
+        const actions = document.createElement("div");
+        actions.className = "file-preview-actions";
+        const cancelBtn = document.createElement("button");
+        cancelBtn.className = "file-preview-action-btn";
+        cancelBtn.textContent = "Cancel";
+        const saveBtn = document.createElement("button");
+        saveBtn.className = "file-preview-action-btn primary";
+        saveBtn.textContent = "Save";
+        saveBtn.disabled = true;
+        const leftGroup = document.createElement("div");
+        leftGroup.className = "file-preview-actions-group";
+        const rightGroup = document.createElement("div");
+        rightGroup.className = "file-preview-actions-group";
+        rightGroup.append(cancelBtn, saveBtn);
+        actions.append(leftGroup, rightGroup);
+        const textarea = document.createElement("textarea");
+        textarea.className = "file-edit-textarea";
+        textarea.value = originalText;
+        textarea.spellcheck = false;
+        textarea.oninput = () => { saveBtn.disabled = textarea.value === originalText; };
+        cancelBtn.onclick = () => renderTextView(filePath, originalText, mime);
+        saveBtn.onclick = async () => {
+          const newText = textarea.value;
+          saveBtn.disabled = true;
+          saveBtn.textContent = "Saving…";
+          cancelBtn.disabled = true;
+          try {
+            const url = "/api/vfs/" + encodeURI(filePath.replace(/^\\//, "")) + "?overwrite=1";
+            const response = await fetch(url, {
+              method: "PUT",
+              credentials: state.tenantToken ? "omit" : "include",
+              headers: { ...buildAuthHeaders(), "Content-Type": mime || "text/plain" },
+              body: newText,
+            });
+            if (!response.ok) {
+              let msg = "Save failed (" + response.status + ")";
+              try { const p = await response.json(); if (p && p.message) msg = p.message; } catch {}
+              throw new Error(msg);
+            }
+          } catch (err) {
+            saveBtn.textContent = "Save";
+            saveBtn.disabled = false;
+            cancelBtn.disabled = false;
+            window.alert("Failed to save: " + (err.message || "unknown error"));
+            return;
+          }
+          // Invalidate parent dir cache so file size/mtime refresh on next view
+          state.dirCache.delete(parentPath(filePath));
+          renderTextView(filePath, newText, mime);
+        };
+        wrap.append(actions, textarea);
+        messages.innerHTML = "";
+        messages.appendChild(wrap);
+        textarea.focus();
+      };
+
+      const renderPreviewPlaceholder = (filePath, mime, size, reason) => {
+        const messages = elements.messages;
+        const filename = filePath.split("/").pop() || filePath;
+        const downloadUrl = "/api/vfs/" + encodeURI(filePath.replace(/^\\//, ""));
+        const wrap = document.createElement("div");
+        wrap.className = "file-preview";
+        const inner = document.createElement("div");
+        inner.className = "file-preview-placeholder";
+        const card = document.createElement("div");
+        const nameEl = document.createElement("div");
+        nameEl.className = "file-preview-name";
+        nameEl.textContent = filename;
+        const metaEl = document.createElement("div");
+        metaEl.className = "file-preview-meta";
+        const metaParts = [];
+        if (mime) metaParts.push(mime);
+        if (size) metaParts.push(formatBytes(size));
+        metaEl.textContent = (reason ? reason + "  ·  " : "") + metaParts.join("  ·  ");
+        const a = document.createElement("a");
+        a.className = "file-preview-download";
+        a.href = downloadUrl;
+        a.textContent = "Download";
+        a.setAttribute("download", filename);
+        card.append(nameEl, metaEl, a);
+        inner.appendChild(card);
+        wrap.appendChild(inner);
+        messages.innerHTML = "";
+        messages.appendChild(wrap);
+      };
+
+      const renderPreviewError = (filePath, message) => {
+        const messages = elements.messages;
+        const filename = filePath.split("/").pop() || filePath;
+        const wrap = document.createElement("div");
+        wrap.className = "file-preview";
+        const inner = document.createElement("div");
+        inner.className = "file-preview-placeholder";
+        const card = document.createElement("div");
+        card.innerHTML = '<div class="file-preview-name">' + escapeHtml(filename) + '</div><div class="file-preview-meta">Failed to load file (' + escapeHtml(message) + ')</div>';
+        inner.appendChild(card);
+        wrap.appendChild(inner);
+        messages.innerHTML = "";
+        messages.appendChild(wrap);
+      };
+
+      const updateComposerVisibility = () => {
+        if (!elements.composer) return;
+        if (state.activeFilePath) elements.composer.classList.add("hidden");
+        else elements.composer.classList.remove("hidden");
+      };
+
+      const deleteEntry = async (path, type, parentDir) => {
+        try {
+          const url = "/api/vfs/" + encodeURI(path.replace(/^\\//, ""));
+          const response = await fetch(url, {
+            method: "DELETE",
+            credentials: state.tenantToken ? "omit" : "include",
+            headers: buildAuthHeaders(),
+          });
+          if (!response.ok) {
+            let msg = "Delete failed (" + response.status + ")";
+            try { const p = await response.json(); if (p && p.message) msg = p.message; } catch {}
+            throw new Error(msg);
+          }
+        } catch (err) {
+          window.alert("Failed to delete: " + (err.message || "unknown error"));
+          renderFileExplorer();
+          return;
+        }
+        // Drop cache for parent and any descendants we cached
+        state.dirCache.delete(parentDir);
+        if (type === "directory") {
+          const prefix = path === "/" ? "/" : path + "/";
+          for (const k of Array.from(state.dirCache.keys())) {
+            if (k === path || k.startsWith(prefix)) state.dirCache.delete(k);
+          }
+          for (const d of Array.from(state.expandedDirs)) {
+            if (d === path || d.startsWith(prefix)) state.expandedDirs.delete(d);
+          }
+        }
+        if (state.activeFilePath === path || (type === "directory" && state.activeFilePath && state.activeFilePath.startsWith(path + "/"))) {
+          state.activeFilePath = null;
+          elements.chatTitle.textContent = "";
+          elements.messages.innerHTML = "";
+          updateComposerVisibility();
+          replaceFileUrl(null);
+        }
+        try { await fetchDirEntries(parentDir); } catch {}
+        renderFileExplorer();
+      };
+
+      const switchSidebarMode = (mode) => {
+        if (mode !== "conversations" && mode !== "files") return;
+        state.sidebarMode = mode;
+        const buttons = document.querySelectorAll(".sidebar-segmented .seg-btn");
+        buttons.forEach((b) => {
+          if (b.dataset.mode === mode) b.classList.add("active");
+          else b.classList.remove("active");
+        });
+        const list = elements.list;
+        const explorer = elements.fileExplorer;
+        if (mode === "files") {
+          list.classList.add("hidden");
+          explorer.classList.remove("hidden");
+          if (!state.dirCache.has("/")) {
+            ensureDirLoaded("/").then(() => renderFileExplorer());
+          }
+          renderFileExplorer();
+        } else {
+          explorer.classList.add("hidden");
+          list.classList.remove("hidden");
+        }
+      };
+
+      // ----- Uploads + mkdir + drag-drop -----
+
+      let _hiddenUploadInput = null;
+      const triggerUploadPicker = (targetDir) => {
+        if (!_hiddenUploadInput) {
+          _hiddenUploadInput = document.createElement("input");
+          _hiddenUploadInput.type = "file";
+          _hiddenUploadInput.multiple = true;
+          _hiddenUploadInput.style.display = "none";
+          document.body.appendChild(_hiddenUploadInput);
+        }
+        _hiddenUploadInput.value = "";
+        _hiddenUploadInput.onchange = () => {
+          const files = Array.from(_hiddenUploadInput.files || []);
+          if (files.length > 0) uploadFiles(files, targetDir);
+        };
+        _hiddenUploadInput.click();
+      };
+
+      const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+
+      const uploadOne = async (file, targetDir, overwrite) => {
+        if (file.size > MAX_UPLOAD_BYTES) {
+          throw new Error("File too large (limit " + formatBytes(MAX_UPLOAD_BYTES) + ")");
+        }
+        const targetPath = joinPath(targetDir, file.name);
+        const url = "/api/vfs/" + encodeURI(targetPath.replace(/^\\//, "")) + (overwrite ? "?overwrite=1" : "");
+        const response = await fetch(url, {
+          method: "PUT",
+          credentials: state.tenantToken ? "omit" : "include",
+          headers: { ...buildAuthHeaders(), "Content-Type": file.type || "application/octet-stream" },
+          body: file,
+        });
+        if (response.status === 409) {
+          const ok = window.confirm("A file named \\\"" + file.name + "\\\" already exists in " + targetDir + ". Overwrite?");
+          if (!ok) return;
+          return uploadOne(file, targetDir, true);
+        }
+        if (!response.ok) {
+          let msg = "Upload failed (" + response.status + ")";
+          try { const p = await response.json(); if (p && p.message) msg = p.message; } catch {}
+          throw new Error(msg);
+        }
+      };
+
+      const uploadFiles = async (files, targetDir) => {
+        for (const file of files) {
+          state.pendingUploads += 1;
+          renderFileExplorer();
+          try {
+            await uploadOne(file, targetDir, false);
+          } catch (err) {
+            window.alert("Failed to upload " + file.name + ": " + (err.message || "unknown error"));
+          } finally {
+            state.pendingUploads -= 1;
+          }
+        }
+        state.dirCache.delete(targetDir);
+        try { await fetchDirEntries(targetDir); } catch {}
+        state.expandedDirs.add(targetDir);
+        renderFileExplorer();
+      };
+
+      let _dropTargetEl = null;
+      const _setDropTarget = (el) => {
+        if (_dropTargetEl === el) return;
+        if (_dropTargetEl) _dropTargetEl.classList.remove("drop-target");
+        _dropTargetEl = el;
+        if (_dropTargetEl) _dropTargetEl.classList.add("drop-target");
+      };
+      const _resolveDropTarget = (eventTarget) => {
+        if (!(eventTarget instanceof Element)) return null;
+        // A folder header row takes precedence — drop INTO that folder.
+        const folderRow = eventTarget.closest(".file-row.is-dir");
+        if (folderRow && elements.fileExplorer.contains(folderRow)) return folderRow;
+        // Otherwise the deepest .file-children wrap — drop into its parent dir.
+        const childrenWrap = eventTarget.closest(".file-children");
+        if (childrenWrap && elements.fileExplorer.contains(childrenWrap)) return childrenWrap;
+        return null;
+      };
+      const _resolveDropPath = (el) => {
+        if (!el) return "/";
+        if (el.classList.contains("file-row")) return el.dataset.path || "/";
+        if (el.classList.contains("file-children")) return el.dataset.dir || "/";
+        return "/";
+      };
+
+      const attachExplorerDropHandlers = () => {
+        const root = elements.fileExplorer;
+        if (!root) return;
+        root.addEventListener("dragover", (e) => {
+          if (!e.dataTransfer || ![...(e.dataTransfer.types || [])].includes("Files")) return;
+          e.preventDefault();
+          _setDropTarget(_resolveDropTarget(e.target));
+        });
+        root.addEventListener("dragleave", (e) => {
+          if (!root.contains(e.relatedTarget)) _setDropTarget(null);
+        });
+        root.addEventListener("drop", (e) => {
+          if (!e.dataTransfer || !e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+          e.preventDefault();
+          const target = _dropTargetEl;
+          const dir = _resolveDropPath(target);
+          _setDropTarget(null);
+          const items = Array.from(e.dataTransfer.items || []);
+          const hasDir = items.some((it) => {
+            const fn = it.webkitGetAsEntry && it.webkitGetAsEntry();
+            return fn && fn.isDirectory;
+          });
+          const files = Array.from(e.dataTransfer.files);
+          if (hasDir) {
+            window.alert("Folder uploads aren't supported yet — drop individual files.");
+          }
+          if (files.length > 0) uploadFiles(files, dir);
+        });
+      };
+
+      // Wire segmented control + drop-handlers once the DOM is ready
+      (function wireFileExplorer() {
+        const buttons = document.querySelectorAll(".sidebar-segmented .seg-btn");
+        buttons.forEach((b) => {
+          b.addEventListener("click", () => switchSidebarMode(b.dataset.mode));
+        });
+        attachExplorerDropHandlers();
+      })();
+
       window.addEventListener("popstate", async () => {
         if (state.isStreaming) return;
+        const filePath = getFilePathFromUrl();
+        if (filePath) {
+          switchSidebarMode("files");
+          await selectFile(filePath);
+          return;
+        }
         const conversationId = getConversationIdFromUrl();
         await navigateToConversation(conversationId);
       });
@@ -4694,6 +5618,26 @@ export const getWebUiClientScript = (markedSource: string): string => `
           return;
         }
         await loadConversations();
+        const urlFilePath = getFilePathFromUrl();
+        if (urlFilePath) {
+          switchSidebarMode("files");
+          // Expand ancestors so the file is visible in the tree
+          let p = parentPath(urlFilePath);
+          const ancestors = [];
+          while (p && p !== "/") { ancestors.push(p); p = parentPath(p); }
+          ancestors.push("/");
+          for (const a of ancestors.reverse()) {
+            state.expandedDirs.add(a);
+            try { await fetchDirEntries(a); } catch {}
+          }
+          state.activeFilePath = urlFilePath;
+          updateComposerVisibility();
+          renderFileExplorer();
+          await renderFilePreview(urlFilePath);
+          autoResizePrompt();
+          updateContextRing();
+          return;
+        }
         const urlConversationId = getConversationIdFromUrl();
         if (urlConversationId) {
           state.activeConversationId = urlConversationId;

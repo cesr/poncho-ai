@@ -306,7 +306,7 @@ export const WEB_UI_STYLES = `
     .conversation-list {
       flex: 1;
       overflow-y: auto;
-      margin-top: 12px;
+      margin-top: 8px;
       display: flex;
       flex-direction: column;
       gap: 2px;
@@ -436,6 +436,379 @@ export const WEB_UI_STYLES = `
       user-select: none;
     }
     .cron-view-more:hover { color: var(--fg-3); }
+    .sidebar-segmented {
+      display: inline-flex;
+      align-self: stretch;
+      margin: 12px 6px 0;
+      padding: 3px;
+      background: var(--surface-3);
+      border-radius: 999px;
+      gap: 2px;
+    }
+    .seg-btn {
+      flex: 1;
+      background: transparent;
+      border: 0;
+      color: var(--fg-5);
+      font-size: 12px;
+      font-weight: 500;
+      padding: 5px 10px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+    }
+    .seg-btn:hover:not(.active) { color: var(--fg-2); }
+    .seg-btn.active {
+      background: #fff;
+      color: #000;
+    }
+    .file-explorer {
+      flex: 1;
+      overflow-y: auto;
+      margin-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .file-children {
+      border-radius: 6px;
+      transition: background 0.1s, box-shadow 0.1s;
+    }
+    .file-children.drop-target {
+      background: var(--surface-3);
+      box-shadow: inset 0 0 0 1px var(--border-drag);
+    }
+    .file-row {
+      display: flex;
+      align-items: center;
+      height: 28px;
+      padding: 0 8px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--fg-6);
+      user-select: none;
+      position: relative;
+      transition: color 0.15s, background 0.15s;
+    }
+    .file-row:hover { color: var(--fg-3); }
+    .file-row.active { color: var(--fg); }
+    .file-row.is-dir.drop-target { background: var(--surface-4); box-shadow: inset 0 0 0 1px var(--border-drag); }
+    .file-row .file-caret {
+      display: grid;
+      place-items: center;
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+      transition: transform 0.15s;
+      color: var(--fg-7);
+    }
+    .file-row .file-caret.open { transform: rotate(90deg); }
+    .file-row .file-caret.empty { visibility: hidden; }
+    .file-row .file-icon {
+      display: inline-flex;
+      width: 16px;
+      margin-right: 6px;
+      flex-shrink: 0;
+      color: var(--fg-7);
+    }
+    .file-row .file-name {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .file-row.is-dir .file-name { color: var(--fg-3); }
+    .file-row-actions {
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      display: flex;
+      align-items: center;
+      opacity: 0;
+      background: var(--bg);
+      border-radius: 0 4px 4px 0;
+      transition: opacity 0.15s;
+    }
+    .file-row:hover .file-row-actions,
+    .file-row-actions.confirming { opacity: 1; }
+    .file-row-actions::before {
+      content: "";
+      position: absolute;
+      right: 100%;
+      top: 0;
+      bottom: 0;
+      width: 24px;
+      background: linear-gradient(to right, transparent, var(--bg));
+      pointer-events: none;
+    }
+    .file-row-action {
+      background: transparent;
+      border: 0;
+      color: var(--fg-7);
+      padding: 0 8px;
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      text-decoration: none;
+      height: 100%;
+      transition: color 0.15s;
+    }
+    .file-row-action:hover { color: var(--fg-2); }
+    .file-row-action svg { width: 14px; height: 14px; }
+    .file-row .file-delete.confirming {
+      width: auto;
+      padding: 0 8px;
+      font-size: 11px;
+      color: var(--error);
+    }
+    .file-row .file-delete.confirming:hover { color: var(--error-alt); }
+    .file-explorer-empty,
+    .file-explorer-error {
+      padding: 12px 10px;
+      font-size: 12px;
+      color: var(--fg-7);
+      line-height: 1.5;
+    }
+    .file-explorer-error { color: var(--error-soft); }
+    .file-explorer-error button {
+      background: transparent;
+      border: 1px solid var(--border-3);
+      color: var(--fg-3);
+      border-radius: 6px;
+      font-size: 12px;
+      padding: 4px 10px;
+      cursor: pointer;
+      margin-top: 6px;
+    }
+    .file-upload-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      color: var(--fg-7);
+    }
+    .file-upload-spinner {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 1.5px solid var(--fg-7);
+      border-top-color: transparent;
+      animation: file-spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes file-spin { to { transform: rotate(360deg); } }
+    .file-explorer-footer {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      font-size: 11px;
+      color: var(--fg-7);
+      border-top: 1px solid var(--border-1);
+      margin-top: 8px;
+    }
+    .file-explorer-usage {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      line-height: 1.3;
+    }
+    .file-explorer-usage span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .file-explorer-upload {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: transparent;
+      border: 1px solid var(--border-3);
+      color: var(--fg-3);
+      font-size: 12px;
+      border-radius: 999px;
+      padding: 4px 12px;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .file-explorer-upload:hover { color: var(--fg); border-color: var(--border-5); background: var(--surface-3); }
+    .file-explorer-upload svg { width: 14px; height: 14px; }
+    .file-explorer-icon-btn {
+      display: grid;
+      place-items: center;
+      width: 26px;
+      height: 26px;
+      background: transparent;
+      border: 1px solid var(--border-3);
+      border-radius: 999px;
+      color: var(--fg-3);
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+      flex-shrink: 0;
+    }
+    .file-explorer-icon-btn:hover { color: var(--fg); border-color: var(--border-5); background: var(--surface-3); }
+    .file-explorer-icon-btn svg { width: 13px; height: 13px; }
+    .file-preview {
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
+      height: 100%;
+    }
+    .file-preview-text {
+      flex: 1;
+      overflow: auto;
+      padding: 16px 20px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--fg-2);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      margin: 0;
+    }
+    .file-preview-markdown {
+      flex: 1;
+      overflow: auto;
+      padding: 16px 20px;
+    }
+    .file-preview-table-wrap {
+      flex: 1;
+      overflow: auto;
+      padding: 0 16px 16px;
+    }
+    .file-preview-table {
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: 12.5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--fg-2);
+      width: max-content;
+      min-width: 100%;
+    }
+    .file-preview-table th,
+    .file-preview-table td {
+      border-right: 1px solid var(--border-1);
+      border-bottom: 1px solid var(--border-1);
+      padding: 6px 10px;
+      text-align: left;
+      vertical-align: top;
+      white-space: pre-wrap;
+      max-width: 480px;
+      overflow-wrap: anywhere;
+    }
+    .file-preview-table tr th:first-child,
+    .file-preview-table tr td:first-child {
+      border-left: 1px solid var(--border-1);
+    }
+    .file-preview-table thead th {
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-weight: 600;
+      z-index: 2;
+      border-top: 1px solid var(--border-1);
+      box-shadow: 0 1px 0 var(--border-1);
+    }
+    .file-preview-table tbody td { background: var(--bg); }
+    .file-preview-table tbody tr:hover td { background: var(--surface-2); }
+    .file-preview-table-truncated {
+      padding: 6px 4px 0;
+      font-size: 11px;
+      color: var(--fg-7);
+    }
+    .file-preview-actions {
+      display: flex;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 8px 16px 12px;
+    }
+    .file-preview-actions-group {
+      display: flex;
+      gap: 6px;
+    }
+    .file-preview-action-btn {
+      background: transparent;
+      border: 1px solid var(--border-3);
+      color: var(--fg-3);
+      border-radius: 999px;
+      font-size: 12px;
+      padding: 4px 12px;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .file-preview-action-btn { text-decoration: none; }
+    .file-preview-action-btn:hover { color: var(--fg); border-color: var(--border-5); }
+    .file-preview-action-btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--accent-fg);
+    }
+    .file-preview-action-btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-fg); }
+    .file-preview-action-btn:disabled { opacity: 0.5; cursor: default; }
+    .file-edit-textarea {
+      flex: 1;
+      width: 100%;
+      box-sizing: border-box;
+      background: transparent;
+      border: 0;
+      outline: none;
+      resize: none;
+      padding: 16px 20px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--fg);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .file-preview-image,
+    .file-preview-pdf,
+    .file-preview-media {
+      flex: 1;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+      overflow: auto;
+      min-height: 0;
+    }
+    .file-preview-image img { max-width: 100%; max-height: 100%; object-fit: contain; }
+    .file-preview-pdf iframe { width: 100%; height: 100%; border: 0; min-height: 600px; }
+    .file-preview-placeholder {
+      flex: 1;
+      display: grid;
+      place-items: center;
+      color: var(--fg-7);
+      text-align: center;
+      padding: 32px;
+    }
+    .file-preview-placeholder .file-preview-name {
+      font-size: 14px;
+      color: var(--fg-3);
+      margin-bottom: 8px;
+      word-break: break-all;
+    }
+    .file-preview-placeholder .file-preview-meta {
+      font-size: 12px;
+      margin-bottom: 16px;
+    }
+    .file-preview-download {
+      display: inline-block;
+      background: var(--surface-4);
+      color: var(--fg);
+      text-decoration: none;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      transition: background 0.15s;
+    }
+    .file-preview-download:hover { background: var(--surface-6); }
     .sidebar-footer {
       margin-top: auto;
       padding-top: 8px;
