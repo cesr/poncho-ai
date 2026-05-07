@@ -75,3 +75,24 @@ export interface ApiSlashCommand {
   description: string;
   type: "command" | "skill";
 }
+
+export interface ApiVfsEntry {
+  name: string;
+  type: "file" | "directory" | "symlink";
+  size: number;
+  mimeType: string | null;
+  updatedAt: number | null;
+}
+
+export interface ApiVfsListResponse {
+  path: string;
+  entries: ApiVfsEntry[];
+  usage: { fileCount: number; totalBytes: number };
+}
+
+export interface ApiVfsWriteResponse {
+  path: string;
+  size: number;
+  mimeType: string | null;
+  updatedAt: number;
+}

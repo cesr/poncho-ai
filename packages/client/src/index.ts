@@ -22,7 +22,7 @@ import { submitApproval } from "./approvals.js";
 import { listSubagents } from "./subagents.js";
 import { listSecrets, setSecret, deleteSecret } from "./secrets.js";
 import { listSlashCommands } from "./commands.js";
-import { readFile } from "./vfs.js";
+import { readFile, listDir, writeFile, deleteFile, mkdir } from "./vfs.js";
 
 // Re-export everything consumers need
 export type { AgentClientOptions } from "./base.js";
@@ -45,6 +45,9 @@ export type {
   ApiThreadListResponse,
   ApiCreateThreadRequest,
   ApiCreateThreadResponse,
+  ApiVfsEntry,
+  ApiVfsListResponse,
+  ApiVfsWriteResponse,
 } from "@poncho-ai/sdk";
 
 export interface CreateTenantTokenOptions {
@@ -113,6 +116,10 @@ export class AgentClient extends BaseClient {
 
   // --- VFS (from vfs.ts) ---
   readFile = readFile;
+  listDir = listDir;
+  writeFile = writeFile;
+  deleteFile = deleteFile;
+  mkdir = mkdir;
 
   // --- Core messaging & streaming (kept inline) ---
 

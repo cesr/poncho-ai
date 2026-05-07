@@ -55,6 +55,7 @@ import type {
   ApiThreadSummary,
 } from "@poncho-ai/sdk";
 import { getTextContent } from "@poncho-ai/sdk";
+import { buildZip, type ZipEntry } from "./vfs-zip.js";
 import {
   AgentBridge,
   ResendAdapter,
@@ -134,6 +135,20 @@ const collectToolCallIds = (msgs: Message[]): Set<string> => {
   }
   return ids;
 };
+
+const isSafeVfsPath = (p: string): boolean => {
+  if (typeof p !== "string" || p.length === 0) return false;
+  if (!p.startsWith("/")) return false;
+  if (p.includes("\0")) return false;
+  const segments = p.split("/").slice(1);
+  if (p !== "/" && segments[segments.length - 1] === "") return false;
+  for (const seg of segments) {
+    if (seg === "" && p !== "/") return false;
+    if (seg === "." || seg === "..") return false;
+  }
+  return true;
+};
+
 const serverlessLog = createLogger("serverless");
 import {
   type DeployTarget,
@@ -1509,7 +1524,7 @@ export const createRequestHandler = async (options?: {
     }
 
     if (webUiEnabled) {
-      if (request.method === "GET" && (pathname === "/" || pathname.startsWith("/c/"))) {
+      if (request.method === "GET" && (pathname === "/" || pathname.startsWith("/c/") || pathname.startsWith("/f/"))) {
         writeHtml(response, 200, renderWebUiHtml({ agentName, isDev: !isProduction }));
         return;
       }
@@ -2904,6 +2919,207 @@ export const createRequestHandler = async (options?: {
         response.end(Buffer.from(data));
       } catch {
         writeJson(response, 404, { code: "NOT_FOUND", message: "File not found in VFS" });
+      }
+      return;
+    }
+
+    if (vfsMatch && request.method === "PUT") {
+      const rawPath = "/" + decodeURIComponent(vfsMatch[1] ?? "");
+      const tenantId = ctx.tenantId ?? "__default__";
+      const engine = harness.storageEngine;
+      if (!engine) {
+        writeJson(response, 500, { code: "NO_ENGINE", message: "Storage engine not available" });
+        return;
+      }
+      if (!isSafeVfsPath(rawPath) || rawPath === "/") {
+        writeJson(response, 400, { code: "BAD_PATH", message: "Invalid path" });
+        return;
+      }
+      const allowOverwrite = requestUrl.searchParams.get("overwrite") === "1";
+      try {
+        const existing = await engine.vfs.stat(tenantId, rawPath);
+        if (existing && !allowOverwrite) {
+          writeJson(response, 409, { code: "EXISTS", message: "File already exists" });
+          return;
+        }
+        if (existing && existing.type !== "file") {
+          writeJson(response, 409, { code: "NOT_A_FILE", message: "Path exists and is not a file" });
+          return;
+        }
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(chunk as Buffer);
+        const body = Buffer.concat(chunks);
+        const mimeType = (request.headers["content-type"] as string | undefined)?.split(";")[0]?.trim() || undefined;
+        await engine.vfs.writeFile(tenantId, rawPath, new Uint8Array(body), mimeType);
+        const stat = await engine.vfs.stat(tenantId, rawPath);
+        writeJson(response, 200, {
+          path: rawPath,
+          size: stat?.size ?? body.length,
+          mimeType: stat?.mimeType ?? mimeType ?? null,
+          updatedAt: stat?.updatedAt ?? Date.now(),
+        });
+      } catch (err) {
+        const message = (err as Error)?.message ?? "Upload failed";
+        const code = /quota|too large|exceed/i.test(message) ? 413 : 500;
+        writeJson(response, code, { code: code === 413 ? "QUOTA" : "WRITE_FAILED", message });
+      }
+      return;
+    }
+
+    if (vfsMatch && request.method === "DELETE") {
+      const rawPath = "/" + decodeURIComponent(vfsMatch[1] ?? "");
+      const tenantId = ctx.tenantId ?? "__default__";
+      const engine = harness.storageEngine;
+      if (!engine) {
+        writeJson(response, 500, { code: "NO_ENGINE", message: "Storage engine not available" });
+        return;
+      }
+      if (!isSafeVfsPath(rawPath) || rawPath === "/") {
+        writeJson(response, 400, { code: "BAD_PATH", message: "Invalid path" });
+        return;
+      }
+      try {
+        const stat = await engine.vfs.stat(tenantId, rawPath);
+        if (!stat) {
+          writeJson(response, 404, { code: "NOT_FOUND", message: "Path not found" });
+          return;
+        }
+        if (stat.type === "directory") {
+          await engine.vfs.deleteDir(tenantId, rawPath, true);
+        } else {
+          await engine.vfs.deleteFile(tenantId, rawPath);
+        }
+        writeJson(response, 200, { ok: true, path: rawPath });
+      } catch (err) {
+        writeJson(response, 500, { code: "DELETE_FAILED", message: (err as Error)?.message ?? "Failed to delete" });
+      }
+      return;
+    }
+
+    if (pathname === "/api/vfs-archive" && request.method === "GET") {
+      const dirPath = requestUrl.searchParams.get("path") ?? "/";
+      const tenantId = ctx.tenantId ?? "__default__";
+      const engine = harness.storageEngine;
+      if (!engine) {
+        writeJson(response, 500, { code: "NO_ENGINE", message: "Storage engine not available" });
+        return;
+      }
+      if (!isSafeVfsPath(dirPath)) {
+        writeJson(response, 400, { code: "BAD_PATH", message: "Invalid path" });
+        return;
+      }
+      try {
+        if (dirPath !== "/") {
+          const stat = await engine.vfs.stat(tenantId, dirPath);
+          if (!stat || stat.type !== "directory") {
+            writeJson(response, 404, { code: "NOT_FOUND", message: "Directory not found" });
+            return;
+          }
+        }
+        const entries: ZipEntry[] = [];
+        const walk = async (dir: string, prefix: string): Promise<void> => {
+          const children = await engine.vfs.readdir(tenantId, dir);
+          for (const child of children) {
+            const childPath = dir === "/" ? "/" + child.name : dir + "/" + child.name;
+            const relName = prefix === "" ? child.name : prefix + "/" + child.name;
+            if (child.type === "directory") {
+              await walk(childPath, relName);
+            } else if (child.type === "file") {
+              const content = await engine.vfs.readFile(tenantId, childPath);
+              const stat = await engine.vfs.stat(tenantId, childPath);
+              entries.push({
+                name: relName,
+                content,
+                mtime: stat?.updatedAt ? new Date(stat.updatedAt) : undefined,
+              });
+            }
+          }
+        };
+        await walk(dirPath, "");
+        const archiveName = (dirPath === "/" ? "vfs" : (dirPath.split("/").pop() || "archive")) + ".zip";
+        const zip = buildZip(entries);
+        response.writeHead(200, {
+          "Content-Type": "application/zip",
+          "Content-Length": zip.length,
+          "Content-Disposition": `attachment; filename="${archiveName}"`,
+          "Cache-Control": "no-cache",
+        });
+        response.end(zip);
+      } catch (err) {
+        writeJson(response, 500, { code: "ARCHIVE_FAILED", message: (err as Error)?.message ?? "Failed to build archive" });
+      }
+      return;
+    }
+
+    if (pathname === "/api/vfs-list" && request.method === "GET") {
+      const dirPath = requestUrl.searchParams.get("path") ?? "/";
+      const tenantId = ctx.tenantId ?? "__default__";
+      const engine = harness.storageEngine;
+      if (!engine) {
+        writeJson(response, 500, { code: "NO_ENGINE", message: "Storage engine not available" });
+        return;
+      }
+      if (!isSafeVfsPath(dirPath)) {
+        writeJson(response, 400, { code: "BAD_PATH", message: "Invalid path" });
+        return;
+      }
+      try {
+        if (dirPath !== "/") {
+          const stat = await engine.vfs.stat(tenantId, dirPath);
+          if (!stat || stat.type !== "directory") {
+            writeJson(response, 404, { code: "NOT_FOUND", message: "Directory not found" });
+            return;
+          }
+        }
+        const dirEntries = await engine.vfs.readdir(tenantId, dirPath);
+        const entries = await Promise.all(dirEntries.map(async (entry) => {
+          const childPath = dirPath === "/" ? "/" + entry.name : dirPath + "/" + entry.name;
+          const stat = await engine.vfs.stat(tenantId, childPath);
+          return {
+            name: entry.name,
+            type: entry.type,
+            size: stat?.size ?? 0,
+            mimeType: stat?.mimeType ?? null,
+            updatedAt: stat?.updatedAt ?? null,
+          };
+        }));
+        entries.sort((a, b) => {
+          if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+        const usage = await engine.vfs.getUsage(tenantId);
+        writeJson(response, 200, { path: dirPath, entries, usage });
+      } catch (err) {
+        writeJson(response, 500, { code: "READDIR_FAILED", message: (err as Error)?.message ?? "Failed to list directory" });
+      }
+      return;
+    }
+
+    if (pathname === "/api/vfs-mkdir" && request.method === "POST") {
+      const tenantId = ctx.tenantId ?? "__default__";
+      const engine = harness.storageEngine;
+      if (!engine) {
+        writeJson(response, 500, { code: "NO_ENGINE", message: "Storage engine not available" });
+        return;
+      }
+      try {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(chunk as Buffer);
+        const body = JSON.parse(Buffer.concat(chunks).toString() || "{}") as { path?: string };
+        const dirPath = body.path ?? "";
+        if (!isSafeVfsPath(dirPath) || dirPath === "/") {
+          writeJson(response, 400, { code: "BAD_PATH", message: "Invalid path" });
+          return;
+        }
+        const existing = await engine.vfs.stat(tenantId, dirPath);
+        if (existing) {
+          writeJson(response, 409, { code: "EXISTS", message: "Path already exists" });
+          return;
+        }
+        await engine.vfs.mkdir(tenantId, dirPath, true);
+        writeJson(response, 200, { path: dirPath });
+      } catch (err) {
+        writeJson(response, 500, { code: "MKDIR_FAILED", message: (err as Error)?.message ?? "Failed to create directory" });
       }
       return;
     }

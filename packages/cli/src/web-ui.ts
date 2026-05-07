@@ -137,7 +137,12 @@ ${WEB_UI_STYLES}
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
         </button>
       </div>
+      <div class="sidebar-segmented" role="tablist">
+        <button class="seg-btn active" data-mode="conversations" role="tab">Chats</button>
+        <button class="seg-btn" data-mode="files" role="tab">Files</button>
+      </div>
       <div id="conversation-list" class="conversation-list"></div>
+      <div id="file-explorer" class="file-explorer hidden"></div>
       <div class="sidebar-footer">
         <div class="sidebar-footer-row">
           <button id="logout" class="logout-btn">Log out</button>
