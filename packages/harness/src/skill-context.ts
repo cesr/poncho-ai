@@ -8,6 +8,10 @@ import {
   normalizeRelativeScriptPattern,
   validateMcpPattern,
 } from "./tool-policy.js";
+import { createLogger } from "@poncho-ai/sdk";
+import type { StorageEngine } from "./storage/engine.js";
+
+const logger = createLogger("skills");
 
 // ---------------------------------------------------------------------------
 // Skill directory scanning — default directories and ecosystem compatibility
@@ -38,6 +42,10 @@ export const resolveSkillDirs = (
   return dirs.map((d) => resolve(workingDir, d));
 };
 
+export type SkillSource =
+  | { kind: "repo" }
+  | { kind: "vfs"; tenantId: string };
+
 export interface SkillMetadata {
   /** Unique skill name from frontmatter. */
   name: string;
@@ -52,9 +60,11 @@ export interface SkillMetadata {
     mcp: string[];
     scripts: string[];
   };
-  /** Absolute path to the skill directory. */
+  /** Where this skill came from. */
+  source: SkillSource;
+  /** Absolute fs path (repo) or VFS path (vfs) to the skill directory. */
   skillDir: string;
-  /** Absolute path to the SKILL.md file. */
+  /** Absolute fs path (repo) or VFS path (vfs) to the SKILL.md file. */
   skillPath: string;
 }
 
@@ -76,7 +86,7 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 // Frontmatter parsing (metadata only — no body content)
 // ---------------------------------------------------------------------------
 
-const parseSkillFrontmatter = (
+export const parseSkillFrontmatter = (
   content: string,
 ): {
   name: string;
@@ -221,6 +231,7 @@ export const loadSkillMetadata = async (
         seen.add(parsed.name);
         skills.push({
           ...parsed,
+          source: { kind: "repo" },
           skillDir: dirname(manifest),
           skillPath: manifest,
         });
@@ -283,15 +294,97 @@ const escapeXml = (value: string): string =>
     .replace(/'/g, "&apos;");
 
 // ---------------------------------------------------------------------------
+// Public: VFS skill discovery — tenant-authored skills in /skills/<name>/SKILL.md
+// ---------------------------------------------------------------------------
+
+const VFS_SKILLS_ROOT = "/skills";
+
+const decoder = new TextDecoder("utf-8");
+
+export const loadVfsSkillMetadata = async (
+  engine: StorageEngine,
+  tenantId: string,
+): Promise<SkillMetadata[]> => {
+  let entries;
+  try {
+    entries = await engine.vfs.readdir(tenantId, VFS_SKILLS_ROOT);
+  } catch {
+    return [];
+  }
+
+  const skills: SkillMetadata[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of entries) {
+    if (entry.type !== "directory") continue;
+    const skillDir = `${VFS_SKILLS_ROOT}/${entry.name}`;
+    const skillPath = `${skillDir}/SKILL.md`;
+    let raw: Uint8Array;
+    try {
+      raw = await engine.vfs.readFile(tenantId, skillPath);
+    } catch {
+      continue; // no SKILL.md in this directory — skip silently
+    }
+    let parsed;
+    try {
+      parsed = parseSkillFrontmatter(decoder.decode(raw));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(
+        `Skipping VFS skill at ${skillDir} for tenant ${tenantId}: ${message}`,
+      );
+      continue;
+    }
+    if (!parsed) continue;
+    if (seen.has(parsed.name)) continue;
+    seen.add(parsed.name);
+    skills.push({
+      ...parsed,
+      source: { kind: "vfs", tenantId },
+      skillDir,
+      skillPath,
+    });
+  }
+
+  return skills;
+};
+
+// ---------------------------------------------------------------------------
+// Public: merge repo + VFS skills with repo-wins-on-collision semantics
+// ---------------------------------------------------------------------------
+
+export const mergeSkills = (
+  repoSkills: SkillMetadata[],
+  vfsSkills: SkillMetadata[],
+  onCollision?: (vfsSkill: SkillMetadata) => void,
+): SkillMetadata[] => {
+  const repoNames = new Set(repoSkills.map((s) => s.name));
+  const merged: SkillMetadata[] = [...repoSkills];
+  for (const skill of vfsSkills) {
+    if (repoNames.has(skill.name)) {
+      onCollision?.(skill);
+      continue;
+    }
+    merged.push(skill);
+  }
+  return merged;
+};
+
+// ---------------------------------------------------------------------------
 // Public: on-demand activation — load the full SKILL.md body
 // ---------------------------------------------------------------------------
 
 export const loadSkillInstructions = async (
   skill: SkillMetadata,
+  engine?: StorageEngine,
 ): Promise<string> => {
-  const content = await readFile(skill.skillPath, "utf8");
-  const match = content.match(FRONTMATTER_PATTERN);
-  return match ? match[2].trim() : content.trim();
+  const raw = skill.source.kind === "vfs"
+    ? decoder.decode(
+        await requireEngine(engine).vfs.readFile(skill.source.tenantId, skill.skillPath),
+      )
+    : await readFile(skill.skillPath, "utf8");
+  const match = raw.match(FRONTMATTER_PATTERN);
+  return match ? match[2].trim() : raw.trim();
 };
 
 // ---------------------------------------------------------------------------
@@ -301,17 +394,32 @@ export const loadSkillInstructions = async (
 export const readSkillResource = async (
   skill: SkillMetadata,
   relativePath: string,
+  engine?: StorageEngine,
 ): Promise<string> => {
   const normalized = normalize(relativePath);
   if (normalized.startsWith("..") || normalized.startsWith("/")) {
     throw new Error("Path must be relative and within the skill directory");
   }
+  if (skill.source.kind === "vfs") {
+    const joined = `${skill.skillDir}/${normalized.split(/[\\/]/).filter(Boolean).join("/")}`;
+    if (!joined.startsWith(`${skill.skillDir}/`)) {
+      throw new Error("Path escapes the skill directory");
+    }
+    const buf = await requireEngine(engine).vfs.readFile(skill.source.tenantId, joined);
+    return decoder.decode(buf);
+  }
   const fullPath = resolve(skill.skillDir, normalized);
-  // Ensure the resolved path is still inside the skill directory
   if (!fullPath.startsWith(skill.skillDir)) {
     throw new Error("Path escapes the skill directory");
   }
   return await readFile(fullPath, "utf8");
+};
+
+const requireEngine = (engine: StorageEngine | undefined): StorageEngine => {
+  if (!engine) {
+    throw new Error("StorageEngine required to read VFS-sourced skill");
+  }
+  return engine;
 };
 
 // ---------------------------------------------------------------------------

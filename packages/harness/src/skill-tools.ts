@@ -5,59 +5,55 @@ import { pathToFileURL } from "node:url";
 import { createJiti } from "jiti";
 import type { SkillMetadata } from "./skill-context.js";
 import { loadSkillInstructions, readSkillResource } from "./skill-context.js";
+import type { StorageEngine } from "./storage/engine.js";
 
-/**
- * Creates the built-in skill tools that implement progressive disclosure
- * per the Agent Skills specification (https://agentskills.io/integrate-skills).
- *
- * - `activate_skill`  — loads the full SKILL.md body on demand
- * - `read_skill_resource` — reads a file from a skill directory (references, scripts, assets)
- * - `list_skill_scripts` — lists runnable JavaScript/TypeScript scripts under scripts/
- * - `run_skill_script` — executes a JavaScript/TypeScript module under scripts/
- */
-export const createSkillTools = (
-  skills: SkillMetadata[],
-  options?: {
-    workingDir?: string;
-    onActivateSkill?: (name: string) => Promise<string[]> | string[];
-    onDeactivateSkill?: (name: string) => Promise<string[]> | string[];
-    onListActiveSkills?: () => string[];
-    isScriptAllowed?: (skill: string, scriptPath: string) => boolean;
-    isRootScriptAllowed?: (scriptPath: string) => boolean;
-  },
-): ToolDefinition[] => {
-  const skillsByName = new Map(skills.map((skill) => [skill.name, skill]));
-  const knownNames = skills.length > 0 ? skills.map((skill) => skill.name).join(", ") : "(none)";
+export interface CreateSkillToolsOptions {
+  workingDir?: string;
+  /** Resolve the skill set visible to a given tenant (repo + that tenant's VFS). */
+  getSkills: (tenantId: string | undefined | null) => Promise<SkillMetadata[]>;
+  /** Lazy accessor for the engine used for VFS reads when a skill's source is `vfs`. */
+  storageEngine?: () => StorageEngine | undefined;
+  onActivateSkill?: (name: string) => Promise<string[]> | string[];
+  onDeactivateSkill?: (name: string) => Promise<string[]> | string[];
+  onListActiveSkills?: () => string[];
+  isScriptAllowed?: (skill: string, scriptPath: string) => boolean;
+  isRootScriptAllowed?: (scriptPath: string) => boolean;
+}
 
+const findSkill = async (
+  options: CreateSkillToolsOptions,
+  tenantId: string | undefined | null,
+  name: string,
+): Promise<SkillMetadata | undefined> => {
+  const skills = await options.getSkills(tenantId);
+  return skills.find((skill) => skill.name === name);
+};
+
+export const createSkillTools = (options: CreateSkillToolsOptions): ToolDefinition[] => {
   return [
     defineTool({
       name: "activate_skill",
       description:
         "Load the full instructions for an available skill. " +
         "Use this when a user's request matches a skill's description. " +
-        `Available skills: ${knownNames}`,
+        "Available skills are listed in the <available_skills> block of the system prompt.",
       inputSchema: {
         type: "object",
         properties: {
-          name: {
-            type: "string",
-            description: "Name of the skill to activate",
-          },
+          name: { type: "string", description: "Name of the skill to activate" },
         },
         required: ["name"],
         additionalProperties: false,
       },
-      handler: async (input) => {
+      handler: async (input, context) => {
         const name = typeof input.name === "string" ? input.name.trim() : "";
-        const skill = skillsByName.get(name);
+        const skill = await findSkill(options, context.tenantId, name);
         if (!skill) {
-          return {
-            error: `Unknown skill: "${name}". Available skills: ${knownNames}`,
-          };
+          return { error: `Unknown skill: "${name}".` };
         }
         try {
-          const instructions = await loadSkillInstructions(skill);
-          const activeSkills = options?.onActivateSkill
+          const instructions = await loadSkillInstructions(skill, options.storageEngine?.());
+          const activeSkills = options.onActivateSkill
             ? await options.onActivateSkill(name)
             : [];
           return {
@@ -79,10 +75,7 @@ export const createSkillTools = (
       inputSchema: {
         type: "object",
         properties: {
-          name: {
-            type: "string",
-            description: "Name of the skill to deactivate",
-          },
+          name: { type: "string", description: "Name of the skill to deactivate" },
         },
         required: ["name"],
         additionalProperties: false,
@@ -93,7 +86,7 @@ export const createSkillTools = (
           return { error: "Skill name is required" };
         }
         try {
-          const activeSkills = options?.onDeactivateSkill
+          const activeSkills = options.onDeactivateSkill
             ? await options.onDeactivateSkill(name)
             : [];
           return { skill: name, activeSkills };
@@ -107,13 +100,9 @@ export const createSkillTools = (
     defineTool({
       name: "list_active_skills",
       description: "List currently active skills with scoped MCP tools.",
-      inputSchema: {
-        type: "object",
-        properties: {},
-        additionalProperties: false,
-      },
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
       handler: async () => ({
-        activeSkills: options?.onListActiveSkills ? options.onListActiveSkills() : [],
+        activeSkills: options.onListActiveSkills ? options.onListActiveSkills() : [],
       }),
     }),
     defineTool({
@@ -121,14 +110,11 @@ export const createSkillTools = (
       description:
         "Read a file from a skill's directory (references, scripts, assets). " +
         "Use relative paths from the skill root. " +
-        `Available skills: ${knownNames}`,
+        "Available skills are listed in the <available_skills> block of the system prompt.",
       inputSchema: {
         type: "object",
         properties: {
-          skill: {
-            type: "string",
-            description: "Name of the skill",
-          },
+          skill: { type: "string", description: "Name of the skill" },
           path: {
             type: "string",
             description:
@@ -138,20 +124,18 @@ export const createSkillTools = (
         required: ["skill", "path"],
         additionalProperties: false,
       },
-      handler: async (input) => {
+      handler: async (input, context) => {
         const name = typeof input.skill === "string" ? input.skill.trim() : "";
         const path = typeof input.path === "string" ? input.path.trim() : "";
-        const skill = skillsByName.get(name);
+        const skill = await findSkill(options, context.tenantId, name);
         if (!skill) {
-          return {
-            error: `Unknown skill: "${name}". Available skills: ${knownNames}`,
-          };
+          return { error: `Unknown skill: "${name}".` };
         }
         if (!path) {
           return { error: "Path is required" };
         }
         try {
-          const content = await readSkillResource(skill, path);
+          const content = await readSkillResource(skill, path, options.storageEngine?.());
           return { skill: name, path, content };
         } catch (err) {
           return {
@@ -164,32 +148,26 @@ export const createSkillTools = (
       name: "list_skill_scripts",
       description:
         "List JavaScript/TypeScript script files available under a skill directory (recursive). " +
-        `Available skills: ${knownNames}`,
+        "Available skills are listed in the <available_skills> block of the system prompt.",
       inputSchema: {
         type: "object",
         properties: {
-          skill: {
-            type: "string",
-            description: "Name of the skill",
-          },
+          skill: { type: "string", description: "Name of the skill" },
         },
         required: ["skill"],
         additionalProperties: false,
       },
-      handler: async (input) => {
+      handler: async (input, context) => {
         const name = typeof input.skill === "string" ? input.skill.trim() : "";
-        const skill = skillsByName.get(name);
+        const skill = await findSkill(options, context.tenantId, name);
         if (!skill) {
-          return {
-            error: `Unknown skill: "${name}". Available skills: ${knownNames}`,
-          };
+          return { error: `Unknown skill: "${name}".` };
         }
         try {
-          const scripts = await listSkillScripts(skill, options?.isScriptAllowed);
-          return {
-            skill: name,
-            scripts,
-          };
+          const scripts = skill.source.kind === "vfs"
+            ? await listVfsSkillScripts(skill, options.storageEngine?.(), options.isScriptAllowed)
+            : await listRepoSkillScripts(skill, options.isScriptAllowed);
+          return { skill: name, scripts };
         } catch (err) {
           return {
             error: `Failed to list scripts for skill "${name}": ${err instanceof Error ? err.message : String(err)}`,
@@ -200,9 +178,10 @@ export const createSkillTools = (
     defineTool({
       name: "run_skill_script",
       description:
-        "Run a JavaScript/TypeScript module in a skill or project directory. " +
-        "Uses default export function or named run/main/handler function. " +
-        `Available skills: ${knownNames}`,
+        "Run a JavaScript/TypeScript module shipped with a repo skill or under the project's scripts directory. " +
+        "Scripts run with full Node access via jiti and must export a default function or named run/main/handler. " +
+        "For VFS (tenant-authored) skills, use `run_code` with `file: '/skills/<name>/scripts/<file>.ts'` instead — " +
+        "those scripts run in the sandboxed isolate.",
       inputSchema: {
         type: "object",
         properties: {
@@ -214,7 +193,7 @@ export const createSkillTools = (
           script: {
             type: "string",
             description:
-              "Relative script path from the skill/project root (e.g. ./fetch-page.ts, scripts/summarize.ts, tools/multiply.ts)",
+              "Relative script path from the skill/project root (e.g. ./fetch-page.ts, scripts/summarize.ts)",
           },
           input: {
             type: "object",
@@ -224,7 +203,7 @@ export const createSkillTools = (
         required: ["script"],
         additionalProperties: false,
       },
-      handler: async (input) => {
+      handler: async (input, context) => {
         const name = typeof input.skill === "string" ? input.skill.trim() : "";
         const script = typeof input.script === "string" ? input.script.trim() : "";
         const payload =
@@ -238,16 +217,22 @@ export const createSkillTools = (
 
         try {
           if (name) {
-            const skill = skillsByName.get(name);
+            const skill = await findSkill(options, context.tenantId, name);
             if (!skill) {
+              return { error: `Unknown skill: "${name}".` };
+            }
+            if (skill.source.kind === "vfs") {
+              const filePath = `${skill.skillDir}/${normalizeScriptPolicyPath(script)}`;
               return {
-                error: `Unknown skill: "${name}". Available skills: ${knownNames}`,
+                error:
+                  `Skill "${name}" is a VFS (tenant-authored) skill. ` +
+                  `Use \`run_code\` with \`file: "${filePath}"\` (and \`input\` if needed) instead.`,
               };
             }
-            const projectRoot = options?.workingDir ?? process.cwd();
+            const projectRoot = options.workingDir ?? process.cwd();
             const resolved = resolveScriptPath(skill.skillDir, script, projectRoot);
             if (
-              options?.isScriptAllowed &&
+              options.isScriptAllowed &&
               !options.isScriptAllowed(name, resolved.relativePath)
             ) {
               return {
@@ -261,16 +246,12 @@ export const createSkillTools = (
               skill: name,
               scriptPath: resolved.fullPath,
             });
-            return {
-              skill: name,
-              script: resolved.relativePath,
-              output,
-            };
+            return { skill: name, script: resolved.relativePath, output };
           }
-          const baseDir = options?.workingDir ?? process.cwd();
+          const baseDir = options.workingDir ?? process.cwd();
           const resolved = resolveScriptPath(baseDir, script);
           if (
-            options?.isRootScriptAllowed &&
+            options.isRootScriptAllowed &&
             !options.isRootScriptAllowed(resolved.relativePath)
           ) {
             return {
@@ -283,11 +264,7 @@ export const createSkillTools = (
             scope: "agent",
             scriptPath: resolved.fullPath,
           });
-          return {
-            skill: null,
-            script: resolved.relativePath,
-            output,
-          };
+          return { skill: null, script: resolved.relativePath, output };
         } catch (err) {
           return {
             error: name
@@ -301,8 +278,9 @@ export const createSkillTools = (
 };
 
 const SCRIPT_EXTENSIONS = new Set([".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"]);
+const VFS_SCRIPT_EXTENSIONS = new Set([".js", ".mjs", ".ts", ".mts"]);
 
-const listSkillScripts = async (
+const listRepoSkillScripts = async (
   skill: SkillMetadata,
   isScriptAllowed?: (skill: string, scriptPath: string) => boolean,
 ): Promise<string[]> => {
@@ -317,27 +295,61 @@ const listSkillScripts = async (
     .sort();
 };
 
+const listVfsSkillScripts = async (
+  skill: SkillMetadata,
+  engine: StorageEngine | undefined,
+  isScriptAllowed?: (skill: string, scriptPath: string) => boolean,
+): Promise<string[]> => {
+  if (!engine || skill.source.kind !== "vfs") return [];
+  const tenantId = skill.source.tenantId;
+  const dir = skill.skillDir;
+  const found: string[] = [];
+
+  const walk = async (current: string): Promise<void> => {
+    const entries = await engine.vfs.readdir(tenantId, current);
+    for (const entry of entries) {
+      const childPath = `${current}/${entry.name}`;
+      if (entry.type === "directory") {
+        await walk(childPath);
+        continue;
+      }
+      if (entry.type !== "file") continue;
+      const ext = extname(entry.name).toLowerCase();
+      if (!VFS_SCRIPT_EXTENSIONS.has(ext)) continue;
+      if (entry.name.toLowerCase() === "skill.md") continue;
+      const rel = childPath.slice(dir.length + 1);
+      found.push(rel.includes("/") ? rel : `./${rel}`);
+    }
+  };
+
+  try {
+    await walk(dir);
+  } catch {
+    return [];
+  }
+  return found
+    .filter((path) => (isScriptAllowed ? isScriptAllowed(skill.name, path) : true))
+    .sort();
+};
+
 const collectScriptFiles = async (directory: string): Promise<string[]> => {
   const entries = await readdir(directory, { withFileTypes: true });
   const files: string[] = [];
 
   for (const entry of entries) {
-    if (entry.name === "node_modules") {
-      continue;
-    }
+    if (entry.name === "node_modules") continue;
     const fullPath = resolve(directory, entry.name);
 
     let isDir = entry.isDirectory();
     let isFile = entry.isFile();
 
-    // Dirent reports symlinks separately; resolve target type via stat()
     if (entry.isSymbolicLink()) {
       try {
         const s = await stat(fullPath);
         isDir = s.isDirectory();
         isFile = s.isFile();
       } catch {
-        continue; // broken symlink — skip
+        continue;
       }
     }
 
@@ -385,10 +397,7 @@ const resolveScriptPath = (
       `Unsupported script extension "${extension || "(none)"}". Allowed: ${[...SCRIPT_EXTENSIONS].join(", ")}`,
     );
   }
-  return {
-    fullPath,
-    relativePath: `./${normalized}`,
-  };
+  return { fullPath, relativePath: `./${normalized}` };
 };
 
 type RunnableScriptFunction = (
@@ -415,9 +424,6 @@ const loadRunnableScriptFunction = async (
 
 const loadScriptModule = async (scriptPath: string): Promise<unknown> => {
   const extension = extname(scriptPath).toLowerCase();
-  // Both Node's native import() and jiti cache modules by URL/path.
-  // Append a cache-busting query string so edits made by the agent are
-  // picked up on the next run_skill_script call.
   const cacheBust = `?t=${Date.now()}`;
   if (extension === ".ts" || extension === ".mts" || extension === ".cts") {
     const jiti = createJiti(import.meta.url, { interopDefault: true, moduleCache: false });

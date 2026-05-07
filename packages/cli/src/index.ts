@@ -2951,6 +2951,9 @@ export const createRequestHandler = async (options?: {
         const body = Buffer.concat(chunks);
         const mimeType = (request.headers["content-type"] as string | undefined)?.split(";")[0]?.trim() || undefined;
         await engine.vfs.writeFile(tenantId, rawPath, new Uint8Array(body), mimeType);
+        if (rawPath === "/skills" || rawPath.startsWith("/skills/")) {
+          harness.invalidateSkillsForTenant(tenantId);
+        }
         const stat = await engine.vfs.stat(tenantId, rawPath);
         writeJson(response, 200, {
           path: rawPath,
@@ -2988,6 +2991,9 @@ export const createRequestHandler = async (options?: {
           await engine.vfs.deleteDir(tenantId, rawPath, true);
         } else {
           await engine.vfs.deleteFile(tenantId, rawPath);
+        }
+        if (rawPath === "/skills" || rawPath.startsWith("/skills/")) {
+          harness.invalidateSkillsForTenant(tenantId);
         }
         writeJson(response, 200, { ok: true, path: rawPath });
       } catch (err) {
@@ -3117,6 +3123,9 @@ export const createRequestHandler = async (options?: {
           return;
         }
         await engine.vfs.mkdir(tenantId, dirPath, true);
+        if (dirPath === "/skills" || dirPath.startsWith("/skills/")) {
+          harness.invalidateSkillsForTenant(tenantId);
+        }
         writeJson(response, 200, { path: dirPath });
       } catch (err) {
         writeJson(response, 500, { code: "MKDIR_FAILED", message: (err as Error)?.message ?? "Failed to create directory" });
