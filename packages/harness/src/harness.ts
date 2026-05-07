@@ -50,7 +50,12 @@ import { createSecretsStore, resolveEnv, type SecretsStore } from "./secrets-sto
 import { createReminderTools } from "./reminder-tools.js";
 import { LocalMcpBridge } from "./mcp.js";
 import { createModelProvider, getModelContextWindow, type ModelProviderFactory, type ProviderConfig } from "./model-factory.js";
-import { buildSkillContextWindow, loadSkillMetadata } from "./skill-context.js";
+import {
+  buildSkillContextWindow,
+  loadSkillMetadata,
+  loadVfsSkillMetadata,
+  mergeSkills,
+} from "./skill-context.js";
 import { generateText, streamText, type ModelMessage } from "ai";
 import { addPromptCacheBreakpoints } from "./prompt-cache.js";
 import { jsonSchemaToZod } from "./schema-converter.js";
@@ -793,7 +798,6 @@ export class AgentHarness {
   private readonly modelProviderInjected: boolean;
   private readonly dispatcher = new ToolDispatcher();
   readonly uploadStore?: UploadStore;
-  private skillContextWindow = "";
   private memoryStore?: MemoryStore;
   private readonly tenantMemoryStores = new Map<string, MemoryStore>();
   private memoryConfig?: MemoryConfig;
@@ -805,6 +809,8 @@ export class AgentHarness {
   private skillFingerprint = "";
   private lastSkillRefreshAt = 0;
   private readonly activeSkillNames = new Set<string>();
+  private readonly skillCache = new Map<string, { skills: SkillMetadata[]; fingerprint: string }>();
+  private readonly vfsSkillCollisionWarnings = new Set<string>();
   private readonly registeredMcpToolNames = new Set<string>();
   private otlpSpanProcessor?: BatchSpanProcessor;
   private otlpTracerProvider?: NodeTracerProvider;
@@ -950,13 +956,22 @@ export class AgentHarness {
 
   private createVfsAccess(tenantId: string): NonNullable<ToolContext["vfs"]> {
     const adapter = this.bashManager!.getAdapter(tenantId);
+    const maybeInvalidate = (path: string) => {
+      if (path === "/skills" || path.startsWith("/skills/")) {
+        this.invalidateSkillsForTenant(tenantId);
+      }
+    };
     return {
       readFile: (path: string) => adapter.readFileBuffer(path),
       readText: (path: string) => adapter.readFile(path),
-      writeFile: (path: string, content: Uint8Array, mimeType?: string) =>
-        adapter.writeFile(path, content),
-      writeText: (path: string, content: string) =>
-        adapter.writeFile(path, content),
+      writeFile: async (path: string, content: Uint8Array, _mimeType?: string) => {
+        await adapter.writeFile(path, content);
+        maybeInvalidate(path);
+      },
+      writeText: async (path: string, content: string) => {
+        await adapter.writeFile(path, content);
+        maybeInvalidate(path);
+      },
       exists: (path: string) => adapter.exists(path),
       stat: async (path: string) => {
         const s = await adapter.stat(path);
@@ -968,10 +983,14 @@ export class AgentHarness {
         };
       },
       readdir: (path: string) => adapter.readdir(path),
-      mkdir: (path: string, options?: { recursive?: boolean }) =>
-        adapter.mkdir(path, options),
-      rm: (path: string, options?: { recursive?: boolean }) =>
-        adapter.rm(path, options),
+      mkdir: async (path: string, options?: { recursive?: boolean }) => {
+        await adapter.mkdir(path, options);
+        maybeInvalidate(path);
+      },
+      rm: async (path: string, options?: { recursive?: boolean }) => {
+        await adapter.rm(path, options);
+        maybeInvalidate(path);
+      },
     };
   }
 
@@ -1183,6 +1202,51 @@ export class AgentHarness {
 
   private listActiveSkills(): string[] {
     return [...this.activeSkillNames].sort();
+  }
+
+  /**
+   * Resolve the skill set visible to a given tenant: repo skills plus that
+   * tenant's VFS skills, with repo winning on name collision. Cached per
+   * tenant; cache invalidates on VFS writes under /skills/ via
+   * invalidateSkillsForTenant.
+   */
+  private async getSkillsForTenant(tenantId: string | undefined | null): Promise<SkillMetadata[]> {
+    if (!this.storageEngine) {
+      return this.loadedSkills;
+    }
+    // Mirror the rest of the harness: undefined tenantId falls back to
+    // "__default__" so dev-mode (no auth) conversations see the same VFS
+    // namespace the Files sidebar writes to.
+    const effectiveTenant = tenantId || "__default__";
+    const fingerprint = this.computeVfsSkillFingerprint(effectiveTenant);
+    const cached = this.skillCache.get(effectiveTenant);
+    if (cached && cached.fingerprint === fingerprint) {
+      return cached.skills;
+    }
+    const vfsSkills = await loadVfsSkillMetadata(this.storageEngine, effectiveTenant);
+    const merged = mergeSkills(this.loadedSkills, vfsSkills, (skipped) => {
+      const key = `${effectiveTenant}:${skipped.name}`;
+      if (this.vfsSkillCollisionWarnings.has(key)) return;
+      this.vfsSkillCollisionWarnings.add(key);
+      createLogger("skills").warn(
+        `VFS skill "${skipped.name}" for tenant ${effectiveTenant} ignored: a repo skill with the same name takes precedence.`,
+      );
+    });
+    this.skillCache.set(effectiveTenant, { skills: merged, fingerprint });
+    return merged;
+  }
+
+  invalidateSkillsForTenant(tenantId: string): void {
+    this.skillCache.delete(tenantId);
+  }
+
+  private computeVfsSkillFingerprint(tenantId: string): string {
+    if (!this.storageEngine) return "";
+    const paths = this.storageEngine.vfs
+      .listAllPaths(tenantId)
+      .filter((p) => p === "/skills" || p.startsWith("/skills/"))
+      .sort();
+    return paths.join("\n");
   }
 
   private getAgentMcpIntent(): string[] {
@@ -1405,10 +1469,12 @@ export class AgentHarness {
       .join("\n");
   }
 
-  private registerSkillTools(skillMetadata: SkillMetadata[]): void {
+  private registerSkillTools(): void {
     this.dispatcher.unregisterMany(SKILL_TOOL_NAMES);
     this.dispatcher.registerMany(
-      createSkillTools(skillMetadata, {
+      createSkillTools({
+        getSkills: (tenantId) => this.getSkillsForTenant(tenantId),
+        storageEngine: () => this.storageEngine,
         onActivateSkill: async (name: string) => {
           this.activeSkillNames.add(name);
           await this.refreshMcpTools(`activate:${name}`);
@@ -1492,9 +1558,10 @@ export class AgentHarness {
         return false;
       }
       this.loadedSkills = latestSkills;
-      this.skillContextWindow = buildSkillContextWindow(latestSkills);
       this.skillFingerprint = nextFingerprint;
-      this.registerSkillTools(latestSkills);
+      this.registerSkillTools();
+      // Repo skills changed; tenant caches merge against the new repo set.
+      this.skillCache.clear();
       // Prune active skills that no longer exist in the updated metadata,
       // but preserve ones that were merely updated (same name).  This keeps
       // MCP tools from active skills registered when their allowed-tools
@@ -1540,9 +1607,8 @@ export class AgentHarness {
     const extraSkillPaths = config?.skillPaths;
     const skillMetadata = await loadSkillMetadata(this.workingDir, extraSkillPaths);
     this.loadedSkills = skillMetadata;
-    this.skillContextWindow = buildSkillContextWindow(skillMetadata);
     this.skillFingerprint = this.buildSkillFingerprint(skillMetadata);
-    this.registerSkillTools(skillMetadata);
+    this.registerSkillTools();
     const agentId = this.parsedAgent.frontmatter.id ?? this.parsedAgent.frontmatter.name;
 
     // --- Unified Storage Engine ---
@@ -2029,10 +2095,12 @@ ${typeStubs}
 Code is wrapped in an async IIFE — use \`return\` to return a value to the tool result.`;
     }
 
-    const buildSystemPrompt = (): string => {
+    const buildSystemPrompt = async (): Promise<string> => {
       const agentPrompt = renderCurrentAgentPrompt();
-      const promptWithSkills = this.skillContextWindow
-        ? `${agentPrompt}${developmentContext}\n\n${this.skillContextWindow}${browserContext}${fsContext}${isolateContext}`
+      const tenantSkills = await this.getSkillsForTenant(input.tenantId);
+      const skillContextWindow = buildSkillContextWindow(tenantSkills);
+      const promptWithSkills = skillContextWindow
+        ? `${agentPrompt}${developmentContext}\n\n${skillContextWindow}${browserContext}${fsContext}${isolateContext}`
         : `${agentPrompt}${developmentContext}${browserContext}${fsContext}${isolateContext}`;
       // Quantize to the hour so the system prompt is stable across runs
       // within the same hour. Including a per-millisecond timestamp would
@@ -2049,7 +2117,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
         : "";
       return `${promptWithSkills}${memoryContext}${todoContext}${timeContext}`;
     };
-    let systemPrompt = buildSystemPrompt();
+    let systemPrompt = await buildSystemPrompt();
     let lastPromptFingerprint = `${this.agentFileFingerprint}\n${this.skillFingerprint}`;
 
     const pushEvent = (event: AgentEvent): AgentEvent => {
@@ -3285,7 +3353,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
             agent = this.parsedAgent as ParsedAgent;
             const currentFingerprint = `${this.agentFileFingerprint}\n${this.skillFingerprint}`;
             if (currentFingerprint !== lastPromptFingerprint) {
-              systemPrompt = buildSystemPrompt();
+              systemPrompt = await buildSystemPrompt();
               lastPromptFingerprint = currentFingerprint;
             }
           }
