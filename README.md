@@ -18,10 +18,11 @@ cd my-agent
 poncho dev
 ```
 
-## Demos
+## Try it
 
-- [Marketing Agent](https://github.com/cesr/marketing-agent) - A specialized marketing AI agent built with Poncho, equipped with 25+ marketing skills for SaaS and software companies.
-- [Product Agent](https://github.com/cesr/product-agent) - A specialized product AI agent built with Poncho, equipped with 80+ product management, growth, strategy, and leadership skills.
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/zQHXif)
+
+One-click deploy a working Poncho agent on Railway: web UI, browser tools, sandboxed code, crons, Telegram-ready, Postgres memory. Source: [cesr/poncho-starter](https://github.com/cesr/poncho-starter) — fork it as a starting point for your own agent.
 
 ## What is Poncho?
 
