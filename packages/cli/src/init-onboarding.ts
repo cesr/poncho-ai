@@ -21,7 +21,7 @@ const bold = (s: string): string => `${C.bold}${s}${C.reset}`;
 const INPUT_CARET = "»";
 
 type OnboardingAnswers = Record<string, string | number | boolean>;
-export type DeployTarget = "none" | "vercel" | "docker" | "fly" | "lambda";
+export type DeployTarget = "none" | "vercel" | "docker" | "fly" | "lambda" | "railway";
 
 export type InitOnboardingOptions = {
   yes?: boolean;
@@ -282,7 +282,13 @@ const getProviderModelName = (provider: string): string =>
 
 const normalizeDeployTarget = (value: unknown): DeployTarget => {
   const target = typeof value === "string" ? value.toLowerCase() : "";
-  if (target === "vercel" || target === "docker" || target === "fly" || target === "lambda") {
+  if (
+    target === "vercel" ||
+    target === "docker" ||
+    target === "fly" ||
+    target === "lambda" ||
+    target === "railway"
+  ) {
     return target;
   }
   return "none";

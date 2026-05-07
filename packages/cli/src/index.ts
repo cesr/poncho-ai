@@ -4741,7 +4741,7 @@ export const buildCli = (): Command => {
 
   program
     .command("build")
-    .argument("[target]", "vercel|docker|lambda|fly")
+    .argument("[target]", "vercel|docker|lambda|fly|railway")
     .option("--force", "overwrite existing deployment files")
     .description("Scaffold deployment files for a target")
     .action(async (target: string | undefined, options: { force?: boolean }) => {

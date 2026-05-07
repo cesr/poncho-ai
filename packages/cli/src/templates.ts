@@ -369,7 +369,7 @@ cron:
 
 - \`poncho dev\`: jobs run via an in-process scheduler.
 - \`poncho build vercel\`: generates \`vercel.json\` cron entries. Set \`CRON_SECRET\` to the same value as \`PONCHO_AUTH_TOKEN\` so Vercel can authenticate.
-- Docker/Fly.io: scheduler runs automatically.
+- Docker/Fly.io/Railway: scheduler runs automatically.
 - Lambda: use AWS EventBridge to trigger \`GET /api/cron/<jobName>\` with \`Authorization: Bearer <token>\`.
 - Trigger manually: \`curl http://localhost:3000/api/cron/daily-report\`
 
@@ -493,6 +493,10 @@ poncho build lambda
 # Fly.io
 poncho build fly
 fly deploy
+
+# Railway
+poncho build railway
+railway up
 \`\`\`
 
 Set environment variables on your deployment platform:

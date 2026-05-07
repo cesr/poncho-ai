@@ -29,7 +29,7 @@ Poncho is a harness framework for building AI agents that other people can use. 
 
 **For your team**, the agent is a web app they can talk to through the built-in chat UI, Slack, Telegram, email, or your own frontend via the API. They don't need to know how it works.
 
-**For you**, the agent is a git repository. Behavior, skills, tests, and configuration are all version-controlled. You iterate locally with `poncho dev`, review changes in PRs, and deploy to Vercel, Docker, Lambda, Fly.io, or anywhere else that runs Node.
+**For you**, the agent is a git repository. Behavior, skills, tests, and configuration are all version-controlled. You iterate locally with `poncho dev`, review changes in PRs, and deploy to Vercel, Docker, Lambda, Fly.io, Railway, or anywhere else that runs Node.
 
 Poncho uses the same conventions as Claude Code and OpenClaw (`AGENT.md` + `skills/` folder) and implements the [Agent Skills open standard](https://agentskills.io/home). Skills are portable across 25+ platforms including GitHub Copilot, Cursor, and VS Code.
 
@@ -745,6 +745,10 @@ poncho build lambda
 # Fly.io
 poncho build fly
 fly deploy
+
+# Railway
+poncho build railway
+# Push to a repo connected to Railway, or run: railway up
 ```
 
 The build command scaffolds deployment files directly in your project root and ensures `@poncho-ai/cli` is available as a runtime dependency.
@@ -753,7 +757,7 @@ The build command scaffolds deployment files directly in your project root and e
 
 Poncho is deployment-agnostic:the same agent code runs on any platform. Pick the model that fits your workload:
 
-| | Serverless (Vercel, Lambda) | Long-lived server (Docker, Fly.io) |
+| | Serverless (Vercel, Lambda) | Long-lived server (Docker, Fly.io, Railway) |
 |---|---|---|
 | **Best for** | Request-response agents, low/bursty traffic, zero-ops | Persistent/background agents, long tasks, steady traffic |
 | **Scales** | Automatically per-request | Manually or via platform autoscaler |
@@ -872,7 +876,7 @@ When `channel` is set, the cron job:
 
 - **Local dev** (`poncho dev`): An in-process scheduler runs cron jobs directly. Jobs are logged to the console and their conversations appear in the web UI.
 - **Vercel**: `poncho build vercel` adds a `crons` array to `vercel.json`. Vercel's infrastructure calls `GET /api/cron/<jobName>` on schedule. Set `CRON_SECRET` to the same value as `PONCHO_AUTH_TOKEN` so Vercel can authenticate.
-- **Docker / Fly.io**: The in-process scheduler activates automatically since these use `startDevServer()`.
+- **Docker / Fly.io / Railway**: The in-process scheduler activates automatically since these use `startDevServer()`.
 - **Lambda**: Use AWS EventBridge (CloudWatch Events) to trigger `GET /api/cron/<jobName>` on schedule. Include the `Authorization: Bearer <token>` header.
 
 Standard cron jobs (without `channel`) create a **fresh conversation** each run (no accumulated history). To carry context between runs, enable [memory](docs/features.md#persistent-memory). Channel-targeted cron jobs reuse the existing messaging conversation, so history carries over automatically.
@@ -948,7 +952,7 @@ A polling loop checks for due reminders at the interval set by `pollSchedule`. R
 
 - **Local dev** (`poncho dev`): A `setInterval` polling loop runs in-process.
 - **Vercel**: `poncho build vercel` adds a cron entry to `vercel.json` that hits `GET /api/reminders/check`. Set `CRON_SECRET` to the same value as `PONCHO_AUTH_TOKEN`.
-- **Docker / Fly.io**: The polling loop activates automatically.
+- **Docker / Fly.io / Railway**: The polling loop activates automatically.
 - **Lambda**: Use AWS EventBridge to trigger `GET /api/reminders/check` on schedule.
 
 ### Delivery

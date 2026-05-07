@@ -25,7 +25,8 @@ export const normalizeDeployTarget = (target: string): DeployScaffoldTarget => {
     normalized === "vercel" ||
     normalized === "docker" ||
     normalized === "lambda" ||
-    normalized === "fly"
+    normalized === "fly" ||
+    normalized === "railway"
   ) {
     return normalized;
   }
@@ -223,6 +224,25 @@ const port = Number.parseInt(process.env.PORT ?? "3000", 10);
 await startDevServer(Number.isNaN(port) ? 3000 : port, { workingDir: process.cwd() });
 `;
 
+  let browserEnabled = false;
+  try {
+    const cfg = await loadPonchoConfig(projectDir);
+    browserEnabled = !!cfg?.browser;
+  } catch { /* best-effort */ }
+
+  // Chromium runtime libs for Playwright when `browser: true`. Built as a
+  // single apt-get layer so it can be inserted verbatim into Dockerfiles
+  // for docker/railway/fly targets and stripped out otherwise.
+  const chromiumLibsLayer = browserEnabled
+    ? `RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates fonts-liberation libnss3 libatk1.0-0 libatk-bridge2.0-0 \\
+    libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \\
+    libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 \\
+  && rm -rf /var/lib/apt/lists/*
+
+`
+    : "";
+
   if (target === "vercel") {
     // Build @vercel/nft trace hints for packages that are dynamically loaded
     // at runtime.  Bare `import("pkg")` with a string literal is enough for
@@ -230,12 +250,6 @@ await startDevServer(Number.isNaN(port) ? 3000 : port, { workingDir: process.cwd
     // blocking the module graph at cold start; .catch() prevents errors when
     // an optional package isn't installed.
     const traceHints: string[] = [];
-
-    let browserEnabled = false;
-    try {
-      const cfg = await loadPonchoConfig(projectDir);
-      browserEnabled = !!cfg?.browser;
-    } catch { /* best-effort */ }
 
     if (browserEnabled) {
       traceHints.push(`import("@poncho-ai/browser").catch(() => {});`);
@@ -346,16 +360,19 @@ export default async function handler(req, res) {
     const dockerfilePath = resolve(projectDir, "Dockerfile");
     await writeScaffoldFile(
       dockerfilePath,
-      `FROM node:20-slim
+      `FROM node:22-slim
 WORKDIR /app
-COPY package.json package.json
+
+${chromiumLibsLayer}COPY package.json package.json
+RUN npm install --omit=dev
+
 COPY AGENT.md AGENT.md
 COPY poncho.config.js poncho.config.js
 COPY skills skills
 COPY tests tests
 COPY .env.example .env.example
-RUN corepack enable && npm install -g @poncho-ai/cli@^${cliVersion}
 COPY server.js server.js
+
 EXPOSE 3000
 CMD ["node","server.js"]
 `,
@@ -392,6 +409,48 @@ export const handler = async (event = {}) => {
 `,
       { force: options?.force, writtenPaths, baseDir: projectDir },
     );
+  } else if (target === "railway") {
+    await writeScaffoldFile(
+      resolve(projectDir, "Dockerfile"),
+      `FROM node:22-slim
+WORKDIR /app
+
+${chromiumLibsLayer}COPY package.json package.json
+RUN npm install --omit=dev
+
+COPY AGENT.md AGENT.md
+COPY poncho.config.js poncho.config.js
+COPY skills skills
+COPY tests tests
+COPY .env.example .env.example
+COPY server.js server.js
+
+EXPOSE 3000
+CMD ["node","server.js"]
+`,
+      { force: options?.force, writtenPaths, baseDir: projectDir },
+    );
+    await writeScaffoldFile(resolve(projectDir, "server.js"), sharedServerEntrypoint, {
+      force: options?.force,
+      writtenPaths,
+      baseDir: projectDir,
+    });
+    // Pin Railway to the Dockerfile builder so it doesn't try Nixpacks (which
+    // misreads pnpm-workspace.yaml or missing lockfiles and fails the build
+    // before producing useful logs).
+    await writeScaffoldFile(
+      resolve(projectDir, "railway.toml"),
+      `[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "node server.js"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+`,
+      { force: options?.force, writtenPaths, baseDir: projectDir },
+    );
   } else if (target === "fly") {
     await writeScaffoldFile(
       resolve(projectDir, "fly.toml"),
@@ -409,15 +468,18 @@ export const handler = async (event = {}) => {
     );
     await writeScaffoldFile(
       resolve(projectDir, "Dockerfile"),
-      `FROM node:20-slim
+      `FROM node:22-slim
 WORKDIR /app
-COPY package.json package.json
+
+${chromiumLibsLayer}COPY package.json package.json
+RUN npm install --omit=dev
+
 COPY AGENT.md AGENT.md
 COPY poncho.config.js poncho.config.js
 COPY skills skills
 COPY tests tests
-RUN npm install -g @poncho-ai/cli@^${cliVersion}
 COPY server.js server.js
+
 EXPOSE 3000
 CMD ["node","server.js"]
 `,
