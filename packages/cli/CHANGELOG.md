@@ -1,5 +1,133 @@
 # @poncho-ai/cli
 
+## 0.39.0
+
+### Minor Changes
+
+- [`48a52a2`](https://github.com/cesr/poncho-ai/commit/48a52a24831d5a4001d5c04939d37292c91b200f) Thanks [@cesr](https://github.com/cesr)! - feat(web-ui): expose persistent agent memory as `/memory.md` in the Files tree
+
+  The agent's per-tenant persistent memory document — previously only reachable
+  through the `memory_main_get` / `memory_main_write` / `memory_main_edit` tools
+  — now appears as a virtual file `memory.md` at the root of the Files mode.
+  Clicking it uses the existing markdown preview/edit UX: read inline, click
+  Edit to open the textarea, Save to persist. Reading and writing both go
+  through `engine.memory` (not the VFS), so changes the agent makes via tools
+  and changes a user makes through the UI see the same document.
+
+  The five VFS routes short-circuit on the path `/memory.md`:
+  `GET` reads from `engine.memory`, `PUT` writes (trimmed, mirroring
+  `memory_main_write` semantics), `DELETE` returns 400 RESERVED, `vfs-list`
+  splices the synthetic entry into the root listing, and `vfs-archive`
+  includes it in root-archive downloads. `vfs-mkdir` rejects the path.
+
+- [#104](https://github.com/cesr/poncho-ai/pull/104) [`9616060`](https://github.com/cesr/poncho-ai/commit/96160607502c2c0b05bc60b67b8fc012f4052ef1) Thanks [@cesr](https://github.com/cesr)! - dev: add a Files mode to the sidebar with VFS browsing, preview, and uploads
+
+  The web UI sidebar now has a Chats / Files segmented control. Switching to
+  Files reveals a folder-tree view of the agent's VFS — the same storage the
+  agent reads and writes via `read_file`, `write_file`, and the virtualized
+  `bash` tool. Folders expand inline with the same caret/dropdown pattern as
+  the Cron jobs section. Clicking a file previews it in the main panel:
+  - Text / JSON / source code render as a wrapped `<pre>` (5 MB cap), with an Edit button for inline editing (last-write-wins via PUT).
+  - Images render inline.
+  - PDFs render in an embedded iframe.
+  - Audio and video render with native controls.
+  - Anything else shows a placeholder card with a Download button.
+
+  Files can be added directly from the UI: an Upload button (multi-file
+  picker), drag-and-drop onto the explorer or onto a specific folder row, and
+  a New folder button. Files and folders are deletable via a hover-X with a
+  two-step confirm. Conflicts prompt to overwrite. Four new HTTP routes back
+  this UI: `GET /api/vfs-list`, `PUT /api/vfs/{path}`, `DELETE /api/vfs/{path}`,
+  and `POST /api/vfs-mkdir`. URLs of the form `/f/{path}` deep-link to a file
+  preview; the chat composer is hidden while previewing a file.
+
+  The same routes are exposed on `AgentClient` for programmatic use:
+  `listDir`, `writeFile`, `deleteFile`, and `mkdir` (alongside the existing
+  `readFile`). New shared types `ApiVfsEntry`, `ApiVfsListResponse`, and
+  `ApiVfsWriteResponse` are exported from `@poncho-ai/sdk`.
+
+- [#105](https://github.com/cesr/poncho-ai/pull/105) [`e127174`](https://github.com/cesr/poncho-ai/commit/e12717415b1114c5e9a58e7c51fcf9e038218f9f) Thanks [@cesr](https://github.com/cesr)! - feat: tenant-authored skills in the VFS
+
+  Tenants can now author skills in their VFS at `/skills/<name>/SKILL.md`
+  (plus sibling files such as `scripts/*.ts` and `references/*.md`). VFS
+  skills are merged with the agent's repo skills per-tenant when building
+  the `<available_skills>` block in the system prompt; repo skills win on
+  name collision (a warning is logged for the dropped VFS skill).
+
+  VFS skills can ship runnable scripts in their tree (`scripts/foo.ts`
+  etc.); the agent runs them via the existing `run_code` tool with
+  `file: "/skills/<name>/scripts/foo.ts"`, which executes in the sandboxed
+  isolated-vm runtime. `run_skill_script` remains for repo-shipped skills
+  only (jiti, full Node access), and returns a clear redirect when
+  called against a VFS skill. The agent's tool-policy lookups still
+  resolve against repo skills only, so tenants cannot grant themselves
+  new MCP tools by uploading a SKILL.md (security boundary).
+
+  `run_code` is enhanced so skill-authored scripts feel natural:
+  - Accepts top-level `export const run = ...`, `export default function ...`,
+    and `export default <expr>;` (the keyword is stripped at strip-TypeScript
+    time; `export default <expr>` becomes a `__default` binding).
+  - New optional `input` parameter, exposed inside the script as the global
+    `__input`.
+  - If the script defines a top-level `run` / `default` / `main` / `handler`
+    function and doesn't `return` on its own, the dispatcher invokes that
+    function with `__input` and returns its result. Existing
+    return-style scripts are unaffected.
+
+  The CLI Files sidebar already exposes the VFS, so creating a tenant
+  skill is just writing to `/skills/...` from the UI or via the agent's
+  own VFS write tools — the harness invalidates its per-tenant skill
+  cache on writes under `/skills/`.
+
+### Patch Changes
+
+- [`fe55b69`](https://github.com/cesr/poncho-ai/commit/fe55b69a348f530e30d9f6998ddb00666b65a983) Thanks [@cesr](https://github.com/cesr)! - dev: add a `user ↔ harness` message toggle to the web UI in verbose mode
+
+  When `poncho dev` is run with `-v`, the web UI now shows a small `user`
+  toggle button in the topbar. Clicking it switches the message area
+  between the user-facing rendering and a raw view of `_harnessMessages` —
+  the actual message stream sent to the model API, with role,
+  runId/step/id metadata, and pretty-printed JSON content. Useful for
+  debugging context construction, tool-call shape, and what the model
+  actually sees turn-by-turn. Hidden entirely outside `-v` mode.
+
+- [`524df41`](https://github.com/cesr/poncho-ai/commit/524df411904bd00c07901695eda6d4dd07dde972) Thanks [@cesr](https://github.com/cesr)! - fix: persist harness messages on cancelled runs so the agent doesn't lose context
+
+  When a run was cancelled (Stop button, abort signal), `conversation.messages`
+  was updated with the partial assistant turn but `conversation._harnessMessages`
+  — the canonical history `loadCanonicalHistory` hands to the model on the next
+  turn — was left holding a snapshot from the _previous_ successful run. The
+  agent had no memory of the cancelled work, even though the user-facing UI
+  still showed it. The new verbose-mode harness toggle made this divergence
+  directly visible.
+
+  The fix plumbs an in-flight `messages` snapshot through the `run:cancelled`
+  event, trims it to a model-valid prefix (no orphan `tool_use`), and persists
+  it as `_harnessMessages` on every cancel path in the CLI.
+
+- [`45c71dc`](https://github.com/cesr/poncho-ai/commit/45c71dcc7ef6af24039c1302769a519671da59c2) Thanks [@cesr](https://github.com/cesr)! - fix(cli): strip large payloads and cap size on the SSE replay buffer
+
+  The per-conversation event buffer in `broadcastEvent` only excluded
+  `browser:frame` events from being retained for replay. But `tool:completed`
+  events for `browser_screenshot` carry the full ~134KB base64 JPEG in
+  `output.screenshot.data`, and `step:completed` / large tool outputs can be
+  similarly heavy. Across a long browser-heavy session these accumulated in
+  `stream.buffer` until the dev server OOM'd at ~3.7-3.8 GB heap.
+
+  Two changes:
+  1. Before pushing into the replay buffer, deep-strip any string > 4 KB
+     (replaced with `[stripped-for-replay len=N]`). Live SSE subscribers still
+     get the full event in real-time; only the replay buffer (used when a
+     client reconnects mid-conversation) holds the stripped copy. A
+     reconnecting client that wants the full screenshot can refetch the
+     conversation from disk.
+  2. Cap the buffer at the most recent 1000 events per conversation.
+
+- Updated dependencies [[`d24c152`](https://github.com/cesr/poncho-ai/commit/d24c152c1ecb9bfe59b086cb1f18a5ab43688223), [`8de45a7`](https://github.com/cesr/poncho-ai/commit/8de45a7ac434fa928ae3b83deec52727073d4658), [`524df41`](https://github.com/cesr/poncho-ai/commit/524df411904bd00c07901695eda6d4dd07dde972), [`8e410a1`](https://github.com/cesr/poncho-ai/commit/8e410a15b246a2b129fded8d1c06b98878e5fd07), [`e127174`](https://github.com/cesr/poncho-ai/commit/e12717415b1114c5e9a58e7c51fcf9e038218f9f), [`9616060`](https://github.com/cesr/poncho-ai/commit/96160607502c2c0b05bc60b67b8fc012f4052ef1), [`2792d84`](https://github.com/cesr/poncho-ai/commit/2792d8448b304bf748f926ce42a91c76f37edf79), [`e127174`](https://github.com/cesr/poncho-ai/commit/e12717415b1114c5e9a58e7c51fcf9e038218f9f)]:
+  - @poncho-ai/harness@0.40.0
+  - @poncho-ai/sdk@1.10.0
+  - @poncho-ai/messaging@0.8.5
+
 ## 0.38.1
 
 ### Patch Changes
