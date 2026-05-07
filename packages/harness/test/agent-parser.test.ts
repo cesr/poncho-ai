@@ -166,6 +166,24 @@ cron:
       expect(parsed.frontmatter.cron!["job"]!.timezone).toBe("Europe/London");
     });
 
+    it.each(["UTC", "GMT", "Etc/UTC"])(
+      "accepts %s as a timezone",
+      (tz) => {
+        const parsed = parseAgentMarkdown(`---
+name: test-agent
+cron:
+  job:
+    schedule: "0 9 * * *"
+    timezone: "${tz}"
+    task: "Do something"
+---
+
+# Agent
+`);
+        expect(parsed.frontmatter.cron!["job"]!.timezone).toBe(tz);
+      },
+    );
+
     it("parses maxRuns when present", () => {
       const parsed = parseAgentMarkdown(`---
 name: test-agent

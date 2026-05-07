@@ -91,16 +91,14 @@ const validateCronExpression = (expr: string, path: string): void => {
   }
 };
 
-const KNOWN_TIMEZONES: Set<string> | null = (() => {
-  try {
-    return new Set(Intl.supportedValuesOf("timeZone"));
-  } catch {
-    return null;
-  }
-})();
-
 const validateTimezone = (tz: string, path: string): void => {
-  if (KNOWN_TIMEZONES && !KNOWN_TIMEZONES.has(tz)) {
+  // Delegate to the runtime's Intl resolver rather than checking against
+  // `Intl.supportedValuesOf("timeZone")`. The latter returns only canonical
+  // IANA names (e.g. "Etc/UTC") and rejects common aliases like "UTC" and
+  // "GMT", even though `Intl.DateTimeFormat` accepts them everywhere.
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: tz });
+  } catch {
     throw new Error(
       `Invalid timezone at ${path}: "${tz}". Expected an IANA timezone string (e.g. "America/New_York", "UTC").`,
     );
