@@ -136,6 +136,8 @@ const collectToolCallIds = (msgs: Message[]): Set<string> => {
   return ids;
 };
 
+const MEMORY_VFILE_PATH = "/memory.md";
+
 const isSafeVfsPath = (p: string): boolean => {
   if (typeof p !== "string" || p.length === 0) return false;
   if (!p.startsWith("/")) return false;
@@ -2889,6 +2891,22 @@ export const createRequestHandler = async (options?: {
         writeJson(response, 500, { code: "NO_ENGINE", message: "Storage engine not available" });
         return;
       }
+      if (vfsPath === MEMORY_VFILE_PATH) {
+        try {
+          const memory = await engine.memory.get(tenantId);
+          const data = Buffer.from(memory.content, "utf-8");
+          response.writeHead(200, {
+            "Content-Type": "text/markdown; charset=utf-8",
+            "Content-Length": data.length,
+            "Content-Disposition": `inline; filename="memory.md"`,
+            "Cache-Control": "no-cache",
+          });
+          response.end(data);
+        } catch (err) {
+          writeJson(response, 500, { code: "READ_FAILED", message: (err as Error)?.message ?? "Failed to read memory" });
+        }
+        return;
+      }
       try {
         const stat = await engine.vfs.stat(tenantId, vfsPath);
         if (!stat || stat.type !== "file") {
@@ -2933,6 +2951,24 @@ export const createRequestHandler = async (options?: {
       }
       if (!isSafeVfsPath(rawPath) || rawPath === "/") {
         writeJson(response, 400, { code: "BAD_PATH", message: "Invalid path" });
+        return;
+      }
+      if (rawPath === MEMORY_VFILE_PATH) {
+        try {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(chunk as Buffer);
+          const body = Buffer.concat(chunks);
+          const content = body.toString("utf-8").trim();
+          const memory = await engine.memory.update(content, tenantId);
+          writeJson(response, 200, {
+            path: MEMORY_VFILE_PATH,
+            size: Buffer.byteLength(memory.content, "utf-8"),
+            mimeType: "text/markdown",
+            updatedAt: memory.updatedAt,
+          });
+        } catch (err) {
+          writeJson(response, 500, { code: "WRITE_FAILED", message: (err as Error)?.message ?? "Failed to write memory" });
+        }
         return;
       }
       const allowOverwrite = requestUrl.searchParams.get("overwrite") === "1";
@@ -2981,6 +3017,13 @@ export const createRequestHandler = async (options?: {
         writeJson(response, 400, { code: "BAD_PATH", message: "Invalid path" });
         return;
       }
+      if (rawPath === MEMORY_VFILE_PATH) {
+        writeJson(response, 400, {
+          code: "RESERVED",
+          message: "memory.md cannot be deleted; clear its contents instead.",
+        });
+        return;
+      }
       try {
         const stat = await engine.vfs.stat(tenantId, rawPath);
         if (!stat) {
@@ -3026,6 +3069,7 @@ export const createRequestHandler = async (options?: {
         const walk = async (dir: string, prefix: string): Promise<void> => {
           const children = await engine.vfs.readdir(tenantId, dir);
           for (const child of children) {
+            if (dir === "/" && child.name === "memory.md") continue;
             const childPath = dir === "/" ? "/" + child.name : dir + "/" + child.name;
             const relName = prefix === "" ? child.name : prefix + "/" + child.name;
             if (child.type === "directory") {
@@ -3042,6 +3086,14 @@ export const createRequestHandler = async (options?: {
           }
         };
         await walk(dirPath, "");
+        if (dirPath === "/") {
+          const memory = await engine.memory.get(tenantId);
+          entries.push({
+            name: "memory.md",
+            content: new Uint8Array(Buffer.from(memory.content, "utf-8")),
+            mtime: memory.updatedAt > 0 ? new Date(memory.updatedAt) : undefined,
+          });
+        }
         const archiveName = (dirPath === "/" ? "vfs" : (dirPath.split("/").pop() || "archive")) + ".zip";
         const zip = buildZip(entries);
         response.writeHead(200, {
@@ -3077,8 +3129,17 @@ export const createRequestHandler = async (options?: {
             return;
           }
         }
-        const dirEntries = await engine.vfs.readdir(tenantId, dirPath);
-        const entries = await Promise.all(dirEntries.map(async (entry) => {
+        const rawDirEntries = await engine.vfs.readdir(tenantId, dirPath);
+        const dirEntries = dirPath === "/"
+          ? rawDirEntries.filter((e) => e.name !== "memory.md")
+          : rawDirEntries;
+        const entries: Array<{
+          name: string;
+          type: "file" | "directory" | "symlink";
+          size: number;
+          mimeType: string | null;
+          updatedAt: number | null;
+        }> = await Promise.all(dirEntries.map(async (entry) => {
           const childPath = dirPath === "/" ? "/" + entry.name : dirPath + "/" + entry.name;
           const stat = await engine.vfs.stat(tenantId, childPath);
           return {
@@ -3089,6 +3150,16 @@ export const createRequestHandler = async (options?: {
             updatedAt: stat?.updatedAt ?? null,
           };
         }));
+        if (dirPath === "/") {
+          const memory = await engine.memory.get(tenantId);
+          entries.push({
+            name: "memory.md",
+            type: "file",
+            size: Buffer.byteLength(memory.content, "utf-8"),
+            mimeType: "text/markdown",
+            updatedAt: memory.updatedAt > 0 ? memory.updatedAt : null,
+          });
+        }
         entries.sort((a, b) => {
           if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
           return a.name.localeCompare(b.name);
@@ -3115,6 +3186,10 @@ export const createRequestHandler = async (options?: {
         const dirPath = body.path ?? "";
         if (!isSafeVfsPath(dirPath) || dirPath === "/") {
           writeJson(response, 400, { code: "BAD_PATH", message: "Invalid path" });
+          return;
+        }
+        if (dirPath === MEMORY_VFILE_PATH) {
+          writeJson(response, 400, { code: "RESERVED", message: "memory.md is reserved" });
           return;
         }
         const existing = await engine.vfs.stat(tenantId, dirPath);
