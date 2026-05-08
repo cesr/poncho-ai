@@ -439,7 +439,7 @@ export const WEB_UI_STYLES = `
     .sidebar-segmented {
       display: inline-flex;
       align-self: stretch;
-      margin: 12px 6px 0;
+      margin: 12px 6px 8px;
       padding: 3px;
       background: var(--surface-3);
       border-radius: 999px;

@@ -1940,6 +1940,13 @@ export class AgentHarness {
     return this.loadedSkills.map((s) => ({ name: s.name, description: s.description }));
   }
 
+  async listSkillsForTenant(
+    tenantId: string | undefined | null,
+  ): Promise<Array<{ name: string; description: string }>> {
+    const skills = await this.getSkillsForTenant(tenantId);
+    return skills.map((s) => ({ name: s.name, description: s.description }));
+  }
+
   /**
    * Wraps the run() generator with an OTel root span (invoke_agent) so all
    * child spans (LLM calls via AI SDK, tool execution) group under one trace.

@@ -3209,7 +3209,8 @@ export const createRequestHandler = async (options?: {
     }
 
     if (pathname === "/api/slash-commands" && request.method === "GET") {
-      const skills: ApiSlashCommand[] = harness.listSkills().map((s) => ({
+      const tenantSkills = await harness.listSkillsForTenant(ctx.tenantId);
+      const skills: ApiSlashCommand[] = tenantSkills.map((s) => ({
         command: "/" + s.name,
         description: s.description,
         type: "skill" as const,
