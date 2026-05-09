@@ -55,7 +55,7 @@ const vfsKey = (tenantId: string, path: string) => `${tenantId}\0${path}`;
 // ---------------------------------------------------------------------------
 
 export class InMemoryEngine implements StorageEngine {
-  private readonly agentId: string;
+  readonly agentId: string;
 
   // Conversation data
   private convs = new Map<string, Conversation>();

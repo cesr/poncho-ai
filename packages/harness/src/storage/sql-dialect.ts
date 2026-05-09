@@ -191,7 +191,7 @@ const colBytes = (v: unknown): number => {
 
 export abstract class SqlStorageEngine implements StorageEngine {
   protected readonly dialect: Dialect;
-  protected readonly agentId: string;
+  readonly agentId: string;
   protected abstract readonly executor: QueryExecutor;
   protected readonly egressMeter = new ConversationEgressMeter();
 
