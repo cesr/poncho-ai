@@ -102,6 +102,20 @@ export interface HarnessOptions {
   toolDefinitions?: ToolDefinition[];
   modelProvider?: ModelProviderFactory;
   uploadStore?: UploadStore;
+  /**
+   * Inject the agent definition directly instead of reading AGENT.md from
+   * `workingDir`. Pass raw markdown (string) or a pre-parsed `ParsedAgent`.
+   * When provided, `storageEngine` is also required — the engine's
+   * `agentId` becomes the source of truth for partitioning, and the
+   * filesystem identity dance (`ensureAgentIdentity`) is skipped.
+   */
+  agentDefinition?: string | ParsedAgent;
+  /**
+   * Pre-constructed storage engine. When provided, the harness will not
+   * create one internally. The engine's `agentId` is used wherever the
+   * harness today reads `parsedAgent.frontmatter.id`.
+   */
+  storageEngine?: StorageEngine;
 }
 
 export interface HarnessRunOutput {
@@ -823,6 +837,8 @@ export class AgentHarness {
 
   private parsedAgent?: ParsedAgent;
   private agentFileFingerprint = "";
+  private injectedAgentDefinition?: string | ParsedAgent;
+  private injectedStorageEngine = false;
   private mcpBridge?: LocalMcpBridge;
   private subagentManager?: SubagentManager;
   private readonly archivedToolResultsByConversation = new Map<string, Record<string, ArchivedToolResult>>();
@@ -1011,6 +1027,18 @@ export class AgentHarness {
     this.modelProviderInjected = !!options.modelProvider;
     this.modelProvider = options.modelProvider ?? createModelProvider("anthropic");
     this.uploadStore = options.uploadStore;
+
+    if (options.agentDefinition !== undefined && options.storageEngine === undefined) {
+      throw new Error(
+        "HarnessOptions.agentDefinition requires HarnessOptions.storageEngine — " +
+        "construct a StorageEngine with the desired agentId and pass both.",
+      );
+    }
+    this.injectedAgentDefinition = options.agentDefinition;
+    if (options.storageEngine) {
+      this.storageEngine = options.storageEngine;
+      this.injectedStorageEngine = true;
+    }
 
     if (options.toolDefinitions?.length) {
       this.dispatcher.registerMany(options.toolDefinitions);
@@ -1508,6 +1536,11 @@ export class AgentHarness {
     if (this.environment !== "development") {
       return false;
     }
+    if (this.injectedAgentDefinition !== undefined) {
+      // Caller owns the agent definition — re-instantiate the harness to
+      // pick up changes rather than re-reading from disk.
+      return false;
+    }
     try {
       const agentFilePath = resolve(this.workingDir, "AGENT.md");
       const rawContent = await readFile(agentFilePath, "utf8");
@@ -1586,13 +1619,26 @@ export class AgentHarness {
   }
 
   async initialize(): Promise<void> {
-    const agentFilePath = resolve(this.workingDir, "AGENT.md");
-    const agentRawContent = await readFile(agentFilePath, "utf8");
-    this.parsedAgent = parseAgentMarkdown(agentRawContent);
-    this.agentFileFingerprint = agentRawContent;
-    const identity = await ensureAgentIdentity(this.workingDir);
-    if (!this.parsedAgent.frontmatter.id) {
-      this.parsedAgent.frontmatter.id = identity.id;
+    if (this.injectedAgentDefinition !== undefined) {
+      this.parsedAgent = typeof this.injectedAgentDefinition === "string"
+        ? parseAgentMarkdown(this.injectedAgentDefinition)
+        : this.injectedAgentDefinition;
+      this.agentFileFingerprint = "";
+      // The injected StorageEngine is the source of truth for agentId.
+      // Mirror it onto frontmatter.id so existing downstream readers
+      // (`frontmatter.id ?? frontmatter.name`) keep resolving correctly.
+      if (this.storageEngine) {
+        this.parsedAgent.frontmatter.id = this.storageEngine.agentId;
+      }
+    } else {
+      const agentFilePath = resolve(this.workingDir, "AGENT.md");
+      const agentRawContent = await readFile(agentFilePath, "utf8");
+      this.parsedAgent = parseAgentMarkdown(agentRawContent);
+      this.agentFileFingerprint = agentRawContent;
+      const identity = await ensureAgentIdentity(this.workingDir);
+      if (!this.parsedAgent.frontmatter.id) {
+        this.parsedAgent.frontmatter.id = identity.id;
+      }
     }
     const config = await loadPonchoConfig(this.workingDir);
     this.loadedConfig = config;
@@ -1612,15 +1658,23 @@ export class AgentHarness {
     const agentId = this.parsedAgent.frontmatter.id ?? this.parsedAgent.frontmatter.name;
 
     // --- Unified Storage Engine ---
-    const storageProvider = (config?.storage?.provider ?? "sqlite") as StorageProvider;
-    const engine = createStorageEngine({
-      provider: storageProvider,
-      workingDir: this.workingDir,
-      agentId,
-      urlEnv: config?.storage?.urlEnv,
-    });
-    await engine.initialize();
-    this.storageEngine = engine;
+    let engine: StorageEngine;
+    if (this.injectedStorageEngine && this.storageEngine) {
+      // Caller-constructed engine; assume already initialized or will be
+      // initialized by them (initialize() is idempotent in current impls).
+      engine = this.storageEngine;
+      await engine.initialize();
+    } else {
+      const storageProvider = (config?.storage?.provider ?? "sqlite") as StorageProvider;
+      engine = createStorageEngine({
+        provider: storageProvider,
+        workingDir: this.workingDir,
+        agentId,
+        urlEnv: config?.storage?.urlEnv,
+      });
+      await engine.initialize();
+      this.storageEngine = engine;
+    }
 
     // --- Bash Environment Manager ---
     const maxFileSize = config?.storage?.limits?.maxFileSize ?? 100 * 1024 * 1024; // 100MB

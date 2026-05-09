@@ -33,6 +33,8 @@ export interface VfsDirEntry {
 // ---------------------------------------------------------------------------
 
 export interface StorageEngine {
+  /** Partition key: every read/write is scoped to this agent id. */
+  readonly agentId: string;
   /** Run migrations and prepare the storage backend. */
   initialize(): Promise<void>;
   /** Gracefully release resources. */
