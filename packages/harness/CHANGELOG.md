@@ -1,5 +1,91 @@
 # @poncho-ai/harness
 
+## 0.41.0
+
+### Minor Changes
+
+- [#110](https://github.com/cesr/poncho-ai/pull/110) [`7d57a88`](https://github.com/cesr/poncho-ai/commit/7d57a88e55a49ec04de3dbd415b2440bb727e31f) Thanks [@cesr](https://github.com/cesr)! - harness: allow programmatic agent + storage injection (no AGENT.md required)
+
+  `HarnessOptions` gains two optional fields that let callers construct a
+  `Harness` without an `AGENT.md` on disk and without the
+  `ensureAgentIdentity` filesystem dance:
+  - `agentDefinition?: string | ParsedAgent` — raw markdown or a pre-parsed
+    agent. When provided, `initialize()` skips the `AGENT.md` read.
+  - `storageEngine?: StorageEngine` — pre-constructed engine; required
+    whenever `agentDefinition` is provided. The engine's `agentId` (now a
+    public readonly field on the `StorageEngine` interface) becomes the
+    source of truth for partitioning, and is mirrored onto
+    `parsedAgent.frontmatter.id` so existing downstream readers continue
+    to resolve correctly.
+
+  When neither field is provided, behaviour is unchanged: the harness
+  reads `AGENT.md` from `workingDir`, calls `ensureAgentIdentity`, and
+  constructs the `StorageEngine` internally.
+
+  `refreshAgentIfChanged()` short-circuits when an agent definition was
+  injected — callers who update an agent re-instantiate the harness
+  rather than relying on disk file watching.
+
+  This is the first of a small set of changes that lets `@poncho-ai/harness`
+  be embedded as a library by consumer SaaS apps where each user has
+  their own per-tenant agent state in a database, no filesystem layout.
+
+- [#111](https://github.com/cesr/poncho-ai/pull/111) [`ac18616`](https://github.com/cesr/poncho-ai/commit/ac18616b864189c91d0957c72c537933497505f4) Thanks [@cesr](https://github.com/cesr)! - harness: allow programmatic `PonchoConfig` injection
+
+  `HarnessOptions` gains an optional `config?: PonchoConfig` field. When
+  provided, `initialize()` skips `loadPonchoConfig` (which imports
+  `poncho.config.js` from `workingDir`) and uses the supplied object
+  directly. Downstream resolvers (`resolveMemoryConfig`,
+  `resolveStateConfig`, etc.) run as today, so any validation/normalization
+  they perform applies to injected configs identically.
+
+  Behaviour is unchanged when the field is absent: the disk loader runs
+  as before.
+
+  This is part of a small series of changes that enables
+  `@poncho-ai/harness` to be embedded as a library by a consumer SaaS
+  where each user's agent configuration comes from a database row, not a
+  `poncho.config.js` on disk.
+
+- [#112](https://github.com/cesr/poncho-ai/pull/112) [`c22416b`](https://github.com/cesr/poncho-ai/commit/c22416b3d4c4557277aeabf53e70877be6436e85) Thanks [@cesr](https://github.com/cesr)! - harness: cache MCP clients per `(serverName, tenantId)` instead of rebuilding per call
+
+  When a tenant resolves a different bearer token than the host's
+  `process.env` default for an MCP server, the per-call handler used to
+  construct a brand-new `StreamableHttpMcpRpcClient` on every tool call.
+  For builders this rarely triggered. For consumer/SaaS deployments where
+  **every** call resolves a different per-user token, every tool call
+  forced a fresh `initialize` round-trip — no session reuse, high
+  latency, and a behaviour the recently-added 404 session-retry can't
+  help with because there was nothing to retry.
+
+  `LocalMcpBridge` now keeps a `Map<key, { client, token, lastUsed }>`
+  keyed by `(serverName, tenantId)`. Lookups reuse the cached client when
+  the token is unchanged and the entry is within the configured idle TTL
+  (default 15 minutes). On token rotation or TTL expiry the entry is
+  evicted lazily and rebuilt. `stopLocalServers()` closes all cached
+  tenant clients alongside the server-default ones.
+
+  The TTL is configurable via a constructor option (`tenantClientTtlMs`)
+  for tests and tuning.
+
+### Patch Changes
+
+- [#109](https://github.com/cesr/poncho-ai/pull/109) [`4b5d974`](https://github.com/cesr/poncho-ai/commit/4b5d974345733ac9e68f36201dff7e7d8a8f0327) Thanks [@cesr](https://github.com/cesr)! - harness: re-initialize MCP session on 404 instead of staying wedged
+
+  Streamable-HTTP MCP clients with session state (e.g. Arcade's gateway
+  for Gmail / Google Calendar) issue an `Mcp-Session-Id` on initialize
+  and expire it after some idle window. The bridge cached `sessionId`
+  and `initialized` in process memory and never reset them, so once the
+  server returned 404 for a stale session every subsequent tool call
+  also 404'd until the host process restarted. Long-lived deployments
+  (e.g. Railway) hit this; serverless platforms masked it because each
+  invocation re-initialized.
+
+  The client now treats `404` with a stored `sessionId` as a session
+  expiry signal: it clears the session, re-runs `initialize`, and
+  retries the request once. A 404 from initialize itself (no session
+  yet) is still treated as a hard endpoint failure with no retry.
+
 ## 0.40.1
 
 ### Patch Changes

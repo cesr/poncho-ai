@@ -1,5 +1,28 @@
 # @poncho-ai/cli
 
+## 0.40.2
+
+### Patch Changes
+
+- [`1dd0e5b`](https://github.com/cesr/poncho-ai/commit/1dd0e5b98f93de5715614be97e62ed503792cf16) Thanks [@cesr](https://github.com/cesr)! - cli: suppress Node `ExperimentalWarning` output during `poncho dev`
+
+  When running on Node 22.6+, every `.ts` skill script triggers a
+  `stripTypeScriptTypes is an experimental feature` warning via
+  `process.emitWarning`. Repeated activation of TypeScript-backed skills
+  spammed the dev server log with the same warning, sometimes 4–8 times
+  in a single agent turn.
+
+  The CLI now installs an in-process `process.emitWarning` filter at the
+  entry point that drops `ExperimentalWarning`s before they reach stderr.
+  Other warnings (deprecation, security, etc.) pass through unchanged.
+
+  If the in-process filter doesn't catch a particular warning (e.g. one
+  emitted from a Node internal module before user code runs), users can
+  still suppress them with `NODE_OPTIONS='--disable-warning=ExperimentalWarning'`.
+
+- Updated dependencies [[`7d57a88`](https://github.com/cesr/poncho-ai/commit/7d57a88e55a49ec04de3dbd415b2440bb727e31f), [`ac18616`](https://github.com/cesr/poncho-ai/commit/ac18616b864189c91d0957c72c537933497505f4), [`4b5d974`](https://github.com/cesr/poncho-ai/commit/4b5d974345733ac9e68f36201dff7e7d8a8f0327), [`c22416b`](https://github.com/cesr/poncho-ai/commit/c22416b3d4c4557277aeabf53e70877be6436e85)]:
+  - @poncho-ai/harness@0.41.0
+
 ## 0.40.1
 
 ### Patch Changes
