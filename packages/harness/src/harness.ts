@@ -116,6 +116,13 @@ export interface HarnessOptions {
    * harness today reads `parsedAgent.frontmatter.id`.
    */
   storageEngine?: StorageEngine;
+  /**
+   * Inject a `PonchoConfig` object directly instead of importing
+   * `poncho.config.js` from `workingDir`. When provided, the disk-based
+   * loader is skipped. Downstream resolvers (`resolveMemoryConfig`,
+   * `resolveStateConfig`, etc.) run as today regardless of source.
+   */
+  config?: PonchoConfig;
 }
 
 export interface HarnessRunOutput {
@@ -819,6 +826,7 @@ export class AgentHarness {
   reminderStore?: ReminderStore;
   secretsStore?: SecretsStore;
   private loadedConfig?: PonchoConfig;
+  private readonly injectedConfig?: PonchoConfig;
   private loadedSkills: SkillMetadata[] = [];
   private skillFingerprint = "";
   private lastSkillRefreshAt = 0;
@@ -1027,6 +1035,7 @@ export class AgentHarness {
     this.modelProviderInjected = !!options.modelProvider;
     this.modelProvider = options.modelProvider ?? createModelProvider("anthropic");
     this.uploadStore = options.uploadStore;
+    this.injectedConfig = options.config;
 
     if (options.agentDefinition !== undefined && options.storageEngine === undefined) {
       throw new Error(
@@ -1640,7 +1649,7 @@ export class AgentHarness {
         this.parsedAgent.frontmatter.id = identity.id;
       }
     }
-    const config = await loadPonchoConfig(this.workingDir);
+    const config = this.injectedConfig ?? await loadPonchoConfig(this.workingDir);
     this.loadedConfig = config;
     this.registerConfiguredBuiltInTools(config);
     const provider = this.parsedAgent.frontmatter.model?.provider ?? "anthropic";
