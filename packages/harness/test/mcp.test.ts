@@ -442,4 +442,178 @@ describe("mcp bridge protocol transports", () => {
     await bridge.stopLocalServers();
     await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
   });
+
+  it("re-initializes and retries when the server expires the session (404)", async () => {
+    process.env.LINEAR_TOKEN = "token-123";
+    let sessionCounter = 0;
+    let activeSession = "";
+    let initializeCount = 0;
+    let toolCallAttempts = 0;
+    const server = createServer(async (req, res) => {
+      if (req.method === "DELETE") {
+        res.statusCode = 200;
+        res.end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = Buffer.concat(chunks).toString("utf8");
+      const payload = body.trim().length > 0 ? (JSON.parse(body) as any) : {};
+      if (payload.method === "initialize") {
+        initializeCount += 1;
+        sessionCounter += 1;
+        activeSession = `session_${sessionCounter}`;
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Mcp-Session-Id", activeSession);
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              protocolVersion: "2025-03-26",
+              capabilities: { tools: { listChanged: true } },
+              serverInfo: { name: "remote", version: "1.0.0" },
+            },
+          }),
+        );
+        return;
+      }
+      if (payload.method === "notifications/initialized") {
+        res.statusCode = 202;
+        res.end();
+        return;
+      }
+      if (req.headers["mcp-session-id"] !== activeSession) {
+        res.statusCode = 404;
+        res.end();
+        return;
+      }
+      if (payload.method === "tools/list") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [
+                {
+                  name: "ping",
+                  inputSchema: {
+                    type: "object",
+                    properties: { value: { type: "string" } },
+                  },
+                },
+              ],
+            },
+          }),
+        );
+        return;
+      }
+      if (payload.method === "tools/call") {
+        toolCallAttempts += 1;
+        // Simulate session expiry on the first tool call after discovery:
+        // invalidate the current session so the existing Mcp-Session-Id is stale,
+        // then return 404 once. The client should re-initialize and retry.
+        if (toolCallAttempts === 1) {
+          activeSession = "";
+          res.statusCode = 404;
+          res.end();
+          return;
+        }
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: { result: { echoed: payload.params?.arguments?.value ?? "" } },
+          }),
+        );
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+    await new Promise<void>((r) => server.listen(0, () => r()));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Unexpected address");
+
+    const bridge = new LocalMcpBridge({
+      mcp: [
+        {
+          name: "remote",
+          url: `http://127.0.0.1:${address.port}/mcp`,
+          auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" },
+        },
+      ],
+    });
+
+    await bridge.startLocalServers();
+    await bridge.discoverTools();
+    const tools = await bridge.loadTools(["remote/ping"]);
+    const tool = tools.find((entry) => entry.name === "remote/ping");
+    expect(tool).toBeDefined();
+
+    const output = await tool?.handler(
+      { value: "after-expiry" },
+      {
+        agentId: "agent",
+        runId: "run",
+        step: 1,
+        workingDir: process.cwd(),
+        parameters: {},
+      },
+    );
+
+    expect(output).toEqual({ echoed: "after-expiry" });
+    expect(toolCallAttempts).toBe(2);
+    expect(initializeCount).toBe(2);
+
+    await bridge.stopLocalServers();
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+
+  it("does not retry on 404 when no session has been established", async () => {
+    process.env.LINEAR_TOKEN = "token-123";
+    let initializeCount = 0;
+    const server = createServer(async (req, res) => {
+      if (req.method === "DELETE") {
+        res.statusCode = 200;
+        res.end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = Buffer.concat(chunks).toString("utf8");
+      const payload = body.trim().length > 0 ? (JSON.parse(body) as any) : {};
+      if (payload.method === "initialize") {
+        initializeCount += 1;
+        // No Mcp-Session-Id: server-side 404 here is a true endpoint failure, not session expiry.
+        res.statusCode = 404;
+        res.end();
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+    await new Promise<void>((r) => server.listen(0, () => r()));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Unexpected address");
+
+    const bridge = new LocalMcpBridge({
+      mcp: [
+        {
+          name: "remote",
+          url: `http://127.0.0.1:${address.port}/mcp`,
+          auth: { type: "bearer", tokenEnv: "LINEAR_TOKEN" },
+        },
+      ],
+    });
+
+    await bridge.startLocalServers();
+    await bridge.discoverTools();
+    expect(initializeCount).toBe(1);
+
+    await bridge.stopLocalServers();
+    await new Promise<void>((r) => server.close(() => r()));
+  });
 });

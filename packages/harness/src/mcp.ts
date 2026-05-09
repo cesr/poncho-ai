@@ -46,6 +46,12 @@ class McpHttpError extends Error {
   }
 }
 
+class McpSessionExpiredError extends Error {
+  constructor() {
+    super("MCP session expired");
+  }
+}
+
 class StreamableHttpMcpRpcClient implements McpRpcClient {
   private readonly endpoint: string;
   private readonly timeoutMs: number;
@@ -105,6 +111,9 @@ class StreamableHttpMcpRpcClient implements McpRpcClient {
       }
       if (response.status === 403) {
         throw new McpHttpError(403, "MCP server forbidden");
+      }
+      if (response.status === 404 && this.sessionId) {
+        throw new McpSessionExpiredError();
       }
       if (!response.ok) {
         throw new Error(`MCP HTTP request failed with status ${response.status}`);
@@ -192,20 +201,32 @@ class StreamableHttpMcpRpcClient implements McpRpcClient {
   }
 
   private async request(method: string, params?: Record<string, unknown>): Promise<unknown> {
-    await this.ensureInitialized();
-    const id = this.idCounter++;
-    const payload = {
-      jsonrpc: "2.0",
-      id,
-      method,
-      params: params ?? {},
-    };
-    const payloads = await this.postMessage(payload);
-    const result = this.extractResult(payloads, id);
-    if (result.error) {
-      throw new Error(result.error.message ?? `MCP error on ${method}`);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await this.ensureInitialized();
+        const id = this.idCounter++;
+        const payload = {
+          jsonrpc: "2.0",
+          id,
+          method,
+          params: params ?? {},
+        };
+        const payloads = await this.postMessage(payload);
+        const result = this.extractResult(payloads, id);
+        if (result.error) {
+          throw new Error(result.error.message ?? `MCP error on ${method}`);
+        }
+        return result.result;
+      } catch (error) {
+        if (error instanceof McpSessionExpiredError && attempt === 0) {
+          this.sessionId = undefined;
+          this.initialized = false;
+          continue;
+        }
+        throw error;
+      }
     }
-    return result.result;
+    throw new Error(`MCP request to ${method} failed after session retry`);
   }
 
   private async ensureInitialized(): Promise<void> {
