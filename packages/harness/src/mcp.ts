@@ -270,6 +270,16 @@ class StreamableHttpMcpRpcClient implements McpRpcClient {
   }
 }
 
+interface CachedTenantClient {
+  client: StreamableHttpMcpRpcClient;
+  token: string;
+  lastUsed: number;
+}
+
+const TENANT_CLIENT_TTL_MS = 15 * 60 * 1000;
+const tenantClientKey = (serverName: string, tenantId: string): string =>
+  `${serverName}\0${tenantId}`;
+
 export class LocalMcpBridge {
   private readonly remoteServers: RemoteMcpServerConfig[];
   private readonly rpcClients = new Map<string, McpRpcClient>();
@@ -277,6 +287,18 @@ export class LocalMcpBridge {
   private readonly unavailableServers = new Map<string, string>();
   private readonly authFailedServers = new Set<string>();
   private envResolver?: (tenantId: string | undefined, envName: string) => Promise<string | undefined>;
+  /**
+   * Per-tenant MCP client cache. For consumer/SaaS deployments where every
+   * call resolves a different bearer token, building a fresh
+   * `StreamableHttpMcpRpcClient` per call would force a fresh `initialize`
+   * round-trip every time. We keep one client per `(serverName, tenantId)`
+   * with TTL-based idle eviction; on token rotation we evict the entry
+   * lazily and rebuild.
+   */
+  private readonly tenantClients = new Map<string, CachedTenantClient>();
+  /** Test/observability hook: bumped every time a new tenant client is constructed. */
+  tenantClientConstructions = 0;
+  private readonly tenantClientTtlMs: number;
 
   /**
    * Set a resolver for per-tenant env vars (e.g. MCP auth tokens).
@@ -286,7 +308,8 @@ export class LocalMcpBridge {
     this.envResolver = resolver;
   }
 
-  constructor(config: McpConfig | undefined) {
+  constructor(config: McpConfig | undefined, options?: { tenantClientTtlMs?: number }) {
+    this.tenantClientTtlMs = options?.tenantClientTtlMs ?? TENANT_CLIENT_TTL_MS;
     this.remoteServers = (config?.mcp ?? []).filter((entry): entry is RemoteMcpServerConfig =>
       typeof entry.url === "string",
     );
@@ -477,6 +500,43 @@ export class LocalMcpBridge {
       await client.close();
     }
     this.rpcClients.clear();
+    for (const [, entry] of this.tenantClients) {
+      await entry.client.close();
+    }
+    this.tenantClients.clear();
+  }
+
+  private getOrCreateTenantClient(
+    serverName: string,
+    tenantId: string,
+    token: string,
+    server: RemoteMcpServerConfig,
+  ): StreamableHttpMcpRpcClient {
+    const key = tenantClientKey(serverName, tenantId);
+    const now = Date.now();
+    // Lazily evict idle entries on access — no background timer needed.
+    const existing = this.tenantClients.get(key);
+    if (existing) {
+      const idle = now - existing.lastUsed > this.tenantClientTtlMs;
+      const tokenChanged = existing.token !== token;
+      if (idle || tokenChanged) {
+        // Best-effort close; the new client supersedes it.
+        void existing.client.close();
+        this.tenantClients.delete(key);
+      } else {
+        existing.lastUsed = now;
+        return existing.client;
+      }
+    }
+    const client = new StreamableHttpMcpRpcClient(
+      server.url,
+      server.timeoutMs ?? 10_000,
+      token,
+      server.headers,
+    );
+    this.tenantClients.set(key, { client, token, lastUsed: now });
+    this.tenantClientConstructions += 1;
+    return client;
   }
 
   listServers(): RemoteMcpServerConfig[] {
@@ -617,20 +677,18 @@ export class LocalMcpBridge {
       handler: async (input, context) => {
         try {
           // Per-tenant token resolution: if we have a resolver and the server uses tokenEnv,
-          // create a per-request client with the tenant-specific token
+          // resolve the tenant token and reuse a cached per-tenant client when present.
           const tokenEnv = server?.auth?.tokenEnv;
-          let callClient = client;
-          if (tokenEnv && this.envResolver && context?.tenantId) {
+          let callClient: McpRpcClient = client;
+          if (tokenEnv && this.envResolver && context?.tenantId && server) {
             const tenantToken = await this.envResolver(context.tenantId, tokenEnv);
             const defaultToken = process.env[tokenEnv];
-            // Only create a per-request client when the tenant has a different token.
-            // Using the original client preserves the established MCP session.
             if (tenantToken && tenantToken !== defaultToken) {
-              callClient = new StreamableHttpMcpRpcClient(
-                server.url,
-                server.timeoutMs ?? 10_000,
+              callClient = this.getOrCreateTenantClient(
+                serverName,
+                context.tenantId,
                 tenantToken,
-                server.headers,
+                server,
               );
             }
           }
