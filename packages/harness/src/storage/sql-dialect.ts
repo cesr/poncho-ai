@@ -572,11 +572,16 @@ export abstract class SqlStorageEngine implements StorageEngine {
       const pattern = `%${query}%`;
       // SQLite uses positional ? so we can't reuse $2, need separate params
       const params: unknown[] = [this.agentId, pattern, pattern];
+      // Postgres rejects `jsonb LIKE text` — cast `data` to text in
+      // Postgres so the LIKE applies to its JSON serialization. SQLite's
+      // `data` column is TEXT (raw JSON string) so no cast needed.
+      const dataMatch =
+        this.dialect.tag === "postgresql" ? "data::text LIKE $3" : "data LIKE $3";
       let sql = `SELECT id, title, updated_at, created_at, owner_id, tenant_id,
                         message_count, parent_conversation_id, parent_message_id,
                         has_pending_approvals, channel_meta
                  FROM conversations
-                 WHERE agent_id = $1 AND (title LIKE $2 OR data LIKE $3)`;
+                 WHERE agent_id = $1 AND (title LIKE $2 OR ${dataMatch})`;
       if (filterTenant) {
         sql += ` AND tenant_id = $4`;
         params.push(tid);
