@@ -1,5 +1,56 @@
 # @poncho-ai/harness
 
+## 0.42.0
+
+### Minor Changes
+
+- [`39793b0`](https://github.com/cesr/poncho-ai/commit/39793b0ab11ed26f140af6fc9c0cd3e1b1c83fec) Thanks [@cesr](https://github.com/cesr)! - harness: extract `runConversationTurn` helper; refactor CLI to use it
+
+  Lifts the inline turn lifecycle from the CLI's
+  `POST /api/conversations/:id/messages` handler (~280 lines of orchestration)
+  into a new public helper at `@poncho-ai/harness`.
+
+  The helper handles the full conversation lifecycle for a primary chat
+  turn: load the conversation with archive, resolve canonical history,
+  upload files via the harness's upload store, build stable user/assistant
+  ids, persist the user message immediately, drive `executeConversationTurn`,
+  periodically persist the in-flight assistant draft on `step:completed`
+  and `tool:approval:required`, persist on `tool:approval:checkpoint` and
+  `run:completed` continuation, rebuild history on `compaction:completed`,
+  apply turn metadata on success, and persist partial state on
+  cancel/error.
+
+  Caller responsibilities (auth, active-run dedup, streaming, continuation
+  HTTP self-fetch, title inference) stay outside the helper — passed in
+  via opts or handled around the call. `opts.onEvent` is invoked for every
+  `AgentEvent` for downstream forwarding (SSE, WebSocket, telemetry, etc.).
+
+  The CLI's handler now delegates to `runConversationTurn` (drops from
+  ~430 to ~150 lines). Consumers like PonchOS can call the same helper
+  to ship the _exact_ same conversation lifecycle without duplicating
+  the orchestration.
+
+  Public API additions:
+  - `runConversationTurn(opts): Promise<RunConversationTurnResult>`
+  - `RunConversationTurnOpts`
+  - `RunConversationTurnResult`
+
+  No behavior changes. The helper is a verbatim extraction of the CLI's
+  prior inline implementation.
+
+### Patch Changes
+
+- [`111d24e`](https://github.com/cesr/poncho-ai/commit/111d24efaab054ef7543c396085f8f4d41e7976a) Thanks [@cesr](https://github.com/cesr)! - cli: include VFS skills in the chat input slash command menu
+
+  The `/api/slash-commands` endpoint was returning only repo-loaded skills,
+  so tenant-authored skills stored in the VFS (`/skills/<name>/SKILL.md`)
+  never appeared in the `/` autocomplete bar even though the agent could
+  already see and run them at conversation time.
+
+  The endpoint now resolves skills per-tenant via a new
+  `harness.listSkillsForTenant(tenantId)` and applies the same repo-wins
+  collision semantics used elsewhere in the harness.
+
 ## 0.41.0
 
 ### Minor Changes
