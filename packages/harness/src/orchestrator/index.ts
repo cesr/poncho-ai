@@ -52,3 +52,9 @@ export {
   type ContinuationHooks,
   type OrchestratorOptions,
 } from "./orchestrator.js";
+
+export {
+  runConversationTurn,
+  type RunConversationTurnOpts,
+  type RunConversationTurnResult,
+} from "./run-conversation-turn.js";

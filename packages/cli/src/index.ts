@@ -16,7 +16,6 @@ import {
   createConversationStore,
   createConversationStoreFromEngine,
   createUploadStore,
-  deriveUploadKey,
   ensureAgentIdentity,
   loadPonchoConfig,
   parseAgentMarkdown,
@@ -39,6 +38,7 @@ import {
   normalizeApprovalCheckpoint,
   buildApprovalCheckpoints,
   applyTurnMetadata,
+  runConversationTurn,
   TOOL_RESULT_ARCHIVE_PARAM,
   withToolResultArchiveParam,
   AgentOrchestrator,
@@ -93,7 +93,6 @@ const approvalLog = createLogger("approval");
 const browserLog = createLogger("browser");
 const selfFetchLog = createLogger("self-fetch");
 const csrfLog = createLogger("csrf");
-const uploadLog = createLogger("upload");
 
 /**
  * Walk a sequence of harness messages and collect all tool-call ids that
@@ -3354,9 +3353,9 @@ export const createRequestHandler = async (options?: {
     const conversationMessageMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
     if (conversationMessageMatch && request.method === "POST") {
       const conversationId = decodeURIComponent(conversationMessageMatch[1] ?? "");
-      // getWithArchive — conversation feeds withToolResultArchiveParam when
-      // the turn below calls executeConversationTurn.
-      const conversation = await conversationStore.getWithArchive(conversationId);
+      // Light access check first; the helper reloads the conversation
+      // (with archive) when it actually runs the turn.
+      const conversation = await conversationStore.get(conversationId);
       if (!conversation || !canAccessConversation(conversation)) {
         writeJson(response, 404, {
           code: "CONVERSATION_NOT_FOUND",
@@ -3421,159 +3420,46 @@ export const createRequestHandler = async (options?: {
         abortController,
         runId: null,
       });
+
+      // Auto-infer a title for fresh conversations. Persist it before the
+      // helper reloads, so its in-memory copy carries the new title.
       if (
         conversation.messages.length === 0 &&
         (conversation.title === "New conversation" || conversation.title.trim().length === 0)
       ) {
         conversation.title = inferConversationTitle(messageText);
+        conversation.updatedAt = Date.now();
+        await conversationStore.update(conversation);
       }
+
       response.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
         "X-Accel-Buffering": "no",
       });
-      const canonicalHistory = resolveRunRequest(conversation, {
-        conversationId,
-        messages: conversation.messages,
-      });
-      const shouldRebuildCanonical = canonicalHistory.shouldRebuildCanonical;
-      const harnessMessages = [...canonicalHistory.messages];
-      const historyMessages = [...conversation.messages];
-      const preRunMessages = [...conversation.messages];
-      log.debug(
-        `conversation=${conversationId.slice(0, 8)} history=${canonicalHistory.source}`,
-      );
-      let latestRunId = conversation.runtimeRunId ?? "";
-      let userContent: Message["content"] | undefined = messageText;
-      if (files.length > 0) {
-        try {
-          const uploadedParts = await Promise.all(
-            files.map(async (f) => {
-              const buf = Buffer.from(f.data, "base64");
-              const key = deriveUploadKey(buf, f.mediaType);
-              const ref = await uploadStore.put(key, buf, f.mediaType);
-              return {
-                type: "file" as const,
-                data: ref,
-                mediaType: f.mediaType,
-                filename: f.filename,
-              };
-            }),
-          );
-          userContent = [
-            { type: "text" as const, text: messageText },
-            ...uploadedParts,
-          ];
-        } catch (uploadErr) {
-          const errMsg = uploadErr instanceof Error ? uploadErr.message : String(uploadErr);
-          uploadLog.error(`file upload failed: ${errMsg}`);
-          const errorEvent: AgentEvent = {
-            type: "run:error",
-            runId: "",
-            error: { code: "UPLOAD_ERROR", message: `File upload failed: ${errMsg}` },
-          };
-          broadcastEvent(conversationId, errorEvent);
-          finishConversationStream(conversationId);
-          activeConversationRuns.delete(conversationId);
-          response.end();
-          return;
-        }
-      }
+
+      // Forward subagent events out-of-band — they're emitted from
+      // child-conversation runs, not yielded by harness.run for this one.
       const unsubSubagentEvents = onConversationEvent(conversationId, (evt) => {
         if (evt.type.startsWith("subagent:")) {
           try { response.write(formatSseEvent(evt)); } catch {}
         }
       });
 
-      const draft = createTurnDraftState();
-      let checkpointedRun = false;
-      let runCancelled = false;
-      let runContinuationMessages: Message[] | undefined;
-      // Snapshot of the harness's in-flight messages emitted with run:cancelled,
-      // so the catch-path (executeConversationTurn threw) can still persist a
-      // canonical history that includes the cancelled work.
-      let cancelHarnessMessages: Message[] | undefined;
-
-      // Hoist stable ids for this turn. The same userMessage / assistantId is
-      // reused across every buildMessages() call so the in-flight assistant
-      // bubble keeps a stable metadata.id from its very first persisted byte.
-      const turnTimestamp = Date.now();
-      const userMessage: Message | undefined = userContent != null
-        ? {
-            role: "user" as const,
-            content: userContent,
-            metadata: { id: randomUUID(), timestamp: turnTimestamp },
-          }
-        : undefined;
-      const assistantId = randomUUID();
-
-      const buildMessages = (): Message[] => {
-        const draftSections = cloneSections(draft.sections);
-        if (draft.currentTools.length > 0) {
-          draftSections.push({ type: "tools", content: [...draft.currentTools] });
-        }
-        if (draft.currentText.length > 0) {
-          draftSections.push({ type: "text", content: draft.currentText });
-        }
-        const userTurn: Message[] = userMessage ? [userMessage] : [];
-        const hasDraftContent =
-          draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0 || draftSections.length > 0;
-        if (!hasDraftContent) {
-          return [...historyMessages, ...userTurn];
-        }
-        return [
-          ...historyMessages,
-          ...userTurn,
-          {
-            role: "assistant" as const,
-            content: draft.assistantResponse,
-            metadata: buildAssistantMetadata(draft, draftSections, { id: assistantId, timestamp: turnTimestamp }),
-          },
-        ];
-      };
-
-      const persistDraftAssistantTurn = async (): Promise<void> => {
-        if (draft.assistantResponse.length === 0 && draft.toolTimeline.length === 0) return;
-        conversation.messages = buildMessages();
-        conversation.updatedAt = Date.now();
-        await conversationStore.update(conversation);
-      };
+      let latestRunId = "";
 
       try {
-        {
-          conversation.messages = [
-            ...historyMessages,
-            ...(userMessage ? [userMessage] : []),
-          ];
-          conversation.subagentCallbackCount = 0;
-          conversation._continuationCount = undefined;
-          conversation.updatedAt = Date.now();
-          conversationStore.update(conversation).catch((err) => {
-            log.error(`failed to persist user turn: ${formatError(err)}`);
-          });
-        }
-
-        const execution = await executeConversationTurn({
+        const result = await runConversationTurn({
           harness,
-          runInput: {
-            task: messageText,
-            conversationId,
-            tenantId: ctx.tenantId ?? undefined,
-            parameters: buildTurnParameters(conversation, { bodyParameters }),
-            messages: harnessMessages,
-            files: files.length > 0 ? files : undefined,
-            abortSignal: abortController.signal,
-          },
-          initialContextTokens: conversation.contextTokens ?? 0,
-          initialContextWindow: conversation.contextWindow ?? 0,
-          onEvent: async (event, eventDraft) => {
-            draft.assistantResponse = eventDraft.assistantResponse;
-            draft.toolTimeline = eventDraft.toolTimeline;
-            draft.sections = eventDraft.sections;
-            draft.currentTools = eventDraft.currentTools;
-            draft.currentText = eventDraft.currentText;
-
+          conversationStore,
+          conversationId,
+          task: messageText,
+          files: files.length > 0 ? files : undefined,
+          parameters: buildTurnParameters(conversation, { bodyParameters }),
+          abortSignal: abortController.signal,
+          tenantId: ctx.tenantId ?? undefined,
+          onEvent: async (event) => {
             if (event.type === "run:started") {
               latestRunId = event.runId;
               runOwners.set(event.runId, ownerId);
@@ -3583,154 +3469,36 @@ export const createRequestHandler = async (options?: {
                 active.runId = event.runId;
               }
             }
-            if (event.type === "run:cancelled") {
-              runCancelled = true;
-              if (event.messages) cancelHarnessMessages = event.messages;
-            }
-            if (event.type === "compaction:completed") {
-              if (event.compactedMessages) {
-                historyMessages.length = 0;
-                historyMessages.push(...event.compactedMessages);
-
-                const preservedFromHistory = historyMessages.length - 1;
-                const removedCount = preRunMessages.length - Math.max(0, preservedFromHistory);
-                const existingHistory = conversation.compactedHistory ?? [];
-                conversation.compactedHistory = [
-                  ...existingHistory,
-                  ...preRunMessages.slice(0, removedCount),
-                ];
-              }
-            }
-            if (event.type === "step:completed") {
-              await persistDraftAssistantTurn();
-            }
-            if (event.type === "tool:approval:required") {
-              const toolText = `- approval required \`${event.tool}\``;
-              draft.toolTimeline.push(toolText);
-              draft.currentTools.push(toolText);
-              const existingApprovals = Array.isArray(conversation.pendingApprovals)
-                ? conversation.pendingApprovals
-                : [];
-              if (!existingApprovals.some((approval) => approval.approvalId === event.approvalId)) {
-                conversation.pendingApprovals = [
-                  ...existingApprovals,
-                  {
-                    approvalId: event.approvalId,
-                    runId: latestRunId || conversation.runtimeRunId || "",
-                    tool: event.tool,
-                    toolCallId: undefined,
-                    input: (event.input ?? {}) as Record<string, unknown>,
-                    checkpointMessages: undefined,
-                    baseMessageCount: historyMessages.length,
-                    pendingToolCalls: [],
-                  },
-                ];
-                conversation.updatedAt = Date.now();
-                await conversationStore.update(conversation);
-              }
-              await persistDraftAssistantTurn();
-            }
-            if (event.type === "tool:approval:checkpoint") {
-              conversation.messages = buildMessages();
-              conversation.pendingApprovals = buildApprovalCheckpoints({
-                approvals: event.approvals,
-                runId: latestRunId,
-                checkpointMessages: event.checkpointMessages,
-                baseMessageCount: historyMessages.length,
-                pendingToolCalls: event.pendingToolCalls,
-              });
-              conversation._toolResultArchive = harness.getToolResultArchive(conversationId);
-              conversation.updatedAt = Date.now();
-              await conversationStore.update(conversation);
-              checkpointedRun = true;
-            }
-            if (event.type === "run:completed") {
-              if (event.result.continuation && event.result.continuationMessages) {
-                runContinuationMessages = event.result.continuationMessages;
-
-                conversation.messages = buildMessages();
-                conversation._continuationMessages = runContinuationMessages;
-                conversation._harnessMessages = runContinuationMessages;
-                conversation._toolResultArchive = harness.getToolResultArchive(conversationId);
-                conversation.runtimeRunId = latestRunId || conversation.runtimeRunId;
-                if (!checkpointedRun) {
-                  conversation.pendingApprovals = [];
-                }
-                if ((event.result.contextTokens ?? 0) > 0) conversation.contextTokens = event.result.contextTokens!;
-                if ((event.result.contextWindow ?? 0) > 0) conversation.contextWindow = event.result.contextWindow!;
-                conversation.updatedAt = Date.now();
-                await conversationStore.update(conversation);
-
-                if (!checkpointedRun) {
-                  doWaitUntil(
-                    new Promise(r => setTimeout(r, 3000)).then(() =>
-                      selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(conversationId)}`),
-                    ),
-                  );
-                }
-              }
-            }
-
             await telemetry.emit(event);
+            // Strip large internal payloads before sending over the wire.
             let sseEvent: AgentEvent = event.type === "compaction:completed" && event.compactedMessages
               ? { ...event, compactedMessages: undefined }
               : event;
             if (sseEvent.type === "run:completed") {
               const hasPendingSubagents = await hasPendingSubagentWorkForParent(conversationId, ownerId);
               const stripped = { ...sseEvent, result: { ...sseEvent.result, continuationMessages: undefined } };
-              if (hasPendingSubagents) {
-                sseEvent = { ...stripped, pendingSubagents: true };
-              } else {
-                sseEvent = stripped;
-              }
+              sseEvent = hasPendingSubagents ? { ...stripped, pendingSubagents: true } : stripped;
             }
             broadcastEvent(conversationId, sseEvent);
-            try {
-              response.write(formatSseEvent(sseEvent));
-            } catch {
-              // Client disconnected — continue processing so the run completes.
-            }
+            try { response.write(formatSseEvent(sseEvent)); } catch {}
             emitBrowserStatusIfActive(conversationId, event, response);
           },
         });
 
-        flushTurnDraft(draft);
-        latestRunId = execution.latestRunId || latestRunId;
-
-        if (!checkpointedRun && !runContinuationMessages) {
-          conversation.messages = buildMessages();
-          applyTurnMetadata(conversation, {
-            latestRunId,
-            contextTokens: execution.runContextTokens,
-            contextWindow: execution.runContextWindow,
-            harnessMessages: execution.runHarnessMessages,
-            toolResultArchive: harness.getToolResultArchive(conversationId),
-          }, { shouldRebuildCanonical });
-          await conversationStore.update(conversation);
+        // Trigger the auto-continuation HTTP roundtrip so the next run
+        // queues. Helper has already persisted the continuation messages.
+        if (result.continuation && !result.checkpointed) {
+          doWaitUntil(
+            new Promise(r => setTimeout(r, 3000)).then(() =>
+              selfFetchWithRetry(`/api/internal/continue/${encodeURIComponent(conversationId)}`),
+            ),
+          );
         }
       } catch (error) {
-        flushTurnDraft(draft);
-        if (abortController.signal.aborted || runCancelled) {
-          if (draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0 || draft.sections.length > 0) {
-            conversation.messages = buildMessages();
-            // Keep _harnessMessages aligned with what the model just saw.
-            // Without this, loadCanonicalHistory will hand the next turn a
-            // pre-cancellation snapshot and the agent will have no memory of
-            // the work it just did.
-            applyTurnMetadata(conversation, {
-              latestRunId,
-              contextTokens: 0,
-              contextWindow: 0,
-              harnessMessages: cancelHarnessMessages,
-              toolResultArchive: harness.getToolResultArchive(conversationId),
-            }, { shouldRebuildCanonical: true });
-            await conversationStore.update(conversation);
-          }
-          if (!checkpointedRun) {
-            await clearPendingApprovalsForConversation(conversationId);
-          }
-          return;
-        }
+        // The helper handles cancel/error internally and returns gracefully.
+        // This catches anything that escapes — typically a helper bug or
+        // the conversation being deleted between auth check and helper reload.
+        log.error(`runConversationTurn threw: ${formatError(error)}`);
         try {
           response.write(
             formatSseEvent({
@@ -3742,13 +3510,7 @@ export const createRequestHandler = async (options?: {
               },
             }),
           );
-        } catch {
-          if (draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0 || draft.sections.length > 0) {
-            conversation.messages = buildMessages();
-            conversation.updatedAt = Date.now();
-            await conversationStore.update(conversation);
-          }
-        }
+        } catch {}
       } finally {
         unsubSubagentEvents();
         const active = activeConversationRuns.get(conversationId);
