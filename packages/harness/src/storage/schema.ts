@@ -195,4 +195,23 @@ export const migrations: Migration[] = [
          WHERE parent_message_id IS NOT NULL`,
     ],
   },
+  {
+    version: 7,
+    name: "fix_reminder_scheduled_at_precision",
+    // Postgres maps `REAL` to float4 (4 bytes, ~7 digit precision),
+    // which silently rounds millisecond epochs (13 digits) — every
+    // reminder write+read on Postgres returned a different value than
+    // it stored. SQLite's REAL is float8 (15+ digit precision) so it
+    // was always fine there.
+    //
+    // Convert the Postgres column to BIGINT so future writes are exact
+    // (already-stored rounded values aren't recoverable but they were
+    // never correct in the first place).
+    up: (d) => {
+      if (d === "sqlite") return [];
+      return [
+        `ALTER TABLE reminders ALTER COLUMN scheduled_at TYPE BIGINT USING scheduled_at::bigint`,
+      ];
+    },
+  },
 ];

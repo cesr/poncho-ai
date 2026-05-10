@@ -1195,7 +1195,10 @@ export abstract class SqlStorageEngine implements StorageEngine {
     return {
       id: row.id as string,
       task: row.task as string,
-      scheduledAt: row.scheduled_at as number,
+      // Postgres-js returns BIGINT columns as strings to avoid silent
+      // precision loss in JS. Coerce to Number — ms epochs max out at
+      // ~10^16 in year 2286, well under Number.MAX_SAFE_INTEGER (2^53).
+      scheduledAt: Number(row.scheduled_at),
       timezone: (row.timezone as string) ?? undefined,
       status: row.status as Reminder["status"],
       createdAt: new Date(row.created_at as string).getTime(),
@@ -1203,7 +1206,7 @@ export abstract class SqlStorageEngine implements StorageEngine {
       ownerId: (row.owner_id as string) ?? undefined,
       tenantId: tid === DEFAULT_TENANT ? null : tid,
       recurrence,
-      occurrenceCount: (row.occurrence_count as number) ?? 0,
+      occurrenceCount: Number(row.occurrence_count ?? 0),
     };
   }
 
