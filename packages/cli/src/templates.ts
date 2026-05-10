@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { defaultAgentDefinition } from "@poncho-ai/harness";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(__dirname, "..");
@@ -21,37 +22,24 @@ const readCliVersion = async (): Promise<string> => {
   return fallback;
 };
 
+/**
+ * Thin back-compat wrapper around `defaultAgentDefinition` from the harness
+ * package. The canonical template now lives in
+ * `@poncho-ai/harness/src/default-agent.ts` so SDK consumers can pass the
+ * exact same default to `new AgentHarness({ agentDefinition })` without
+ * hand-copying the template.
+ */
 export const AGENT_TEMPLATE = (
   name: string,
   id: string,
   options: { modelProvider: "anthropic" | "openai" | "openai-codex"; modelName: string },
-): string => `---
-name: ${name}
-id: ${id}
-description: A helpful Poncho assistant
-model:
-  provider: ${options.modelProvider}
-  name: ${options.modelName}
-  temperature: 0.2
-limits:
-  maxSteps: 20
-  timeout: 300
----
-
-# {{name}}
-
-You are **{{name}}**, a helpful assistant built with Poncho.
-
-Working directory: {{runtime.workingDir}}
-Environment: {{runtime.environment}}
-
-## Task Guidance
-
-- Use tools when needed
-- Explain your reasoning clearly
-- Ask clarifying questions when requirements are ambiguous
-- Never claim a file/tool change unless the corresponding tool call actually succeeded
-`;
+): string =>
+  defaultAgentDefinition({
+    name,
+    id,
+    modelProvider: options.modelProvider,
+    modelName: options.modelName,
+  });
 
 /**
  * Resolve the monorepo packages root if we're running from a local dev build.
