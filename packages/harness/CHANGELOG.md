@@ -1,5 +1,21 @@
 # @poncho-ai/harness
 
+## 0.43.1
+
+### Patch Changes
+
+- [`134fae7`](https://github.com/cesr/poncho-ai/commit/134fae7eb4f3658b8d2dc0a5e560b0bcad094679) Thanks [@cesr](https://github.com/cesr)! - fix(harness): conversations.search now works on Postgres
+
+  The SQL for `engine.conversations.search()` matched `data LIKE $3`, but
+  `data` is a `jsonb` column in Postgres — `jsonb LIKE text` raises
+  `operator does not exist: jsonb ~~ unknown` (Postgres error 42883), so
+  every search call against a Postgres-backed engine 500'd at runtime.
+
+  Cast `data` to text in the Postgres branch (`data::text LIKE $3`).
+  SQLite stores `data` as TEXT-of-JSON, so no cast there.
+
+  Discovered while wiring `GET /me/conversations/search` in PonchOS.
+
 ## 0.43.0
 
 ### Minor Changes
