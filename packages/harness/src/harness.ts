@@ -1255,6 +1255,21 @@ export class AgentHarness {
     // "__default__" so dev-mode (no auth) conversations see the same VFS
     // namespace the Files sidebar writes to.
     const effectiveTenant = tenantId || "__default__";
+    // Refresh the engine's path cache before fingerprinting. The cache is
+    // the only thing `computeVfsSkillFingerprint` reads, and historically
+    // it was only populated by `bash-manager.refreshPathCache` — chat-only
+    // flows (no bash) left it empty, the patched writeFile's incremental
+    // update became a no-op (it skips when the cache isn't loaded), the
+    // fingerprint stuck at "" across runs, and any skill the agent (or a
+    // client like PonchOS's iOS Files browser) authored after the harness
+    // was first instantiated was invisible from the next turn onward.
+    // One SELECT per turn is the cost of correctness here.
+    const engineWithRefresh = this.storageEngine as unknown as {
+      refreshPathCache?: (tenantId: string) => Promise<void>;
+    };
+    if (typeof engineWithRefresh.refreshPathCache === "function") {
+      await engineWithRefresh.refreshPathCache(effectiveTenant);
+    }
     const fingerprint = this.computeVfsSkillFingerprint(effectiveTenant);
     const cached = this.skillCache.get(effectiveTenant);
     if (cached && cached.fingerprint === fingerprint) {
