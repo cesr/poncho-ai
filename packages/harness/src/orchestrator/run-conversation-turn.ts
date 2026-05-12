@@ -24,7 +24,7 @@ import type { AgentEvent, FileInput, Message } from "@poncho-ai/sdk";
 import { createLogger } from "@poncho-ai/sdk";
 import type { AgentHarness } from "../harness.js";
 import type { ConversationStore } from "../state.js";
-import { deriveUploadKey } from "../upload-store.js";
+import { decodeFileInputData, deriveUploadKey } from "../upload-store.js";
 import { withToolResultArchiveParam } from "./continuation.js";
 import { resolveRunRequest } from "./history.js";
 import {
@@ -104,7 +104,7 @@ export const runConversationTurn = async (
   if (opts.files && opts.files.length > 0 && opts.harness.uploadStore) {
     const uploadedParts = await Promise.all(
       opts.files.map(async (f) => {
-        const buf = Buffer.from(f.data, "base64");
+        const buf = await decodeFileInputData(f.data);
         const key = deriveUploadKey(buf, f.mediaType);
         const ref = await opts.harness.uploadStore!.put(key, buf, f.mediaType);
         return {

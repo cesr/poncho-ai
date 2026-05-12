@@ -20,7 +20,7 @@ const costLog = createLogger("cost");
 const mcpLog = createLogger("mcp");
 const modelLog = createLogger("model");
 import type { UploadStore } from "./upload-store.js";
-import { PONCHO_UPLOAD_SCHEME, VFS_SCHEME, deriveUploadKey } from "./upload-store.js";
+import { PONCHO_UPLOAD_SCHEME, VFS_SCHEME, decodeFileInputData, deriveUploadKey } from "./upload-store.js";
 import type { StorageEngine } from "./storage/engine.js";
 import { createStorageEngine, type StorageProvider } from "./storage/index.js";
 import {
@@ -2256,7 +2256,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
         ];
         for (const file of input.files) {
           if (this.uploadStore) {
-            const buf = Buffer.from(file.data, "base64");
+            const buf = await decodeFileInputData(file.data);
             const key = deriveUploadKey(buf, file.mediaType);
             const ref = await this.uploadStore.put(key, buf, file.mediaType);
             parts.push({

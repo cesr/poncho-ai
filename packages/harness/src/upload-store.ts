@@ -108,6 +108,33 @@ export const deriveUploadKey = (
   return `${hash}${ext}`;
 };
 
+const DATA_URI_PREFIX = /^data:[^,]*?;base64,/;
+
+/**
+ * Decode the `FileInput.data` field per its documented contract: it may be a
+ * raw base64 string, a `data:<mime>;base64,<…>` URI, or an `https?://` URL.
+ * Returns the decoded bytes. Older versions of the harness called
+ * `Buffer.from(data, "base64")` unconditionally; that silently produced
+ * garbage bytes for data URIs (the `:` / `;` / `,` in the prefix are not
+ * valid base64 chars but Node's decoder ignores them rather than throwing).
+ */
+export const decodeFileInputData = async (data: string): Promise<Buffer> => {
+  if (data.startsWith("http://") || data.startsWith("https://")) {
+    const resp = await fetch(data);
+    if (!resp.ok) {
+      throw new Error(
+        `uploads: failed to fetch file at ${data}: ${resp.status} ${resp.statusText}`,
+      );
+    }
+    return Buffer.from(await resp.arrayBuffer());
+  }
+  const match = data.match(DATA_URI_PREFIX);
+  if (match) {
+    return Buffer.from(data.slice(match[0].length), "base64");
+  }
+  return Buffer.from(data, "base64");
+};
+
 const MIME_EXT_MAP: Record<string, string> = {
   "image/jpeg": ".jpg",
   "image/png": ".png",
