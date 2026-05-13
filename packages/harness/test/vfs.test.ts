@@ -240,3 +240,114 @@ describe("bash + VFS integration", () => {
     await engine.close();
   });
 });
+
+describe("PonchoFsAdapter virtual read-only mounts", () => {
+  async function withMountFixture(): Promise<{
+    engine: InMemoryEngine;
+    adapter: PonchoFsAdapter;
+    sourceDir: string;
+    cleanup: () => Promise<void>;
+  }> {
+    const nodeFs = await import("node:fs/promises");
+    const nodeOs = await import("node:os");
+    const nodePath = await import("node:path");
+    const sourceDir = await nodeFs.mkdtemp(nodePath.join(nodeOs.tmpdir(), "ponchofs-mount-"));
+    await nodeFs.mkdir(nodePath.join(sourceDir, "jobs"), { recursive: true });
+    await nodeFs.writeFile(nodePath.join(sourceDir, "jobs", "dream.md"), "dream content");
+    await nodeFs.writeFile(nodePath.join(sourceDir, "jobs", "heartbeat.md"), "heartbeat content");
+
+    const engine = new InMemoryEngine("test");
+    await engine.initialize();
+    const adapter = new PonchoFsAdapter(engine, "t1", LIMITS, [
+      { prefix: "/system/", source: sourceDir },
+    ]);
+
+    return {
+      engine,
+      adapter,
+      sourceDir,
+      cleanup: async () => {
+        await engine.close();
+        await nodeFs.rm(sourceDir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it("serves mounted files from disk and lists them via readdir", async () => {
+    const { adapter, cleanup } = await withMountFixture();
+    try {
+      expect(await adapter.readFile("/system/jobs/dream.md")).toBe("dream content");
+      expect(await adapter.readFile("/system/jobs/heartbeat.md")).toBe("heartbeat content");
+
+      const sysEntries = (await adapter.readdir("/system")).sort();
+      expect(sysEntries).toEqual(["jobs"]);
+
+      const jobsEntries = (await adapter.readdir("/system/jobs")).sort();
+      expect(jobsEntries).toEqual(["dream.md", "heartbeat.md"]);
+
+      const dreamStat = await adapter.stat("/system/jobs/dream.md");
+      expect(dreamStat.isFile).toBe(true);
+      expect(dreamStat.size).toBe("dream content".length);
+
+      const sysStat = await adapter.stat("/system");
+      expect(sysStat.isDirectory).toBe(true);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("exposes the mount root segment when listing the root", async () => {
+    const { adapter, cleanup } = await withMountFixture();
+    try {
+      // Write a user file at /jobs/ so root has both engine + virtual entries.
+      await adapter.mkdir("/jobs", { recursive: true });
+      await adapter.writeFile("/jobs/mine.md", "mine");
+      const rootEntries = (await adapter.readdir("/")).sort();
+      expect(rootEntries).toContain("jobs");
+      expect(rootEntries).toContain("system");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("rejects writes anywhere under a mount prefix", async () => {
+    const { adapter, cleanup } = await withMountFixture();
+    try {
+      await expect(adapter.writeFile("/system/jobs/new.md", "x")).rejects.toThrow(/EROFS/);
+      await expect(adapter.writeFile("/system/jobs/dream.md", "overwrite")).rejects.toThrow(/EROFS/);
+      await expect(adapter.mkdir("/system/extra", { recursive: true })).rejects.toThrow(/EROFS/);
+      await expect(adapter.rm("/system/jobs/dream.md")).rejects.toThrow(/EROFS/);
+      await expect(adapter.appendFile("/system/jobs/dream.md", "y")).rejects.toThrow(/EROFS/);
+      // Source of mv being mounted also rejects (can't move out of read-only).
+      await expect(adapter.mv("/system/jobs/dream.md", "/jobs/dream.md")).rejects.toThrow(/EROFS/);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("getAllPaths includes mount contents for bash glob/find", async () => {
+    const { adapter, cleanup } = await withMountFixture();
+    try {
+      const paths = adapter.getAllPaths();
+      expect(paths).toContain("/system");
+      expect(paths).toContain("/system/jobs");
+      expect(paths).toContain("/system/jobs/dream.md");
+      expect(paths).toContain("/system/jobs/heartbeat.md");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("does not affect engine-backed reads outside any mount", async () => {
+    const { adapter, cleanup } = await withMountFixture();
+    try {
+      await adapter.mkdir("/jobs", { recursive: true });
+      await adapter.writeFile("/jobs/morning-brief.md", "brief");
+      expect(await adapter.readFile("/jobs/morning-brief.md")).toBe("brief");
+      // Mount path still serves from disk independently
+      expect(await adapter.readFile("/system/jobs/dream.md")).toBe("dream content");
+    } finally {
+      await cleanup();
+    }
+  });
+});

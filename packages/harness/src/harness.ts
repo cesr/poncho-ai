@@ -30,6 +30,8 @@ import {
   createReminderStoreFromEngine,
 } from "./storage/store-adapters.js";
 import { BashEnvironmentManager } from "./vfs/bash-manager.js";
+import type { VirtualMount } from "./vfs/poncho-fs-adapter.js";
+export type { VirtualMount } from "./vfs/poncho-fs-adapter.js";
 import { createBashTool } from "./vfs/bash-tool.js";
 import { createReadFileTool } from "./vfs/read-file-tool.js";
 import { createEditFileTool } from "./vfs/edit-file-tool.js";
@@ -123,6 +125,15 @@ export interface HarnessOptions {
    * `resolveStateConfig`, etc.) run as today regardless of source.
    */
   config?: PonchoConfig;
+  /**
+   * Read-only virtual mounts overlaid on the VFS. Each mount maps a VFS
+   * prefix (e.g. "/system/") to a local filesystem directory; reads under
+   * the prefix are served from local disk, writes are rejected. Used by
+   * platforms like PonchOS to expose deployment-shipped defaults (system
+   * jobs, system skills) without storing them in each tenant's VFS.
+   * Empty by default — no system mounts in the CLI / dev workflow.
+   */
+  virtualMounts?: VirtualMount[];
 }
 
 export interface HarnessRunOutput {
@@ -855,6 +866,8 @@ export class AgentHarness {
   storageEngine?: StorageEngine;
   /** Bash environment manager (creates per-tenant bash instances). */
   private bashManager?: BashEnvironmentManager;
+  /** Read-only virtual mounts overlaid on the VFS. Empty by default. */
+  private virtualMounts: VirtualMount[] = [];
 
   private resolveToolAccess(toolName: string): ToolAccess {
     const tools = this.loadedConfig?.tools;
@@ -1048,6 +1061,7 @@ export class AgentHarness {
       this.storageEngine = options.storageEngine;
       this.injectedStorageEngine = true;
     }
+    this.virtualMounts = options.virtualMounts ?? [];
 
     if (options.toolDefinitions?.length) {
       this.dispatcher.registerMany(options.toolDefinitions);
@@ -1710,6 +1724,7 @@ export class AgentHarness {
       bashWorkingDir,
       config?.bash,
       config?.network,
+      this.virtualMounts,
     );
     // Register VFS tools
     this.registerIfMissing(createBashTool(this.bashManager));

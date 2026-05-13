@@ -11,7 +11,7 @@ import type {
 } from "just-bash";
 import type { StorageEngine } from "../storage/engine.js";
 import type { BashConfig, NetworkConfig } from "../config.js";
-import { PonchoFsAdapter } from "./poncho-fs-adapter.js";
+import { PonchoFsAdapter, type VirtualMount } from "./poncho-fs-adapter.js";
 import { createBashFs } from "./create-bash-fs.js";
 import type { PostgresEngine } from "../storage/postgres-engine.js";
 
@@ -69,6 +69,7 @@ export class BashEnvironmentManager {
   private filesystems = new Map<string, IFileSystem>();
   private readonly workingDir: string | null;
   private readonly bashOptions: Partial<BashOptions>;
+  private readonly virtualMounts: VirtualMount[];
 
   constructor(
     private engine: StorageEngine,
@@ -76,16 +77,18 @@ export class BashEnvironmentManager {
     workingDir: string | null,
     bashConfig?: BashConfig,
     network?: NetworkConfig,
+    virtualMounts: VirtualMount[] = [],
   ) {
     this.workingDir = workingDir;
     this.bashOptions = toBashOptions(bashConfig, network);
+    this.virtualMounts = virtualMounts;
   }
 
   /** Return the combined IFileSystem (VFS + optional /project mount) for a tenant. */
   getFs(tenantId: string): IFileSystem {
     let fs = this.filesystems.get(tenantId);
     if (!fs) {
-      const adapter = new PonchoFsAdapter(this.engine, tenantId, this.limits);
+      const adapter = new PonchoFsAdapter(this.engine, tenantId, this.limits, this.virtualMounts);
       fs = createBashFs(adapter, this.workingDir);
       this.filesystems.set(tenantId, fs);
     }
@@ -107,7 +110,7 @@ export class BashEnvironmentManager {
   }
 
   getAdapter(tenantId: string): PonchoFsAdapter {
-    return new PonchoFsAdapter(this.engine, tenantId, this.limits);
+    return new PonchoFsAdapter(this.engine, tenantId, this.limits, this.virtualMounts);
   }
 
   /** Refresh the PostgreSQL path cache before a bash.exec() call. */
