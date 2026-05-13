@@ -1,5 +1,80 @@
 # @poncho-ai/harness
 
+## 0.44.0
+
+### Minor Changes
+
+- [`e6f5c14`](https://github.com/cesr/poncho-ai/commit/e6f5c142a368389b3eb62e80731612048d9198b5) Thanks [@cesr](https://github.com/cesr)! - VFS adapter now supports read-only virtual mounts. `HarnessOptions.virtualMounts` accepts entries like `{ prefix: "/system/", source: "/path/on/disk" }`; reads under the prefix are served from the local filesystem source directory, writes are rejected with `EROFS`. Used by platforms (e.g. PonchOS) to expose deployment-shipped defaults without persisting them in each tenant's VFS — improvements ship via normal deploys and tenant data stays portable. Empty by default; CLI/dev workflows are unaffected.
+
+### Patch Changes
+
+- [`b171c0e`](https://github.com/cesr/poncho-ai/commit/b171c0e9c4cdc149e8282611f7333519b5e04e38) Thanks [@cesr](https://github.com/cesr)! - harness: properly decode `FileInput.data` per its documented contract
+
+  `FileInput.data` is documented in `@poncho-ai/sdk` as accepting raw
+  base64, `data:<mime>;base64,<…>` URIs, or `https?://` URLs. The
+  runtime used to call `Buffer.from(data, "base64")` unconditionally,
+  which silently produced garbage bytes for data URIs (Node's base64
+  decoder ignores invalid chars like `:` `;` `,` rather than throwing,
+  so the file's magic bytes were destroyed). Anthropic responded with
+  "Could not process image" on every turn that attached an image as a
+  data URI — including PonchOS's `resolveAttachment`, which built data
+  URIs by following the documented format.
+
+  Introduce `decodeFileInputData(data)` in `upload-store.ts` that
+  detects the three formats and decodes accordingly, and call it from
+  `AgentHarness.run` and `runConversationTurn` instead of the inline
+  `Buffer.from(_, "base64")`. Pinned by a new test that exercises raw
+  base64, simple data URIs, and data URIs with mime parameters.
+
+  Callers that have been passing raw base64 all along see no behavior
+  change.
+
+- [`4d322f7`](https://github.com/cesr/poncho-ai/commit/4d322f79900f449d1f7783f697eef0351cd45f0a) Thanks [@cesr](https://github.com/cesr)! - fix(harness): reminders.scheduledAt no longer rounds on Postgres
+
+  Two related Postgres-only bugs in reminder storage:
+  1. **Schema precision**: the `reminders.scheduled_at` column was declared
+     `REAL` so SQLite would get its 8-byte double. Postgres maps `REAL` to
+     `float4` (4 bytes, ~7 digit precision), which silently rounds
+     millisecond epoch values (13 digits). Every reminder write+read on
+     Postgres returned a different value than it stored — and recurring
+     reminders would fire at wrong times. New migration v7 alters the
+     column to `BIGINT` (Postgres only; SQLite's `REAL` is already
+     double-precision and stays).
+  2. **Wire-format coercion**: `rowToReminder` declared `scheduledAt: row.scheduled_at as number`
+     but didn't actually coerce. With BIGINT, postgres-js returns the
+     value as a string (deliberate, to avoid JS-side precision loss).
+     The `as` cast is type-only; the runtime value stayed a string,
+     making strict equality and arithmetic fail. Now coerces with
+     `Number(...)`, which is safe — ms epochs max at ~10^16 in year 2286,
+     well under `Number.MAX_SAFE_INTEGER` (2^53).
+
+  Same coercion applied to `occurrenceCount` for consistency.
+
+  Discovered while wiring `/me/reminders` in PonchOS — every PATCH-back
+  returned a different scheduledAt than was sent.
+
+- [`1499eb4`](https://github.com/cesr/poncho-ai/commit/1499eb4f63cc480fb42ec4e5568e023b84e54b5a) Thanks [@cesr](https://github.com/cesr)! - harness: discover VFS skills written without running bash
+
+  Per-tenant VFS skill discovery was tied to the storage engine's
+  in-memory path cache, which was only ever populated by
+  `bash-manager.refreshPathCache` before a bash invocation. Chat-only
+  flows (PonchOS's iOS Files browser, the `write_file` tool, any agent
+  that never shells out) left the cache empty, the patched `writeFile`'s
+  incremental update was a silent no-op (it only mutates when the cache
+  is already initialized for that tenant), and the skill fingerprint
+  stuck at `""` for the lifetime of the harness instance — so any
+  SKILL.md authored after `getSkillsForTenant` first ran for a tenant
+  was invisible from that point forward.
+
+  Refresh the engine's path cache inside `getSkillsForTenant` before
+  computing the fingerprint. One extra SELECT-paths round-trip per
+  turn (skills are checked once per `buildSystemPrompt`); correctness
+  for the increasingly common no-bash deployments wins easily over the
+  saved query.
+
+  Surfaced by PonchOS (no bash, iOS Files + write_file is the only way
+  SKILL.md ends up in `/skills/`).
+
 ## 0.43.1
 
 ### Patch Changes
