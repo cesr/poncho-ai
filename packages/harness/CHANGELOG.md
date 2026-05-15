@@ -1,5 +1,48 @@
 # @poncho-ai/harness
 
+## 0.45.0
+
+### Minor Changes
+
+- [`1adaae2`](https://github.com/cesr/poncho-ai/commit/1adaae2d4cc55800f01d602f2a7d6ecc65031443) Thanks [@cesr](https://github.com/cesr)! - harness: device-dispatch mode for tools that execute on a connected client
+
+  Tools can now be marked `dispatch: "device"` on `loadedConfig.tools`. When
+  the model calls such a tool the dispatcher pauses the run, emits a new
+  `tool:device:required` event, and checkpoints with the new
+  `kind: "device"` discriminator on `pendingApprovals` — same plumbing as
+  the approval flow, different trigger and different resume payload.
+  Consumers (e.g. PonchOS for iOS device tools) drive the external
+  execution and feed the result back via `continueFromToolResult`.
+
+  Approval can be combined: `{access: "approval", dispatch: "device"}`
+  yields the approval card first, then on resume falls through to the
+  device-required event. The wire vocabulary for approvals
+  (`approvalId` etc.) is unchanged; the `pendingApprovals` column /
+  field name stays.
+
+  `ToolAccess` is broadened to accept both the legacy string `"approval"`
+  and the new `{access?, dispatch?}` object form. Existing configs keep
+  working unchanged.
+
+- [`6132601`](https://github.com/cesr/poncho-ai/commit/613260159cdd80fcc02d68aa58ad52d4465bcede) Thanks [@cesr](https://github.com/cesr)! - harness: add `read_subagent` tool for fetching subagent transcripts
+
+  Parent agents can now read a spawned subagent's conversation directly
+  instead of using `message_subagent` to ask it to repeat its work. The
+  new tool accepts a `mode` parameter — `"final"` (last assistant message,
+  default), `"assistant"` (assistant messages only), or `"full"` (every
+  message including tool calls and results) — plus optional `since_index`
+  and `max_messages` for paging long transcripts.
+
+  Access is restricted to direct children: a parent can only read
+  transcripts of subagents whose `parentConversationId` matches its own
+  conversation. The `SubagentManager` interface gains a corresponding
+  `getTranscript` method.
+
+### Patch Changes
+
+- Updated dependencies [[`1adaae2`](https://github.com/cesr/poncho-ai/commit/1adaae2d4cc55800f01d602f2a7d6ecc65031443)]:
+  - @poncho-ai/sdk@1.11.0
+
 ## 0.44.0
 
 ### Minor Changes
