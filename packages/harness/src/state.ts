@@ -47,6 +47,15 @@ export interface Conversation {
     baseMessageCount?: number;
     pendingToolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }>;
     decision?: "approved" | "denied";
+    /**
+     * Checkpoint kind discriminator.
+     * - "approval" (default for legacy rows): user approve/deny gate.
+     * - "device":   tool executes on a connected client device (e.g. iOS); the
+     *               consumer of the harness POSTs a tool result back to resume.
+     * Treat `undefined` as "approval" for backward compatibility with rows
+     * persisted before this field existed.
+     */
+    kind?: "approval" | "device";
   }>;
   runStatus?: "running" | "idle";
   ownerId: string;

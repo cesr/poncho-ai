@@ -257,6 +257,34 @@ export const runConversationTurn = async (
                 checkpointMessages: undefined,
                 baseMessageCount: historyMessages.length,
                 pendingToolCalls: [],
+                kind: "approval",
+              },
+            ];
+            conversation.updatedAt = Date.now();
+            await opts.conversationStore.update(conversation);
+          }
+          await persistDraft();
+        }
+        if (event.type === "tool:device:required") {
+          const toolText = `- device dispatch \`${event.tool}\``;
+          draft.toolTimeline.push(toolText);
+          draft.currentTools.push(toolText);
+          const existing = Array.isArray(conversation.pendingApprovals)
+            ? conversation.pendingApprovals
+            : [];
+          if (!existing.some((a) => a.approvalId === event.requestId)) {
+            conversation.pendingApprovals = [
+              ...existing,
+              {
+                approvalId: event.requestId,
+                runId: latestRunId || conversation.runtimeRunId || "",
+                tool: event.tool,
+                toolCallId: undefined,
+                input: (event.input ?? {}) as Record<string, unknown>,
+                checkpointMessages: undefined,
+                baseMessageCount: historyMessages.length,
+                pendingToolCalls: [],
+                kind: "device",
               },
             ];
             conversation.updatedAt = Date.now();
@@ -272,6 +300,24 @@ export const runConversationTurn = async (
             checkpointMessages: event.checkpointMessages,
             baseMessageCount: historyMessages.length,
             pendingToolCalls: event.pendingToolCalls,
+            kind: "approval",
+          });
+          conversation._toolResultArchive = opts.harness.getToolResultArchive(
+            opts.conversationId,
+          );
+          conversation.updatedAt = Date.now();
+          await opts.conversationStore.update(conversation);
+          checkpointedRun = true;
+        }
+        if (event.type === "tool:device:checkpoint") {
+          conversation.messages = buildMessages();
+          conversation.pendingApprovals = buildApprovalCheckpoints({
+            approvals: event.approvals,
+            runId: latestRunId,
+            checkpointMessages: event.checkpointMessages,
+            baseMessageCount: historyMessages.length,
+            pendingToolCalls: event.pendingToolCalls,
+            kind: "device",
           });
           conversation._toolResultArchive = opts.harness.getToolResultArchive(
             opts.conversationId,

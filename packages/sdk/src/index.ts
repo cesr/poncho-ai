@@ -196,6 +196,30 @@ export type AgentEvent =
       checkpointMessages: Message[];
       pendingToolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
     }
+  | {
+      /**
+       * Tool wants to execute on a connected client device (e.g. iOS).
+       * The consumer of the harness is responsible for routing this event
+       * to the appropriate WebSocket and POSTing the tool's result back via
+       * `resumeRunFromCheckpoint`. Carries the same envelope as the
+       * approval-required event; `requestId` plays the role of `approvalId`.
+       */
+      type: "tool:device:required";
+      tool: string;
+      input: unknown;
+      requestId: string;
+    }
+  | {
+      type: "tool:device:checkpoint";
+      approvals: Array<{
+        approvalId: string;
+        tool: string;
+        toolCallId: string;
+        input: Record<string, unknown>;
+      }>;
+      checkpointMessages: Message[];
+      pendingToolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
+    }
   | { type: "browser:frame"; data: string; width: number; height: number }
   | {
       type: "browser:status";

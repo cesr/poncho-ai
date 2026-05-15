@@ -304,12 +304,14 @@ export const buildApprovalCheckpoints = ({
   checkpointMessages,
   baseMessageCount,
   pendingToolCalls,
+  kind = "approval",
 }: {
   approvals: ApprovalEventItem[];
   runId: string;
   checkpointMessages: Message[];
   baseMessageCount: number;
   pendingToolCalls: PendingToolCall[];
+  kind?: "approval" | "device";
 }): NonNullable<Conversation["pendingApprovals"]> =>
   approvals.map((approval) => ({
     approvalId: approval.approvalId,
@@ -320,6 +322,7 @@ export const buildApprovalCheckpoints = ({
     checkpointMessages,
     baseMessageCount,
     pendingToolCalls,
+    kind,
   }));
 
 // ── Turn metadata persistence ──

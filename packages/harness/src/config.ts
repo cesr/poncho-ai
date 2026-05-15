@@ -37,7 +37,26 @@ export interface UploadsConfig {
   endpoint?: string;
 }
 
-export type ToolAccess = boolean | "approval";
+export type ToolAccess =
+  | boolean
+  | "approval"
+  | { access?: "approval"; dispatch?: "device" };
+
+/**
+ * Normalize any ToolAccess value into a {access, dispatch} struct.
+ * `boolean` collapses to no special handling — the boolean only encodes
+ * enable/disable, not dispatch — callers gate behavior on `dispatch` and
+ * `access`.
+ */
+export const normalizeToolAccess = (
+  value: ToolAccess | undefined,
+): { access?: "approval"; dispatch?: "device" } => {
+  if (value === "approval") return { access: "approval" };
+  if (value && typeof value === "object") {
+    return { access: value.access, dispatch: value.dispatch };
+  }
+  return {};
+};
 
 /** @deprecated Use flat tool keys on `tools` instead. Kept for backward compat. */
 export type BuiltInToolToggles = {

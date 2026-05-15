@@ -38,7 +38,7 @@ import { createEditFileTool } from "./vfs/edit-file-tool.js";
 import { createWriteFileTool } from "./vfs/write-file-tool.js";
 import { PonchoFsAdapter } from "./vfs/poncho-fs-adapter.js";
 import { parseAgentFile, parseAgentMarkdown, renderAgentPrompt, type ParsedAgent, type AgentFrontmatter } from "./agent-parser.js";
-import { loadPonchoConfig, resolveMemoryConfig, resolveStateConfig, type PonchoConfig, type ToolAccess, type BuiltInToolToggles } from "./config.js";
+import { loadPonchoConfig, normalizeToolAccess, resolveMemoryConfig, resolveStateConfig, type PonchoConfig, type ToolAccess, type BuiltInToolToggles } from "./config.js";
 import { ponchoDocsTool } from "./default-tools.js";
 import {
   createMemoryStore,
@@ -878,12 +878,27 @@ export class AgentHarness {
     if (envOverride !== undefined) return envOverride;
 
     const flatValue = tools[toolName];
-    if (typeof flatValue === "boolean" || flatValue === "approval") return flatValue;
+    if (
+      typeof flatValue === "boolean" ||
+      flatValue === "approval" ||
+      (flatValue !== null && typeof flatValue === "object" && !Array.isArray(flatValue) &&
+        // distinguish a ToolAccess object from the nested `defaults` /
+        // `byEnvironment` sibling fields by checking it has only the
+        // expected ToolAccess keys.
+        Object.keys(flatValue as object).every((k) => k === "access" || k === "dispatch"))
+    ) {
+      return flatValue as ToolAccess;
+    }
 
     const legacyValue = tools.defaults?.[toolName as keyof BuiltInToolToggles];
     if (legacyValue !== undefined) return legacyValue;
 
     return true;
+  }
+
+  /** Returns the normalized {access, dispatch} mode for the tool. */
+  private resolveToolMode(toolName: string): { access?: "approval"; dispatch?: "device" } {
+    return normalizeToolAccess(this.resolveToolAccess(toolName));
   }
 
   private isToolEnabled(name: string): boolean {
@@ -1470,7 +1485,7 @@ export class AgentHarness {
     toolName: string,
     input: Record<string, unknown>,
   ): boolean {
-    if (this.resolveToolAccess(toolName) === "approval") {
+    if (this.resolveToolMode(toolName).access === "approval") {
       return true;
     }
     if (toolName === "run_skill_script") {
@@ -3119,8 +3134,19 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
         name: string;
         input: Record<string, unknown>;
       }> = [];
+      const deviceNeeded: Array<{
+        approvalId: string;
+        id: string;
+        name: string;
+        input: Record<string, unknown>;
+      }> = [];
 
-      // Phase 1: classify all tool calls
+      // Phase 1: classify all tool calls.
+      // Approval gates run first; device dispatch fires only after approval is
+      // cleared. On a device+approval tool the first dispatch pass yields the
+      // approval, and the post-resume pass (where access is no longer required
+      // because the message stream has the approve decision baked in) sees
+      // dispatch="device" still set and falls into deviceNeeded below.
       for (const call of toolCalls) {
         if (isCancelled()) {
           yield emitCancellation();
@@ -3131,6 +3157,13 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
         if (this.requiresApprovalForToolCall(runtimeToolName, call.input)) {
           approvalNeeded.push({
             approvalId: `approval_${randomUUID()}`,
+            id: call.id,
+            name: runtimeToolName,
+            input: call.input,
+          });
+        } else if (this.resolveToolMode(runtimeToolName).dispatch === "device") {
+          deviceNeeded.push({
+            approvalId: `device_${randomUUID()}`,
             id: call.id,
             name: runtimeToolName,
             input: call.input,
@@ -3176,6 +3209,52 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
             tool: an.name,
             toolCallId: an.id,
             input: an.input,
+          })),
+          checkpointMessages: deltaMessages,
+          pendingToolCalls: toolCalls.map(tc => ({
+            id: tc.id,
+            name: exposedToolNames.get(tc.name) ?? tc.name,
+            input: tc.input,
+          })),
+        });
+        return;
+      }
+
+      // Phase 2a': if any tools must dispatch to a connected device, emit
+      // tool:device:required events for each and checkpoint with kind="device".
+      // Consumers (e.g. PonchOS) route the events to the right WS and POST
+      // the resulting tool output back through resumeRunFromCheckpoint.
+      if (deviceNeeded.length > 0) {
+        for (const dn of deviceNeeded) {
+          yield pushEvent({
+            type: "tool:device:required",
+            tool: dn.name,
+            input: dn.input,
+            requestId: dn.approvalId,
+          });
+        }
+
+        const assistantContent = JSON.stringify({
+          text: fullText,
+          tool_calls: toolCalls.map(tc => ({
+            id: tc.id,
+            name: exposedToolNames.get(tc.name) ?? tc.name,
+            input: tc.input,
+          })),
+        });
+        const assistantMsg: Message = {
+          role: "assistant",
+          content: assistantContent,
+          metadata: { timestamp: now(), id: randomUUID(), step, runId },
+        };
+        const deltaMessages = [...messages.slice(inputMessageCount), assistantMsg];
+        yield pushEvent({
+          type: "tool:device:checkpoint",
+          approvals: deviceNeeded.map(dn => ({
+            approvalId: dn.approvalId,
+            tool: dn.name,
+            toolCallId: dn.id,
+            input: dn.input,
           })),
           checkpointMessages: deltaMessages,
           pendingToolCalls: toolCalls.map(tc => ({
