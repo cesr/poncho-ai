@@ -19,6 +19,18 @@ export interface SubagentSpawnResult {
   subagentId: string;
 }
 
+export type SubagentTranscriptMode = "final" | "assistant" | "full";
+
+export interface SubagentTranscript {
+  subagentId: string;
+  task: string;
+  status: string;
+  totalMessages: number;
+  startIndex: number;
+  messages: Message[];
+  truncated: boolean;
+}
+
 export interface SubagentManager {
   spawn(opts: {
     task: string;
@@ -32,4 +44,12 @@ export interface SubagentManager {
   stop(subagentId: string): Promise<void>;
 
   list(parentConversationId: string): Promise<SubagentSummary[]>;
+
+  getTranscript(opts: {
+    subagentId: string;
+    parentConversationId: string;
+    mode: SubagentTranscriptMode;
+    sinceIndex?: number;
+    maxMessages?: number;
+  }): Promise<SubagentTranscript>;
 }

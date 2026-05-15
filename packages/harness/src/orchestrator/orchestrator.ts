@@ -1511,6 +1511,52 @@ export class AgentOrchestrator {
         }
         return results;
       },
+
+      getTranscript: async (opts) => {
+        const conversation = await this.conversationStore.get(opts.subagentId);
+        if (!conversation) {
+          throw new Error(`Subagent "${opts.subagentId}" not found.`);
+        }
+        if (!conversation.parentConversationId) {
+          throw new Error(`Conversation "${opts.subagentId}" is not a subagent.`);
+        }
+        if (conversation.parentConversationId !== opts.parentConversationId) {
+          throw new Error(`Subagent "${opts.subagentId}" was not spawned by this conversation.`);
+        }
+
+        const all = conversation.messages;
+        let filtered: Message[];
+        if (opts.mode === "final") {
+          let lastAssistant: Message | undefined;
+          for (let i = all.length - 1; i >= 0; i--) {
+            if (all[i]!.role === "assistant") {
+              lastAssistant = all[i];
+              break;
+            }
+          }
+          filtered = lastAssistant ? [lastAssistant] : [];
+        } else if (opts.mode === "assistant") {
+          filtered = all.filter((m) => m.role === "assistant");
+        } else {
+          filtered = all;
+        }
+
+        const startIndex = Math.max(0, opts.sinceIndex ?? 0);
+        const sliced = filtered.slice(startIndex);
+        const cap = opts.maxMessages !== undefined && opts.maxMessages >= 0 ? opts.maxMessages : sliced.length;
+        const messages = sliced.slice(0, cap);
+        const truncated = startIndex + messages.length < filtered.length;
+
+        return {
+          subagentId: conversation.conversationId,
+          task: conversation.subagentMeta?.task ?? conversation.title,
+          status: conversation.subagentMeta?.status ?? "stopped",
+          totalMessages: filtered.length,
+          startIndex,
+          messages,
+          truncated,
+        };
+      },
     };
   }
 

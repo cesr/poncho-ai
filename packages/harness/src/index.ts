@@ -21,7 +21,7 @@ export * from "./telemetry.js";
 export * from "./secrets-store.js";
 export * from "./storage/index.js";
 export * from "./storage/store-adapters.js";
-export { PonchoFsAdapter } from "./vfs/poncho-fs-adapter.js";
+export { PonchoFsAdapter, type VirtualMount } from "./vfs/poncho-fs-adapter.js";
 export { BashEnvironmentManager } from "./vfs/bash-manager.js";
 export { createBashTool } from "./vfs/bash-tool.js";
 export * from "./tenant-token.js";

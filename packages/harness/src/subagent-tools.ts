@@ -131,4 +131,66 @@ export const createSubagentTools = (
       return { subagents };
     },
   }),
+
+  defineTool({
+    name: "read_subagent",
+    description:
+      "Fetch the conversation transcript of a subagent you spawned. Use this to inspect a " +
+      "subagent's intermediate reasoning, tool calls, or full output -- instead of asking it " +
+      "to repeat its work via message_subagent.\n\n" +
+      "Modes:\n" +
+      "- 'final' (default): just the last assistant message. Cheap.\n" +
+      "- 'assistant': all assistant messages, no tool calls/results.\n" +
+      "- 'full': every message including tool calls and results. Can be large.\n\n" +
+      "Use since_index / max_messages to page through long transcripts. Only works on " +
+      "subagents directly spawned by this conversation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        subagent_id: {
+          type: "string",
+          description: "The subagent ID (from spawn_subagent or list_subagents).",
+        },
+        mode: {
+          type: "string",
+          enum: ["final", "assistant", "full"],
+          description: "How much of the transcript to return. Defaults to 'final'.",
+        },
+        since_index: {
+          type: "number",
+          description: "Skip messages before this index (applied after mode filter).",
+        },
+        max_messages: {
+          type: "number",
+          description: "Cap the number of messages returned.",
+        },
+      },
+      required: ["subagent_id"],
+      additionalProperties: false,
+    },
+    handler: async (input: Record<string, unknown>, context: ToolContext) => {
+      const subagentId = typeof input.subagent_id === "string" ? input.subagent_id : "";
+      if (!subagentId) {
+        return { error: "subagent_id is required" };
+      }
+      const parentConversationId = context.conversationId;
+      if (!parentConversationId) {
+        return { error: "no active conversation" };
+      }
+      const rawMode = typeof input.mode === "string" ? input.mode : "final";
+      const mode: "final" | "assistant" | "full" =
+        rawMode === "assistant" || rawMode === "full" ? rawMode : "final";
+      try {
+        return await manager.getTranscript({
+          subagentId,
+          parentConversationId,
+          mode,
+          sinceIndex: typeof input.since_index === "number" ? input.since_index : undefined,
+          maxMessages: typeof input.max_messages === "number" ? input.max_messages : undefined,
+        });
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  }),
 ];
