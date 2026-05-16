@@ -62,6 +62,12 @@ export interface RunConversationTurnOpts {
   parameters?: Record<string, unknown>;
   abortSignal?: AbortSignal;
   tenantId?: string | null;
+  /**
+   * Forwarded to `RunInput.disablePromptCache`. Set true for one-shot
+   * turns with no follow-up coming (cron-fired jobs, etc.) so the
+   * harness skips the Anthropic cache write.
+   */
+  disablePromptCache?: boolean;
   /** Per-event hook — called for every AgentEvent yielded by the run, in order. */
   onEvent?: (event: AgentEvent) => void | Promise<void>;
 }
@@ -203,6 +209,7 @@ export const runConversationTurn = async (
         messages: harnessMessages,
         files: opts.files && opts.files.length > 0 ? opts.files : undefined,
         abortSignal: opts.abortSignal,
+        disablePromptCache: opts.disablePromptCache,
       },
       initialContextTokens: conversation.contextTokens ?? 0,
       initialContextWindow: conversation.contextWindow ?? 0,

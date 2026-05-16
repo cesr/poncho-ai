@@ -1,6 +1,6 @@
 import type { ModelMessage, LanguageModel } from "ai";
 
-function isAnthropicModel(model: LanguageModel): boolean {
+export function isAnthropicModel(model: LanguageModel): boolean {
   if (typeof model === "string") {
     return model.includes("anthropic") || model.includes("claude");
   }

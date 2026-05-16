@@ -128,6 +128,13 @@ export interface RunInput {
   conversationId?: string;
   /** When true, ignores PONCHO_MAX_DURATION soft deadline (used for background subagent runs). */
   disableSoftDeadline?: boolean;
+  /**
+   * When true, skip the Anthropic prompt-cache breakpoint for this run.
+   * Use for one-shot runs with no follow-up turn coming (e.g. cron-fired
+   * jobs) — the 1.25× write surcharge is pure waste when no later read
+   * will hit the cache before the 5-min TTL expires.
+   */
+  disablePromptCache?: boolean;
   /** Scope this run to a specific tenant. */
   tenantId?: string;
 }
