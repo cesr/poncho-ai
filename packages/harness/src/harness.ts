@@ -59,7 +59,7 @@ import {
   mergeSkills,
 } from "./skill-context.js";
 import { generateText, streamText, type ModelMessage } from "ai";
-import { addPromptCacheBreakpoints } from "./prompt-cache.js";
+import { addPromptCacheBreakpoints, isAnthropicModel } from "./prompt-cache.js";
 import { jsonSchemaToZod } from "./schema-converter.js";
 import type { SkillMetadata } from "./skill-context.js";
 import { createSkillTools, normalizeScriptPolicyPath } from "./skill-tools.js";
@@ -2104,10 +2104,17 @@ export class AgentHarness {
       );
     }
     const hasFullToolResults = hasUntruncatedToolResults(messages);
-    if (hasFullToolResults) {
-      costLog.debug(`cache breakpoint before untruncated tool results (run=${runId.slice(0, 12)})`);
+    // The 5-min tail breakpoint is skipped only when the caller explicitly
+    // declares no follow-up is coming (jobs, programmatic one-shots). The
+    // 1-hour static breakpoint on the system prompt is always on — it
+    // amortizes across every later turn or job within the hour.
+    const skipTailCache = input.disablePromptCache === true;
+    if (skipTailCache) {
+      costLog.debug(`tail cache breakpoint skipped — disablePromptCache (run=${runId.slice(0, 12)})`);
+    } else if (hasFullToolResults) {
+      costLog.debug(`tail cache breakpoint before untruncated tool results (run=${runId.slice(0, 12)})`);
     } else {
-      costLog.debug(`cache breakpoint at history tail (run=${runId.slice(0, 12)})`);
+      costLog.debug(`tail cache breakpoint at history tail (run=${runId.slice(0, 12)})`);
     }
     const inputMessageCount = messages.length;
     const events: AgentEvent[] = [];
@@ -2210,11 +2217,17 @@ ${typeStubs}
 Code is wrapped in an async IIFE — use \`return\` to return a value to the tool result.`;
     }
 
-    const buildSystemPrompt = async (): Promise<string> => {
+    // Split the system prompt into a static portion (stable across turns
+    // and jobs within an hour, modulo MCP connect/skill author/memory edit)
+    // and a dynamic tail (memory, todos, time). The static portion gets a
+    // 1-hour Anthropic cache breakpoint downstream; the tail rides the
+    // existing 5-min message-level breakpoint. See the streamText site for
+    // the breakpoint wiring.
+    const buildSystemPromptParts = async (): Promise<{ staticPart: string; dynamicPart: string }> => {
       const agentPrompt = renderCurrentAgentPrompt();
       const tenantSkills = await this.getSkillsForTenant(input.tenantId);
       const skillContextWindow = buildSkillContextWindow(tenantSkills);
-      const promptWithSkills = skillContextWindow
+      const staticPart = skillContextWindow
         ? `${agentPrompt}${developmentContext}\n\n${skillContextWindow}${browserContext}${fsContext}${isolateContext}`
         : `${agentPrompt}${developmentContext}${browserContext}${fsContext}${isolateContext}`;
       // Quantize to the hour so the system prompt is stable across runs
@@ -2230,9 +2243,13 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
       const timeContext = this.reminderStore
         ? `\n\nCurrent UTC time (hour precision): ${hourlyTime}`
         : "";
-      return `${promptWithSkills}${memoryContext}${todoContext}${timeContext}`;
+      const dynamicPart = `${memoryContext}${todoContext}${timeContext}`;
+      return { staticPart, dynamicPart };
     };
-    let systemPrompt = await buildSystemPrompt();
+    let { staticPart: staticSystemPart, dynamicPart: dynamicSystemPart } =
+      await buildSystemPromptParts();
+    // Concatenated form for legacy consumers (token estimation, telemetry).
+    let systemPrompt = `${staticSystemPart}${dynamicSystemPart}`;
     let lastPromptFingerprint = `${this.agentFileFingerprint}\n${this.skillFingerprint}`;
 
     const pushEvent = (event: AgentEvent): AgentEvent => {
@@ -2772,25 +2789,55 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
 
         const temperature = agent.frontmatter.model?.temperature ?? 0.2;
         const maxTokens = agent.frontmatter.model?.maxTokens;
-        // Place the breakpoint before any untruncated tool-result so we
-        // cache only the stable prefix when prior-run tool results are
-        // still full-fidelity. Otherwise cache at the history tail.
-        const breakpointIndex = hasFullToolResults
-          ? findLastStableCacheIndex(coreMessages)
-          : coreMessages.length - 1;
-        const cachedMessages = addPromptCacheBreakpoints(
-          coreMessages,
-          modelInstance,
-          breakpointIndex,
-        );
+        // Place the tail breakpoint before any untruncated tool-result so
+        // we cache only the stable prefix when prior-run tool results are
+        // still full-fidelity. Otherwise cache at the history tail. When
+        // `skipTailCache` is set (per-run override), don't write the tail
+        // breakpoint at all. The 1-hour static-prefix breakpoint is added
+        // separately when assembling the final messages array.
+        const cachedMessages = skipTailCache
+          ? coreMessages
+          : addPromptCacheBreakpoints(
+              coreMessages,
+              modelInstance,
+              hasFullToolResults
+                ? findLastStableCacheIndex(coreMessages)
+                : coreMessages.length - 1,
+            );
+
+        // Anthropic: split system into two blocks with a 1-hour cache
+        // breakpoint at the boundary between the static portion (agent
+        // body + skills + browser/fs/isolate context — stable across many
+        // turns and jobs) and the dynamic tail (memory, todos, time).
+        // The static block becomes a hot cache that every later turn and
+        // job in the hour reads at 0.1× — much bigger payoff than the
+        // 5-min tail breakpoint, which only survives active back-and-forth.
+        // For non-Anthropic models, fall back to the single concatenated
+        // string via `system:` — those providers auto-cache.
+        const useStaticCache = isAnthropicModel(modelInstance);
+        const finalMessages: ModelMessage[] = useStaticCache
+          ? [
+              {
+                role: "system",
+                content: staticSystemPart,
+                providerOptions: {
+                  anthropic: { cacheControl: { type: "ephemeral", ttl: "1h" } },
+                },
+              },
+              ...(dynamicSystemPart.length > 0
+                ? [{ role: "system" as const, content: dynamicSystemPart }]
+                : []),
+              ...cachedMessages,
+            ]
+          : cachedMessages;
 
         const telemetryEnabled = this.loadedConfig?.telemetry?.enabled !== false;
 
 
         const result = await streamText({
           model: modelInstance,
-          system: systemPrompt,
-          messages: cachedMessages,
+          ...(useStaticCache ? {} : { system: systemPrompt }),
+          messages: finalMessages,
           tools,
           temperature,
           abortSignal: input.abortSignal,
@@ -3532,7 +3579,9 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
             agent = this.parsedAgent as ParsedAgent;
             const currentFingerprint = `${this.agentFileFingerprint}\n${this.skillFingerprint}`;
             if (currentFingerprint !== lastPromptFingerprint) {
-              systemPrompt = await buildSystemPrompt();
+              ({ staticPart: staticSystemPart, dynamicPart: dynamicSystemPart } =
+                await buildSystemPromptParts());
+              systemPrompt = `${staticSystemPart}${dynamicSystemPart}`;
               lastPromptFingerprint = currentFingerprint;
             }
           }
