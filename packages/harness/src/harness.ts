@@ -2233,16 +2233,17 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
       // Quantize to the hour so the system prompt is stable across runs
       // within the same hour. Including a per-millisecond timestamp would
       // invalidate the prompt cache on every run, since the system prompt
-      // is the first block the cache tries to match.
+      // is the first block the cache tries to match. Format is
+      // `Weekday YYYY-MM-DDTHHZ` — minutes/seconds dropped to make the
+      // hour-quantization visible to the model rather than hidden behind
+      // a zeroed-out tail. Always emitted: every agent needs to know
+      // "what day is it" even without reminders configured.
       const hourlyTime = (() => {
         const d = new Date();
-        d.setUTCMinutes(0, 0, 0);
         const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getUTCDay()];
-        return `${weekday} ${d.toISOString()}`;
+        return `${weekday} ${d.toISOString().slice(0, 13)}Z`;
       })();
-      const timeContext = this.reminderStore
-        ? `\n\nCurrent UTC time (hour precision): ${hourlyTime}`
-        : "";
+      const timeContext = `\n\nCurrent UTC time (hour precision): ${hourlyTime}`;
       const dynamicPart = `${memoryContext}${todoContext}${timeContext}`;
       return { staticPart, dynamicPart };
     };
