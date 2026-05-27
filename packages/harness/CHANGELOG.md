@@ -1,5 +1,25 @@
 # @poncho-ai/harness
 
+## 0.49.0
+
+### Minor Changes
+
+- [#127](https://github.com/cesr/poncho-ai/pull/127) [`87b40d9`](https://github.com/cesr/poncho-ai/commit/87b40d9d6cebba4ac646598d154a767a1d2f3551) Thanks [@cesr](https://github.com/cesr)! - harness: stop truncating main memory by default
+
+  Main memory injected into the system prompt was hard-truncated at 4000
+  characters with a `...[truncated]` marker. Silently dropping the tail of
+  a user's memory every turn is a footgun, so the **default is now no
+  truncation** — the full memory is injected.
+
+  New `MemoryConfig.maxPromptChars` (also settable via
+  `storage.memory.maxPromptChars`) lets a consumer opt back _into_ a cap
+  for prompt-cost control: set a positive number and content beyond it is
+  sliced with the `...[truncated]` marker as before.
+
+  Behavior change: consumers that relied on the implicit 4000-char cap
+  will now see full memory in the prompt. To restore the old behavior set
+  `maxPromptChars: 4000`.
+
 ## 0.48.0
 
 ### Minor Changes
