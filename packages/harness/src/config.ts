@@ -21,6 +21,7 @@ export interface StorageConfig {
   memory?: {
     enabled?: boolean;
     maxRecallConversations?: number;
+    maxPromptChars?: number;
   };
   limits?: {
     maxFileSize?: number;
@@ -335,6 +336,9 @@ export const resolveMemoryConfig = (
       maxRecallConversations:
         config.storage.memory?.maxRecallConversations ??
         config.memory?.maxRecallConversations,
+      maxPromptChars:
+        config.storage.memory?.maxPromptChars ??
+        config.memory?.maxPromptChars,
     };
   }
   return config?.memory;

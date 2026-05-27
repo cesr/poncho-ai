@@ -15,6 +15,15 @@ export interface MemoryConfig {
   region?: string;
   ttl?: number;
   maxRecallConversations?: number;
+  /**
+   * Optional cap on the characters of main memory injected into the
+   * system prompt each turn. Default is **no cap** — the full memory is
+   * injected (silently truncating a user's memory every turn is a
+   * footgun). Set a positive number to opt into truncation for
+   * prompt-cost control; content beyond it is sliced with a
+   * `...[truncated]` marker.
+   */
+  maxPromptChars?: number;
 }
 
 export interface MemoryStore {
