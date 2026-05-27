@@ -16,11 +16,12 @@ export interface MemoryConfig {
   ttl?: number;
   maxRecallConversations?: number;
   /**
-   * Max characters of main memory injected into the system prompt each
-   * turn. Content beyond this is sliced off with a `...[truncated]`
-   * marker. Defaults to 4000. Set to `0` to disable truncation entirely
-   * (inject the full memory) — appropriate when memory is the primary
-   * personalization surface and a consolidation job keeps it dense.
+   * Optional cap on the characters of main memory injected into the
+   * system prompt each turn. Default is **no cap** — the full memory is
+   * injected (silently truncating a user's memory every turn is a
+   * footgun). Set a positive number to opt into truncation for
+   * prompt-cost control; content beyond it is sliced with a
+   * `...[truncated]` marker.
    */
   maxPromptChars?: number;
 }

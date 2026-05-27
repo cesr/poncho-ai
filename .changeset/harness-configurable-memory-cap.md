@@ -2,16 +2,18 @@
 "@poncho-ai/harness": minor
 ---
 
-harness: make the main-memory prompt cap configurable
+harness: stop truncating main memory by default
 
 Main memory injected into the system prompt was hard-truncated at 4000
-characters with a `...[truncated]` marker. New `MemoryConfig.maxPromptChars`
-(also settable via `storage.memory.maxPromptChars`) lets a consumer
-raise that ceiling, or set it to `0` to disable truncation entirely and
-inject the full memory.
+characters with a `...[truncated]` marker. Silently dropping the tail of
+a user's memory every turn is a footgun, so the **default is now no
+truncation** — the full memory is injected.
 
-Default is unchanged (4000), so existing consumers are unaffected. The
-`0`/unbounded mode is intended for products where memory is the primary
-personalization surface and a consolidation job keeps it dense — there,
-silently dropping the tail of memory every turn is worse than the extra
-prompt length.
+New `MemoryConfig.maxPromptChars` (also settable via
+`storage.memory.maxPromptChars`) lets a consumer opt back *into* a cap
+for prompt-cost control: set a positive number and content beyond it is
+sliced with the `...[truncated]` marker as before.
+
+Behavior change: consumers that relied on the implicit 4000-char cap
+will now see full memory in the prompt. To restore the old behavior set
+`maxPromptChars: 4000`.

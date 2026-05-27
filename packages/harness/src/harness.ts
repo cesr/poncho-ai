@@ -2184,11 +2184,12 @@ Browser sessions (cookies, localStorage, login state) are automatically saved an
 Each conversation gets its own browser tab sharing a single browser instance. Call \`browser_close\` when done to free the tab. If you don't close it, the tab stays open and the user can continue interacting with it.`
       : "";
     const mainMemory = await memoryPromise;
-    // Cap the main-memory block injected into the prompt. Default 4000;
-    // `maxPromptChars: 0` disables truncation entirely (inject full
-    // memory) — for consumers where memory is the primary personalization
-    // surface and a consolidation job keeps it dense.
-    const memCap = this.memoryConfig?.maxPromptChars ?? 4000;
+    // Main memory is injected in full by default — silently dropping the
+    // tail of a user's memory every turn is a footgun. Set
+    // `maxPromptChars` to a positive number to opt into a cap (e.g. for
+    // prompt-cost control); content beyond it is sliced with a
+    // `...[truncated]` marker.
+    const memCap = this.memoryConfig?.maxPromptChars ?? 0;
     const boundedMainMemory =
       mainMemory && memCap > 0 && mainMemory.content.length > memCap
         ? `${mainMemory.content.slice(0, memCap)}\n...[truncated]`
