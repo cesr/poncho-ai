@@ -209,7 +209,17 @@ export const loadSkillMetadata = async (
   workingDir: string,
   extraSkillPaths?: string[],
 ): Promise<SkillMetadata[]> => {
-  const skillDirs = resolveSkillDirs(workingDir, extraSkillPaths);
+  return loadSkillMetadataFromDirs(resolveSkillDirs(workingDir, extraSkillPaths));
+};
+
+// Scan an explicit list of absolute directories for `<name>/SKILL.md`
+// manifests and return their metadata as `source: "repo"` skills (body
+// read from disk on activation). Used both by `loadSkillMetadata` (after
+// resolving repo skill dirs against the working dir) and directly for
+// platform-shipped "system" skills whose source dirs are already absolute.
+export const loadSkillMetadataFromDirs = async (
+  skillDirs: string[],
+): Promise<SkillMetadata[]> => {
   const allManifests: string[] = [];
 
   for (const dir of skillDirs) {

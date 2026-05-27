@@ -55,6 +55,7 @@ import { createModelProvider, getModelContextWindow, type ModelProviderFactory, 
 import {
   buildSkillContextWindow,
   loadSkillMetadata,
+  loadSkillMetadataFromDirs,
   loadVfsSkillMetadata,
   mergeSkills,
 } from "./skill-context.js";
@@ -134,6 +135,17 @@ export interface HarnessOptions {
    * Empty by default — no system mounts in the CLI / dev workflow.
    */
   virtualMounts?: VirtualMount[];
+  /**
+   * Absolute directories of platform-shipped "system" skills. Each is
+   * scanned for `<name>/SKILL.md` at init; the bodies live on local disk
+   * and ship with the deploy. System skills are surfaced in
+   * `<available_skills>` like any other skill, but sit at the LOWEST
+   * precedence: a tenant's own `/skills/<same-name>/` (and a repo skill)
+   * overrides a system skill of the same name. Pair with a read-only
+   * `virtualMounts` entry (e.g. "/system/skills/") if the same files
+   * should also be browsable in the VFS. Empty by default.
+   */
+  systemSkillPaths?: string[];
 }
 
 export interface HarnessRunOutput {
@@ -839,6 +851,8 @@ export class AgentHarness {
   private loadedConfig?: PonchoConfig;
   private readonly injectedConfig?: PonchoConfig;
   private loadedSkills: SkillMetadata[] = [];
+  private systemSkills: SkillMetadata[] = [];
+  private readonly systemSkillPaths: string[] = [];
   private skillFingerprint = "";
   private lastSkillRefreshAt = 0;
   private readonly activeSkillNames = new Set<string>();
@@ -1077,6 +1091,7 @@ export class AgentHarness {
       this.injectedStorageEngine = true;
     }
     this.virtualMounts = options.virtualMounts ?? [];
+    this.systemSkillPaths = options.systemSkillPaths ?? [];
 
     if (options.toolDefinitions?.length) {
       this.dispatcher.registerMany(options.toolDefinitions);
@@ -1271,14 +1286,19 @@ export class AgentHarness {
   }
 
   /**
-   * Resolve the skill set visible to a given tenant: repo skills plus that
-   * tenant's VFS skills, with repo winning on name collision. Cached per
-   * tenant; cache invalidates on VFS writes under /skills/ via
-   * invalidateSkillsForTenant.
+   * Resolve the skill set visible to a given tenant. Three tiers, by
+   * precedence: repo skills > the tenant's own VFS skills > platform
+   * system skills. So a repo skill wins over a same-named VFS skill
+   * (unchanged), and a tenant's `/skills/<name>/` overrides a same-named
+   * system skill (the deploy-shipped default). Cached per tenant; cache
+   * invalidates on VFS writes under /skills/ via invalidateSkillsForTenant.
+   * System skills are static within a process, so they don't participate
+   * in the fingerprint — but a VFS override does (it changes a /skills
+   * path), which recomputes the cache and lets the override take effect.
    */
   private async getSkillsForTenant(tenantId: string | undefined | null): Promise<SkillMetadata[]> {
     if (!this.storageEngine) {
-      return this.loadedSkills;
+      return mergeSkills(this.loadedSkills, this.systemSkills);
     }
     // Mirror the rest of the harness: undefined tenantId falls back to
     // "__default__" so dev-mode (no auth) conversations see the same VFS
@@ -1305,7 +1325,7 @@ export class AgentHarness {
       return cached.skills;
     }
     const vfsSkills = await loadVfsSkillMetadata(this.storageEngine, effectiveTenant);
-    const merged = mergeSkills(this.loadedSkills, vfsSkills, (skipped) => {
+    const repoAndVfs = mergeSkills(this.loadedSkills, vfsSkills, (skipped) => {
       const key = `${effectiveTenant}:${skipped.name}`;
       if (this.vfsSkillCollisionWarnings.has(key)) return;
       this.vfsSkillCollisionWarnings.add(key);
@@ -1313,6 +1333,11 @@ export class AgentHarness {
         `VFS skill "${skipped.name}" for tenant ${effectiveTenant} ignored: a repo skill with the same name takes precedence.`,
       );
     });
+    // System skills sit at the bottom: a repo or VFS skill of the same
+    // name overrides them. Overriding a system default is the intended
+    // user workflow (mirrors /jobs system-default overrides), so the
+    // collision is silent — not a warning.
+    const merged = mergeSkills(repoAndVfs, this.systemSkills);
     this.skillCache.set(effectiveTenant, { skills: merged, fingerprint });
     return merged;
   }
@@ -1706,6 +1731,13 @@ export class AgentHarness {
     const extraSkillPaths = config?.skillPaths;
     const skillMetadata = await loadSkillMetadata(this.workingDir, extraSkillPaths);
     this.loadedSkills = skillMetadata;
+    // Platform-shipped system skills, scanned from absolute dirs on disk.
+    // Loaded once at init (they ship with the deploy and don't change
+    // within a process). Merged at LOWEST precedence per tenant — see
+    // getSkillsForTenant.
+    this.systemSkills = this.systemSkillPaths.length
+      ? await loadSkillMetadataFromDirs(this.systemSkillPaths)
+      : [];
     this.skillFingerprint = this.buildSkillFingerprint(skillMetadata);
     this.registerSkillTools();
     const agentId = this.parsedAgent.frontmatter.id ?? this.parsedAgent.frontmatter.name;
