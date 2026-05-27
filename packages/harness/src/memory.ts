@@ -15,6 +15,14 @@ export interface MemoryConfig {
   region?: string;
   ttl?: number;
   maxRecallConversations?: number;
+  /**
+   * Max characters of main memory injected into the system prompt each
+   * turn. Content beyond this is sliced off with a `...[truncated]`
+   * marker. Defaults to 4000. Set to `0` to disable truncation entirely
+   * (inject the full memory) — appropriate when memory is the primary
+   * personalization surface and a consolidation job keeps it dense.
+   */
+  maxPromptChars?: number;
 }
 
 export interface MemoryStore {
