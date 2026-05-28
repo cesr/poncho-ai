@@ -349,11 +349,19 @@ export class S3UploadStore implements UploadStore {
       }
       return Buffer.from(await response.arrayBuffer());
     }
+    // Strip the `poncho-upload://` scheme — LocalUploadStore does this for
+    // both get/delete but S3 used to treat the full URI as a literal S3
+    // key, so resolving a persisted file part (data: "poncho-upload://…")
+    // on a follow-up turn 404'd against R2 and the harness emitted a
+    // "file is no longer available" placeholder.
+    const key = urlOrKey.startsWith(PONCHO_UPLOAD_SCHEME)
+      ? urlOrKey.slice(PONCHO_UPLOAD_SCHEME.length)
+      : urlOrKey;
     await this.ensureClient();
     const result = await this.client.send(
-      new this.s3Sdk.GetObjectCommand({ Bucket: this.bucket, Key: urlOrKey }),
+      new this.s3Sdk.GetObjectCommand({ Bucket: this.bucket, Key: key }),
     );
-    if (!result.Body) throw new Error(`uploads: empty body for S3 key ${urlOrKey}`);
+    if (!result.Body) throw new Error(`uploads: empty body for S3 key ${key}`);
     return Buffer.from(await result.Body.transformToByteArray());
   }
 
@@ -361,7 +369,9 @@ export class S3UploadStore implements UploadStore {
     await this.ensureClient();
     const key = urlOrKey.startsWith("https://")
       ? new URL(urlOrKey).pathname.slice(1)
-      : urlOrKey;
+      : urlOrKey.startsWith(PONCHO_UPLOAD_SCHEME)
+        ? urlOrKey.slice(PONCHO_UPLOAD_SCHEME.length)
+        : urlOrKey;
     await this.client.send(
       new this.s3Sdk.DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
     );
