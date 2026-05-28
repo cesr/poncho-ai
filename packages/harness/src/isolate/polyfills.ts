@@ -532,6 +532,36 @@ const POLYFILL_FETCH = `
     return arr;
   }
 
+  function _fetchUint8ToB64(u8) {
+    let bin = "";
+    for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+    return btoa(bin);
+  }
+
+  // Normalise the init.body into { body, bodyEncoding } the binding accepts.
+  // Strings go through as text. Binary inputs (Uint8Array / ArrayBuffer /
+  // typed-array views / Blob) are base64-encoded with bodyEncoding="base64"
+  // so the host decodes back to the exact bytes before fetch() — without
+  // this branch, String(uint8Array) gave "1,2,3,..." and corrupted every
+  // binary upload (image-edit APIs, file uploads, etc.).
+  function _fetchEncodeBody(raw) {
+    if (raw == null) return { body: undefined };
+    if (typeof raw === "string") return { body: raw };
+    if (raw instanceof ArrayBuffer) {
+      return { body: _fetchUint8ToB64(new Uint8Array(raw)), bodyEncoding: "base64" };
+    }
+    if (ArrayBuffer.isView(raw)) {
+      const u8 = raw instanceof Uint8Array
+        ? raw
+        : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+      return { body: _fetchUint8ToB64(u8), bodyEncoding: "base64" };
+    }
+    if (typeof Blob !== "undefined" && raw instanceof Blob && raw._data) {
+      return { body: _fetchUint8ToB64(raw._data), bodyEncoding: "base64" };
+    }
+    return { body: String(raw) };
+  }
+
   globalThis.fetch = async function(input, init) {
     const url = typeof input === "string" ? input : (input?.url || String(input));
     const method = init?.method || "GET";
@@ -542,10 +572,17 @@ const POLYFILL_FETCH = `
         : Object.entries(init.headers);
       for (const [k, v] of entries) headers[k] = String(v);
     }
-    const body = init?.body ? String(init.body) : undefined;
+    const encoded = _fetchEncodeBody(init?.body);
 
     // Always fetch as binary to preserve data integrity
-    const result = await __poncho_fetch({ url, method, headers, body, binary: true });
+    const result = await __poncho_fetch({
+      url,
+      method,
+      headers,
+      body: encoded.body,
+      bodyEncoding: encoded.bodyEncoding,
+      binary: true,
+    });
     return new Response(result, true);
   };
 

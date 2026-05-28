@@ -161,6 +161,11 @@ export function createFetchBinding(
         method: { type: "string" },
         headers: { type: "object", additionalProperties: { type: "string" } },
         body: { type: "string" },
+        // "base64" => `body` is base64-encoded raw bytes. The polyfill sets
+        // this when init.body is a Uint8Array/ArrayBuffer/Blob, so binary
+        // uploads (image-edit APIs, file uploads) reach the server intact
+        // instead of being mangled by String(...) coercion.
+        bodyEncoding: { type: "string", enum: ["base64"] },
         binary: { type: "boolean" },
       },
       required: ["url"],
@@ -173,10 +178,18 @@ export function createFetchBinding(
         );
       }
 
+      const rawBody = input.body as string | undefined;
+      const reqBody: string | Uint8Array | undefined =
+        rawBody !== undefined && input.bodyEncoding === "base64"
+          ? new Uint8Array(Buffer.from(rawBody, "base64"))
+          : rawBody;
+
       const resp = await fetch(input.url as string, {
         method: (input.method as string) ?? "GET",
         headers: (input.headers as Record<string, string>) ?? undefined,
-        body: (input.body as string) ?? undefined,
+        // Cast: Node's undici fetch accepts Uint8Array at runtime, but the
+        // BodyInit type in this lib version doesn't list it.
+        body: reqBody as unknown as BodyInit | undefined,
         redirect: "follow",
       });
 
