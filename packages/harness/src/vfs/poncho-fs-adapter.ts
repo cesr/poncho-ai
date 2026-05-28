@@ -85,9 +85,34 @@ const normalize = (path: string): string => {
 };
 
 /**
- * Read-only virtual mount mapping a VFS path prefix to a local filesystem
- * directory. All read operations under the prefix resolve via local FS;
- * writes throw. The prefix is normalised internally to end with "/".
+ * Read-only data source for a virtual mount whose contents don't live on
+ * local disk. Lets a host (e.g. PonchOS) back a VFS prefix with a database
+ * row set, object-store keys, or anything else expressible as
+ * `(tenantId, relative) -> bytes/listing/stat`.
+ *
+ * All three methods are read-only; writes through the adapter still throw
+ * `EROFS` for routed mounts the same way disk-backed mounts do (see
+ * `routeToMount` checks in writeFile/mkdir/rm/cp/mv/chmod/utimes/symlink/link).
+ * `relative` is the path within the mount; `""` means the mount root.
+ */
+export interface MountProvider {
+  /** List entries directly under `relative`. The mount root is `""`. */
+  readdir(
+    tenantId: string,
+    relative: string,
+  ): Promise<Array<{ name: string; isFile: boolean; isDirectory: boolean }>>;
+  /** Stat a single entry. Throw ENOENT-like for missing paths. */
+  stat(tenantId: string, relative: string): Promise<FsStat>;
+  /** Read raw bytes for a file entry. */
+  readFileBuffer(tenantId: string, relative: string): Promise<Uint8Array>;
+}
+
+/**
+ * Read-only virtual mount mapping a VFS path prefix to either a local
+ * filesystem directory (`source`) OR a custom provider (`provider`).
+ * Exactly one of the two must be set. All read operations under the prefix
+ * resolve via the chosen backend; writes throw. The prefix is normalised
+ * internally to end with "/".
  */
 export interface VirtualMount {
   /** VFS prefix, e.g. "/system/". Leading slash required; trailing slash
@@ -95,15 +120,20 @@ export interface VirtualMount {
    *  but no validation is enforced here. */
   prefix: string;
   /** Absolute local FS path to serve from, e.g. "/srv/poncho/system". */
-  source: string;
+  source?: string;
+  /** Custom backend serving reads for this mount. Mutually exclusive with
+   *  `source` — set exactly one. Use when the data doesn't live on local
+   *  disk (e.g. database-backed upload listings). */
+  provider?: MountProvider;
 }
 
-/** Internal normalised form: prefix always ends with "/", source has no
- *  trailing slash. */
+/** Internal normalised form: prefix always ends with "/", source (when set)
+ *  has no trailing slash. Exactly one of source/provider is populated. */
 interface NormalisedMount {
   prefix: string;
   prefixNoSlash: string;
-  source: string;
+  source?: string;
+  provider?: MountProvider;
 }
 
 const READ_ONLY_ERROR = (path: string, op: string): Error =>
@@ -120,10 +150,18 @@ export class PonchoFsAdapter implements IFileSystem {
   ) {
     this.mounts = mounts.map((m) => {
       const prefix = m.prefix.endsWith("/") ? m.prefix : m.prefix + "/";
+      const hasSource = typeof m.source === "string";
+      const hasProvider = m.provider != null;
+      if (hasSource === hasProvider) {
+        throw new Error(
+          `VirtualMount '${m.prefix}': set exactly one of 'source' or 'provider'`,
+        );
+      }
       return {
         prefix,
         prefixNoSlash: prefix.slice(0, -1),
-        source: m.source.replace(/\/+$/, ""),
+        source: hasSource ? m.source!.replace(/\/+$/, "") : undefined,
+        provider: m.provider,
       };
     });
   }
@@ -157,8 +195,9 @@ export class PonchoFsAdapter implements IFileSystem {
   }
 
   private toLocal(mount: NormalisedMount, relative: string): string {
-    // nodePath.join handles empty relative -> source dir
-    return nodePath.join(mount.source, relative);
+    // Only callable for disk-backed mounts; provider mounts never call this.
+    // nodePath.join handles empty relative -> source dir.
+    return nodePath.join(mount.source!, relative);
   }
 
   /** Build an FsStat from a node fs.Stats. */
@@ -193,6 +232,10 @@ export class PonchoFsAdapter implements IFileSystem {
     const np = normalize(path);
     const route = this.routeToMount(np);
     if (route) {
+      if (route.mount.provider) {
+        const buf = await route.mount.provider.readFileBuffer(this.tenantId, route.relative);
+        return new TextDecoder().decode(buf);
+      }
       const buf = await nodeFs.readFile(this.toLocal(route.mount, route.relative));
       return buf.toString("utf8");
     }
@@ -204,6 +247,9 @@ export class PonchoFsAdapter implements IFileSystem {
     const np = normalize(path);
     const route = this.routeToMount(np);
     if (route) {
+      if (route.mount.provider) {
+        return route.mount.provider.readFileBuffer(this.tenantId, route.relative);
+      }
       const buf = await nodeFs.readFile(this.toLocal(route.mount, route.relative));
       return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
     }
@@ -214,6 +260,14 @@ export class PonchoFsAdapter implements IFileSystem {
     const np = normalize(path);
     const route = this.routeToMount(np);
     if (route) {
+      if (route.mount.provider) {
+        try {
+          await route.mount.provider.stat(this.tenantId, route.relative);
+          return true;
+        } catch {
+          return false;
+        }
+      }
       try {
         await nodeFs.access(this.toLocal(route.mount, route.relative));
         return true;
@@ -232,6 +286,13 @@ export class PonchoFsAdapter implements IFileSystem {
     const np = normalize(path);
     const route = this.routeToMount(np);
     if (route) {
+      if (route.mount.provider) {
+        try {
+          return await route.mount.provider.stat(this.tenantId, route.relative);
+        } catch {
+          throw new Error(`ENOENT: no such file or directory, stat '${path}'`);
+        }
+      }
       try {
         const s = await nodeFs.stat(this.toLocal(route.mount, route.relative));
         return this.toFsStat(s);
@@ -259,6 +320,10 @@ export class PonchoFsAdapter implements IFileSystem {
     const np = normalize(path);
     const route = this.routeToMount(np);
     if (route) {
+      if (route.mount.provider) {
+        const entries = await route.mount.provider.readdir(this.tenantId, route.relative);
+        return entries.map((e) => e.name);
+      }
       return nodeFs.readdir(this.toLocal(route.mount, route.relative));
     }
     // Engine-backed read; also inject any mount-root segments whose parent
@@ -282,6 +347,15 @@ export class PonchoFsAdapter implements IFileSystem {
     const np = normalize(path);
     const route = this.routeToMount(np);
     if (route) {
+      if (route.mount.provider) {
+        const entries = await route.mount.provider.readdir(this.tenantId, route.relative);
+        return entries.map((e) => ({
+          name: e.name,
+          isFile: e.isFile,
+          isDirectory: e.isDirectory,
+          isSymbolicLink: false,
+        }));
+      }
       const entries = await nodeFs.readdir(this.toLocal(route.mount, route.relative), { withFileTypes: true });
       return entries.map((e) => ({
         name: e.name,
@@ -411,11 +485,17 @@ export class PonchoFsAdapter implements IFileSystem {
     const np = normalize(path);
     const route = this.routeToMount(np);
     if (route) {
+      if (route.mount.provider) {
+        // Provider mounts have no real disk path and don't support symlinks.
+        // The VFS path is its own canonical form.
+        return np;
+      }
       // Mount contents on local disk: resolve via node, but report back
       // in VFS-namespace terms (don't leak the on-disk source path to the
       // agent — that would be confusing and non-portable).
       const localResolved = await nodeFs.realpath(this.toLocal(route.mount, route.relative));
-      const localRoot = await nodeFs.realpath(route.mount.source).catch(() => route.mount.source);
+      const source = route.mount.source!;
+      const localRoot = await nodeFs.realpath(source).catch(() => source);
       if (localResolved === localRoot) return route.mount.prefixNoSlash;
       if (localResolved.startsWith(localRoot + nodePath.sep)) {
         const rel = localResolved.slice(localRoot.length + 1).split(nodePath.sep).join("/");
@@ -448,12 +528,16 @@ export class PonchoFsAdapter implements IFileSystem {
     for (const m of this.mounts) {
       // Always advertise the mount root itself as a directory.
       out.add(m.prefixNoSlash);
-      // Walk the local source once and add all paths under the mount.
+      // Provider mounts: deep listing would need async IO; advertise the
+      // mount root only. Bash glob/find over the mount falls back to a
+      // shallow listing — acceptable per the v1 spec (corner case).
+      if (m.provider) continue;
+      // Disk-backed mount: walk the local source once and add all paths.
       // Sync IO is acceptable here: bash glob/find call this sporadically and
       // the source is a small static asset directory on the API container.
       try {
         const stack: Array<{ abs: string; vfs: string }> = [
-          { abs: m.source, vfs: m.prefixNoSlash },
+          { abs: m.source!, vfs: m.prefixNoSlash },
         ];
         while (stack.length > 0) {
           const { abs, vfs } = stack.pop()!;
@@ -514,6 +598,9 @@ export class PonchoFsAdapter implements IFileSystem {
     const np = normalize(path);
     const route = this.routeToMount(np);
     if (route) {
+      if (route.mount.provider) {
+        throw new Error(`EINVAL: not a symbolic link, readlink '${path}'`);
+      }
       // Mount contents are real files; readlink only makes sense for symlinks
       // we don't expect to have on disk. Node will throw EINVAL for non-links.
       return nodeFs.readlink(this.toLocal(route.mount, route.relative));
@@ -525,6 +612,14 @@ export class PonchoFsAdapter implements IFileSystem {
     const np = normalize(path);
     const route = this.routeToMount(np);
     if (route) {
+      if (route.mount.provider) {
+        // Provider mounts can't host symlinks; lstat == stat.
+        try {
+          return await route.mount.provider.stat(this.tenantId, route.relative);
+        } catch {
+          throw new Error(`ENOENT: no such file or directory, lstat '${path}'`);
+        }
+      }
       try {
         const s = await nodeFs.lstat(this.toLocal(route.mount, route.relative));
         return this.toFsStat(s);
