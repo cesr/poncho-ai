@@ -2388,14 +2388,25 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
         });
       }
     } else {
-      // Continuation run (no explicit task). Some providers (Anthropic) require
-      // the conversation to end with a user message. Inject a transient signal
-      // that is sent to the LLM but never persisted to the conversation store.
+      // Taskless run: either a genuine continuation checkpoint (the model
+      // was cut off mid-response by a soft-deadline / max-steps boundary)
+      // or a tool-result resume — `continueFromToolResult`, e.g. after an
+      // approval gate — whose last message is the tool results.
+      //
+      // Only the first case needs a bridge: ending on an assistant message
+      // is invalid for some providers (Anthropic), and the model must be
+      // told to continue rather than restart. A `tool` last message converts
+      // to a user-role tool_result block, so the conversation already ends
+      // "with a user message" and the model continues from the results
+      // naturally. Injecting the bridge after tool results was a bug: it
+      // told the model — after a normal approval resolution — that its turn
+      // had been "interrupted by a time limit" and to not re-summarize,
+      // which made it distrust and re-derive context it already had.
       const lastMsg = messages[messages.length - 1];
-      if (lastMsg && lastMsg.role !== "user") {
+      if (lastMsg && lastMsg.role === "assistant") {
         messages.push({
           role: "user",
-          content: "[System: Your previous turn was interrupted by a time limit. Your partial response above is already visible to the user. Continue EXACTLY from where you left off — do NOT restart, re-summarize, or repeat any content you already produced. If you were mid-sentence or mid-table, continue that sentence or table. Proceed directly with the next action or output.]",
+          content: "[System: Your previous turn was interrupted before you finished. Your partial response above is already visible to the user. Continue EXACTLY from where you left off — do NOT restart, re-summarize, or repeat any content you already produced. If you were mid-sentence or mid-table, continue that sentence or table. Proceed directly with the next action or output.]",
           metadata: { timestamp: now(), id: randomUUID() },
         });
       }
