@@ -3727,6 +3727,11 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
     messages: Message[];
     toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }>;
     conversationId?: string;
+    /** Must be forwarded for the continuation run, otherwise tenant-scoped
+     *  tool stores (memory, VFS, todos) resolve the default "__default__"
+     *  tenant on resume instead of the caller's — e.g. memory_main_get
+     *  returns empty after an approval checkpoint. */
+    tenantId?: string;
     parameters?: Record<string, unknown>;
     abortSignal?: AbortSignal;
   }): AsyncGenerator<AgentEvent> {
@@ -3784,6 +3789,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
     yield* this.runWithTelemetry({
       messages,
       conversationId: input.conversationId,
+      tenantId: input.tenantId,
       parameters: input.parameters,
       abortSignal: input.abortSignal,
     });
