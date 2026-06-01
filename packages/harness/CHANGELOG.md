@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.50.3
+
+### Patch Changes
+
+- [`a67fb45`](https://github.com/cesr/poncho-ai/commit/a67fb45162823d832296ae9af137eb566d9f2f97) Thanks [@cesr](https://github.com/cesr)! - harness: forward `tenantId` through `continueFromToolResult`. Resumed runs (after an approval checkpoint) ran tools with `ctx.tenantId` undefined, so tenant-scoped stores (memory, VFS, todos) resolved the default `"__default__"` tenant instead of the caller's — surfacing as `memory_main_get` returning empty after an approval resume.
+
 ## 0.50.2
 
 ### Patch Changes
