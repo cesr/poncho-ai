@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createIsolateRuntime } from "../src/isolate/runtime.js";
+import { buildPolyfillPreamble } from "../src/isolate/polyfills.js";
 import type { IsolateBinding } from "../src/config.js";
 
 const DEFAULT_CONFIG = { memoryLimit: 64, timeout: 5000, outputLimit: 65536 };
+const POLYFILLS = buildPolyfillPreamble(false);
 
 describe("IsolateRuntime", () => {
   it("executes basic JavaScript and returns a result", async () => {
@@ -133,6 +135,79 @@ describe("IsolateRuntime", () => {
 
     expect(res.error).toBeDefined();
     expect(res.error!.message).toMatch(/cancelled|disposed/i);
+  });
+});
+
+describe("IsolateRuntime timers + wall-clock", () => {
+  it("resolves a non-zero setTimeout sleep instead of hanging", async () => {
+    const runtime = createIsolateRuntime(DEFAULT_CONFIG);
+    const res = await runtime.execute(
+      `await new Promise(r => setTimeout(r, 50)); return "slept";`,
+      {},
+      null,
+      undefined,
+      POLYFILLS,
+    );
+
+    expect(res.error).toBeUndefined();
+    expect(res.result).toBe("slept");
+  });
+
+  it("runs awaited timers in delay order against the virtual clock", async () => {
+    const runtime = createIsolateRuntime(DEFAULT_CONFIG);
+    const res = await runtime.execute(
+      `const order = [];
+       async function at(ms, label) {
+         await new Promise(r => setTimeout(r, ms));
+         order.push(label);
+       }
+       await Promise.all([at(100, "a"), at(10, "b"), at(50, "c")]);
+       return order;`,
+      {},
+      null,
+      undefined,
+      POLYFILLS,
+    );
+
+    expect(res.error).toBeUndefined();
+    expect(res.result).toEqual(["b", "c", "a"]);
+  });
+
+  it("supports setInterval + clearInterval", async () => {
+    const runtime = createIsolateRuntime(DEFAULT_CONFIG);
+    const res = await runtime.execute(
+      `let n = 0;
+       await new Promise(resolve => {
+         const id = setInterval(() => {
+           n += 1;
+           if (n >= 3) { clearInterval(id); resolve(); }
+         }, 10);
+       });
+       return n;`,
+      {},
+      null,
+      undefined,
+      POLYFILLS,
+    );
+
+    expect(res.error).toBeUndefined();
+    expect(res.result).toBe(3);
+  });
+
+  it("times out a never-resolving promise via the wall-clock guard", async () => {
+    const runtime = createIsolateRuntime({ ...DEFAULT_CONFIG, timeout: 200 });
+    const start = performance.now();
+    const res = await runtime.execute(
+      `await new Promise(() => {}); return "never";`,
+      {},
+      null,
+    );
+
+    expect(res.error).toBeDefined();
+    expect(res.error!.message).toMatch(/timed out/i);
+    expect(res.error!.name).toBe("TimeoutError");
+    // Bounded by the wall clock, not hanging forever.
+    expect(performance.now() - start).toBeLessThan(2000);
   });
 });
 

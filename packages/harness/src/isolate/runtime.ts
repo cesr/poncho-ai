@@ -153,6 +153,14 @@ export function createIsolateRuntime(config: {
       const t0 = performance.now();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let context: any;
+      // Wall-clock guard. isolated-vm's `timeout` option only bounds the
+      // *synchronous* portion of an eval; when the script returns a promise
+      // (which ours always does — it's an async IIFE) a never-settling promise
+      // would hang here forever (e.g. `await new Promise(() => {})`, or a
+      // bound host call that never resolves). Race the eval against a host
+      // timer that disposes the isolate, so `timeLimit` bounds total execution.
+      let timedOut = false;
+      let wallTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         context = await isolate.createContext();
         const jail = context.global;
@@ -197,12 +205,35 @@ export function createIsolateRuntime(config: {
         // (context.eval + promise option handles Reference.apply resolution
         // correctly, unlike compileScript().run())
         const wrapped = `(async () => {\n${code}\n})()`;
-        const rawResult = await context.eval(wrapped, {
+        const evalPromise = context.eval(wrapped, {
           filename: "<user-code>",
           promise: true,
           copy: true,
           timeout: config.timeout,
         });
+        const rawResult =
+          config.timeout > 0
+            ? await Promise.race([
+                evalPromise,
+                new Promise((_resolve, reject) => {
+                  wallTimer = setTimeout(() => {
+                    timedOut = true;
+                    // Disposing rejects the pending eval; this reject is the
+                    // one that wins the race when the promise never settles.
+                    try {
+                      isolate.dispose();
+                    } catch {
+                      /* already disposed */
+                    }
+                    reject(new Error("Execution timed out"));
+                  }, config.timeout);
+                }),
+              ])
+            : await evalPromise;
+        if (wallTimer) {
+          clearTimeout(wallTimer);
+          wallTimer = undefined;
+        }
 
         // Read captured stdout/stderr from isolate
         const stdout = (await context.eval("__stdout.join('\\n')", { copy: true })) as string;
@@ -237,6 +268,18 @@ export function createIsolateRuntime(config: {
           };
         }
 
+        if (timedOut) {
+          return {
+            stdout: "",
+            stderr: "",
+            error: {
+              message: `Execution timed out after ${config.timeout}ms`,
+              name: "TimeoutError",
+            },
+            executionTimeMs: elapsed,
+          };
+        }
+
         // Try to recover stdout/stderr captured before the error
         let stdout = "";
         let stderr = "";
@@ -258,6 +301,7 @@ export function createIsolateRuntime(config: {
           executionTimeMs: elapsed,
         };
       } finally {
+        if (wallTimer) clearTimeout(wallTimer);
         if (abortHandler && signal) {
           signal.removeEventListener("abort", abortHandler);
         }

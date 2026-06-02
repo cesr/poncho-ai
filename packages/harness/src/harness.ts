@@ -2297,14 +2297,61 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
     };
     const isCancelled = (): boolean => input.abortSignal?.aborted === true;
     let cancellationEmitted = false;
+    // The assistant turn for the current step, captured as it streams. The
+    // assistant message + its tool results are only pushed to `messages`
+    // *together*, after the tool batch finishes — so between "model streamed
+    // a tool call" and "tools done" the turn lives only in these locals. If a
+    // cancellation lands in that window we'd otherwise drop the whole turn
+    // from the canonical history, leaving the next request with back-to-back
+    // user messages and a model with no record of what it just said (the user
+    // still sees it, since the display history is built separately). Cleared
+    // once the turn is committed, and reset at the top of every step.
+    let inflightTurn: {
+      text: string;
+      toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
+    } | null = null;
     const emitCancellation = (): AgentEvent => {
       cancellationEmitted = true;
       // Snapshot the in-flight messages so the orchestrator can persist them
-      // as the canonical history. Drop a trailing assistant tool_use message
-      // that has no matching tool result — sending that to the API on the next
-      // turn would be rejected.
-      const snapshot = trimToValidPrefix([...messages]);
-      return pushEvent({ type: "run:cancelled", runId, messages: snapshot });
+      // as the canonical history.
+      const snapshot: Message[] = [...messages];
+      // Re-attach the in-flight assistant turn (if any). Synthesize a
+      // tool_result for every pending tool_use so the turn is a valid prefix —
+      // an assistant tool_use with no following tool result is rejected by the
+      // API on the next turn, which is exactly why a naive snapshot drops it.
+      if (inflightTurn && (inflightTurn.text.length > 0 || inflightTurn.toolCalls.length > 0)) {
+        const hasToolCalls = inflightTurn.toolCalls.length > 0;
+        const assistantContent = hasToolCalls
+          ? JSON.stringify({
+              text: inflightTurn.text,
+              tool_calls: inflightTurn.toolCalls.map((tc) => ({
+                id: tc.id,
+                name: tc.name,
+                input: tc.input,
+              })),
+            })
+          : inflightTurn.text;
+        snapshot.push({
+          role: "assistant",
+          content: assistantContent,
+          metadata: { timestamp: now(), id: randomUUID(), runId },
+        });
+        if (hasToolCalls) {
+          const cancelledResults = inflightTurn.toolCalls.map((tc) => ({
+            type: "tool_result" as const,
+            tool_use_id: tc.id,
+            tool_name: tc.name,
+            content: "Tool execution cancelled by user.",
+          }));
+          snapshot.push({
+            role: "tool",
+            content: JSON.stringify(cancelledResults),
+            metadata: { timestamp: now(), id: randomUUID(), runId },
+          });
+        }
+      }
+      // Defensive: drop any trailing dangling tool_use we didn't pair above.
+      return pushEvent({ type: "run:cancelled", runId, messages: trimToValidPrefix(snapshot) });
     };
 
     const resolvedModelName = agent.frontmatter.model?.name ?? "claude-opus-4-5";
@@ -2424,6 +2471,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
     let convertedUpTo = 0;
 
     for (let step = 1; step <= maxSteps; step += 1) {
+      inflightTurn = null;
       try {
         yield* drainBrowserEvents();
         if (isCancelled()) {
@@ -3026,6 +3074,11 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
           return;
         }
 
+        // The model finished streaming this step's text. Capture it so a
+        // cancellation from here on persists what the user already saw; the
+        // tool calls are attached once they're parsed below.
+        inflightTurn = { text: fullText, toolCalls: [] };
+
         if (isCancelled()) {
           yield emitCancellation();
           return;
@@ -3135,6 +3188,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
         name: tc.toolName,
         input: (tc as any).input as Record<string, unknown>,
       }));
+      if (inflightTurn) inflightTurn.toolCalls = toolCalls;
 
       if (toolCalls.length === 0) {
         // Detect silent empty responses — likely an SDK or model
@@ -3593,6 +3647,9 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
         content: JSON.stringify(toolResultsForModel),
         metadata: toolMsgMeta as Message["metadata"],
       });
+      // Turn is now committed to `messages`; a later cancellation must not
+      // re-append it from the in-flight holder.
+      inflightTurn = null;
 
       // Post-tool-execution soft deadline: long-running tool batches (e.g.
       // multiple web_search calls) can push past the deadline. Checkpoint

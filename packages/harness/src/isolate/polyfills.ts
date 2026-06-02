@@ -610,50 +610,79 @@ const POLYFILL_FETCH_STUB = `
 
 const POLYFILL_TIMERS = `
 // --- Timers polyfill ---
+//
+// The isolate has no host event loop, so real wall-clock delays can't be
+// honoured. What we *can* do is drain pending timers on the microtask queue
+// (which isolated-vm does pump while resolving the run's promise), firing
+// them in order of their requested delay against a virtual clock. This makes
+// the overwhelmingly common pattern — \`await new Promise(r => setTimeout(r, n))\`
+// as a sleep — actually resolve instead of hanging the whole run forever.
+// Delays collapse to "as soon as possible, in delay order"; that's the right
+// trade for a sandbox with no real time. A runaway setInterval is bounded by
+// __MAX_FIRES here and, ultimately, by the host-side wall-clock timeout.
 (function() {
   let __timerId = 0;
-  const __timers = new Map();
+  const __timers = new Map();   // id -> { fn, due, type }
+  const __intervals = new Set(); // ids that should reschedule
+  let __vclock = 0;             // virtual clock (ms)
+  let __draining = false;
+  let __fired = 0;
+  const __MAX_FIRES = 1000000;  // backstop against a runaway interval
+
+  function __schedule(fn, delayMs, type, id) {
+    __timers.set(id, { fn, due: __vclock + delayMs, type });
+    if (!__draining) __drain();
+    return id;
+  }
+
+  function __drain() {
+    __draining = true;
+    const step = function() {
+      if (__timers.size === 0) { __draining = false; return; }
+      // Pick the earliest-due timer (ties broken by insertion id for FIFO).
+      let pick = null;
+      for (const [id, t] of __timers) {
+        if (pick === null || t.due < pick.t.due || (t.due === pick.t.due && id < pick.id)) {
+          pick = { id, t };
+        }
+      }
+      __timers.delete(pick.id);
+      if (pick.t.due > __vclock) __vclock = pick.t.due;
+      __fired++;
+      try { pick.t.fn(); } catch (e) { /* host timers swallow callback throws */ }
+      if (__fired > __MAX_FIRES) { __draining = false; return; }
+      Promise.resolve().then(step);
+    };
+    Promise.resolve().then(step);
+  }
 
   globalThis.setTimeout = function(fn, delay) {
     const id = ++__timerId;
     const ms = Math.max(0, Number(delay) || 0);
-    const start = Date.now();
-    __timers.set(id, { fn, ms, start, type: "timeout" });
-    // In the isolate, setTimeout returns the id but the callback is
-    // executed via a polling mechanism in the async wrapper.
-    // For simple cases (delay=0), we can use a microtask.
-    if (ms === 0) {
-      Promise.resolve().then(() => {
-        if (__timers.has(id)) {
-          __timers.delete(id);
-          fn();
-        }
-      });
-    }
-    return id;
+    return __schedule(typeof fn === "function" ? fn : function() {}, ms, "timeout", id);
   };
 
   globalThis.clearTimeout = function(id) {
     __timers.delete(id);
+    __intervals.delete(id);
   };
 
   globalThis.setInterval = function(fn, delay) {
     const id = ++__timerId;
     const ms = Math.max(1, Number(delay) || 1);
-    const wrapper = () => {
-      if (!__timers.has(id)) return;
-      fn();
-      if (__timers.has(id)) {
-        globalThis.setTimeout(wrapper, ms);
+    __intervals.add(id);
+    const tick = function() {
+      if (!__intervals.has(id)) return;
+      try { fn(); } finally {
+        if (__intervals.has(id)) __schedule(tick, ms, "interval", id);
       }
     };
-    __timers.set(id, { fn: wrapper, ms, type: "interval" });
-    globalThis.setTimeout(wrapper, ms);
-    return id;
+    return __schedule(tick, ms, "interval", id);
   };
 
   globalThis.clearInterval = function(id) {
     __timers.delete(id);
+    __intervals.delete(id);
   };
 
   // queueMicrotask if not available
