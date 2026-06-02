@@ -159,6 +159,16 @@ const now = (): number => Date.now();
 const FIRST_CHUNK_TIMEOUT_MS = 90_000; // 90s to receive the first chunk from the model
 const MAX_TRANSIENT_STEP_RETRIES = 1;
 const COMPACTION_CHECK_INTERVAL_STEPS = 3;
+// Injected as a trailing user turn on the final allowed step, with tools
+// disabled, so a step-exhausted run produces a text summary instead of
+// terminating on a dangling tool call (which surfaces to a parent agent as
+// an empty "(no response)" subagent result). See the `isFinalStep` branch in
+// the run loop.
+const FINAL_STEP_SUMMARY_PROMPT =
+  "You have reached the maximum number of steps for this run and cannot call " +
+  "any more tools. Do NOT attempt any tool calls. Using only the work you have " +
+  "already done, write your final response now: summarize what you found or " +
+  "accomplished, include any concrete results, and flag anything left unfinished.";
 const TOOL_RESULT_ARCHIVE_PARAM = "__toolResultArchive";
 const TOOL_RESULT_TRUNCATED_PREFIX = "[TRUNCATED_TOOL_RESULT]";
 const TOOL_RESULT_PREVIEW_CHARS = 700;
@@ -2931,12 +2941,24 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
 
         const telemetryEnabled = this.loadedConfig?.telemetry?.enabled !== false;
 
+        // On the last permitted step, force a closing text turn: strip the
+        // tools so the model cannot start another tool call it has no step
+        // left to resolve, and append a one-shot nudge instructing it to
+        // summarize. This is what keeps a step-exhausted run (very common in
+        // subagents) from ending on a dangling tool call that a parent would
+        // see as an empty result. The nudge is appended only to this model
+        // request — it is never written into `messages`/history.
+        const isFinalStep = step === maxSteps;
+        const toolsForStep = isFinalStep ? {} : tools;
+        const messagesForStep: ModelMessage[] = isFinalStep
+          ? [...finalMessages, { role: "user", content: FINAL_STEP_SUMMARY_PROMPT }]
+          : finalMessages;
 
         const result = await streamText({
           model: modelInstance,
           ...(useStaticCache ? {} : { system: systemPrompt }),
-          messages: finalMessages,
-          tools,
+          messages: messagesForStep,
+          tools: toolsForStep,
           temperature,
           abortSignal: input.abortSignal,
           ...(typeof maxTokens === "number" ? { maxTokens } : {}),

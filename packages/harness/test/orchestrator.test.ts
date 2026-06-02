@@ -8,6 +8,7 @@ import {
   createTurnDraftState,
   recordStandardTurnEvent,
   executeConversationTurn,
+  lastAssistantText,
 } from "../src/orchestrator/index.js";
 import type { Conversation } from "../src/state.js";
 
@@ -172,5 +173,67 @@ describe("orchestrator helpers", () => {
     expect(result.runContextTokens).toBe(321);
     expect(result.draft.assistantResponse).toBe("hello");
     expect(seenTypes).toEqual(["run:started", "tool:started", "model:chunk", "run:completed"]);
+  });
+});
+
+describe("lastAssistantText (subagent result extraction)", () => {
+  it("returns a plain-string assistant message", () => {
+    const messages: Message[] = [
+      { role: "user", content: "find me 3 creators" },
+      { role: "assistant", content: "Here are 3 creators: ..." },
+    ];
+    expect(lastAssistantText(messages)).toBe("Here are 3 creators: ...");
+  });
+
+  it("unwraps the {text,tool_calls} envelope to its text", () => {
+    // How the run loop serializes an assistant turn that also called tools.
+    const envelope = JSON.stringify({
+      text: "Searching for candidates now.",
+      tool_calls: [{ id: "t1", name: "web_search", input: { q: "creators" } }],
+    });
+    const messages: Message[] = [{ role: "assistant", content: envelope }];
+    expect(lastAssistantText(messages)).toBe("Searching for candidates now.");
+  });
+
+  it("walks back past a trailing tool-call turn with no text", () => {
+    // The reported bug: subagent ends on a pure tool call (empty text), but it
+    // produced a real summary the turn before. We must surface that summary,
+    // not an empty string.
+    const toolOnly = JSON.stringify({
+      text: "",
+      tool_calls: [{ id: "t9", name: "web_search", input: { q: "x" } }],
+    });
+    const messages: Message[] = [
+      { role: "user", content: "go" },
+      { role: "assistant", content: "Found 12 candidates, here they are: ..." },
+      { role: "tool", content: "[]" },
+      { role: "assistant", content: toolOnly },
+    ];
+    expect(lastAssistantText(messages)).toBe("Found 12 candidates, here they are: ...");
+  });
+
+  it("extracts text from ContentPart[] content", () => {
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "part one" },
+          { type: "file", data: "Zm9v", mediaType: "image/png" },
+          { type: "text", text: " part two" },
+        ],
+      },
+    ];
+    expect(lastAssistantText(messages)).toBe("part one part two");
+  });
+
+  it("returns empty string when there is genuinely no assistant text", () => {
+    const messages: Message[] = [
+      { role: "user", content: "hi" },
+      {
+        role: "assistant",
+        content: JSON.stringify({ text: "", tool_calls: [{ id: "t1", name: "x", input: {} }] }),
+      },
+    ];
+    expect(lastAssistantText(messages)).toBe("");
   });
 });

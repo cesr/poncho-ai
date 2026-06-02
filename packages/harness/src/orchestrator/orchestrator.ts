@@ -1,4 +1,4 @@
-import type { AgentEvent, Message } from "@poncho-ai/sdk";
+import { getTextContent, type AgentEvent, type Message } from "@poncho-ai/sdk";
 import type { Conversation, ConversationStore, PendingSubagentResult } from "../state.js";
 import type { AgentHarness } from "../harness.js";
 import type { TelemetryEmitter } from "../telemetry.js";
@@ -27,6 +27,45 @@ import {
   CALLBACK_LOCK_STALE_MS,
   STALE_SUBAGENT_THRESHOLD_MS,
 } from "./subagents.js";
+
+// ── Subagent result extraction ──
+
+/**
+ * Pull the human-readable text out of a single assistant message.
+ *
+ * Beyond the `string | ContentPart[]` shapes `getTextContent` handles, the
+ * harness serializes an assistant turn that ALSO made tool calls as a JSON
+ * string `{"text":"...","tool_calls":[...]}` (see the run loop's
+ * `assistantContent`). A naive `typeof content === "string"` read would hand
+ * that raw JSON blob back as the "response"; here we unwrap it to its `.text`.
+ */
+const assistantMessageText = (message: Message): string => {
+  const raw = getTextContent(message).trim();
+  if (raw.startsWith("{") && raw.includes("\"tool_calls\"")) {
+    try {
+      const parsed = JSON.parse(raw) as { text?: unknown };
+      if (typeof parsed.text === "string") return parsed.text.trim();
+    } catch {
+      // Not the envelope we expected — fall through to the raw string.
+    }
+  }
+  return raw;
+};
+
+/**
+ * Find the last non-empty assistant text in a subagent transcript. Walking
+ * backwards (rather than reading only the final message) means a subagent
+ * that ended on a tool-call turn still yields the prose it produced just
+ * before — instead of surfacing to the parent as an empty result.
+ */
+export const lastAssistantText = (messages: Message[]): string => {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].role !== "assistant") continue;
+    const text = assistantMessageText(messages[i]);
+    if (text) return text;
+  }
+  return "";
+};
 
 // ── Types ──
 
@@ -933,14 +972,11 @@ export class AgentOrchestrator {
         conversationId: childConversationId,
       });
 
-      let subagentResponse = runResult?.response ?? draft.assistantResponse;
+      let subagentResponse = (runResult?.response ?? draft.assistantResponse ?? "").trim();
       if (!subagentResponse) {
         const freshSubConv = await this.conversationStore.get(childConversationId);
         if (freshSubConv) {
-          const lastAssistant = [...freshSubConv.messages].reverse().find(m => m.role === "assistant");
-          if (lastAssistant && typeof lastAssistant.content === "string") {
-            subagentResponse = lastAssistant.content;
-          }
+          subagentResponse = lastAssistantText(freshSubConv.messages);
         }
       }
       const pendingResult: PendingSubagentResult = {
@@ -1040,8 +1076,16 @@ export class AgentOrchestrator {
     conversation.subagentCallbackCount = callbackCount;
 
     for (const pr of pendingResults) {
+      // An empty response is recoverable, not a dead end: the subagent's work
+      // lives in its transcript even when it produced no closing summary (e.g.
+      // it ran out of steps mid-task). Hand the parent an actionable pointer
+      // instead of a silent "(no response)" it can't act on.
+      const responseText = (pr.result?.response ?? "").trim();
+      const responseLine = responseText
+        || `(subagent produced no final summary after ${pr.result?.steps ?? 0} step(s); its work may be incomplete. `
+          + `Call read_subagent with subagent_id "${pr.subagentId}" and mode "assistant" to retrieve what it did.)`;
       const resultBody = pr.result
-        ? `Status: ${pr.result.status}\nResponse: ${pr.result.response ?? "(no response)"}\nSteps: ${pr.result.steps}, Duration: ${pr.result.duration}ms`
+        ? `Status: ${pr.result.status}\nResponse: ${responseLine}\nSteps: ${pr.result.steps}, Duration: ${pr.result.duration}ms`
         : pr.error
           ? `Error: ${pr.error.message}`
           : "(no result)";
@@ -1322,14 +1366,11 @@ export class AgentOrchestrator {
         conversationId,
       });
 
-      let subagentResponse = runResult?.response ?? draft.assistantResponse;
+      let subagentResponse = (runResult?.response ?? draft.assistantResponse ?? "").trim();
       if (!subagentResponse) {
         const freshSubConv = await this.conversationStore.get(conversationId);
         if (freshSubConv) {
-          const lastAssistant = [...freshSubConv.messages].reverse().find(m => m.role === "assistant");
-          if (lastAssistant) {
-            subagentResponse = typeof lastAssistant.content === "string" ? lastAssistant.content : "";
-          }
+          subagentResponse = lastAssistantText(freshSubConv.messages);
         }
       }
 

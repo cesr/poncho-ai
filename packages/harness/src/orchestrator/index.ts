@@ -46,6 +46,7 @@ export {
 
 export {
   AgentOrchestrator,
+  lastAssistantText,
   type ActiveConversationRun,
   type EventSink,
   type OrchestratorHooks,
