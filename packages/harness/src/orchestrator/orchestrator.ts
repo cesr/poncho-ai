@@ -67,6 +67,39 @@ export const lastAssistantText = (messages: Message[]): string => {
   return "";
 };
 
+/**
+ * The run loop stuffs a synthetic `[Error: ...]` placeholder into the draft /
+ * persisted assistant text when a run ends on `run:error` (e.g. a timeout).
+ * That placeholder is not real model output — strip it so we don't surface it
+ * to the parent as the subagent's "response".
+ */
+export const realResponseText = (text: string | undefined): string => {
+  const t = (text ?? "").trim();
+  return t.startsWith("[Error:") ? "" : t;
+};
+
+/**
+ * Build the result text delivered to the parent when a subagent ended
+ * abnormally (timeout / error) with no RunResult. We never drop the work it
+ * gathered, and the parent is told it didn't finish — e.g. it may not have
+ * written its output files — plus how to recover (use what's here, send a
+ * write-only follow-up, or read the full transcript).
+ */
+export const abnormalEndResponse = (opts: {
+  subagentId: string;
+  gathered: string;
+  runError?: { code?: string; message?: string };
+}): string => {
+  const timedOut = opts.runError?.code === "TIMEOUT";
+  const head = timedOut
+    ? "[Subagent hit its time limit before finishing — it may not have written its output files.]"
+    : `[Subagent ended before finishing${opts.runError?.message ? `: ${opts.runError.message}` : ""}.]`;
+  const recover = opts.gathered
+    ? "Partial work it gathered is below — write the files yourself from it, or send a tight write-only follow-up with message_subagent."
+    : `Use read_subagent("${opts.subagentId}", mode:"full") to recover what it gathered.`;
+  return opts.gathered ? `${head} ${recover}\n\n${opts.gathered}` : `${head} ${recover}`;
+};
+
 // ── Types ──
 
 export type ActiveConversationRun = {
@@ -762,6 +795,7 @@ export class AgentOrchestrator {
     const draft = createTurnDraftState();
     let latestRunId = "";
     let runResult: { status: "completed" | "error" | "cancelled"; response?: string; steps: number; duration: number; continuation?: boolean; continuationMessages?: Message[] } | undefined;
+    let runError: { code?: string; message?: string } | undefined;
 
     try {
       const conversation = await this.conversationStore.getWithArchive(childConversationId);
@@ -911,6 +945,7 @@ export class AgentOrchestrator {
           }
         }
         if (event.type === "run:error") {
+          runError = { code: event.error.code, message: event.error.message };
           draft.assistantResponse = draft.assistantResponse || `[Error: ${event.error.message}]`;
         }
         await this.eventSink(childConversationId, event);
@@ -961,7 +996,17 @@ export class AgentOrchestrator {
           return;
         }
 
-        conv.subagentMeta = { ...conv.subagentMeta!, status: "completed" };
+        // No runResult means the run ended on run:error (timeout / model
+        // error) rather than run:completed — flag the subagent accordingly
+        // instead of faking "completed".
+        const abnormalEnd = !runResult;
+        conv.subagentMeta = {
+          ...conv.subagentMeta!,
+          status: abnormalEnd ? "error" : "completed",
+          ...(abnormalEnd
+            ? { error: { code: runError?.code ?? "SUBAGENT_INCOMPLETE", message: runError?.message ?? "subagent ended without a result" } }
+            : {}),
+        };
         await this.conversationStore.update(conv);
       }
 
@@ -972,18 +1017,36 @@ export class AgentOrchestrator {
         conversationId: childConversationId,
       });
 
-      let subagentResponse = (runResult?.response ?? draft.assistantResponse ?? "").trim();
-      if (!subagentResponse) {
+      // Recover the subagent's real output: prefer the run response, then the
+      // streamed draft, then walk the transcript — discarding the synthetic
+      // "[Error: ...]" placeholder at each step.
+      let gathered = realResponseText(runResult?.response) || realResponseText(draft.assistantResponse);
+      if (!gathered) {
         const freshSubConv = await this.conversationStore.get(childConversationId);
-        if (freshSubConv) {
-          subagentResponse = lastAssistantText(freshSubConv.messages);
-        }
+        if (freshSubConv) gathered = realResponseText(lastAssistantText(freshSubConv.messages));
       }
+
+      // On an abnormal end (timeout / error) there is no runResult; don't drop
+      // the work — deliver what it gathered, tagged so the parent knows it
+      // didn't finish, and build a result so it never renders as "(no result)".
+      const abnormal = !runResult;
+      const subagentResponse = abnormal
+        ? abnormalEndResponse({ subagentId: childConversationId, gathered, runError })
+        : gathered;
       const pendingResult: PendingSubagentResult = {
         subagentId: childConversationId,
         task,
-        status: "completed",
-        result: runResult ? { status: runResult.status, response: subagentResponse, steps: runResult.steps, tokens: { input: 0, output: 0, cached: 0 }, duration: runResult.duration } : undefined,
+        status: abnormal ? "error" : "completed",
+        result: {
+          status: runResult?.status ?? "error",
+          response: subagentResponse,
+          steps: runResult?.steps ?? 0,
+          tokens: { input: 0, output: 0, cached: 0 },
+          duration: runResult?.duration ?? 0,
+        },
+        ...(abnormal
+          ? { error: { code: runError?.code ?? "SUBAGENT_INCOMPLETE", message: runError?.message ?? "subagent ended without a result" } }
+          : {}),
         timestamp: Date.now(),
       };
       await this.conversationStore.appendSubagentResult(parentConversationId, pendingResult);
@@ -1271,7 +1334,8 @@ export class AgentOrchestrator {
     this.activeSubagentRuns.set(conversationId, { abortController: childAbortController, harness: childHarness, parentConversationId });
 
     const draft = createTurnDraftState();
-    let runResult: { status: string; response?: string; steps: number; duration: number; continuation?: boolean; continuationMessages?: Message[] } | undefined;
+    let runResult: { status: "completed" | "error" | "cancelled"; response?: string; steps: number; duration: number; continuation?: boolean; continuationMessages?: Message[] } | undefined;
+    let runError: { code?: string; message?: string } | undefined;
 
     try {
       const recallParams = this.hooks?.buildRecallParams?.({ ownerId, tenantId: conversation.tenantId, excludeConversationId: conversationId }) ?? {};
@@ -1306,6 +1370,7 @@ export class AgentOrchestrator {
           }
         }
         if (event.type === "run:error") {
+          runError = { code: event.error.code, message: event.error.message };
           draft.assistantResponse = draft.assistantResponse || `[Error: ${event.error.message}]`;
         }
         await this.eventSink(conversationId, event);
@@ -1355,7 +1420,14 @@ export class AgentOrchestrator {
           return;
         }
 
-        conv.subagentMeta = { ...conv.subagentMeta!, status: "completed" };
+        const abnormalEnd = !runResult;
+        conv.subagentMeta = {
+          ...conv.subagentMeta!,
+          status: abnormalEnd ? "error" : "completed",
+          ...(abnormalEnd
+            ? { error: { code: runError?.code ?? "SUBAGENT_INCOMPLETE", message: runError?.message ?? "subagent ended without a result" } }
+            : {}),
+        };
         await this.conversationStore.update(conv);
       }
 
@@ -1366,21 +1438,26 @@ export class AgentOrchestrator {
         conversationId,
       });
 
-      let subagentResponse = (runResult?.response ?? draft.assistantResponse ?? "").trim();
-      if (!subagentResponse) {
+      let gathered = realResponseText(runResult?.response) || realResponseText(draft.assistantResponse);
+      if (!gathered) {
         const freshSubConv = await this.conversationStore.get(conversationId);
-        if (freshSubConv) {
-          subagentResponse = lastAssistantText(freshSubConv.messages);
-        }
+        if (freshSubConv) gathered = realResponseText(lastAssistantText(freshSubConv.messages));
       }
+      const abnormal = !runResult;
+      const subagentResponse = abnormal
+        ? abnormalEndResponse({ subagentId: conversationId, gathered, runError })
+        : gathered;
 
       const parentConv = await this.conversationStore.get(parentConversationId);
       if (parentConv) {
         const result: PendingSubagentResult = {
           subagentId: conversationId,
           task,
-          status: "completed",
-          result: { status: "completed", response: subagentResponse, steps: runResult?.steps ?? 0, tokens: { input: 0, output: 0, cached: 0 }, duration: runResult?.duration ?? 0 },
+          status: abnormal ? "error" : "completed",
+          result: { status: runResult?.status ?? "error", response: subagentResponse, steps: runResult?.steps ?? 0, tokens: { input: 0, output: 0, cached: 0 }, duration: runResult?.duration ?? 0 },
+          ...(abnormal
+            ? { error: { code: runError?.code ?? "SUBAGENT_INCOMPLETE", message: runError?.message ?? "subagent ended without a result" } }
+            : {}),
           timestamp: Date.now(),
         };
         await this.conversationStore.appendSubagentResult(parentConversationId, result);

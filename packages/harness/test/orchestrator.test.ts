@@ -9,6 +9,8 @@ import {
   recordStandardTurnEvent,
   executeConversationTurn,
   lastAssistantText,
+  realResponseText,
+  abnormalEndResponse,
 } from "../src/orchestrator/index.js";
 import type { Conversation } from "../src/state.js";
 
@@ -235,5 +237,52 @@ describe("lastAssistantText (subagent result extraction)", () => {
       },
     ];
     expect(lastAssistantText(messages)).toBe("");
+  });
+});
+
+describe("realResponseText (strips run:error placeholder)", () => {
+  it("drops the synthetic [Error: ...] placeholder", () => {
+    expect(realResponseText("[Error: Run exceeded timeout of 300s]")).toBe("");
+  });
+  it("keeps real text and trims", () => {
+    expect(realResponseText("  done, wrote the file  ")).toBe("done, wrote the file");
+  });
+  it("handles undefined", () => {
+    expect(realResponseText(undefined)).toBe("");
+  });
+});
+
+describe("abnormalEndResponse (graceful timeout / error delivery)", () => {
+  it("timeout WITH gathered work: notes the cutoff and includes the work", () => {
+    const out = abnormalEndResponse({
+      subagentId: "sub_1",
+      gathered: "Found 12 competitors: A, B, C...",
+      runError: { code: "TIMEOUT", message: "Run exceeded timeout of 3600s" },
+    });
+    expect(out).toContain("time limit");
+    expect(out).toContain("may not have written its output files");
+    expect(out).toContain("Found 12 competitors: A, B, C...");
+    expect(out).not.toContain("(no result)");
+  });
+
+  it("timeout WITHOUT gathered work: points at read_subagent to recover", () => {
+    const out = abnormalEndResponse({
+      subagentId: "sub_2",
+      gathered: "",
+      runError: { code: "TIMEOUT", message: "Run exceeded timeout of 3600s" },
+    });
+    expect(out).toContain("time limit");
+    expect(out).toContain('read_subagent("sub_2"');
+    expect(out).toContain('mode:"full"');
+  });
+
+  it("non-timeout error: surfaces the error message", () => {
+    const out = abnormalEndResponse({
+      subagentId: "sub_3",
+      gathered: "",
+      runError: { code: "EMPTY_RESPONSE", message: "model returned no content" },
+    });
+    expect(out).toContain("ended before finishing");
+    expect(out).toContain("model returned no content");
   });
 });

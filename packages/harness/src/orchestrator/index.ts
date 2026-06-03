@@ -47,6 +47,8 @@ export {
 export {
   AgentOrchestrator,
   lastAssistantText,
+  realResponseText,
+  abnormalEndResponse,
   type ActiveConversationRun,
   type EventSink,
   type OrchestratorHooks,

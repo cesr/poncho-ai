@@ -146,6 +146,14 @@ export interface HarnessOptions {
    * should also be browsable in the VFS. Empty by default.
    */
   systemSkillPaths?: string[];
+  /**
+   * Override the per-run hard wall-clock timeout, in seconds, taking
+   * precedence over the agent definition's `limits.timeout`. Platforms use
+   * this to give background subagents a longer budget than the foreground
+   * agent without forking the agent definition (e.g. a 1h research subagent
+   * vs. a 5-min foreground turn). `0` disables the hard timeout.
+   */
+  runTimeoutSecOverride?: number;
 }
 
 export interface HarnessRunOutput {
@@ -848,6 +856,7 @@ function extractMediaFromToolOutput(output: unknown): {
 export class AgentHarness {
   private readonly workingDir: string;
   private readonly environment: HarnessOptions["environment"];
+  private readonly runTimeoutSecOverride?: number;
   private modelProvider: ModelProviderFactory;
   private readonly modelProviderInjected: boolean;
   private readonly dispatcher = new ToolDispatcher();
@@ -1084,6 +1093,7 @@ export class AgentHarness {
   constructor(options: HarnessOptions = {}) {
     this.workingDir = options.workingDir ?? process.cwd();
     this.environment = options.environment ?? "development";
+    this.runTimeoutSecOverride = options.runTimeoutSecOverride;
     this.modelProviderInjected = !!options.modelProvider;
     this.modelProvider = options.modelProvider ?? createModelProvider("anthropic");
     this.uploadStore = options.uploadStore;
@@ -2126,7 +2136,9 @@ export class AgentHarness {
     const runId = `run_${randomUUID()}`;
     const start = now();
     const maxSteps = agent.frontmatter.limits?.maxSteps ?? 20;
-    const configuredTimeout = agent.frontmatter.limits?.timeout;
+    // A constructor-level override (e.g. a longer budget for background
+    // subagents) takes precedence over the agent definition's limits.timeout.
+    const configuredTimeout = this.runTimeoutSecOverride ?? agent.frontmatter.limits?.timeout;
     const timeoutMs = this.environment === "development" && configuredTimeout == null
       ? 0 // no hard timeout in development unless explicitly configured
       : (configuredTimeout ?? 300) * 1000;
