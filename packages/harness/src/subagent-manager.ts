@@ -37,6 +37,9 @@ export interface SubagentManager {
     parentConversationId: string;
     ownerId: string;
     tenantId?: string | null;
+    /** Inherit the parent run's telemetry choice — when true, the subagent
+     *  run (and its re-runs) emit no telemetry. */
+    suppressTelemetry?: boolean;
   }): Promise<SubagentSpawnResult>;
 
   sendMessage(subagentId: string, message: string): Promise<SubagentSpawnResult>;

@@ -78,6 +78,10 @@ export interface ToolContext {
   conversationId?: string;
   /** The tenant ID when running in multi-tenant mode. */
   tenantId?: string;
+  /** Telemetry is suppressed for this run (e.g. an incognito turn). Tools
+   *  that spawn further runs (subagents) propagate this so the child run
+   *  emits no telemetry either. */
+  suppressTelemetry?: boolean;
   /** Virtual filesystem scoped to the current tenant. Available when VFS is enabled. */
   vfs?: VfsAccess;
 }

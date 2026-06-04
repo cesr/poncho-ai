@@ -75,6 +75,10 @@ export interface Conversation {
     status: "running" | "completed" | "error" | "stopped";
     result?: import("@poncho-ai/sdk").RunResult;
     error?: import("@poncho-ai/sdk").AgentFailure;
+    /** Inherited from the parent run at spawn time — when true, this
+     *  subagent's runs emit no telemetry (e.g. spawned from an incognito
+     *  turn). Read by the orchestrator's runSubagent / continuation. */
+    suppressTelemetry?: boolean;
   };
   channelMeta?: {
     platform: string;

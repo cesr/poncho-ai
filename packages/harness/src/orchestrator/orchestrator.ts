@@ -825,6 +825,8 @@ export class AgentOrchestrator {
         }, conversation),
         messages: harnessMessages,
         abortSignal: childAbortController.signal,
+        // Inherit the parent run's telemetry choice (e.g. incognito).
+        suppressTelemetry: conversation.subagentMeta?.suppressTelemetry,
       })) {
         if (event.type === "run:started") {
           latestRunId = event.runId;
@@ -1350,6 +1352,8 @@ export class AgentOrchestrator {
         }, conversation),
         messages: continuationMessages,
         abortSignal: childAbortController.signal,
+        // Inherit the parent run's telemetry choice (e.g. incognito).
+        suppressTelemetry: conversation.subagentMeta?.suppressTelemetry,
       })) {
         if (event.type === "run:started") {
           const active = this.activeConversationRuns.get(conversationId);
@@ -1530,7 +1534,7 @@ export class AgentOrchestrator {
           opts.tenantId ?? null,
           {
             parentConversationId: opts.parentConversationId,
-            subagentMeta: { task: opts.task, status: "running" },
+            subagentMeta: { task: opts.task, status: "running", suppressTelemetry: opts.suppressTelemetry },
             messages: [{ role: "user", content: opts.task }],
           },
         );

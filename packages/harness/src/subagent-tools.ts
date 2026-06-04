@@ -45,6 +45,7 @@ export const createSubagentTools = (
         parentConversationId: conversationId,
         ownerId,
         tenantId: context.tenantId,
+        suppressTelemetry: context.suppressTelemetry,
       });
       return { subagentId, status: "running" };
     },

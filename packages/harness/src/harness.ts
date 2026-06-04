@@ -3285,6 +3285,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
         abortSignal: input.abortSignal,
         conversationId: input.conversationId,
         tenantId: input.tenantId,
+        suppressTelemetry: input.suppressTelemetry,
         vfs: this.bashManager
           ? this.createVfsAccess(input.tenantId ?? "__default__")
           : undefined,
