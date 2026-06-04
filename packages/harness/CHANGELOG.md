@@ -1,5 +1,20 @@
 # @poncho-ai/harness
 
+## 0.51.0
+
+### Minor Changes
+
+- [`773f113`](https://github.com/cesr/poncho-ai/commit/773f11309e2410d6c5e17af0fde17425953105f2) Thanks [@cesr](https://github.com/cesr)! - harness: add a per-run `suppressTelemetry` flag so one harness can serve both telemetry-on and telemetry-off runs.
+
+  Telemetry was effectively an instance-level property: whether the OTLP exporter is attached is decided at construction, so a host that wants telemetry-off runs (e.g. incognito) had to build and maintain a _second_ harness instance with no exporter — duplicating all per-harness provisioning (tool registration, subagent manager, etc.) and risking drift between the two.
+
+  `RunInput.suppressTelemetry` lets a single harness — built once, with the exporter attached — emit nothing for a given run: the `invoke_agent` root span, the `execute_tool` spans, and the AI-SDK spans are all gated on `!input.suppressTelemetry`. Hosts can now keep one harness per user and pass `suppressTelemetry: true` per run instead of routing to a parallel exporter-less instance.
+
+### Patch Changes
+
+- Updated dependencies [[`773f113`](https://github.com/cesr/poncho-ai/commit/773f11309e2410d6c5e17af0fde17425953105f2)]:
+  - @poncho-ai/sdk@1.13.0
+
 ## 0.50.5
 
 ### Patch Changes
