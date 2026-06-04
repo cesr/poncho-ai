@@ -3825,6 +3825,9 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
     tenantId?: string;
     parameters?: Record<string, unknown>;
     abortSignal?: AbortSignal;
+    /** Emit no telemetry for the continuation run (e.g. resuming an
+     *  incognito turn after an approval). */
+    suppressTelemetry?: boolean;
   }): AsyncGenerator<AgentEvent> {
     const messages = [...input.messages];
     const lastMsg = messages[messages.length - 1];
@@ -3883,6 +3886,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
       tenantId: input.tenantId,
       parameters: input.parameters,
       abortSignal: input.abortSignal,
+      suppressTelemetry: input.suppressTelemetry,
     });
   }
 
