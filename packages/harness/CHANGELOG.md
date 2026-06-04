@@ -1,5 +1,13 @@
 # @poncho-ai/harness
 
+## 0.51.1
+
+### Patch Changes
+
+- [`3c72a7f`](https://github.com/cesr/poncho-ai/commit/3c72a7f0861dbe2c623931e3a08e1a89a14554b1) Thanks [@cesr](https://github.com/cesr)! - harness: forward `suppressTelemetry` through `runConversationTurn` and `continueFromToolResult`.
+
+  `RunConversationTurnOpts` and `continueFromToolResult`'s input now carry `suppressTelemetry`, passed into the run input (alongside the existing `disablePromptCache` passthrough). Hosts driving turns through these helpers (rather than calling `runWithTelemetry` directly) can now suppress telemetry per turn and per approval-resume — the missing piece for serving telemetry-off (incognito) turns and their continuations from a single shared harness.
+
 ## 0.51.0
 
 ### Minor Changes
