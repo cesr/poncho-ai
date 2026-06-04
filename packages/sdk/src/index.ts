@@ -137,6 +137,14 @@ export interface RunInput {
   disablePromptCache?: boolean;
   /** Scope this run to a specific tenant. */
   tenantId?: string;
+  /**
+   * When true, emit no telemetry for this run — no `invoke_agent` /
+   * `execute_tool` spans and no AI-SDK spans, even on a harness built with an
+   * OTLP exporter attached. Lets a single harness serve both telemetry-on and
+   * telemetry-off (e.g. incognito) runs, instead of needing a separate
+   * exporter-less harness instance per mode.
+   */
+  suppressTelemetry?: boolean;
 }
 
 export interface TokenUsage {

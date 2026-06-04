@@ -2049,7 +2049,7 @@ export class AgentHarness {
    * child spans (LLM calls via AI SDK, tool execution) group under one trace.
    */
   async *runWithTelemetry(input: RunInput): AsyncGenerator<AgentEvent> {
-    if (this.hasOtlpExporter && this.otlpTracerProvider) {
+    if (this.hasOtlpExporter && this.otlpTracerProvider && !input.suppressTelemetry) {
       const tracer = this.otlpTracerProvider.getTracer("gen_ai");
       const agentName = this.parsedAgent?.frontmatter.name ?? "agent";
 
@@ -2975,7 +2975,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
           abortSignal: input.abortSignal,
           ...(typeof maxTokens === "number" ? { maxTokens } : {}),
           experimental_telemetry: {
-            isEnabled: telemetryEnabled && this.hasOtlpExporter,
+            isEnabled: telemetryEnabled && this.hasOtlpExporter && !input.suppressTelemetry,
             recordInputs: true,
             recordOutputs: true,
           },
@@ -3461,7 +3461,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
       // OTel GenAI execute_tool spans for tool call visibility in traces
       type OtelSpan = ReturnType<ReturnType<typeof trace.getTracer>["startSpan"]>;
       const toolSpans = new Map<string, OtelSpan>();
-      if (this.hasOtlpExporter && this.otlpTracerProvider) {
+      if (this.hasOtlpExporter && this.otlpTracerProvider && !input.suppressTelemetry) {
         const tracer = this.otlpTracerProvider.getTracer("gen_ai");
         for (const call of approvedCalls) {
           const toolDef = this.dispatcher.get(call.name);
