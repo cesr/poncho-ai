@@ -68,6 +68,12 @@ export interface RunConversationTurnOpts {
    * harness skips the Anthropic cache write.
    */
   disablePromptCache?: boolean;
+  /**
+   * Forwarded to `RunInput.suppressTelemetry`. Set true to emit no telemetry
+   * for this run (e.g. an incognito / telemetry-off turn) even on a harness
+   * built with an OTLP exporter attached.
+   */
+  suppressTelemetry?: boolean;
   /** Per-event hook — called for every AgentEvent yielded by the run, in order. */
   onEvent?: (event: AgentEvent) => void | Promise<void>;
 }
@@ -210,6 +216,7 @@ export const runConversationTurn = async (
         files: opts.files && opts.files.length > 0 ? opts.files : undefined,
         abortSignal: opts.abortSignal,
         disablePromptCache: opts.disablePromptCache,
+        suppressTelemetry: opts.suppressTelemetry,
       },
       initialContextTokens: conversation.contextTokens ?? 0,
       initialContextWindow: conversation.contextWindow ?? 0,
