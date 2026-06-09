@@ -2907,7 +2907,12 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
         convertedUpTo = messages.length;
         const coreMessages = cachedCoreMessages;
 
-        const temperature = agent.frontmatter.model?.temperature ?? 0.2;
+        // Only send temperature when the agent explicitly set one. Newer
+        // models (Fable 5, Opus 4.7+) removed sampling params entirely and
+        // return a 400 ("`temperature` is deprecated for this model") on any
+        // value — forcing a default here broke them. Treated like maxTokens
+        // below: omitted from the request when undefined.
+        const temperature = agent.frontmatter.model?.temperature;
         const maxTokens = agent.frontmatter.model?.maxTokens;
         // Place the tail breakpoint before any untruncated tool-result so
         // we cache only the stable prefix when prior-run tool results are
@@ -2971,7 +2976,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
           ...(useStaticCache ? {} : { system: systemPrompt }),
           messages: messagesForStep,
           tools: toolsForStep,
-          temperature,
+          ...(typeof temperature === "number" ? { temperature } : {}),
           abortSignal: input.abortSignal,
           ...(typeof maxTokens === "number" ? { maxTokens } : {}),
           experimental_telemetry: {

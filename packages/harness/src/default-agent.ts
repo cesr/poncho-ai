@@ -26,7 +26,12 @@ export interface DefaultAgentDefinitionOptions {
   modelProvider?: "anthropic" | "openai" | "openai-codex";
   /** Model name. Default: "claude-opus-4-5". */
   modelName?: string;
-  /** Sampling temperature. Default: 0.2. */
+  /**
+   * Sampling temperature. When unset, it is omitted from the generated
+   * frontmatter entirely and the harness sends no temperature (provider
+   * default). Newer models (Fable 5, Opus 4.7+) reject `temperature` — leave
+   * this unset for them.
+   */
   temperature?: number;
   /** Max tool-call steps per run. Default: 20. */
   maxSteps?: number;
@@ -55,7 +60,10 @@ export const defaultAgentDefinition = (
   const description = opts.description ?? DEFAULT_AGENT_DESCRIPTION;
   const modelProvider = opts.modelProvider ?? DEFAULT_MODEL_PROVIDER;
   const modelName = opts.modelName ?? DEFAULT_MODEL_NAME;
-  const temperature = opts.temperature ?? DEFAULT_TEMPERATURE;
+  // Opt-in: only emit a `temperature:` line when explicitly provided, so the
+  // harness sends no temperature otherwise (newer models reject it).
+  const temperatureLine =
+    opts.temperature !== undefined ? `\n  temperature: ${opts.temperature}` : "";
   const maxSteps = opts.maxSteps ?? DEFAULT_MAX_STEPS;
   const timeout = opts.timeout ?? DEFAULT_TIMEOUT;
 
@@ -65,8 +73,7 @@ id: ${id}
 description: ${description}
 model:
   provider: ${modelProvider}
-  name: ${modelName}
-  temperature: ${temperature}
+  name: ${modelName}${temperatureLine}
 limits:
   maxSteps: ${maxSteps}
   timeout: ${timeout}
