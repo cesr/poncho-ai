@@ -1,6 +1,6 @@
 {
   "name": "@poncho-ai/cli",
-  "version": "0.40.26",
+  "version": "0.40.27",
   "description": "CLI for building and deploying AI agents",
   "repository": {
     "type": "git",

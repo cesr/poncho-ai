@@ -1,5 +1,21 @@
 # @poncho-ai/harness
 
+## 0.56.0
+
+### Minor Changes
+
+- [#151](https://github.com/cesr/poncho-ai/pull/151) [`4c116d8`](https://github.com/cesr/poncho-ai/commit/4c116d8f883c1d486b86b6c254334602326d7713) Thanks [@cesr](https://github.com/cesr)! - Add append-only conversation entry persistence (Phase 3 substrate).
+
+  Introduces `appendEntries` / `readEntries` on the `ConversationStore` and
+  `StorageEngine.conversations` interfaces, implemented for SQLite, PostgreSQL
+  (via `SqlStorageEngine`), and the in-memory stores. A new `conversation_entries`
+  table (migration v8) stores each entry with an app-assigned per-conversation
+  monotonic `seq`, a unique `id`, a JSON `payload`, and a `UNIQUE
+(conversation_id, seq)` constraint.
+
+  Purely additive: no existing table, behavior, or read path changes — this is
+  the foundation for a later dual-write phase.
+
 ## 0.55.0
 
 ### Minor Changes
