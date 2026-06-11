@@ -38,6 +38,14 @@ export interface Message {
     toolActivity?: string[];
     sections?: Array<{ type: "text" | "tools"; content: string | string[] }>;
     isCompactionSummary?: boolean;
+    /** True while this assistant message is an in-flight DRAFT (the turn
+     *  hasn't finished). Set by the orchestrator's per-step draft persist and
+     *  cleared at finalize. Consumers that reconcile a persisted snapshot with
+     *  a live event stream (e.g. PonchOS's WS layer) strip `incomplete`
+     *  messages from the snapshot and rebuild the in-flight turn from the
+     *  event log instead — so the two never both carry it (no reconnect
+     *  duplication). */
+    incomplete?: boolean;
   };
 }
 

@@ -157,7 +157,15 @@ export const runConversationTurn = async (
   let cancelHarnessMessages: Message[] | undefined;
   let checkpointedRun = false;
 
-  const buildMessages = (): Message[] => {
+  // `incomplete: true` (the default) marks the trailing assistant message as
+  // an in-flight DRAFT — content for a turn that hasn't finished. A consumer
+  // (e.g. PonchOS's WS snapshot) uses this to strip the draft from the
+  // authoritative snapshot: the in-flight turn is delivered by the event
+  // stream instead, so the snapshot and the event log never both carry it
+  // (no reconnect duplication). The three TERMINAL writes (normal finalize,
+  // cancelled, errored) pass `incomplete: false` — at that point the turn is
+  // done and the assistant message is authoritative.
+  const buildMessages = (incomplete = true): Message[] => {
     const draftSections = cloneSections(draft.sections);
     if (draft.currentTools.length > 0) {
       draftSections.push({ type: "tools", content: [...draft.currentTools] });
@@ -179,10 +187,15 @@ export const runConversationTurn = async (
       {
         role: "assistant" as const,
         content: draft.assistantResponse,
-        metadata: buildAssistantMetadata(draft, draftSections, {
-          id: assistantId,
-          timestamp: turnTimestamp,
-        }),
+        metadata: {
+          ...buildAssistantMetadata(draft, draftSections, {
+            id: assistantId,
+            timestamp: turnTimestamp,
+          }),
+          // Only stamp the flag when true; finalize omits it so completed
+          // assistants stay clean (no `incomplete: false` noise on the row).
+          ...(incomplete ? { incomplete: true } : {}),
+        },
       },
     ];
   };
@@ -442,7 +455,7 @@ export const runConversationTurn = async (
     latestRunId = execution.latestRunId || latestRunId;
 
     if (!checkpointedRun && !runContinuationMessages) {
-      conversation.messages = buildMessages();
+      conversation.messages = buildMessages(false); // terminal: turn complete
       applyTurnMetadata(
         conversation,
         {
@@ -515,7 +528,7 @@ export const runConversationTurn = async (
         draft.toolTimeline.length > 0 ||
         draft.sections.length > 0
       ) {
-        conversation.messages = buildMessages();
+        conversation.messages = buildMessages(false); // terminal: cancelled
         applyTurnMetadata(
           conversation,
           {
@@ -571,7 +584,7 @@ export const runConversationTurn = async (
       draft.toolTimeline.length > 0 ||
       draft.sections.length > 0
     ) {
-      conversation.messages = buildMessages();
+      conversation.messages = buildMessages(false); // terminal: errored
       conversation.updatedAt = Date.now();
       await opts.conversationStore.update(conversation);
     }
