@@ -1,5 +1,25 @@
 # @poncho-ai/harness
 
+## 0.59.1
+
+### Patch Changes
+
+- [`299f574`](https://github.com/cesr/poncho-ai/commit/299f574a2f2f0d4873f42bbcffdf604e9cc4c29c) Thanks [@cesr](https://github.com/cesr)! - Mark in-flight assistant drafts with `metadata.incomplete = true`.
+
+  The orchestrator's per-step draft persist (`persistDraft`) and the
+  approval/device checkpoint and continuation writes now stamp the trailing
+  assistant message `metadata.incomplete = true`; the three terminal writes
+  (normal finalize, cancelled, errored) clear it. This lets a consumer that
+  reconciles a persisted snapshot against a live event stream (e.g. a
+  WebSocket layer) strip the in-flight draft from the authoritative snapshot
+  and rebuild that turn from the event log instead — so the snapshot and the
+  replayed events never both carry the in-flight turn, eliminating
+  reconnect-time duplication. Additive + backwards-compatible: consumers that
+  ignore the flag are unaffected.
+
+- Updated dependencies [[`299f574`](https://github.com/cesr/poncho-ai/commit/299f574a2f2f0d4873f42bbcffdf604e9cc4c29c)]:
+  - @poncho-ai/sdk@1.15.1
+
 ## 0.59.0
 
 ### Minor Changes
