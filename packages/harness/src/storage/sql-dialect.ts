@@ -22,6 +22,7 @@ import type { MainMemory } from "../memory.js";
 import type { TodoItem } from "../todo-tools.js";
 import type { Reminder, ReminderCreateInput, ReminderStatus } from "../reminder-store.js";
 import type { StorageEngine, VfsDirEntry, VfsStat } from "./engine.js";
+import type { ConversationEntry } from "./entries.js";
 import { type DialectTag, migrations } from "./schema.js";
 
 // ---------------------------------------------------------------------------
@@ -627,6 +628,117 @@ export abstract class SqlStorageEngine implements StorageEngine {
         parentConversationId,
       ]);
       return rows.map((r) => this.rowToSummary(r));
+    },
+
+    appendEntries: async (
+      conversationId: string,
+      agentId: string,
+      tenantId: string | null,
+      entries: Array<Omit<ConversationEntry, "seq" | "createdAt">>,
+    ): Promise<ConversationEntry[]> => {
+      if (entries.length === 0) return [];
+      const tid = normalizeTenant(tenantId);
+
+      // CONCURRENCY: seq is assigned by the app as COALESCE(MAX(seq),0)+1 per
+      // conversation, inside a transaction. Two concurrent writers can read
+      // the same MAX and collide on the UNIQUE (conversation_id, seq)
+      // constraint; we let the loser's transaction fail and retry the whole
+      // compute-and-insert up to 3 times. This MAX+1+retry scheme is correct
+      // for the modest concurrency here (a single conversation rarely has
+      // simultaneous appenders). A later hardening — a per-conversation
+      // advisory lock — can replace it before any read path depends on these
+      // entries.
+      const maxAttempts = 3;
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const stored: ConversationEntry[] = [];
+        try {
+          await this.executor.transaction(async () => {
+            stored.length = 0; // reset on retry within the same closure
+            const row = await this.executor.get<{ max_seq: number | null }>(
+              rewrite(
+                "SELECT MAX(seq) AS max_seq FROM conversation_entries WHERE conversation_id = $1",
+                this.dialect,
+              ),
+              [conversationId],
+            );
+            let nextSeq = Number(row?.max_seq ?? 0) + 1;
+            const now = Date.now();
+            for (const entry of entries) {
+              const seq = nextSeq++;
+              const createdAt = now;
+              // Persist the full entry object (minus seq/createdAt, which are
+              // columns) as the JSON payload. seq, id, created_at are columns.
+              const payload = JSON.stringify(entry);
+              await this.executor.run(
+                rewrite(
+                  `INSERT INTO conversation_entries
+                     (seq, id, agent_id, tenant_id, conversation_id, type, payload, created_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                  this.dialect,
+                ),
+                [
+                  seq,
+                  entry.id,
+                  agentId,
+                  tid,
+                  conversationId,
+                  entry.type,
+                  payload,
+                  new Date(createdAt).toISOString(),
+                ],
+              );
+              stored.push({ ...entry, seq, createdAt } as ConversationEntry);
+            }
+          });
+          return stored;
+        } catch (err) {
+          lastErr = err;
+          // Retry on any failure (the likely cause is a UNIQUE collision from
+          // a concurrent writer); the next attempt re-reads MAX(seq).
+        }
+      }
+      throw lastErr;
+    },
+
+    readEntries: async (
+      conversationId: string,
+      opts?: { types?: string[]; afterSeq?: number; limit?: number },
+    ): Promise<ConversationEntry[]> => {
+      const params: unknown[] = [conversationId];
+      let sql = "SELECT seq, id, payload, created_at FROM conversation_entries WHERE conversation_id = $1";
+      if (opts?.types && opts.types.length > 0) {
+        const placeholders = opts.types.map(
+          (_t, i) => `$${params.length + 1 + i}`,
+        );
+        sql += ` AND type IN (${placeholders.join(", ")})`;
+        params.push(...opts.types);
+      }
+      if (typeof opts?.afterSeq === "number") {
+        sql += ` AND seq > $${params.length + 1}`;
+        params.push(opts.afterSeq);
+      }
+      sql += " ORDER BY seq ASC";
+      if (typeof opts?.limit === "number") {
+        sql += ` LIMIT $${params.length + 1}`;
+        params.push(opts.limit);
+      }
+      const rows = await this.executor.all<{
+        seq: number;
+        id: string;
+        payload: unknown;
+        created_at: string;
+      }>(rewrite(sql, this.dialect), params);
+      return rows.map((r) => {
+        const parsed =
+          typeof r.payload === "string" ? JSON.parse(r.payload) : r.payload;
+        return {
+          ...parsed,
+          id: r.id,
+          seq: Number(r.seq),
+          createdAt: new Date(r.created_at).getTime(),
+        } as ConversationEntry;
+      });
     },
   };
 

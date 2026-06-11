@@ -58,6 +58,14 @@ export function createConversationStoreFromEngine(
       engine.conversations.clearCallbackLock(conversationId),
     listThreads: (parentConversationId: string) =>
       engine.conversations.listThreads(parentConversationId),
+    appendEntries: (
+      conversationId: string,
+      agentId: string,
+      tenantId: string | null,
+      entries,
+    ) => engine.conversations.appendEntries(conversationId, agentId, tenantId, entries),
+    readEntries: (conversationId: string, opts) =>
+      engine.conversations.readEntries(conversationId, opts),
   };
 }
 

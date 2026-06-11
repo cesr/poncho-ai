@@ -1,4 +1,5 @@
 import type { Message } from "@poncho-ai/sdk";
+import type { ConversationEntry } from "./storage/entries.js";
 
 export interface ConversationState {
   runId: string;
@@ -142,6 +143,23 @@ export interface ConversationStore {
   clearCallbackLock(conversationId: string): Promise<Conversation | undefined>;
   /** List thread conversations anchored under `parentConversationId`. */
   listThreads(parentConversationId: string): Promise<ConversationSummary[]>;
+  /**
+   * Append entries to a conversation's append-only log (Phase 3 substrate).
+   * Assigns a per-conversation monotonic `seq` and a `createdAt` to each
+   * entry, persists them in order, and returns the stored entries with those
+   * fields filled in. Additive — no existing read path consumes these yet.
+   */
+  appendEntries(
+    conversationId: string,
+    agentId: string,
+    tenantId: string | null,
+    entries: Array<Omit<ConversationEntry, "seq" | "createdAt">>,
+  ): Promise<ConversationEntry[]>;
+  /** Read a conversation's entries ordered by `seq` ascending. */
+  readEntries(
+    conversationId: string,
+    opts?: { types?: string[]; afterSeq?: number; limit?: number },
+  ): Promise<ConversationEntry[]>;
 }
 
 export type StateProviderName =
@@ -201,6 +219,7 @@ export class InMemoryStateStore implements StateStore {
 
 export class InMemoryConversationStore implements ConversationStore {
   private readonly conversations = new Map<string, Conversation>();
+  private readonly entries = new Map<string, ConversationEntry[]>();
   private readonly ttlMs?: number;
 
   constructor(ttlSeconds?: number) {
@@ -371,6 +390,43 @@ export class InMemoryConversationStore implements ConversationStore {
         hasPendingApprovals: Array.isArray(c.pendingApprovals) && c.pendingApprovals.length > 0,
         channelMeta: c.channelMeta,
       }));
+  }
+
+  async appendEntries(
+    conversationId: string,
+    _agentId: string,
+    _tenantId: string | null,
+    entries: Array<Omit<ConversationEntry, "seq" | "createdAt">>,
+  ): Promise<ConversationEntry[]> {
+    const list = this.entries.get(conversationId) ?? [];
+    // seq is per-conversation: max existing seq + 1, then consecutive.
+    let nextSeq = list.reduce((max, e) => (e.seq > max ? e.seq : max), 0) + 1;
+    const now = Date.now();
+    const stored: ConversationEntry[] = entries.map(
+      (e) => ({ ...e, seq: nextSeq++, createdAt: now }) as ConversationEntry,
+    );
+    this.entries.set(conversationId, [...list, ...stored]);
+    return stored;
+  }
+
+  async readEntries(
+    conversationId: string,
+    opts?: { types?: string[]; afterSeq?: number; limit?: number },
+  ): Promise<ConversationEntry[]> {
+    let list = (this.entries.get(conversationId) ?? [])
+      .slice()
+      .sort((a, b) => a.seq - b.seq);
+    if (opts?.types && opts.types.length > 0) {
+      const allowed = new Set(opts.types);
+      list = list.filter((e) => allowed.has(e.type));
+    }
+    if (typeof opts?.afterSeq === "number") {
+      list = list.filter((e) => e.seq > opts.afterSeq!);
+    }
+    if (typeof opts?.limit === "number") {
+      list = list.slice(0, opts.limit);
+    }
+    return list;
   }
 }
 
