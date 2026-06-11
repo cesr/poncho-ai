@@ -5,7 +5,7 @@ import type {
   ConversationSummary,
   PendingSubagentResult,
 } from "../state.js";
-import type { ConversationEntry } from "./entries.js";
+import type { ConversationEntry, NewConversationEntry } from "./entries.js";
 import type { MainMemory } from "../memory.js";
 import type { TodoItem } from "../todo-tools.js";
 import type { Reminder, ReminderCreateInput, ReminderStatus } from "../reminder-store.js";
@@ -88,7 +88,7 @@ export interface StorageEngine {
       conversationId: string,
       agentId: string,
       tenantId: string | null,
-      entries: Array<Omit<ConversationEntry, "seq" | "createdAt">>,
+      entries: NewConversationEntry[],
     ): Promise<ConversationEntry[]>;
     /** Read a conversation's entries ordered by `seq` ascending. */
     readEntries(

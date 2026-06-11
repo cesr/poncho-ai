@@ -101,6 +101,19 @@ export type ConversationEntry =
   | CallbackStartedEntry;
 
 /**
+ * An entry to append, before the engine assigns `seq` and `createdAt`. This
+ * is a DISTRIBUTIVE omit — `Omit<ConversationEntry, K>` over a union would
+ * collapse to only the keys common to every member (dropping `message`,
+ * `summaryMessage`, etc.), so we distribute over the union with a
+ * conditional type to omit those fields from each member individually.
+ */
+export type NewConversationEntry = ConversationEntry extends infer T
+  ? T extends ConversationEntry
+    ? Omit<T, "seq" | "createdAt">
+    : never
+  : never;
+
+/**
  * Rebuild the LLM-visible message context from the entry log.
  *
  * If a compaction overlay exists, the context is its summary message

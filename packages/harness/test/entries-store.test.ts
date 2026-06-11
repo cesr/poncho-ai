@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InMemoryConversationStore } from "../src/state.js";
 import type { ConversationStore } from "../src/state.js";
-import type { ConversationEntry } from "../src/storage/entries.js";
+import type { ConversationEntry, NewConversationEntry } from "../src/storage/entries.js";
 import { SqliteEngine } from "../src/storage/sqlite-engine.js";
 import { createConversationStoreFromEngine } from "../src/storage/store-adapters.js";
 import type { Message } from "@poncho-ai/sdk";
@@ -12,21 +12,21 @@ import type { Message } from "@poncho-ai/sdk";
 const msg = (role: Message["role"], content: string): Message => ({ role, content });
 
 // Entry factories (without seq/createdAt — those are assigned by the store).
-const userEntry = (id: string, content: string): Omit<ConversationEntry, "seq" | "createdAt"> => ({
+const userEntry = (id: string, content: string): NewConversationEntry => ({
   type: "user_message",
   id,
   message: msg("user", content),
   turnId: "t1",
 });
 
-const harnessEntry = (id: string, content: string): Omit<ConversationEntry, "seq" | "createdAt"> => ({
+const harnessEntry = (id: string, content: string): NewConversationEntry => ({
   type: "harness_message",
   id,
   message: msg("assistant", content),
   turnId: "t1",
 });
 
-const compactionEntry = (id: string): Omit<ConversationEntry, "seq" | "createdAt"> => ({
+const compactionEntry = (id: string): NewConversationEntry => ({
   type: "compaction",
   id,
   summaryMessage: msg("user", "summary so far"),

@@ -1,5 +1,5 @@
 import type { Message } from "@poncho-ai/sdk";
-import type { ConversationEntry } from "./storage/entries.js";
+import type { ConversationEntry, NewConversationEntry } from "./storage/entries.js";
 
 export interface ConversationState {
   runId: string;
@@ -153,7 +153,7 @@ export interface ConversationStore {
     conversationId: string,
     agentId: string,
     tenantId: string | null,
-    entries: Array<Omit<ConversationEntry, "seq" | "createdAt">>,
+    entries: NewConversationEntry[],
   ): Promise<ConversationEntry[]>;
   /** Read a conversation's entries ordered by `seq` ascending. */
   readEntries(
@@ -396,7 +396,7 @@ export class InMemoryConversationStore implements ConversationStore {
     conversationId: string,
     _agentId: string,
     _tenantId: string | null,
-    entries: Array<Omit<ConversationEntry, "seq" | "createdAt">>,
+    entries: NewConversationEntry[],
   ): Promise<ConversationEntry[]> {
     const list = this.entries.get(conversationId) ?? [];
     // seq is per-conversation: max existing seq + 1, then consecutive.

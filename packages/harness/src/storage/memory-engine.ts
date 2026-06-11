@@ -14,7 +14,7 @@ import type { MainMemory } from "../memory.js";
 import type { TodoItem } from "../todo-tools.js";
 import type { Reminder, ReminderCreateInput, ReminderStatus } from "../reminder-store.js";
 import type { StorageEngine, VfsDirEntry, VfsStat } from "./engine.js";
-import type { ConversationEntry } from "./entries.js";
+import type { ConversationEntry, NewConversationEntry } from "./entries.js";
 
 // ---------------------------------------------------------------------------
 // Internal VFS entry type
@@ -247,7 +247,7 @@ export class InMemoryEngine implements StorageEngine {
       conversationId: string,
       _agentId: string,
       _tenantId: string | null,
-      entries: Array<Omit<ConversationEntry, "seq" | "createdAt">>,
+      entries: NewConversationEntry[],
     ): Promise<ConversationEntry[]> => {
       const list = this.entries.get(conversationId) ?? [];
       // seq is per-conversation: max existing seq + 1, then consecutive.

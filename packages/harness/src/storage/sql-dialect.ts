@@ -22,7 +22,7 @@ import type { MainMemory } from "../memory.js";
 import type { TodoItem } from "../todo-tools.js";
 import type { Reminder, ReminderCreateInput, ReminderStatus } from "../reminder-store.js";
 import type { StorageEngine, VfsDirEntry, VfsStat } from "./engine.js";
-import type { ConversationEntry } from "./entries.js";
+import type { ConversationEntry, NewConversationEntry } from "./entries.js";
 import { type DialectTag, migrations } from "./schema.js";
 
 // ---------------------------------------------------------------------------
@@ -634,7 +634,7 @@ export abstract class SqlStorageEngine implements StorageEngine {
       conversationId: string,
       agentId: string,
       tenantId: string | null,
-      entries: Array<Omit<ConversationEntry, "seq" | "createdAt">>,
+      entries: NewConversationEntry[],
     ): Promise<ConversationEntry[]> => {
       if (entries.length === 0) return [];
       const tid = normalizeTenant(tenantId);
