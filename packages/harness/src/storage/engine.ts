@@ -5,6 +5,7 @@ import type {
   ConversationSummary,
   PendingSubagentResult,
 } from "../state.js";
+import type { ConversationEntry, NewConversationEntry } from "./entries.js";
 import type { MainMemory } from "../memory.js";
 import type { TodoItem } from "../todo-tools.js";
 import type { Reminder, ReminderCreateInput, ReminderStatus } from "../reminder-store.js";
@@ -77,6 +78,23 @@ export interface StorageEngine {
     clearCallbackLock(conversationId: string): Promise<Conversation | undefined>;
     /** List thread conversations anchored under `parentConversationId`. */
     listThreads(parentConversationId: string): Promise<ConversationSummary[]>;
+    /**
+     * Append entries to a conversation's append-only log (Phase 3 substrate).
+     * Assigns a per-conversation monotonic `seq` and `createdAt` to each entry,
+     * persists them in order, and returns the stored entries. Additive — no
+     * read path consumes these yet.
+     */
+    appendEntries(
+      conversationId: string,
+      agentId: string,
+      tenantId: string | null,
+      entries: NewConversationEntry[],
+    ): Promise<ConversationEntry[]>;
+    /** Read a conversation's entries ordered by `seq` ascending. */
+    readEntries(
+      conversationId: string,
+      opts?: { types?: string[]; afterSeq?: number; limit?: number },
+    ): Promise<ConversationEntry[]>;
   };
 
   // --- Memory (replaces MemoryStore) ---

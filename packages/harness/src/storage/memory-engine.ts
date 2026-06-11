@@ -14,6 +14,7 @@ import type { MainMemory } from "../memory.js";
 import type { TodoItem } from "../todo-tools.js";
 import type { Reminder, ReminderCreateInput, ReminderStatus } from "../reminder-store.js";
 import type { StorageEngine, VfsDirEntry, VfsStat } from "./engine.js";
+import type { ConversationEntry, NewConversationEntry } from "./entries.js";
 
 // ---------------------------------------------------------------------------
 // Internal VFS entry type
@@ -59,6 +60,8 @@ export class InMemoryEngine implements StorageEngine {
 
   // Conversation data
   private convs = new Map<string, Conversation>();
+  // Append-only conversation entries (Phase 3 substrate)
+  private entries = new Map<string, ConversationEntry[]>();
   // Memory data
   private mem = new Map<string, MainMemory>();
   // Todos data
@@ -238,6 +241,43 @@ export class InMemoryEngine implements StorageEngine {
       }
       results.sort((a, b) => b.updatedAt - a.updatedAt);
       return results;
+    },
+
+    appendEntries: async (
+      conversationId: string,
+      _agentId: string,
+      _tenantId: string | null,
+      entries: NewConversationEntry[],
+    ): Promise<ConversationEntry[]> => {
+      const list = this.entries.get(conversationId) ?? [];
+      // seq is per-conversation: max existing seq + 1, then consecutive.
+      let nextSeq = list.reduce((max, e) => (e.seq > max ? e.seq : max), 0) + 1;
+      const now = Date.now();
+      const stored: ConversationEntry[] = entries.map(
+        (e) => ({ ...e, seq: nextSeq++, createdAt: now }) as ConversationEntry,
+      );
+      this.entries.set(conversationId, [...list, ...stored]);
+      return stored;
+    },
+
+    readEntries: async (
+      conversationId: string,
+      opts?: { types?: string[]; afterSeq?: number; limit?: number },
+    ): Promise<ConversationEntry[]> => {
+      let list = (this.entries.get(conversationId) ?? [])
+        .slice()
+        .sort((a, b) => a.seq - b.seq);
+      if (opts?.types && opts.types.length > 0) {
+        const allowed = new Set(opts.types);
+        list = list.filter((e) => allowed.has(e.type));
+      }
+      if (typeof opts?.afterSeq === "number") {
+        list = list.filter((e) => e.seq > opts.afterSeq!);
+      }
+      if (typeof opts?.limit === "number") {
+        list = list.slice(0, opts.limit);
+      }
+      return list;
     },
   };
 

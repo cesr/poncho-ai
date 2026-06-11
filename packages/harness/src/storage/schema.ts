@@ -214,4 +214,34 @@ export const migrations: Migration[] = [
       ];
     },
   },
+  {
+    version: 8,
+    name: "conversation_entries",
+    // Append-only conversation log (Phase 3 substrate). Additive: no
+    // existing table or behavior changes. `seq` is a per-conversation
+    // monotonic order assigned by the application (NOT an autoincrement
+    // serial), so the same seq space restarts at 1 for every conversation.
+    // The UNIQUE (conversation_id, seq) constraint backstops the
+    // app-assigned ordering against concurrent writers.
+    up: (d) => {
+      const jsonType = d === "sqlite" ? "TEXT" : "JSONB";
+      const tsDefault = d === "sqlite" ? "datetime('now')" : "NOW()";
+      const autoTs = `DEFAULT (${tsDefault})`;
+      return [
+        `CREATE TABLE IF NOT EXISTS conversation_entries (
+          seq INTEGER NOT NULL,
+          id TEXT NOT NULL UNIQUE,
+          agent_id TEXT NOT NULL,
+          tenant_id TEXT NOT NULL DEFAULT '__default__',
+          conversation_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          payload ${jsonType} NOT NULL,
+          created_at TIMESTAMP ${autoTs},
+          UNIQUE (conversation_id, seq)
+        )`,
+        `CREATE INDEX IF NOT EXISTS idx_conversation_entries_seq
+          ON conversation_entries (conversation_id, seq)`,
+      ];
+    },
+  },
 ];
