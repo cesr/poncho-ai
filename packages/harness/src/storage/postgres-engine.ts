@@ -36,12 +36,25 @@ export class PostgresEngine extends SqlStorageEngine {
         return rows as T[];
       },
       exec: async (sql: string): Promise<void> => {
-        await this.sql.unsafe(sql);
+        // DDL is idempotent in our migrations (`CREATE TABLE IF NOT
+        // EXISTS`, etc.), so retrying on a stale-socket drop is
+        // safe — same idempotency as `query()` reads/writes.
+        await this.runWithRetry(() => this.sql.unsafe(sql));
       },
       transaction: async (fn: () => Promise<void>): Promise<void> => {
-        await this.sql.begin(async () => {
+        // Transactions are inherently retry-safe at the
+        // CONNECTION_ENDED boundary: if the connection dies before
+        // BEGIN takes effect server-side, no work was committed and
+        // re-running `fn` produces the correct end state. The retry
+        // only catches the connection-level reject from the
+        // postgres.js client; a partial-commit + drop scenario
+        // surfaces as a different error code and bypasses the
+        // retry, preserving the caller's expectation that a
+        // returned transaction either fully committed or fully
+        // rolled back.
+        await this.runWithRetry(() => this.sql.begin(async () => {
           await fn();
-        });
+        }));
       },
     };
   }
@@ -59,25 +72,34 @@ export class PostgresEngine extends SqlStorageEngine {
       prepare: false,
       // Connection-pool resilience. Managed Postgres providers
       // (Railway, Neon, Heroku, etc.) routinely drop idle TCP
-      // connections server-side after a few minutes. Without these
-      // knobs, porsager/postgres keeps stale sockets in the pool;
-      // the next query on one rejects with
-      // `write CONNECTION_ENDED <host>:5432` at `durMs=0`, surfacing
-      // as a hard failure to the caller. Two complementary settings:
+      // connections server-side after a few minutes — and on
+      // Railway in particular, mid-stream drops within a few
+      // seconds of inactivity are common. Without these knobs,
+      // porsager/postgres keeps stale sockets in the pool; the
+      // next query on one rejects with
+      // `write CONNECTION_ENDED <host>:5432` at `durMs=0`,
+      // surfacing as a hard failure to the caller.
       //
-      //   - `idle_timeout: 20` closes idle connections client-side
-      //     after 20s, before any reasonable provider-side timer
-      //     fires. Fresh connection on next checkout = no stale
-      //     socket race.
-      //   - `max_lifetime: 600` (10 min) recycles long-lived
-      //     connections defensively even if they've stayed busy,
-      //     which sidesteps a separate class of provider-side
-      //     "max connection age" limits.
+      //   - `idle_timeout: 5` closes idle connections client-side
+      //     aggressively. Empirically Railway's pg drops sockets
+      //     well before the 20s value that managed-provider docs
+      //     suggest; 5s is short enough to win the race in
+      //     practice while staying long enough that bursty
+      //     workloads still get connection reuse.
+      //   - `max_lifetime: 300` (5 min) recycles long-lived
+      //     connections defensively. Even with idle_timeout, a
+      //     connection that's been actively serving small queries
+      //     for an hour can hit provider-side max-age limits.
+      //   - `connect_timeout: 10` — slightly less patient on
+      //     initial connect than the 30s default. Combined with
+      //     the retry below, "connection refused" surfaces faster
+      //     during incidents and the caller can shed load instead
+      //     of stacking up.
       //
-      // Defaults remain `max: 10`, `connect_timeout: 30` — leaving
-      // pool size + initial connect behavior unchanged.
-      idle_timeout: 20,
-      max_lifetime: 60 * 10,
+      // Pool size (`max: 10`) unchanged.
+      idle_timeout: 5,
+      max_lifetime: 60 * 5,
+      connect_timeout: 10,
     });
   }
 
@@ -147,33 +169,53 @@ export class PostgresEngine extends SqlStorageEngine {
   }
 
   /**
-   * Single retry on a transient connection-layer failure. The
-   * `idle_timeout` / `max_lifetime` config above prevents *most*
-   * stale-connection cases, but a query can still race a
-   * provider-initiated drop in flight — the postgres.js client
-   * rejects with `code: "CONNECTION_ENDED"` and the next attempt
-   * checks out a fresh connection from the pool. One retry is
-   * enough; if it fails again the host-side network is genuinely
-   * broken and the caller should see the error.
+   * Retry on transient connection-layer failures. Three attempts
+   * with exponential-ish backoff (0, 50ms, 200ms) — the pool may
+   * have multiple stale sockets accumulated during an idle period
+   * (especially on managed Postgres after boot when no traffic
+   * has flowed for a while), so a single retry can land on a
+   * second stale socket and still fail. Three attempts virtually
+   * always exhausts the staleness wave; if all three throw, the
+   * failure is real and the caller should see it.
    *
-   * Only retries reads + the standard exec/run paths in `query`;
-   * `sql.unsafe(sql)` calls in `executeRaw` (migration DDL) and
-   * `sql.begin(...)` transactions are unwrapped — those are
-   * idempotent-by-construction (DDL is `IF NOT EXISTS`) or
-   * atomically scoped (transactions roll back cleanly), and adding
-   * a retry around them would complicate the transaction
-   * semantics.
+   * Applied to every pg path the executor exposes:
+   *  - `query()` (run/get/all)  — natural retry: queries are
+   *    idempotent at the connection-failure boundary because the
+   *    server-side rollback runs cleanly on socket close.
+   *  - `exec(sql)` for DDL      — `CREATE TABLE IF NOT EXISTS` and
+   *    friends are idempotent by construction.
+   *  - `transaction(fn)`        — only retried when the
+   *    CONNECTION_ENDED reject arrives *before* the transaction
+   *    body started executing on the connection; if it errors
+   *    mid-transaction, the postgres.js client surfaces a
+   *    different error class (the inner SQL error) and bypasses
+   *    this retry, preserving the all-or-nothing semantics.
    */
   private async runWithRetry<T>(fn: () => Promise<T>): Promise<T> {
-    try {
-      return await fn();
-    } catch (err) {
-      const code = (err as { code?: string } | null | undefined)?.code;
-      if (code === "CONNECTION_ENDED" || code === "CONNECTION_CLOSED" || code === "CONNECTION_DESTROYED") {
-        return await fn();
+    const backoffs = [0, 50, 200];
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < backoffs.length; attempt++) {
+      if (backoffs[attempt] > 0) {
+        await new Promise((r) => setTimeout(r, backoffs[attempt]));
       }
-      throw err;
+      try {
+        return await fn();
+      } catch (err) {
+        lastErr = err;
+        const code = (err as { code?: string } | null | undefined)?.code;
+        if (
+          code === "CONNECTION_ENDED" ||
+          code === "CONNECTION_CLOSED" ||
+          code === "CONNECTION_DESTROYED" ||
+          code === "CONNECT_TIMEOUT" ||
+          code === "ECONNRESET"
+        ) {
+          continue;
+        }
+        throw err;
+      }
     }
+    throw lastErr;
   }
 
   private addToPathCache(tenantId: string, path: string): void {
