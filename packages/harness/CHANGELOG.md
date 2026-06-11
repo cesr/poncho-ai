@@ -1,5 +1,79 @@
 # @poncho-ai/harness
 
+## 0.52.2
+
+### Patch Changes
+
+- [#124](https://github.com/cesr/poncho-ai/pull/124) [`4ae26e0`](https://github.com/cesr/poncho-ai/commit/4ae26e0d8d2788f57411f9c17e10766769514f9b) Thanks [@cesr](https://github.com/cesr)! - harness: postgres retry covers exec/transaction + 3 attempts + tighter idle
+
+  Follow-up to the previous `idle_timeout`/`max_lifetime`/retry patch.
+  Live testing on Railway showed the previous values weren't tight
+  enough — `write CONNECTION_ENDED postgres.railway.internal:5432`
+  still surfaced both during user-facing chat turns and during
+  subagent auto-callback reruns, despite the new config and the
+  one-shot retry.
+
+  Two failure modes the previous version didn't cover:
+  1. The retry only wrapped `private query()` (executor.run/get/all),
+     but `executor.exec` (`sql.unsafe`) and `executor.transaction`
+     (`sql.begin`) called the postgres.js client directly. A pg drop
+     inside a transaction or migration write threw straight through.
+  2. After an idle period the pool can have multiple stale sockets;
+     a single retry can checkout a second stale socket from the pool
+     and fail again. One-shot retry exhausted into an error visible
+     to the caller.
+
+  Fixes:
+  - All three executor paths (`run/get/all`, `exec`, `transaction`)
+    now go through the same `runWithRetry` wrapper. Transactions
+    only retry the connection-level `CONNECTION_ENDED` reject from
+    the postgres.js client — actual SQL errors mid-transaction
+    surface as a different error class and bypass the retry,
+    preserving atomic semantics.
+  - Three attempts with light exponential backoff (0, 50ms, 200ms).
+    Enough to ride out a typical staleness wave; if all three fail
+    the network is genuinely broken.
+  - `CONNECT_TIMEOUT` and `ECONNRESET` added to the retry-eligible
+    error codes.
+
+  Config knobs tightened:
+  - `idle_timeout: 5` (was 20). Empirically Railway's pg drops
+    sockets well before 20s; 5s wins the race in practice while
+    staying long enough for bursty workloads to reuse connections.
+  - `max_lifetime: 300` (was 600). Same reasoning — recycle more
+    aggressively.
+  - `connect_timeout: 10` (was 30 default). Faster failure during
+    incidents lets callers shed load instead of stacking up.
+
+- [#144](https://github.com/cesr/poncho-ai/pull/144) [`28d640b`](https://github.com/cesr/poncho-ai/commit/28d640b2f82ea780f8e0be90965972d9903c01d7) Thanks [@cesr](https://github.com/cesr)! - orchestrator: make subagent result delivery reliable
+
+  Subagent results could silently never reach the parent agent. Several
+  plumbing bugs in `runSubagent` / `runSubagentContinuation`:
+  - **Emit-before-persist race.** `subagent:completed` / `subagent:error`
+    were emitted to the parent's event stream _before_ the result was
+    written to the store, so a consumer reacting to the event (the parent
+    callback, the streaming client) could race the write. Now the result
+    is persisted first, then the event is emitted.
+  - **Silently swallowed writes.** Two `appendSubagentResult(...).catch(() => {})`
+    call sites (the error path and the continuation-error path) dropped the
+    result with no trace on a transient store failure. Replaced with a
+    shared `appendSubagentResultReliable` helper that retries once and then
+    logs loudly — a dropped result is the worst failure mode (the parent
+    waits forever on a subagent it thinks is still running).
+  - **Un-awaited eventSink.** The subagent-callback run path was the lone
+    `this.eventSink(...)` call site that didn't `await` (every other site
+    does), so callback-turn events could interleave out of order. Now awaited.
+  - **Spawn rejections went to a bare `console.error`.** A background
+    `runSubagent` that rejected outside its own try/catch left the parent
+    hanging. Both fire-and-forget spawn paths now route to a
+    `handleSpawnFailure` that marks the child errored and hands the parent
+    an error result so the turn can resume.
+  - **`recoverStaleSubagents` now also drains undelivered results.** It
+    previously only rescued children stuck in `running`; it now also
+    re-triggers the parent callback for any parent that has results sitting
+    in the store with no active run (e.g. a result persisted just before a
+    process restart, whose in-memory callback trigger was lost).
+
 ## 0.52.1
 
 ### Patch Changes
