@@ -1012,13 +1012,6 @@ export class AgentOrchestrator {
         await this.conversationStore.update(conv);
       }
 
-      this.hooks?.onStreamEnd?.(childConversationId);
-      await this.eventSink(parentConversationId, {
-        type: "subagent:completed",
-        subagentId: childConversationId,
-        conversationId: childConversationId,
-      });
-
       // Recover the subagent's real output: prefer the run response, then the
       // streamed draft, then walk the transcript — discarding the synthetic
       // "[Error: ...]" placeholder at each step.
@@ -1051,7 +1044,18 @@ export class AgentOrchestrator {
           : {}),
         timestamp: Date.now(),
       };
-      await this.conversationStore.appendSubagentResult(parentConversationId, pendingResult);
+      // Persist the result BEFORE emitting subagent:completed: a consumer
+      // reacting to the event (the parent callback, the streaming client)
+      // must find the result already durable in the store, not race its write.
+      await this.appendSubagentResultReliable(parentConversationId, pendingResult);
+
+      this.hooks?.onStreamEnd?.(childConversationId);
+      await this.eventSink(parentConversationId, {
+        type: "subagent:completed",
+        subagentId: childConversationId,
+        conversationId: childConversationId,
+      });
+
       this.triggerParentCallback(parentConversationId).catch(err =>
         console.error(`[poncho][subagent] Parent callback failed:`, err instanceof Error ? err.message : err),
       );
@@ -1070,6 +1074,16 @@ export class AgentOrchestrator {
         await this.conversationStore.update(conv);
       }
 
+      const pendingResult: PendingSubagentResult = {
+        subagentId: childConversationId,
+        task,
+        status: "error",
+        error: { code: "SUBAGENT_ERROR", message: errMsg },
+        timestamp: Date.now(),
+      };
+      // Persist before emitting (see the success path); never swallow.
+      await this.appendSubagentResultReliable(parentConversationId, pendingResult);
+
       this.hooks?.onStreamEnd?.(childConversationId);
       await this.eventSink(parentConversationId, {
         type: "subagent:error",
@@ -1078,14 +1092,6 @@ export class AgentOrchestrator {
         error: errMsg,
       });
 
-      const pendingResult: PendingSubagentResult = {
-        subagentId: childConversationId,
-        task,
-        status: "error",
-        error: { code: "SUBAGENT_ERROR", message: errMsg },
-        timestamp: Date.now(),
-      };
-      await this.conversationStore.appendSubagentResult(parentConversationId, pendingResult).catch(() => {});
       this.triggerParentCallback(parentConversationId).catch(err2 =>
         console.error(`[poncho][subagent] Parent callback failed:`, err2 instanceof Error ? err2.message : err2),
       );
@@ -1221,12 +1227,15 @@ export class AgentOrchestrator {
         },
         initialContextTokens: conversation.contextTokens ?? 0,
         initialContextWindow: conversation.contextWindow ?? 0,
-        onEvent: (event) => {
+        onEvent: async (event) => {
           if (event.type === "run:started") {
             const active = this.activeConversationRuns.get(conversationId);
             if (active) active.runId = event.runId;
           }
-          this.eventSink(conversationId, event);
+          // Await so the event is fully sunk before the next step's events,
+          // matching every other eventSink call site (the callback run path
+          // was the lone fire-and-forget exception).
+          await this.eventSink(conversationId, event);
         },
       });
       flushTurnDraft(execution.draft);
@@ -1436,11 +1445,6 @@ export class AgentOrchestrator {
       }
 
       this.activeSubagentRuns.delete(conversationId);
-      await this.eventSink(parentConversationId, {
-        type: "subagent:completed",
-        subagentId: conversationId,
-        conversationId,
-      });
 
       let gathered = realResponseText(runResult?.response) || realResponseText(draft.assistantResponse);
       if (!gathered) {
@@ -1464,8 +1468,17 @@ export class AgentOrchestrator {
             : {}),
           timestamp: Date.now(),
         };
-        await this.conversationStore.appendSubagentResult(parentConversationId, result);
+        // Persist before emitting completion (see runSubagent).
+        await this.appendSubagentResultReliable(parentConversationId, result);
+      }
 
+      await this.eventSink(parentConversationId, {
+        type: "subagent:completed",
+        subagentId: conversationId,
+        conversationId,
+      });
+
+      if (parentConv) {
         if (this.isServerless) {
           this.hooks!.dispatchBackground!("subagent-callback", parentConversationId);
         } else {
@@ -1490,12 +1503,6 @@ export class AgentOrchestrator {
         await this.conversationStore.update(conv);
       }
 
-      await this.eventSink(conversation.parentConversationId!, {
-        type: "subagent:completed",
-        subagentId: conversationId,
-        conversationId,
-      });
-
       const parentConv = await this.conversationStore.get(conversation.parentConversationId!);
       if (parentConv) {
         const result: PendingSubagentResult = {
@@ -1505,11 +1512,23 @@ export class AgentOrchestrator {
           error: { code: "CONTINUATION_ERROR", message: err instanceof Error ? err.message : String(err) },
           timestamp: Date.now(),
         };
-        await this.conversationStore.appendSubagentResult(conversation.parentConversationId!, result);
+        // Persist before emitting; never swallow (was `.catch(() => {})`).
+        await this.appendSubagentResultReliable(conversation.parentConversationId!, result);
+      }
+
+      await this.eventSink(conversation.parentConversationId!, {
+        type: "subagent:completed",
+        subagentId: conversationId,
+        conversationId,
+      });
+
+      if (parentConv) {
         if (this.isServerless) {
           this.hooks!.dispatchBackground!("subagent-callback", conversation.parentConversationId!);
         } else {
-          this.processSubagentCallback(conversation.parentConversationId!).catch(() => {});
+          this.processSubagentCallback(conversation.parentConversationId!).catch(err2 =>
+            console.error(`[poncho][subagent] Continuation-error callback failed:`, err2 instanceof Error ? err2.message : err2),
+          );
         }
       }
     }
@@ -1559,7 +1578,7 @@ export class AgentOrchestrator {
             opts.parentConversationId,
             opts.task,
             opts.ownerId,
-          ).catch(err => console.error(`[poncho][subagent] Background spawn failed:`, err instanceof Error ? err.message : err));
+          ).catch(err => this.handleSpawnFailure(conversation.conversationId, opts.parentConversationId, opts.task, err));
         }
 
         return { subagentId: conversation.conversationId };
@@ -1596,7 +1615,7 @@ export class AgentOrchestrator {
             conversation.parentConversationId,
             message,
             conversation.ownerId,
-          ).catch(err => console.error(`[poncho][subagent] Background sendMessage failed:`, err instanceof Error ? err.message : err));
+          ).catch(err => this.handleSpawnFailure(subagentId, conversation.parentConversationId!, message, err));
         }
 
         return { subagentId };
@@ -1684,6 +1703,79 @@ export class AgentOrchestrator {
 
   // ── Stale subagent recovery ──
 
+  /**
+   * Append a subagent result to its parent, retrying once on a transient
+   * store failure before giving up loudly. A silently dropped result is the
+   * worst subagent failure mode — the parent waits forever on a subagent it
+   * thinks is still running — so this never swallows the error the way the
+   * old `.catch(() => {})` call sites did. Returns whether the result landed.
+   */
+  private async appendSubagentResultReliable(
+    parentConversationId: string,
+    result: PendingSubagentResult,
+  ): Promise<boolean> {
+    try {
+      await this.conversationStore.appendSubagentResult(parentConversationId, result);
+      return true;
+    } catch (firstErr) {
+      try {
+        await this.conversationStore.appendSubagentResult(parentConversationId, result);
+        return true;
+      } catch (secondErr) {
+        console.error(
+          `[poncho][subagent] FAILED to persist result for subagent ${result.subagentId} ` +
+            `to parent ${parentConversationId} after 2 attempts — the parent will not see this result:`,
+          secondErr instanceof Error ? secondErr.message : secondErr,
+          `(first attempt: ${firstErr instanceof Error ? firstErr.message : firstErr})`,
+        );
+        return false;
+      }
+    }
+  }
+
+  /**
+   * A subagent's fire-and-forget background run rejected outside its own
+   * error handling (e.g. it threw before entering its try block, or the
+   * catch block itself threw). Without this the parent is left waiting on a
+   * subagent that will never report back. Record the failure on the child
+   * and hand the parent an error result so the turn can resume.
+   */
+  private async handleSpawnFailure(
+    childConversationId: string,
+    parentConversationId: string,
+    task: string,
+    err: unknown,
+  ): Promise<void> {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[poncho][subagent] Background run failed for ${childConversationId}:`, message);
+    try {
+      const conv = await this.conversationStore.get(childConversationId);
+      if (conv?.subagentMeta && conv.subagentMeta.status === "running") {
+        conv.subagentMeta = {
+          ...conv.subagentMeta,
+          status: "error",
+          error: { code: "SUBAGENT_SPAWN_FAILED", message },
+        };
+        conv.updatedAt = Date.now();
+        await this.conversationStore.update(conv);
+      }
+    } catch {
+      // best-effort: the result append below is what the parent actually needs
+    }
+    const appended = await this.appendSubagentResultReliable(parentConversationId, {
+      subagentId: childConversationId,
+      task,
+      status: "error",
+      error: { code: "SUBAGENT_SPAWN_FAILED", message },
+      timestamp: Date.now(),
+    });
+    if (appended) {
+      this.triggerParentCallback(parentConversationId).catch(e =>
+        console.error(`[poncho][subagent] Parent callback failed after spawn failure:`, e instanceof Error ? e.message : e),
+      );
+    }
+  }
+
   async recoverStaleSubagents(): Promise<void> {
     const allSummaries = await this.conversationStore.listSummaries();
     const subagentSummaries = allSummaries.filter((s) => s.parentConversationId);
@@ -1711,11 +1803,26 @@ export class AgentOrchestrator {
             error: conv.subagentMeta.error,
             timestamp: Date.now(),
           };
-          await this.conversationStore.appendSubagentResult(conv.parentConversationId, pendingResult);
+          await this.appendSubagentResultReliable(conv.parentConversationId, pendingResult);
           parentsToCallback.add(conv.parentConversationId);
         }
       }
     }
+
+    // Also drain parents that already have results sitting in the store but
+    // no active run to deliver them — e.g. a result persisted just before a
+    // process restart, whose in-memory callback trigger was lost. Without
+    // this the parent stays stuck even though its result landed durably.
+    const parentIds = new Set(
+      subagentSummaries.map(s => s.parentConversationId).filter((id): id is string => !!id),
+    );
+    for (const parentId of parentIds) {
+      if (parentsToCallback.has(parentId)) continue;
+      if (this.activeConversationRuns.has(parentId)) continue;
+      const parent = await this.conversationStore.get(parentId);
+      if (parent?.pendingSubagentResults?.length) parentsToCallback.add(parentId);
+    }
+
     for (const parentId of parentsToCallback) {
       this.processSubagentCallback(parentId).catch(err =>
         console.error(`[poncho][subagent] Recovery callback failed for ${parentId}:`, err instanceof Error ? err.message : err),
