@@ -62,7 +62,10 @@ export class ToolDispatcher {
     }
 
     try {
-      const output = await definition.handler(call.input, context);
+      // Per-call context: stamp the current tool call's id so handlers that
+      // spawn further work (spawn_subagent) can record `parentToolCallId`.
+      // A fresh object — `context` is shared across a batch, don't mutate it.
+      const output = await definition.handler(call.input, { ...context, toolCallId: call.id });
       if (context.abortSignal?.aborted) {
         return {
           callId: call.id,

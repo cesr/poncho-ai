@@ -76,6 +76,11 @@ export interface ToolContext {
   parameters: Record<string, unknown>;
   abortSignal?: AbortSignal;
   conversationId?: string;
+  /** The id of the tool call currently executing. Lets a tool that spawns
+   *  further work (spawn_subagent) record which call produced it, so the
+   *  resulting subagent events can carry `parentToolCallId` and the client
+   *  can attach subagent state to the spawning tool's pill. */
+  toolCallId?: string;
   /** The tenant ID when running in multi-tenant mode. */
   tenantId?: string;
   /** Telemetry is suppressed for this run (e.g. an incognito turn). Tools
@@ -183,7 +188,25 @@ export interface AgentFailure {
 }
 
 export type AgentEvent =
-  | { type: "run:started"; runId: string; agentId: string; contextWindow?: number }
+  | {
+      type: "run:started";
+      runId: string;
+      agentId: string;
+      contextWindow?: number;
+      /**
+       * Why this run began. Lets a streaming client render the run
+       * deterministically instead of inferring from event order:
+       *  - "user": a fresh user-message turn.
+       *  - "continuation": the harness continued a long turn past a
+       *    checkpoint (same logical turn).
+       *  - "subagent_callback": a turn injecting a finished subagent's
+       *    result back into the parent.
+       *  - "approval_resume": resuming after a tool-approval decision
+       *    (continues the existing assistant turn).
+       * Absent on older harness versions.
+       */
+      cause?: "user" | "continuation" | "subagent_callback" | "approval_resume";
+    }
   | { type: "run:completed"; runId: string; result: RunResult; pendingSubagents?: boolean }
   | { type: "run:cancelled"; runId: string; messages?: Message[] }
   | { type: "run:error"; runId: string; error: AgentFailure }
@@ -193,9 +216,9 @@ export type AgentEvent =
   | { type: "model:chunk"; content: string }
   | { type: "model:response"; usage: TokenUsage }
   | { type: "tool:generating"; tool: string; toolCallId: string }
-  | { type: "tool:started"; tool: string; input: unknown }
-  | { type: "tool:completed"; tool: string; input?: unknown; output: unknown; duration: number; outputTokenEstimate?: number }
-  | { type: "tool:error"; tool: string; error: string; recoverable: boolean }
+  | { type: "tool:started"; tool: string; toolCallId: string; input: unknown }
+  | { type: "tool:completed"; tool: string; toolCallId: string; input?: unknown; output: unknown; duration: number; outputTokenEstimate?: number }
+  | { type: "tool:error"; tool: string; toolCallId: string; error: string; recoverable: boolean }
   | {
       type: "tool:approval:required";
       tool: string;
@@ -246,10 +269,10 @@ export type AgentEvent =
       url?: string;
       interactionAllowed: boolean;
     }
-  | { type: "subagent:spawned"; subagentId: string; conversationId: string; task: string }
-  | { type: "subagent:completed"; subagentId: string; conversationId: string }
-  | { type: "subagent:error"; subagentId: string; conversationId: string; error: string }
-  | { type: "subagent:stopped"; subagentId: string; conversationId: string }
+  | { type: "subagent:spawned"; subagentId: string; conversationId: string; task: string; parentToolCallId?: string }
+  | { type: "subagent:completed"; subagentId: string; conversationId: string; task?: string; parentToolCallId?: string; resultText?: string }
+  | { type: "subagent:error"; subagentId: string; conversationId: string; error: string; task?: string; parentToolCallId?: string; resultText?: string }
+  | { type: "subagent:stopped"; subagentId: string; conversationId: string; task?: string; parentToolCallId?: string }
   | {
       type: "subagent:approval_needed";
       subagentId: string;

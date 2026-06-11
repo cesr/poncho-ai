@@ -40,6 +40,10 @@ export interface SubagentManager {
     /** Inherit the parent run's telemetry choice — when true, the subagent
      *  run (and its re-runs) emit no telemetry. */
     suppressTelemetry?: boolean;
+    /** The id of the `spawn_subagent` tool call that produced this subagent,
+     *  so its events can carry `parentToolCallId` and a client can attach
+     *  subagent state to the spawning tool's pill. */
+    parentToolCallId?: string;
   }): Promise<SubagentSpawnResult>;
 
   sendMessage(subagentId: string, message: string): Promise<SubagentSpawnResult>;
