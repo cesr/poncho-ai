@@ -218,10 +218,6 @@ export function getPendingSubagentResults(
     .map((e) => e.result);
 }
 
-// A very large tail so the rebuilt display snapshot is the full transcript.
-// Display callers slice to whatever window they actually render.
-const FULL_TRANSCRIPT_TAIL = 100_000;
-
 /**
  * Phase 3c read cutover: rebuild a conversation's reader-facing fields from
  * the append-only entry log, with a blob fallback for conversations that
@@ -251,19 +247,25 @@ export async function rebuildConversationFromEntries(
   conversation: Conversation,
   readEntries: (conversationId: string) => Promise<ConversationEntry[]>,
 ): Promise<Conversation> {
-  // Kill-switch: ON by default; PONCHO_READ_ENTRIES="0" reverts to blob reads.
+  // Targeted append-only: only `pendingSubagentResults` is read from the
+  // entry log, because it's the ONLY conversation field with a write race
+  // (a subagent finishing mid-turn vs. the parent turn's whole-blob write).
+  // The message history (`messages` / `_harnessMessages`) is written solely
+  // by the turn finalize, which the orchestrator serializes per
+  // conversation — never raced — so it stays on the blob (known-good, and
+  // far simpler than faithfully rebuilding the LLM transcript from entries).
+  //
+  // Kill-switch: ON by default; PONCHO_READ_ENTRIES="0" reverts to the blob.
   if (process.env.PONCHO_READ_ENTRIES === "0") return conversation;
 
   try {
     const entries = await readEntries(conversation.conversationId);
     if (entries.length === 0) return conversation; // fallback: pre-dual-write
-    conversation._harnessMessages = buildLlmContext(entries);
-    conversation.messages = buildDisplaySnapshot(entries, FULL_TRANSCRIPT_TAIL).messages;
     conversation.pendingSubagentResults = getPendingSubagentResults(entries);
     return conversation;
   } catch (err) {
     entriesReadLog.warn(
-      `[entries-read] ${conversation.conversationId} rebuild failed, using blob: ${
+      `[entries-read] ${conversation.conversationId} pendingSubagentResults rebuild failed, using blob: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
