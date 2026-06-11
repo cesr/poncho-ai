@@ -557,11 +557,21 @@ export abstract class SqlStorageEngine implements StorageEngine {
       conversationId: string,
       title: string,
     ): Promise<Conversation | undefined> => {
-      const conv = await this.conversations.get(conversationId);
-      if (!conv) return undefined;
-      conv.title = normalizeTitle(title);
-      await this.conversations.update(conv);
-      return conv;
+      // Targeted column update — deliberately NOT get→mutate→update().
+      // The whole-row read-modify-write races a streaming turn's per-step
+      // draft persist: rename reads the row at T0, the turn persists step
+      // N's draft at T1, rename writes T0's stale blob back at T2 and
+      // silently reverts the turn's progress. Title lives in its own
+      // column, so touch only that (+ updated_at for sidebar ordering).
+      const normalized = normalizeTitle(title);
+      await this.executor.run(
+        rewrite(
+          `UPDATE conversations SET title = $1, updated_at = $2 WHERE id = $3`,
+          this.dialect,
+        ),
+        [normalized, new Date().toISOString(), conversationId],
+      );
+      return this.conversations.get(conversationId);
     },
 
     delete: async (conversationId: string): Promise<boolean> => {
