@@ -1,5 +1,12 @@
 # @poncho-ai/client
 
+## 0.11.6
+
+### Patch Changes
+
+- Updated dependencies [[`299f574`](https://github.com/cesr/poncho-ai/commit/299f574a2f2f0d4873f42bbcffdf604e9cc4c29c)]:
+  - @poncho-ai/sdk@1.15.1
+
 ## 0.11.5
 
 ### Patch Changes
