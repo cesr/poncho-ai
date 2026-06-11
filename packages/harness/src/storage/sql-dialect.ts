@@ -22,7 +22,11 @@ import type { MainMemory } from "../memory.js";
 import type { TodoItem } from "../todo-tools.js";
 import type { Reminder, ReminderCreateInput, ReminderStatus } from "../reminder-store.js";
 import type { StorageEngine, VfsDirEntry, VfsStat } from "./engine.js";
-import type { ConversationEntry, NewConversationEntry } from "./entries.js";
+import {
+  type ConversationEntry,
+  type NewConversationEntry,
+  rebuildConversationFromEntries,
+} from "./entries.js";
 import { type DialectTag, migrations } from "./schema.js";
 
 // ---------------------------------------------------------------------------
@@ -325,7 +329,12 @@ export abstract class SqlStorageEngine implements StorageEngine {
             ? JSON.parse(row.continuation_messages)
             : row.continuation_messages;
       }
-      return conv;
+      // Phase 3c read cutover: rebuild reader-facing fields from the
+      // append-only entry log, falling back to the blob for un-migrated
+      // conversations. parseConversation returns a fresh object, so no clone.
+      return rebuildConversationFromEntries(conv, (id) =>
+        this.conversations.readEntries(id),
+      );
     },
 
     getStatusSnapshot: async (
@@ -408,7 +417,11 @@ export abstract class SqlStorageEngine implements StorageEngine {
             ? JSON.parse(row.continuation_messages)
             : row.continuation_messages;
       }
-      return conv;
+      // Phase 3c read cutover: rebuild reader-facing fields from the entry
+      // log (blob fallback for un-migrated conversations).
+      return rebuildConversationFromEntries(conv, (id) =>
+        this.conversations.readEntries(id),
+      );
     },
 
     create: async (
