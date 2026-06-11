@@ -693,12 +693,15 @@ export class AgentOrchestrator {
       result: { status: "completed", response: responseText, steps: 0, tokens: { input: 0, output: 0, cached: 0 }, duration: 0 },
       timestamp: Date.now(),
     };
-    await this.conversationStore.appendSubagentResult(conv.parentConversationId, pendingResult);
+    await this.appendSubagentResultReliable(conv.parentConversationId, pendingResult);
 
     await this.eventSink(conv.parentConversationId, {
       type: "subagent:completed",
       subagentId,
       conversationId: subagentId,
+      task: conv.subagentMeta?.task ?? conv.title,
+      parentToolCallId: conv.subagentMeta?.parentToolCallId,
+      resultText: responseText,
     });
 
     await this.triggerParentCallback(conv.parentConversationId);
@@ -796,10 +799,14 @@ export class AgentOrchestrator {
     let latestRunId = "";
     let runResult: { status: "completed" | "error" | "cancelled"; response?: string; steps: number; duration: number; continuation?: boolean; continuationMessages?: Message[] } | undefined;
     let runError: { code?: string; message?: string } | undefined;
+    // The spawning tool call's id — echoed onto subagent:* events so the
+    // client can attach subagent state to that tool's pill.
+    let parentToolCallId: string | undefined;
 
     try {
       const conversation = await this.conversationStore.getWithArchive(childConversationId);
       if (!conversation) throw new Error("Subagent conversation not found");
+      parentToolCallId = conversation.subagentMeta?.parentToolCallId;
 
       if (conversation.subagentMeta?.status === "stopped") return;
 
@@ -1054,6 +1061,9 @@ export class AgentOrchestrator {
         type: "subagent:completed",
         subagentId: childConversationId,
         conversationId: childConversationId,
+        task,
+        parentToolCallId,
+        resultText: subagentResponse,
       });
 
       this.triggerParentCallback(parentConversationId).catch(err =>
@@ -1090,6 +1100,8 @@ export class AgentOrchestrator {
         subagentId: childConversationId,
         conversationId: childConversationId,
         error: errMsg,
+        task,
+        parentToolCallId,
       });
 
       this.triggerParentCallback(parentConversationId).catch(err2 =>
@@ -1476,6 +1488,9 @@ export class AgentOrchestrator {
         type: "subagent:completed",
         subagentId: conversationId,
         conversationId,
+        task,
+        parentToolCallId: conversation.subagentMeta?.parentToolCallId,
+        resultText: subagentResponse,
       });
 
       if (parentConv) {
@@ -1520,6 +1535,8 @@ export class AgentOrchestrator {
         type: "subagent:completed",
         subagentId: conversationId,
         conversationId,
+        task,
+        parentToolCallId: conversation.subagentMeta?.parentToolCallId,
       });
 
       if (parentConv) {
@@ -1553,7 +1570,7 @@ export class AgentOrchestrator {
           opts.tenantId ?? null,
           {
             parentConversationId: opts.parentConversationId,
-            subagentMeta: { task: opts.task, status: "running", suppressTelemetry: opts.suppressTelemetry },
+            subagentMeta: { task: opts.task, status: "running", suppressTelemetry: opts.suppressTelemetry, parentToolCallId: opts.parentToolCallId },
             messages: [{ role: "user", content: opts.task }],
           },
         );
@@ -1568,6 +1585,7 @@ export class AgentOrchestrator {
           subagentId: conversation.conversationId,
           conversationId: conversation.conversationId,
           task: opts.task,
+          parentToolCallId: opts.parentToolCallId,
         });
 
         if (this.isServerless) {

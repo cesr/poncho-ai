@@ -3344,7 +3344,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
           return;
         }
         const runtimeToolName = exposedToolNames.get(call.name) ?? call.name;
-        yield pushEvent({ type: "tool:started", tool: runtimeToolName, input: call.input });
+        yield pushEvent({ type: "tool:started", tool: runtimeToolName, toolCallId: call.id, input: call.input });
         if (this.requiresApprovalForToolCall(runtimeToolName, call.input)) {
           approvalNeeded.push({
             approvalId: `approval_${randomUUID()}`,
@@ -3563,6 +3563,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
           yield pushEvent({
             type: "tool:error",
             tool: result.tool,
+            toolCallId: result.callId,
             error: result.error,
             recoverable: true,
           });
@@ -3604,6 +3605,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
           yield pushEvent({
             type: "tool:completed",
             tool: result.tool,
+            toolCallId: result.callId,
             input: callInputMap.get(result.callId),
             output: result.output,
             duration: now() - batchStart,

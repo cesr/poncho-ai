@@ -79,6 +79,9 @@ export interface Conversation {
      *  subagent's runs emit no telemetry (e.g. spawned from an incognito
      *  turn). Read by the orchestrator's runSubagent / continuation. */
     suppressTelemetry?: boolean;
+    /** The parent's `spawn_subagent` tool call id — echoed onto subagent:*
+     *  events so a client can attach subagent state to that tool's pill. */
+    parentToolCallId?: string;
   };
   channelMeta?: {
     platform: string;
