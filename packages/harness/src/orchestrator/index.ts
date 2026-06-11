@@ -61,3 +61,10 @@ export {
   type RunConversationTurnOpts,
   type RunConversationTurnResult,
 } from "./run-conversation-turn.js";
+
+export {
+  appendEntriesSafe,
+  verifyEntriesParity,
+  entriesParityEnabled,
+  newHarnessMessagesThisTurn,
+} from "./entries-dual-write.js";

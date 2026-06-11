@@ -1,4 +1,4 @@
-import { getTextContent, type AgentEvent, type Message } from "@poncho-ai/sdk";
+import { createLogger, getTextContent, type AgentEvent, type Message } from "@poncho-ai/sdk";
 import type { Conversation, ConversationStore, PendingSubagentResult } from "../state.js";
 import type { AgentHarness } from "../harness.js";
 import type { TelemetryEmitter } from "../telemetry.js";
@@ -27,6 +27,17 @@ import {
   CALLBACK_LOCK_STALE_MS,
   STALE_SUBAGENT_THRESHOLD_MS,
 } from "./subagents.js";
+import {
+  appendEntriesSafe,
+  assistantAmendmentEntry,
+  assistantMessageEntry,
+  callbackStartedEntry,
+  subagentResultEntry,
+  userMessageEntry,
+  verifyEntriesParity,
+} from "./entries-dual-write.js";
+
+const dualWriteLog = createLogger("orchestrator:entries");
 
 // ── Subagent result extraction ──
 
@@ -491,6 +502,11 @@ export class AgentOrchestrator {
     if (!checkpointedRun) {
       const conv = await this.conversationStore.get(conversationId);
       if (conv) {
+        // Track which dual-write branch the blob took: an in-place merge onto
+        // the previous assistant bubble (→ assistant_amendment) or a fresh
+        // bubble (→ assistant_message).
+        let amendmentText: string | undefined;
+        let pushedAssistant: Message | undefined;
         const hasAssistantContent =
           draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0 || draft.sections.length > 0;
         if (hasAssistantContent) {
@@ -519,15 +535,14 @@ export class AgentOrchestrator {
                 } as Message["metadata"],
               },
             ];
+            amendmentText = draft.assistantResponse;
           } else {
-            conv.messages = [
-              ...prevMessages,
-              {
-                role: "assistant" as const,
-                content: draft.assistantResponse,
-                metadata: buildAssistantMetadata(draft),
-              },
-            ];
+            pushedAssistant = {
+              role: "assistant" as const,
+              content: draft.assistantResponse,
+              metadata: buildAssistantMetadata(draft),
+            };
+            conv.messages = [...prevMessages, pushedAssistant];
           }
         }
         applyTurnMetadata(conv, {
@@ -537,6 +552,62 @@ export class AgentOrchestrator {
           harnessMessages: execution?.runHarnessMessages,
         }, { shouldRebuildCanonical: true });
         await this.conversationStore.update(conv);
+
+        // DUAL-WRITE (mirrors the resume merge/push above). In-place merge →
+        // assistant_amendment targeting the latest assistant_message entry
+        // (BEST-EFFORT: the blob carries no entry id, so we resolve the target
+        // by reading the log's last assistant_message). Fresh bubble →
+        // assistant_message. Then parity-check. Fire-and-forget.
+        if (amendmentText !== undefined || pushedAssistant) {
+          const finalConv = conv;
+          const amendText = amendmentText;
+          const pushed = pushedAssistant;
+          void (async () => {
+            try {
+              if (pushed) {
+                await appendEntriesSafe(
+                  this.conversationStore,
+                  finalConv,
+                  [assistantMessageEntry(pushed, `resume-${conversationId}`, latestRunId)],
+                  dualWriteLog,
+                );
+              } else if (amendText !== undefined) {
+                const existing = await this.conversationStore.readEntries(
+                  conversationId,
+                  { types: ["assistant_message"] },
+                );
+                const target = existing[existing.length - 1];
+                if (target) {
+                  await appendEntriesSafe(
+                    this.conversationStore,
+                    finalConv,
+                    [assistantAmendmentEntry(target.id, amendText)],
+                    dualWriteLog,
+                  );
+                } else {
+                  dualWriteLog.warn(
+                    `[entries-dual-write] resume amendment for ${conversationId}: no assistant_message entry to target; skipped`,
+                  );
+                }
+              }
+              await verifyEntriesParity(
+                this.conversationStore,
+                conversationId,
+                {
+                  harnessMessages: finalConv._harnessMessages,
+                  displayMessages: finalConv.messages,
+                },
+                dualWriteLog,
+              );
+            } catch (err) {
+              dualWriteLog.error(
+                `[entries-dual-write] resume finalize append failed for ${conversationId}: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          })();
+        }
       }
     } else {
       const conv = await this.conversationStore.get(conversationId);
@@ -1158,6 +1229,9 @@ export class AgentOrchestrator {
     const callbackCount = (conversation.subagentCallbackCount ?? 0) + 1;
     conversation.subagentCallbackCount = callbackCount;
 
+    // Collect the injected callback messages so the dual-write can append them
+    // as hidden user_message entries (mirroring the blob pushes below).
+    const injectedCallbackMessages: Message[] = [];
     for (const pr of pendingResults) {
       // An empty response is recoverable, not a dead end: the subagent's work
       // lives in its transcript even when it produced no closing summary (e.g.
@@ -1172,11 +1246,13 @@ export class AgentOrchestrator {
         : pr.error
           ? `Error: ${pr.error.message}`
           : "(no result)";
-      conversation.messages.push({
+      const injected: Message = {
         role: "user",
         content: `[Subagent Result] Subagent "${pr.task}" (${pr.subagentId}) ${pr.status}:\n\n${resultBody}`,
         metadata: { _subagentCallback: true, subagentId: pr.subagentId, task: pr.task, timestamp: pr.timestamp } as Message["metadata"],
-      });
+      };
+      injectedCallbackMessages.push(injected);
+      conversation.messages.push(injected);
     }
     const processedIds = new Set(pendingResults.map(pr => pr.subagentId));
     const freshForPending = await this.conversationStore.get(conversationId);
@@ -1186,6 +1262,48 @@ export class AgentOrchestrator {
     conversation._harnessMessages = [...conversation.messages];
     conversation.updatedAt = Date.now();
     await this.conversationStore.update(conversation);
+
+    // DUAL-WRITE (mirrors the consume-pending + message-push blob writes
+    // above): append a callback_started entry listing the consumed
+    // subagent_result seqs (resolved by matching subagentId against the entry
+    // log — BEST-EFFORT, since the blob's pending array carries no seq), plus
+    // a hidden user_message entry per injected callback message.
+    if (pendingResults.length > 0) {
+      const turnId = `callback-${callbackCount}-${conversation.conversationId}`;
+      void (async () => {
+        try {
+          const resultEntries = await this.conversationStore.readEntries(
+            conversation.conversationId,
+            { types: ["subagent_result"] },
+          );
+          const consumedIds = new Set(pendingResults.map((pr) => pr.subagentId));
+          const consumedSeqs = resultEntries
+            .filter(
+              (e) =>
+                e.type === "subagent_result" &&
+                consumedIds.has(e.result.subagentId),
+            )
+            .map((e) => e.seq);
+          await appendEntriesSafe(
+            this.conversationStore,
+            conversation,
+            [
+              callbackStartedEntry(consumedSeqs),
+              ...injectedCallbackMessages.map((m) =>
+                userMessageEntry(m, turnId, { hidden: true }),
+              ),
+            ],
+            dualWriteLog,
+          );
+        } catch (err) {
+          dualWriteLog.error(
+            `[entries-dual-write] callback_started append failed for ${conversation.conversationId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      })();
+    }
 
     if (callbackCount > MAX_SUBAGENT_CALLBACK_COUNT) {
       console.warn(`[poncho][subagent-callback] Circuit breaker: ${callbackCount} callbacks for ${conversationId}, skipping re-run`);
@@ -1256,12 +1374,14 @@ export class AgentOrchestrator {
       if (callbackNeedsContinuation || execution.draft.assistantResponse.length > 0 || execution.draft.toolTimeline.length > 0) {
         const freshConv = await this.conversationStore.get(conversationId);
         if (freshConv) {
+          let callbackAssistantMsg: Message | undefined;
           if (!callbackNeedsContinuation) {
-            freshConv.messages.push({
+            callbackAssistantMsg = {
               role: "assistant",
               content: execution.draft.assistantResponse,
               metadata: buildAssistantMetadata(execution.draft),
-            });
+            };
+            freshConv.messages.push(callbackAssistantMsg);
           }
           applyTurnMetadata(freshConv, {
             latestRunId: execution.latestRunId,
@@ -1274,6 +1394,30 @@ export class AgentOrchestrator {
           }, { shouldRebuildCanonical: true, clearApprovals: false });
           freshConv.runningCallbackSince = undefined;
           await this.conversationStore.update(freshConv);
+
+          // DUAL-WRITE (mirrors the assistant push above): the callback re-run's
+          // final assistant bubble. Only when not continuing (a continuation has
+          // no final bubble yet). Then run the parity check on the rebuilt
+          // transcript. Fire-and-forget; never blocks.
+          if (callbackAssistantMsg) {
+            const finalMsg = callbackAssistantMsg;
+            void appendEntriesSafe(
+              this.conversationStore,
+              freshConv,
+              [assistantMessageEntry(finalMsg, `callback-${conversationId}`, execution.latestRunId)],
+              dualWriteLog,
+            ).then(() =>
+              verifyEntriesParity(
+                this.conversationStore,
+                conversationId,
+                {
+                  harnessMessages: freshConv._harnessMessages,
+                  displayMessages: freshConv.messages,
+                },
+                dualWriteLog,
+              ),
+            );
+          }
 
           // Proactive messaging notification
           if (freshConv.channelMeta && execution.draft.assistantResponse.length > 0) {
@@ -1732,6 +1876,28 @@ export class AgentOrchestrator {
     parentConversationId: string,
     result: PendingSubagentResult,
   ): Promise<boolean> {
+    // DUAL-WRITE (mirrors the appendSubagentResult blob write below): append a
+    // subagent_result entry. Fire-and-forget; needs the parent's owner/tenant,
+    // fetched cheaply. Never blocks or fails the reliable append.
+    void (async () => {
+      try {
+        const parent = await this.conversationStore.get(parentConversationId);
+        if (!parent) return;
+        await appendEntriesSafe(
+          this.conversationStore,
+          parent,
+          [subagentResultEntry(result)],
+          dualWriteLog,
+        );
+      } catch (err) {
+        dualWriteLog.error(
+          `[entries-dual-write] subagent_result append failed for ${parentConversationId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    })();
+
     try {
       await this.conversationStore.appendSubagentResult(parentConversationId, result);
       return true;
