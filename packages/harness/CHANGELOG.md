@@ -1,5 +1,14 @@
 # @poncho-ai/harness
 
+## 0.59.2
+
+### Patch Changes
+
+- [`ac0faae`](https://github.com/cesr/poncho-ai/commit/ac0faae54365afda5ef518b0a306a8cde5978ca8) Thanks [@cesr](https://github.com/cesr)! - conversations.rename now does a targeted title-column UPDATE instead of a
+  whole-row get→mutate→update. The read-modify-write raced a streaming turn's
+  per-step draft persist: a rename landing mid-run wrote the stale blob back
+  and silently reverted the turn's persisted progress.
+
 ## 0.59.1
 
 ### Patch Changes
