@@ -1,5 +1,9 @@
 import type { Message } from "@poncho-ai/sdk";
-import type { ConversationEntry, NewConversationEntry } from "./storage/entries.js";
+import {
+  type ConversationEntry,
+  type NewConversationEntry,
+  rebuildConversationFromEntries,
+} from "./storage/entries.js";
 
 export interface ConversationState {
   runId: string;
@@ -269,7 +273,12 @@ export class InMemoryConversationStore implements ConversationStore {
 
   async get(conversationId: string): Promise<Conversation | undefined> {
     this.purgeExpired();
-    return this.conversations.get(conversationId);
+    const c = this.conversations.get(conversationId);
+    if (!c) return undefined;
+    // Phase 3c read cutover: rebuild reader-facing fields from the entry log
+    // (blob fallback for un-migrated conversations). Clone first — the map
+    // holds a live mutable reference and the rebuild overrides fields.
+    return rebuildConversationFromEntries({ ...c }, (id) => this.readEntries(id));
   }
 
   // In-memory stores already hold the full conversation object, so there's

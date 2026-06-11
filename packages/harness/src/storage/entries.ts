@@ -1,5 +1,7 @@
-import type { Message } from "@poncho-ai/sdk";
-import type { PendingSubagentResult } from "../state.js";
+import { createLogger, type Message } from "@poncho-ai/sdk";
+import type { Conversation, PendingSubagentResult } from "../state.js";
+
+const entriesReadLog = createLogger("entries-read");
 
 /**
  * Append-only conversation entries (Phase 3 substrate).
@@ -214,4 +216,57 @@ export function getPendingSubagentResults(
     .filter((e): e is SubagentResultEntry => e.type === "subagent_result")
     .filter((e) => !consumed.has(e.seq))
     .map((e) => e.result);
+}
+
+// A very large tail so the rebuilt display snapshot is the full transcript.
+// Display callers slice to whatever window they actually render.
+const FULL_TRANSCRIPT_TAIL = 100_000;
+
+/**
+ * Phase 3c read cutover: rebuild a conversation's reader-facing fields from
+ * the append-only entry log, with a blob fallback for conversations that
+ * predate dual-write.
+ *
+ * Call this in every conversation `get`/`getWithArchive` path AFTER the
+ * Conversation has been constructed from the stored row/blob. It:
+ *   - reads the entry log via `readEntries`,
+ *   - if NON-EMPTY, overrides `_harnessMessages`, `messages`, and
+ *     `pendingSubagentResults` with entry-derived values,
+ *   - if EMPTY (un-migrated conversation), leaves the blob-derived fields
+ *     untouched (fallback),
+ *   - on ANY error, logs and falls back to the blob (never throws — this is
+ *     a hot read path).
+ *
+ * `_continuationMessages` and `pendingApprovals` are NOT modeled as entries
+ * yet and are intentionally left as blob fields.
+ *
+ * Kill-switch: set `PONCHO_READ_ENTRIES=0` to instantly revert to pure blob
+ * reads without a deploy (rebuild is ON by default).
+ *
+ * NOTE: mutates `conversation` in place and returns it. Callers that hand
+ * back a shared/mutable Conversation reference (the in-memory stores) MUST
+ * pass a clone, or the override will corrupt their stored object.
+ */
+export async function rebuildConversationFromEntries(
+  conversation: Conversation,
+  readEntries: (conversationId: string) => Promise<ConversationEntry[]>,
+): Promise<Conversation> {
+  // Kill-switch: ON by default; PONCHO_READ_ENTRIES="0" reverts to blob reads.
+  if (process.env.PONCHO_READ_ENTRIES === "0") return conversation;
+
+  try {
+    const entries = await readEntries(conversation.conversationId);
+    if (entries.length === 0) return conversation; // fallback: pre-dual-write
+    conversation._harnessMessages = buildLlmContext(entries);
+    conversation.messages = buildDisplaySnapshot(entries, FULL_TRANSCRIPT_TAIL).messages;
+    conversation.pendingSubagentResults = getPendingSubagentResults(entries);
+    return conversation;
+  } catch (err) {
+    entriesReadLog.warn(
+      `[entries-read] ${conversation.conversationId} rebuild failed, using blob: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return conversation;
+  }
 }

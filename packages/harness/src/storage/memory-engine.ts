@@ -14,7 +14,11 @@ import type { MainMemory } from "../memory.js";
 import type { TodoItem } from "../todo-tools.js";
 import type { Reminder, ReminderCreateInput, ReminderStatus } from "../reminder-store.js";
 import type { StorageEngine, VfsDirEntry, VfsStat } from "./engine.js";
-import type { ConversationEntry, NewConversationEntry } from "./entries.js";
+import {
+  type ConversationEntry,
+  type NewConversationEntry,
+  rebuildConversationFromEntries,
+} from "./entries.js";
 
 // ---------------------------------------------------------------------------
 // Internal VFS entry type
@@ -103,13 +107,24 @@ export class InMemoryEngine implements StorageEngine {
     },
 
     get: async (conversationId: string): Promise<Conversation | undefined> => {
-      return this.convs.get(conversationId);
+      const c = this.convs.get(conversationId);
+      if (!c) return undefined;
+      // Phase 3c read cutover: rebuild reader-facing fields from the entry
+      // log (blob fallback for un-migrated conversations). Clone first — the
+      // map holds a live mutable reference and the rebuild overrides fields.
+      return rebuildConversationFromEntries({ ...c }, (id) =>
+        this.conversations.readEntries(id),
+      );
     },
 
     // In-memory storage has no separate archive blob, so both variants
     // return the same conversation object.
     getWithArchive: async (conversationId: string): Promise<Conversation | undefined> => {
-      return this.convs.get(conversationId);
+      const c = this.convs.get(conversationId);
+      if (!c) return undefined;
+      return rebuildConversationFromEntries({ ...c }, (id) =>
+        this.conversations.readEntries(id),
+      );
     },
 
     getStatusSnapshot: async (
