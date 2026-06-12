@@ -74,6 +74,12 @@ export interface RunConversationTurnOpts {
    * built with an OTLP exporter attached.
    */
   suppressTelemetry?: boolean;
+  /**
+   * Forwarded to `RunInput.model`. Per-run model override, captured once at
+   * run start — safe under concurrent runs on a shared harness, unlike
+   * mutating the parsed agent's frontmatter.
+   */
+  model?: string;
   /** Per-event hook — called for every AgentEvent yielded by the run, in order. */
   onEvent?: (event: AgentEvent) => void | Promise<void>;
 }
@@ -230,6 +236,7 @@ export const runConversationTurn = async (
         abortSignal: opts.abortSignal,
         disablePromptCache: opts.disablePromptCache,
         suppressTelemetry: opts.suppressTelemetry,
+        model: opts.model,
       },
       initialContextTokens: conversation.contextTokens ?? 0,
       initialContextWindow: conversation.contextWindow ?? 0,

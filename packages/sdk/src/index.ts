@@ -152,6 +152,17 @@ export interface RunInput {
    * will hit the cache before the 5-min TTL expires.
    */
   disablePromptCache?: boolean;
+  /**
+   * Model name override for this run, captured once at run start. Takes
+   * precedence over the agent definition's `model.name` for every step of
+   * the run. Use this instead of mutating the parsed agent's frontmatter
+   * when one harness instance serves runs that need different models
+   * (e.g. user turns vs cron jobs) — a frontmatter mutation made while
+   * another run is in flight changes that run's model mid-turn, and the
+   * model switch invalidates its entire Anthropic prompt cache (caches
+   * are per-model).
+   */
+  model?: string;
   /** Scope this run to a specific tenant. */
   tenantId?: string;
   /**

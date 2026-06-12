@@ -2376,7 +2376,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
       return pushEvent({ type: "run:cancelled", runId, messages: trimToValidPrefix(snapshot) });
     };
 
-    const resolvedModelName = agent.frontmatter.model?.name ?? "claude-opus-4-5";
+    const resolvedModelName = input.model ?? agent.frontmatter.model?.name ?? "claude-opus-4-5";
     const contextWindow =
       agent.frontmatter.model?.contextWindow ?? getModelContextWindow(resolvedModelName);
 
@@ -2836,7 +2836,12 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
           return [];
         };
 
-        const modelName = agent.frontmatter.model?.name ?? "claude-opus-4-5";
+        // Per-run override wins over frontmatter. Reading frontmatter here is
+        // what made model selection racy: the field is re-read every step, so
+        // a concurrent run's setHarnessModel-style mutation flipped this
+        // run's model mid-turn (and a model switch drops the whole per-model
+        // Anthropic prompt cache).
+        const modelName = input.model ?? agent.frontmatter.model?.name ?? "claude-opus-4-5";
         if (step === 1) {
           modelLog.item(`${modelName} (provider=${agent.frontmatter.model?.provider ?? "anthropic"})`);
         }
