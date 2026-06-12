@@ -333,7 +333,7 @@ export abstract class SqlStorageEngine implements StorageEngine {
       // append-only entry log, falling back to the blob for un-migrated
       // conversations. parseConversation returns a fresh object, so no clone.
       return rebuildConversationFromEntries(conv, (id) =>
-        this.conversations.readEntries(id),
+        this.conversations.readEntries(id, { types: ["subagent_result", "callback_started"] }),
       );
     },
 
@@ -420,7 +420,7 @@ export abstract class SqlStorageEngine implements StorageEngine {
       // Phase 3c read cutover: rebuild reader-facing fields from the entry
       // log (blob fallback for un-migrated conversations).
       return rebuildConversationFromEntries(conv, (id) =>
-        this.conversations.readEntries(id),
+        this.conversations.readEntries(id, { types: ["subagent_result", "callback_started"] }),
       );
     },
 
@@ -557,19 +557,29 @@ export abstract class SqlStorageEngine implements StorageEngine {
       conversationId: string,
       title: string,
     ): Promise<Conversation | undefined> => {
-      // Targeted column update — deliberately NOT get→mutate→update().
-      // The whole-row read-modify-write races a streaming turn's per-step
+      // Targeted update — deliberately NOT get→mutate→update(). The
+      // whole-row read-modify-write races a streaming turn's per-step
       // draft persist: rename reads the row at T0, the turn persists step
       // N's draft at T1, rename writes T0's stale blob back at T2 and
-      // silently reverts the turn's progress. Title lives in its own
-      // column, so touch only that (+ updated_at for sidebar ordering).
+      // silently reverts the turn's progress.
+      //
+      // Title lives in BOTH the `title` column and the `data` blob (reads
+      // parse the blob), so update both — the blob via the database's own
+      // JSON-set function INSIDE the same UPDATE. That keeps the write
+      // atomic and server-side: no stale snapshot is ever serialized back.
       const normalized = normalizeTitle(title);
+      // Distinct placeholders for the two title occurrences: rewrite()
+      // converts $N → ? positionally for sqlite, so reusing $1 would
+      // desync the param array.
+      const dataExpr = this.dialect.tag === "sqlite"
+        ? `json_set(data, '$.title', $2)`
+        : `jsonb_set(data, '{title}', to_jsonb($2::text))`;
       await this.executor.run(
         rewrite(
-          `UPDATE conversations SET title = $1, updated_at = $2 WHERE id = $3`,
+          `UPDATE conversations SET title = $1, data = ${dataExpr}, updated_at = $3 WHERE id = $4`,
           this.dialect,
         ),
-        [normalized, new Date().toISOString(), conversationId],
+        [normalized, normalized, new Date().toISOString(), conversationId],
       );
       return this.conversations.get(conversationId);
     },

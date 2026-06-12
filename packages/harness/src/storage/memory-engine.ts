@@ -113,7 +113,7 @@ export class InMemoryEngine implements StorageEngine {
       // log (blob fallback for un-migrated conversations). Clone first — the
       // map holds a live mutable reference and the rebuild overrides fields.
       return rebuildConversationFromEntries({ ...c }, (id) =>
-        this.conversations.readEntries(id),
+        this.conversations.readEntries(id, { types: ["subagent_result", "callback_started"] }),
       );
     },
 
@@ -123,7 +123,7 @@ export class InMemoryEngine implements StorageEngine {
       const c = this.convs.get(conversationId);
       if (!c) return undefined;
       return rebuildConversationFromEntries({ ...c }, (id) =>
-        this.conversations.readEntries(id),
+        this.conversations.readEntries(id, { types: ["subagent_result", "callback_started"] }),
       );
     },
 

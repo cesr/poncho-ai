@@ -278,7 +278,9 @@ export class InMemoryConversationStore implements ConversationStore {
     // Phase 3c read cutover: rebuild reader-facing fields from the entry log
     // (blob fallback for un-migrated conversations). Clone first — the map
     // holds a live mutable reference and the rebuild overrides fields.
-    return rebuildConversationFromEntries({ ...c }, (id) => this.readEntries(id));
+    return rebuildConversationFromEntries({ ...c }, (id) =>
+      this.readEntries(id, { types: ["subagent_result", "callback_started"] }),
+    );
   }
 
   // In-memory stores already hold the full conversation object, so there's

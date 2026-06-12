@@ -36,15 +36,6 @@ import {
   executeConversationTurn,
   flushTurnDraft,
 } from "./turn.js";
-import {
-  appendEntriesSafe,
-  assistantMessageEntry,
-  compactionEntry,
-  harnessMessageEntries,
-  newHarnessMessagesThisTurn,
-  userMessageEntry,
-  verifyEntriesParity,
-} from "./entries-dual-write.js";
 
 const log = createLogger("orchestrator");
 
@@ -207,14 +198,6 @@ export const runConversationTurn = async (
     await opts.conversationStore.update(conversation);
   };
 
-  // Snapshot the harness-message array as it stood BEFORE this turn so the
-  // finalize path can diff out the messages this turn appended (dual-write).
-  const preTurnHarnessMessages = conversation._harnessMessages
-    ? [...conversation._harnessMessages]
-    : undefined;
-  // The stable per-turn id used to group dual-write entries.
-  const turnId = assistantId;
-
   // Persist the user turn immediately so a crash mid-run still records what
   // the user said. Fire-and-forget — don't block the run.
   conversation.messages = [...historyMessages, userMessage];
@@ -226,15 +209,6 @@ export const runConversationTurn = async (
       `failed to persist user turn: ${err instanceof Error ? err.message : String(err)}`,
     );
   });
-
-  // DUAL-WRITE (additive, mirrors the user-turn blob write above): append a
-  // user_message entry. Fire-and-forget — never blocks or breaks the turn.
-  void appendEntriesSafe(
-    opts.conversationStore,
-    conversation,
-    [userMessageEntry(userMessage, turnId)],
-    log,
-  );
 
   try {
     const execution = await executeConversationTurn({
@@ -286,48 +260,6 @@ export const runConversationTurn = async (
               ...existingHistory,
               ...preRunMessages.slice(0, removedCount),
             ];
-
-            // DUAL-WRITE (mirrors the compactedHistory blob write above): the
-            // compacted array is [summaryMessage, ...keptMessages]. BEST-EFFORT
-            // firstKeptSeq: the entry-log seqs of the kept harness messages
-            // aren't known here, so we derive a sentinel from the kept-count by
-            // reading the current max harness_message seq and pointing at the
-            // tail. We read the existing entries to compute it.
-            const summaryMessage = event.compactedMessages[0];
-            const keptCount = Math.max(0, event.compactedMessages.length - 1);
-            if (summaryMessage) {
-              void (async () => {
-                try {
-                  const existing = await opts.conversationStore.readEntries(
-                    opts.conversationId,
-                    { types: ["harness_message"] },
-                  );
-                  // firstKeptSeq = seq of the (keptCount)-th-from-last existing
-                  // harness message, so rebuild keeps exactly that many.
-                  const harnessSeqs = existing.map((e) => e.seq);
-                  const firstKeptSeq =
-                    harnessSeqs.length >= keptCount && keptCount > 0
-                      ? harnessSeqs[harnessSeqs.length - keptCount]!
-                      : (harnessSeqs[harnessSeqs.length - 1] ?? 0) + 1;
-                  await appendEntriesSafe(
-                    opts.conversationStore,
-                    conversation,
-                    [
-                      compactionEntry(summaryMessage, firstKeptSeq, {
-                        tokensBefore: conversation.contextTokens,
-                      }),
-                    ],
-                    log,
-                  );
-                } catch (err) {
-                  log.error(
-                    `[entries-dual-write] compaction append failed: ${
-                      err instanceof Error ? err.message : String(err)
-                    }`,
-                  );
-                }
-              })();
-            }
           }
         }
         if (event.type === "step:completed") {
@@ -468,46 +400,6 @@ export const runConversationTurn = async (
         { shouldRebuildCanonical },
       );
       await opts.conversationStore.update(conversation);
-
-      // DUAL-WRITE at finalize (mirrors applyTurnMetadata's _harnessMessages
-      // write + the final assistant bubble in conversation.messages):
-      //   1. harness_message entries for the messages this turn appended,
-      //   2. the final assistant_message entry.
-      // Best-effort + fire-and-forget; never blocks the return.
-      const finalAssistant =
-        conversation.messages[conversation.messages.length - 1];
-      const { messages: newHarness, approximate } = newHarnessMessagesThisTurn(
-        preTurnHarnessMessages,
-        conversation._harnessMessages,
-      );
-      if (approximate) {
-        log.warn(
-          `[entries-dual-write] ${opts.conversationId} harness-message diff approximate ` +
-            `(blob array shrank this turn — likely compaction); appended full context`,
-        );
-      }
-      const finalizeEntries = [
-        ...harnessMessageEntries(newHarness, turnId),
-        ...(finalAssistant && finalAssistant.role === "assistant"
-          ? [assistantMessageEntry(finalAssistant, turnId, latestRunId)]
-          : []),
-      ];
-      void appendEntriesSafe(
-        opts.conversationStore,
-        conversation,
-        finalizeEntries,
-        log,
-      ).then(() =>
-        verifyEntriesParity(
-          opts.conversationStore,
-          opts.conversationId,
-          {
-            harnessMessages: conversation._harnessMessages,
-            displayMessages: conversation.messages,
-          },
-          log,
-        ),
-      );
     }
 
     return {

@@ -29,15 +29,11 @@ import {
 } from "./subagents.js";
 import {
   appendEntriesSafe,
-  assistantAmendmentEntry,
-  assistantMessageEntry,
   callbackStartedEntry,
   subagentResultEntry,
-  userMessageEntry,
-  verifyEntriesParity,
 } from "./entries-dual-write.js";
 
-const dualWriteLog = createLogger("orchestrator:entries");
+const entriesQueueLog = createLogger("orchestrator:entries");
 
 // ── Subagent result extraction ──
 
@@ -502,11 +498,6 @@ export class AgentOrchestrator {
     if (!checkpointedRun) {
       const conv = await this.conversationStore.get(conversationId);
       if (conv) {
-        // Track which dual-write branch the blob took: an in-place merge onto
-        // the previous assistant bubble (→ assistant_amendment) or a fresh
-        // bubble (→ assistant_message).
-        let amendmentText: string | undefined;
-        let pushedAssistant: Message | undefined;
         const hasAssistantContent =
           draft.assistantResponse.length > 0 || draft.toolTimeline.length > 0 || draft.sections.length > 0;
         if (hasAssistantContent) {
@@ -535,14 +526,15 @@ export class AgentOrchestrator {
                 } as Message["metadata"],
               },
             ];
-            amendmentText = draft.assistantResponse;
           } else {
-            pushedAssistant = {
-              role: "assistant" as const,
-              content: draft.assistantResponse,
-              metadata: buildAssistantMetadata(draft),
-            };
-            conv.messages = [...prevMessages, pushedAssistant];
+            conv.messages = [
+              ...prevMessages,
+              {
+                role: "assistant" as const,
+                content: draft.assistantResponse,
+                metadata: buildAssistantMetadata(draft),
+              },
+            ];
           }
         }
         applyTurnMetadata(conv, {
@@ -552,62 +544,6 @@ export class AgentOrchestrator {
           harnessMessages: execution?.runHarnessMessages,
         }, { shouldRebuildCanonical: true });
         await this.conversationStore.update(conv);
-
-        // DUAL-WRITE (mirrors the resume merge/push above). In-place merge →
-        // assistant_amendment targeting the latest assistant_message entry
-        // (BEST-EFFORT: the blob carries no entry id, so we resolve the target
-        // by reading the log's last assistant_message). Fresh bubble →
-        // assistant_message. Then parity-check. Fire-and-forget.
-        if (amendmentText !== undefined || pushedAssistant) {
-          const finalConv = conv;
-          const amendText = amendmentText;
-          const pushed = pushedAssistant;
-          void (async () => {
-            try {
-              if (pushed) {
-                await appendEntriesSafe(
-                  this.conversationStore,
-                  finalConv,
-                  [assistantMessageEntry(pushed, `resume-${conversationId}`, latestRunId)],
-                  dualWriteLog,
-                );
-              } else if (amendText !== undefined) {
-                const existing = await this.conversationStore.readEntries(
-                  conversationId,
-                  { types: ["assistant_message"] },
-                );
-                const target = existing[existing.length - 1];
-                if (target) {
-                  await appendEntriesSafe(
-                    this.conversationStore,
-                    finalConv,
-                    [assistantAmendmentEntry(target.id, amendText)],
-                    dualWriteLog,
-                  );
-                } else {
-                  dualWriteLog.warn(
-                    `[entries-dual-write] resume amendment for ${conversationId}: no assistant_message entry to target; skipped`,
-                  );
-                }
-              }
-              await verifyEntriesParity(
-                this.conversationStore,
-                conversationId,
-                {
-                  harnessMessages: finalConv._harnessMessages,
-                  displayMessages: finalConv.messages,
-                },
-                dualWriteLog,
-              );
-            } catch (err) {
-              dualWriteLog.error(
-                `[entries-dual-write] resume finalize append failed for ${conversationId}: ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
-              );
-            }
-          })();
-        }
       }
     } else {
       const conv = await this.conversationStore.get(conversationId);
@@ -1263,13 +1199,13 @@ export class AgentOrchestrator {
     conversation.updatedAt = Date.now();
     await this.conversationStore.update(conversation);
 
-    // DUAL-WRITE (mirrors the consume-pending + message-push blob writes
-    // above): append a callback_started entry listing the consumed
-    // subagent_result seqs (resolved by matching subagentId against the entry
-    // log — BEST-EFFORT, since the blob's pending array carries no seq), plus
-    // a hidden user_message entry per injected callback message.
+    // QUEUE CONSUMPTION: append a callback_started entry listing the consumed
+    // subagent_result seqs (resolved by matching subagentId against the queue
+    // — the blob's pending array carries no seq), so the consumed results stop
+    // being "pending" on the entry-sourced read path. Mirrors the blob's
+    // consume-pending write above (kept fresh for the PONCHO_READ_ENTRIES=0
+    // kill-switch).
     if (pendingResults.length > 0) {
-      const turnId = `callback-${callbackCount}-${conversation.conversationId}`;
       void (async () => {
         try {
           const resultEntries = await this.conversationStore.readEntries(
@@ -1287,17 +1223,12 @@ export class AgentOrchestrator {
           await appendEntriesSafe(
             this.conversationStore,
             conversation,
-            [
-              callbackStartedEntry(consumedSeqs),
-              ...injectedCallbackMessages.map((m) =>
-                userMessageEntry(m, turnId, { hidden: true }),
-              ),
-            ],
-            dualWriteLog,
+            [callbackStartedEntry(consumedSeqs)],
+            entriesQueueLog,
           );
         } catch (err) {
-          dualWriteLog.error(
-            `[entries-dual-write] callback_started append failed for ${conversation.conversationId}: ${
+          entriesQueueLog.error(
+            `[entries-queue] callback_started append failed for ${conversation.conversationId}: ${
               err instanceof Error ? err.message : String(err)
             }`,
           );
@@ -1394,30 +1325,6 @@ export class AgentOrchestrator {
           }, { shouldRebuildCanonical: true, clearApprovals: false });
           freshConv.runningCallbackSince = undefined;
           await this.conversationStore.update(freshConv);
-
-          // DUAL-WRITE (mirrors the assistant push above): the callback re-run's
-          // final assistant bubble. Only when not continuing (a continuation has
-          // no final bubble yet). Then run the parity check on the rebuilt
-          // transcript. Fire-and-forget; never blocks.
-          if (callbackAssistantMsg) {
-            const finalMsg = callbackAssistantMsg;
-            void appendEntriesSafe(
-              this.conversationStore,
-              freshConv,
-              [assistantMessageEntry(finalMsg, `callback-${conversationId}`, execution.latestRunId)],
-              dualWriteLog,
-            ).then(() =>
-              verifyEntriesParity(
-                this.conversationStore,
-                conversationId,
-                {
-                  harnessMessages: freshConv._harnessMessages,
-                  displayMessages: freshConv.messages,
-                },
-                dualWriteLog,
-              ),
-            );
-          }
 
           // Proactive messaging notification
           if (freshConv.channelMeta && execution.draft.assistantResponse.length > 0) {
@@ -1887,11 +1794,11 @@ export class AgentOrchestrator {
           this.conversationStore,
           parent,
           [subagentResultEntry(result)],
-          dualWriteLog,
+          entriesQueueLog,
         );
       } catch (err) {
-        dualWriteLog.error(
-          `[entries-dual-write] subagent_result append failed for ${parentConversationId}: ${
+        entriesQueueLog.error(
+          `[entries-queue] subagent_result append failed for ${parentConversationId}: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );

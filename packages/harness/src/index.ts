@@ -21,23 +21,15 @@ export * from "./telemetry.js";
 export * from "./secrets-store.js";
 export * from "./storage/index.js";
 export * from "./storage/store-adapters.js";
-// Append-only conversation entries (Phase 3 substrate): types + rebuild fns.
-// appendEntries/readEntries are reachable on the ConversationStore /
-// StorageEngine.conversations surfaces already exported above.
+// Subagent delivery queue (append-only conversation_entries): types + the
+// pending-results rebuild. appendEntries/readEntries are reachable on the
+// ConversationStore / StorageEngine.conversations surfaces exported above.
 export {
-  buildLlmContext,
-  buildDisplaySnapshot,
   getPendingSubagentResults,
   type ConversationEntry,
   type NewConversationEntry,
-  type UserMessageEntry,
-  type AssistantMessageEntry,
-  type AssistantAmendmentEntry,
-  type HarnessMessageEntry,
-  type CompactionEntry,
   type SubagentResultEntry,
   type CallbackStartedEntry,
-  type DisplaySnapshot,
 } from "./storage/entries.js";
 export {
   PonchoFsAdapter,
