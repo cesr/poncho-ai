@@ -3841,6 +3841,11 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
     /** Emit no telemetry for the continuation run (e.g. resuming an
      *  incognito turn after an approval). */
     suppressTelemetry?: boolean;
+    /** Per-run model override for the continuation run — same semantics as
+     *  `RunInput.model`. Forward the model the checkpointed run was using,
+     *  otherwise the continuation falls back to the agent definition's
+     *  (possibly concurrently-mutated) frontmatter model. */
+    model?: string;
   }): AsyncGenerator<AgentEvent> {
     const messages = [...input.messages];
     const lastMsg = messages[messages.length - 1];
@@ -3900,6 +3905,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
       parameters: input.parameters,
       abortSignal: input.abortSignal,
       suppressTelemetry: input.suppressTelemetry,
+      model: input.model,
     });
   }
 
