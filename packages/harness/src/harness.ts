@@ -2331,13 +2331,17 @@ ${typeStubs}
 Code is wrapped in an async IIFE — use \`return\` to return a value to the tool result.`;
     }
 
-    // Split the system prompt into a static portion (stable across turns
-    // and jobs within an hour, modulo MCP connect/skill author/memory edit)
-    // and a dynamic tail (memory, todos, time). The static portion gets a
-    // 1-hour Anthropic cache breakpoint downstream; the tail rides the
-    // existing 5-min message-level breakpoint. See the streamText site for
-    // the breakpoint wiring.
-    const buildSystemPromptParts = async (): Promise<{ staticPart: string; dynamicPart: string }> => {
+    // Split the system prompt into THREE cacheability tiers (see the
+    // streamText site for the breakpoint wiring):
+    //   1. staticPart — agent body + skills + runtime context. Stable across
+    //      turns, conversations, and jobs within an hour. 1h breakpoint.
+    //   2. memoryPart — the user's memory file. Per-user, shared by every
+    //      conversation, and only changes on an explicit memory write — so
+    //      it gets its own 1h breakpoint instead of riding the volatile
+    //      tail (where it busted the message-history cache for no reason).
+    //   3. dynamicPart — todos + hour-quantized time. Genuinely volatile
+    //      within a conversation; uncached, kept as small as possible.
+    const buildSystemPromptParts = async (): Promise<{ staticPart: string; memoryPart: string; dynamicPart: string }> => {
       const agentPrompt = renderCurrentAgentPrompt();
       const tenantSkills = await this.getSkillsForTenant(input.tenantId);
       const skillContextWindow = buildSkillContextWindow(tenantSkills);
@@ -2358,13 +2362,13 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
         return `${weekday} ${d.toISOString().slice(0, 13)}Z`;
       })();
       const timeContext = `\n\nCurrent UTC time (hour precision): ${hourlyTime}`;
-      const dynamicPart = `${memoryContext}${todoContext}${timeContext}`;
-      return { staticPart, dynamicPart };
+      const dynamicPart = `${todoContext}${timeContext}`;
+      return { staticPart, memoryPart: memoryContext, dynamicPart };
     };
-    let { staticPart: staticSystemPart, dynamicPart: dynamicSystemPart } =
+    let { staticPart: staticSystemPart, memoryPart: memorySystemPart, dynamicPart: dynamicSystemPart } =
       await buildSystemPromptParts();
     // Concatenated form for legacy consumers (token estimation, telemetry).
-    let systemPrompt = `${staticSystemPart}${dynamicSystemPart}`;
+    let systemPrompt = `${staticSystemPart}${memorySystemPart}${dynamicSystemPart}`;
     let lastPromptFingerprint = `${this.agentFileFingerprint}\n${this.skillFingerprint}`;
 
     const pushEvent = (event: AgentEvent): AgentEvent => {
@@ -3008,6 +3012,20 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
                   anthropic: { cacheControl: { type: "ephemeral", ttl: "1h" } },
                 },
               },
+              // Memory: per-user, conversation-independent, changes only on
+              // an explicit memory write — its own 1h breakpoint means a
+              // memory edit busts THIS block forward but a normal turn reads
+              // it (plus everything before it) from cache. Breakpoint budget:
+              // Anthropic allows 4; this is #2 of 3 (static, memory, tail).
+              ...(memorySystemPart.length > 0
+                ? [{
+                    role: "system" as const,
+                    content: memorySystemPart,
+                    providerOptions: {
+                      anthropic: { cacheControl: { type: "ephemeral", ttl: "1h" } },
+                    },
+                  }]
+                : []),
               ...(dynamicSystemPart.length > 0
                 ? [{ role: "system" as const, content: dynamicSystemPart }]
                 : []),
@@ -3794,9 +3812,9 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
             agent = this.parsedAgent as ParsedAgent;
             const currentFingerprint = `${this.agentFileFingerprint}\n${this.skillFingerprint}`;
             if (currentFingerprint !== lastPromptFingerprint) {
-              ({ staticPart: staticSystemPart, dynamicPart: dynamicSystemPart } =
+              ({ staticPart: staticSystemPart, memoryPart: memorySystemPart, dynamicPart: dynamicSystemPart } =
                 await buildSystemPromptParts());
-              systemPrompt = `${staticSystemPart}${dynamicSystemPart}`;
+              systemPrompt = `${staticSystemPart}${memorySystemPart}${dynamicSystemPart}`;
               lastPromptFingerprint = currentFingerprint;
             }
           }
