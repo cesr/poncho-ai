@@ -67,9 +67,41 @@ import { createSkillTools, normalizeScriptPolicyPath } from "./skill-tools.js";
 import { createSearchTools } from "./search-tools.js";
 import { createSubagentTools } from "./subagent-tools.js";
 import type { SubagentManager } from "./subagent-manager.js";
-import { trace, context as otelContext, SpanStatusCode, SpanKind, diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api";
+import { trace, context as otelContext, createContextKey, type Context as OtelContextType, SpanStatusCode, SpanKind, diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api";
+import type { Span as OtelSdkSpan, SpanProcessor } from "@opentelemetry/sdk-trace-node";
 import { NodeTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-node";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+
+// ── Telemetry identity propagation ──────────────────────────────────────────
+// Observability backends (Latitude) resolve a span's session/user from the
+// span's OWN attributes — the console's session & conversation views key on
+// the LLM generation spans, not the root span. So stamping `session.id` /
+// `user.id` only on the invoke_agent root groups the API-level trace but
+// leaves the console treating every turn as its own session. The fix is the
+// same one vendor SDKs use: carry the identity in the OTel Context and have
+// a SpanProcessor stamp it onto EVERY span at start.
+const TELEMETRY_SESSION_ID_KEY = createContextKey("poncho.telemetry.session_id");
+const TELEMETRY_USER_ID_KEY = createContextKey("poncho.telemetry.user_id");
+
+class IdentityAttributeSpanProcessor implements SpanProcessor {
+  onStart(span: OtelSdkSpan, parentContext: OtelContextType): void {
+    const sessionId = parentContext.getValue(TELEMETRY_SESSION_ID_KEY);
+    if (typeof sessionId === "string" && sessionId) {
+      span.setAttribute("session.id", sessionId);
+    }
+    const userId = parentContext.getValue(TELEMETRY_USER_ID_KEY);
+    if (typeof userId === "string" && userId) {
+      span.setAttribute("user.id", userId);
+    }
+  }
+  onEnd(): void {}
+  forceFlush(): Promise<void> {
+    return Promise.resolve();
+  }
+  shutdown(): Promise<void> {
+    return Promise.resolve();
+  }
+}
 import { normalizeOtlp } from "./telemetry.js";
 
 /** Extract useful details from OTLPExporterError (has .code + .data) or plain Error. */
@@ -1883,7 +1915,9 @@ export class AgentHarness {
       const processor = new BatchSpanProcessor(exporter);
       this.otlpSpanProcessor = processor;
       const provider = new NodeTracerProvider({
-        spanProcessors: [processor],
+        // Identity injector FIRST so every span (root, LLM steps, tool
+        // executions) carries session.id/user.id before batching/export.
+        spanProcessors: [new IdentityAttributeSpanProcessor(), processor],
       });
       provider.register();
       this.otlpTracerProvider = provider;
@@ -2074,7 +2108,15 @@ export class AgentHarness {
         },
       });
 
-      const spanContext = trace.setSpan(otelContext.active(), rootSpan);
+      let spanContext = trace.setSpan(otelContext.active(), rootSpan);
+      // Identity rides the context so IdentityAttributeSpanProcessor stamps
+      // session.id/user.id on every descendant span (see processor docs).
+      if (input.conversationId) {
+        spanContext = spanContext.setValue(TELEMETRY_SESSION_ID_KEY, input.conversationId);
+      }
+      if (this.telemetryUserId) {
+        spanContext = spanContext.setValue(TELEMETRY_USER_ID_KEY, this.telemetryUserId);
+      }
 
       try {
         const gen = this.run(input);
