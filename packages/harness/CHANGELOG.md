@@ -1,5 +1,20 @@
 # @poncho-ai/harness
 
+## 0.59.6
+
+### Patch Changes
+
+- [`e573f72`](https://github.com/cesr/poncho-ai/commit/e573f72ca31627e48dbdbf296946a72c59a488db) Thanks [@cesr](https://github.com/cesr)! - Preserve the LLM transcript when a turn dies. The errored branch of
+  runConversationTurn persisted only the display draft — `_harnessMessages`
+  was never updated, so the model's next turn had no memory of the entire
+  failed interaction (its user message included), even though the user could
+  see it on screen. Both the errored branch and the cancelled-without-
+  `run:cancelled.messages` fallback now append a faithful plain-text
+  reconstruction (user message + assistant text-so-far + tool activity + an
+  interruption note) to the transcript. Plain text on purpose: replaying real
+  tool_use blocks would need paired results or the next API call rejects the
+  dangling pair.
+
 ## 0.59.5
 
 ### Patch Changes
