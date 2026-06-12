@@ -1,5 +1,18 @@
 # @poncho-ai/harness
 
+## 0.59.7
+
+### Patch Changes
+
+- [`c73cb19`](https://github.com/cesr/poncho-ai/commit/c73cb19ec8bf61fe0598262ae4d050fb84c939b5) Thanks [@cesr](https://github.com/cesr)! - Auto-compaction never fired on cached conversations: the per-step context
+  measure (`latestContextTokens`) used `usage.inputTokens`, which with
+  Anthropic prompt caching is only the NON-cached slice — a real 190k+
+  conversation reported ~12k of "context", so the trigger comparison never
+  tripped and transcripts grew past the model's window. Context now counts
+  input + cache-read + cache-write tokens (everything the model read). Also
+  pins claude-fable-5 / opus-4-8 / opus-4-7 in the context-window registry
+  (previously relying on the silent 200k default).
+
 ## 0.59.6
 
 ### Patch Changes
