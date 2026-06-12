@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.59.5
+
+### Patch Changes
+
+- [`d14c390`](https://github.com/cesr/poncho-ai/commit/d14c390ce6830f7446ea7a4e934d2cb76833c455) Thanks [@cesr](https://github.com/cesr)! - `continueFromToolResult` accepts and forwards the per-run `model` override, so approval-checkpoint continuations run on the same model as the checkpointed run instead of re-reading the (possibly concurrently-mutated) agent frontmatter.
+
 ## 0.59.4
 
 ### Patch Changes
