@@ -420,6 +420,31 @@ export const runConversationTurn = async (
     };
   } catch (error) {
     flushTurnDraft(draft);
+
+    // The LLM transcript (`_harnessMessages`) is normally only written at a
+    // clean finalize / a cancel that delivered `run:cancelled.messages`. A
+    // turn that dies any other way (in-process error, abort that never
+    // surfaced the cancel event) would leave the transcript WITHOUT this
+    // turn at all — the display shows the partial work but the model has
+    // amnesia about the whole interaction on the next turn. Reconstruct a
+    // faithful plain-text record from the draft instead: the user message
+    // plus an assistant message carrying the text-so-far + tool activity.
+    // Plain text on purpose — replaying real tool_use blocks would need
+    // paired results or the next API call 400s on the dangling pair.
+    const reconstructTranscriptTail = (reason: string): Message[] => {
+      const parts: string[] = [];
+      if (draft.assistantResponse.length > 0) parts.push(draft.assistantResponse);
+      if (draft.toolTimeline.length > 0) {
+        parts.push(`Tool activity before interruption:\n${draft.toolTimeline.join("\n")}`);
+      }
+      parts.push(`[This turn was interrupted: ${reason}. The work above may be incomplete.]`);
+      return [
+        ...(conversation._harnessMessages ?? []),
+        userMessage,
+        { role: "assistant" as const, content: parts.join("\n\n") },
+      ];
+    };
+
     const aborted = opts.abortSignal?.aborted === true;
     if (aborted || runCancelled) {
       if (
@@ -434,7 +459,8 @@ export const runConversationTurn = async (
             latestRunId,
             contextTokens: 0,
             contextWindow: 0,
-            harnessMessages: cancelHarnessMessages,
+            harnessMessages:
+              cancelHarnessMessages ?? reconstructTranscriptTail("cancelled"),
             toolResultArchive: opts.harness.getToolResultArchive(opts.conversationId),
           },
           { shouldRebuildCanonical: true },
@@ -484,6 +510,12 @@ export const runConversationTurn = async (
       draft.sections.length > 0
     ) {
       conversation.messages = buildMessages(false); // terminal: errored
+      // Keep the LLM transcript faithful too (see reconstructTranscriptTail
+      // above) — without this, the next turn's model context skipped the
+      // whole errored interaction.
+      conversation._harnessMessages = reconstructTranscriptTail(
+        error instanceof Error ? `error — ${error.message}` : "error",
+      );
       conversation.updatedAt = Date.now();
       await opts.conversationStore.update(conversation);
     }
