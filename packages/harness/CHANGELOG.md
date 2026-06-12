@@ -1,5 +1,14 @@
 # @poncho-ai/harness
 
+## 0.59.9
+
+### Patch Changes
+
+- [`eb9600a`](https://github.com/cesr/poncho-ai/commit/eb9600a111cf74968689f8b33835d8b58c64e375) Thanks [@cesr](https://github.com/cesr)! - Root trace spans now carry `session.id` (= conversationId) and `user.id`
+  (new `config.telemetry.userId`) alongside the existing
+  `gen_ai.conversation.id` — the attributes observability backends
+  (Latitude) key session grouping and user filtering on.
+
 ## 0.59.8
 
 ### Patch Changes
