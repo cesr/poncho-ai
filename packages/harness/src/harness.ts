@@ -3208,7 +3208,14 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
       totalOutputTokens += usage.outputTokens ?? 0;
       totalCachedTokens += stepCachedTokens;
       totalCacheWriteTokens += stepCacheWriteTokens;
-      latestContextTokens = stepInputTokens;
+      // Context size = EVERYTHING the model read this step. With prompt
+      // caching, Anthropic's `usage.input_tokens` is only the non-cached
+      // slice — the bulk of a long conversation arrives as cache reads.
+      // Counting input alone made the auto-compaction check see ~12k of
+      // "context" on a real 190k+ conversation, so compaction never fired
+      // and the transcript grew unbounded (observed 2026-06-12: 205k real
+      // context, trigger at 190k, no compaction).
+      latestContextTokens = stepInputTokens + stepCachedTokens + stepCacheWriteTokens;
       toolOutputEstimateSinceModel = 0;
 
       yield pushEvent({

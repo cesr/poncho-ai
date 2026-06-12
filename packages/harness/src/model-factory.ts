@@ -9,6 +9,12 @@ import {
 export type ModelProviderFactory = (modelName: string) => LanguageModel;
 
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  // Pinned conservatively at 200k. The API has accepted >204k for fable-5
+  // (its real window is larger), but compacting at trigger×200k keeps
+  // long-conversation cost bounded; raise deliberately, not by omission.
+  "claude-fable-5": 200_000,
+  "claude-opus-4-8": 200_000,
+  "claude-opus-4-7": 200_000,
   "claude-opus-4-6": 200_000,
   "claude-sonnet-4-6": 200_000,
   "claude-opus-4-5": 200_000,
