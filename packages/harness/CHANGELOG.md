@@ -1,5 +1,16 @@
 # @poncho-ai/harness
 
+## 0.59.8
+
+### Patch Changes
+
+- [`fb07954`](https://github.com/cesr/poncho-ai/commit/fb07954ee7edfa614bdd5ed27474f4d3be7c8f1f) Thanks [@cesr](https://github.com/cesr)! - Fix conversations.rename on Postgres: the JSONB `data` column usually
+  holds a JSON-encoded string scalar (update() binds JSON.stringify output),
+  so the 0.59.3 in-blob title update threw `cannot set path in scalar` and
+  every rename 500'd. The UPDATE now branches on jsonb_typeof(data) and
+  preserves each row's encoding (objects via jsonb_set; string scalars
+  unwrapped, set, and re-serialized).
+
 ## 0.59.7
 
 ### Patch Changes
