@@ -231,6 +231,11 @@ export interface PonchoConfig extends McpConfig {
       url: string;
       headers?: Record<string, string>;
     };
+    /** End-user identifier (e.g. an email) stamped as `user.id` on every
+     *  root trace span — observability backends (Latitude) group and
+     *  filter traces by it. Per-harness, so a harness-per-user consumer
+     *  sets it once at construction. */
+    userId?: string;
     handler?: (event: unknown) => Promise<void> | void;
   };
   skills?: Record<string, Record<string, unknown>>;

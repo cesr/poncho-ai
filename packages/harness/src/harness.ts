@@ -881,6 +881,8 @@ export class AgentHarness {
   private otlpSpanProcessor?: BatchSpanProcessor;
   private otlpTracerProvider?: NodeTracerProvider;
   private hasOtlpExporter = false;
+  /** End-user id (config.telemetry.userId) stamped as `user.id` on root spans. */
+  private telemetryUserId?: string;
   private _browserSession?: unknown;
   private _browserMod?: {
     createBrowserTools: (getSession: () => unknown, getConversationId?: () => string) => ToolDefinition[];
@@ -1871,6 +1873,7 @@ export class AgentHarness {
 
     const telemetryEnabled = config?.telemetry?.enabled !== false;
     const otlpConfig = telemetryEnabled ? normalizeOtlp(config?.telemetry?.otlp) : undefined;
+    this.telemetryUserId = config?.telemetry?.userId;
     if (otlpConfig) {
       diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.WARN);
       const exporter = new OTLPTraceExporter({
@@ -2057,7 +2060,16 @@ export class AgentHarness {
         kind: SpanKind.INTERNAL,
         attributes: {
           "gen_ai.operation.name": "invoke_agent",
-          ...(input.conversationId ? { "gen_ai.conversation.id": input.conversationId } : {}),
+          // `session.id` / `user.id` are the attributes observability
+          // backends (Latitude) key session grouping and user filtering on.
+          // gen_ai.conversation.id is kept for the GenAI semantic convention.
+          ...(input.conversationId
+            ? {
+                "gen_ai.conversation.id": input.conversationId,
+                "session.id": input.conversationId,
+              }
+            : {}),
+          ...(this.telemetryUserId ? { "user.id": this.telemetryUserId } : {}),
           ...(input.tenantId ? { "tenant.id": input.tenantId } : {}),
         },
       });
