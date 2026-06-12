@@ -1,5 +1,17 @@
 # @poncho-ai/harness
 
+## 0.59.10
+
+### Patch Changes
+
+- [`fad3918`](https://github.com/cesr/poncho-ai/commit/fad3918302114f76a29080cf28e9c003c61ef0d9) Thanks [@cesr](https://github.com/cesr)! - Stamp `session.id` / `user.id` on EVERY span, not just the invoke_agent
+  root. Observability backends resolve a span's identity from its own
+  attributes — Latitude's console session/conversation views key on the LLM
+  generation spans, so root-only attributes grouped the API-level trace but
+  left the console showing one session per turn and no user. The identity now
+  rides the OTel Context and an IdentityAttributeSpanProcessor injects it
+  into every descendant span (LLM steps, tool executions) at start.
+
 ## 0.59.9
 
 ### Patch Changes
