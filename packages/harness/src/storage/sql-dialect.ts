@@ -571,9 +571,21 @@ export abstract class SqlStorageEngine implements StorageEngine {
       // Distinct placeholders for the two title occurrences: rewrite()
       // converts $N → ? positionally for sqlite, so reusing $1 would
       // desync the param array.
+      //
+      // Postgres: the JSONB column usually holds a JSON-encoded STRING
+      // scalar, not an object — update() binds `JSON.stringify(conv)` and
+      // the driver serializes that JS string as a JSON string. A bare
+      // jsonb_set on those rows throws `cannot set path in scalar`
+      // (observed in prod 2026-06-12: every rename 500'd). Branch on the
+      // stored shape and preserve each row's encoding: objects get a plain
+      // jsonb_set; string scalars get unwrapped (#>> '{}'), parsed, set,
+      // and re-serialized back to a string scalar.
       const dataExpr = this.dialect.tag === "sqlite"
         ? `json_set(data, '$.title', $2)`
-        : `jsonb_set(data, '{title}', to_jsonb($2::text))`;
+        : `CASE WHEN jsonb_typeof(data) = 'object'
+             THEN jsonb_set(data, '{title}', to_jsonb($2::text))
+             ELSE to_jsonb(jsonb_set((data #>> '{}')::jsonb, '{title}', to_jsonb($2::text))::text)
+           END`;
       await this.executor.run(
         rewrite(
           `UPDATE conversations SET title = $1, data = ${dataExpr}, updated_at = $3 WHERE id = $4`,
