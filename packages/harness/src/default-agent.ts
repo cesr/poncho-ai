@@ -37,10 +37,19 @@ export interface DefaultAgentDefinitionOptions {
   maxSteps?: number;
   /** Hard timeout in seconds. Default: 300. */
   timeout?: number;
+  /**
+   * The descriptor that follows the name in the opening line
+   * ("You are **{name}**, {tagline}."). Default:
+   * "a helpful assistant built with Poncho". SDK consumers shipping a
+   * differently-branded product can override this so the framework name
+   * does not leak into the agent's system prompt.
+   */
+  tagline?: string;
 }
 
 export const DEFAULT_AGENT_NAME = "agent";
 export const DEFAULT_AGENT_DESCRIPTION = "A helpful Poncho assistant";
+export const DEFAULT_TAGLINE = "a helpful assistant built with Poncho";
 export const DEFAULT_MODEL_PROVIDER = "anthropic" as const;
 export const DEFAULT_MODEL_NAME = "claude-opus-4-5";
 export const DEFAULT_TEMPERATURE = 0.2;
@@ -66,6 +75,7 @@ export const defaultAgentDefinition = (
     opts.temperature !== undefined ? `\n  temperature: ${opts.temperature}` : "";
   const maxSteps = opts.maxSteps ?? DEFAULT_MAX_STEPS;
   const timeout = opts.timeout ?? DEFAULT_TIMEOUT;
+  const tagline = opts.tagline ?? DEFAULT_TAGLINE;
 
   return `---
 name: ${name}
@@ -81,7 +91,7 @@ limits:
 
 # {{name}}
 
-You are **{{name}}**, a helpful assistant built with Poncho.
+You are **{{name}}**, ${tagline}.
 
 Working directory: {{runtime.workingDir}}
 Environment: {{runtime.environment}}
