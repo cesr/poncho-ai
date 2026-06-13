@@ -1,5 +1,15 @@
 # @poncho-ai/harness
 
+## 0.59.12
+
+### Patch Changes
+
+- [`4dc94a7`](https://github.com/cesr/poncho-ai/commit/4dc94a7d7d1d411baa9ca4ac1e98053d6d2e66c3) Thanks [@cesr](https://github.com/cesr)! - `defaultAgentDefinition()` accepts an optional `tagline` to override the
+  opening line's descriptor ("You are **{name}**, {tagline}."). Default is
+  unchanged ("a helpful assistant built with Poncho"). Lets SDK consumers
+  shipping a differently-branded product keep the framework name out of the
+  agent's system prompt.
+
 ## 0.59.11
 
 ### Patch Changes
