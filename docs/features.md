@@ -642,7 +642,7 @@ When `memory.enabled` is true in `poncho.config.js`, the harness enables a simpl
 
 - A single persistent main memory document is loaded at run start and interpolated into the system prompt under `## Persistent Memory`.
 - `memory_main_write` overwrites the entire memory document (for initial writes or full rewrites).
-- `memory_main_edit` performs targeted string-replacement edits on memory (find `old_str`, replace with `new_str`), mirroring `edit_file` semantics. The tool description instructs the model to proactively evaluate each turn whether durable memory should be updated.
+- `memory_main_edit` performs targeted string-replacement edits on memory (find `old_str`, replace with `new_str`), mirroring `edit_file` semantics. An empty `old_str` appends `new_str` to the end of memory, which also handles the first-ever write into empty memory. The tool description instructs the model to proactively evaluate each turn whether durable memory should be updated.
 - `conversation_recall` can search, browse, and fetch past conversations. It supports keyword search (scoring by relevance), date-range filtering (`after`/`before`), and fetching a specific conversation's full message history by ID.
 
 ```javascript

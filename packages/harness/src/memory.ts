@@ -192,15 +192,17 @@ export const createMemoryTools = (
           throw new Error("content is required");
         }
         const memory = await resolveStore(context).updateMainMemory({ content });
-        return { ok: true, memory };
+        return { ok: true, bytes: memory.content.length };
       },
     }),
     defineTool({
       name: "memory_main_edit",
       description:
-        "Edit persistent main memory by replacing an exact string match with new content. " +
-        "The old_str must match exactly one location in memory. " +
-        "Use an empty new_str to delete matched content. " +
+        "Edit persistent main memory. With a non-empty old_str, replace that exact " +
+        "string (which must match exactly one location) with new_str; use an empty " +
+        "new_str to delete the matched content. With an empty old_str, append new_str " +
+        "to the end of memory — use this to add a brand-new fact or to write the first " +
+        "fact when memory is still empty. " +
         "Proactively evaluate every turn whether memory should be updated.",
       inputSchema: {
         type: "object",
@@ -209,11 +211,14 @@ export const createMemoryTools = (
             type: "string",
             description:
               "The exact text to find and replace (must be unique in memory). " +
-              "Include surrounding context if needed to ensure uniqueness.",
+              "Include surrounding context if needed to ensure uniqueness. " +
+              "Leave empty to append new_str to the end of memory instead.",
           },
           new_str: {
             type: "string",
-            description: "The replacement text (use empty string to delete the matched content)",
+            description:
+              "The replacement text (use empty string to delete the matched content), " +
+              "or the text to append when old_str is empty.",
           },
         },
         required: ["old_str", "new_str"],
@@ -222,26 +227,35 @@ export const createMemoryTools = (
       handler: async (input, context) => {
         const oldStr = typeof input.old_str === "string" ? input.old_str : "";
         const newStr = typeof input.new_str === "string" ? input.new_str : "";
-        if (!oldStr) {
-          throw new Error("old_str must not be empty.");
-        }
         const current = await resolveStore(context).getMainMemory();
         const content = current.content;
-        const first = content.indexOf(oldStr);
-        if (first === -1) {
-          throw new Error(
-            "old_str not found in memory. Make sure it matches exactly, including whitespace and line breaks.",
-          );
+        let newContent: string;
+        if (!oldStr) {
+          // Append mode: add new_str to the end. Handles the first-ever write
+          // (empty memory) and adding new facts without needing existing text
+          // to match. Separate from prior content with a blank line when both
+          // sides are non-empty.
+          if (!newStr) {
+            throw new Error("new_str must not be empty when appending (old_str is empty).");
+          }
+          newContent = content ? `${content.replace(/\s+$/, "")}\n\n${newStr}` : newStr;
+        } else {
+          const first = content.indexOf(oldStr);
+          if (first === -1) {
+            throw new Error(
+              "old_str not found in memory. Make sure it matches exactly, including whitespace and line breaks.",
+            );
+          }
+          const last = content.lastIndexOf(oldStr);
+          if (first !== last) {
+            throw new Error(
+              "old_str appears multiple times in memory. Please provide more context to ensure a unique match.",
+            );
+          }
+          newContent = content.slice(0, first) + newStr + content.slice(first + oldStr.length);
         }
-        const last = content.lastIndexOf(oldStr);
-        if (first !== last) {
-          throw new Error(
-            "old_str appears multiple times in memory. Please provide more context to ensure a unique match.",
-          );
-        }
-        const newContent = content.slice(0, first) + newStr + content.slice(first + oldStr.length);
         const memory = await resolveStore(context).updateMainMemory({ content: newContent });
-        return { ok: true, memory };
+        return { ok: true, bytes: memory.content.length };
       },
     }),
     defineTool({
