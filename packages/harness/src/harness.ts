@@ -65,6 +65,7 @@ import { jsonSchemaToZod } from "./schema-converter.js";
 import type { SkillMetadata } from "./skill-context.js";
 import { createSkillTools, normalizeScriptPolicyPath } from "./skill-tools.js";
 import { createSearchTools } from "./search-tools.js";
+import { createAskUserTool } from "./ask-user-tool.js";
 import { createSubagentTools } from "./subagent-tools.js";
 import type { SubagentManager } from "./subagent-manager.js";
 import { trace, context as otelContext, createContextKey, type Context as OtelContextType, SpanStatusCode, SpanKind, diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api";
@@ -965,6 +966,11 @@ export class AgentHarness {
 
   /** Returns the normalized {access, dispatch} mode for the tool. */
   private resolveToolMode(toolName: string): { access?: "approval"; dispatch?: "device" } {
+    // ask_user is always answered by the user on the client. Force device
+    // dispatch unconditionally so it pauses the run and checkpoints rather
+    // than running its (defensive, error-returning) server-side handler —
+    // even if no `poncho.config.js` entry exists for it.
+    if (toolName === "ask_user") return { dispatch: "device" };
     return normalizeToolAccess(this.resolveToolAccess(toolName));
   }
 
@@ -1013,6 +1019,9 @@ export class AgentHarness {
       if (this.isToolEnabled(tool.name)) {
         this.registerIfMissing(tool);
       }
+    }
+    if (this.isToolEnabled("ask_user")) {
+      this.registerIfMissing(createAskUserTool());
     }
     if (this.environment === "development" && this.isToolEnabled("poncho_docs")) {
       this.registerIfMissing(ponchoDocsTool);
