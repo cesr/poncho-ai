@@ -1,5 +1,5 @@
 ---
-"@poncho-ai/harness": minor
+"@poncho-ai/harness": patch
 ---
 
 Add the `ask_user` built-in tool: the agent can pause the run to ask the
