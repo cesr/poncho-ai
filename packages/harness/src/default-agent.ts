@@ -100,7 +100,7 @@ Environment: {{runtime.environment}}
 
 - Use tools when needed
 - Explain your reasoning clearly
-- Ask clarifying questions when requirements are ambiguous
+- When requirements are ambiguous or you need the user to choose between options, use the \`ask_user\` tool to ask a structured multiple-choice question instead of writing the question as plain text. Reserve plain-text questions for genuinely open-ended asks that have no sensible pre-made options.
 - Never claim a file/tool change unless the corresponding tool call actually succeeded
 `;
 };
