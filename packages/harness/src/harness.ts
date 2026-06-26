@@ -1068,6 +1068,30 @@ export class AgentHarness {
             error: `No archived tool result found for id "${toolResultId}" in this conversation.`,
           };
         }
+        // Spill envelopes: the archived payload is the small handle, not the
+        // data — the real payload lives in a VFS file. Paging the envelope here
+        // would silently return ~6k chars and `hasMore:false`, reading as "I've
+        // got everything". Redirect to the file (read it with bash) instead of
+        // building a second read path the agent already has via bash/jq.
+        try {
+          const env = JSON.parse(record.payload) as Record<string, unknown>;
+          if (env && env.__toolResultSpilled === true && typeof env.path === "string") {
+            return {
+              toolResultId: record.toolResultId,
+              toolName: record.toolName,
+              toolCallId: record.toolCallId,
+              spilled: true,
+              path: env.path,
+              totalChars: typeof env.totalChars === "number" ? env.totalChars : undefined,
+              note:
+                `This result was spilled to ${env.path} — the archive only holds a preview. ` +
+                `Read the full payload there with bash (head -c / tail -c +<N> | head -c, or ` +
+                `jq), NOT via get_tool_result_by_id.`,
+            };
+          }
+        } catch {
+          // Not JSON / not an envelope — fall through to normal paging.
+        }
         const offset = Math.max(0, Number(input.offset) || 0);
         const limit = Math.min(Math.max(Number(input.limit) || 6000, 1), 20_000);
         const end = Math.min(record.payload.length, offset + limit);
@@ -1219,7 +1243,7 @@ export class AgentHarness {
         await vfs.mkdir(policy.dir, { recursive: true });
         await vfs.writeText(path, content);
         await this.pruneSpillDir(vfs, policy.dir, policy.keepLast);
-        return buildSpillHandle({ toolName, path, format, serialized, records });
+        return buildSpillHandle({ toolName, toolCallId, path, format, serialized, records });
       } catch {
         // Fall through to inline truncation below.
       }

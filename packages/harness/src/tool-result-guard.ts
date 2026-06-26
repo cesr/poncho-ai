@@ -80,32 +80,49 @@ export const formatSpillPayload = (
  *  a file: a small preview plus the path and bash-readback instructions. */
 export const buildSpillHandle = (opts: {
   toolName: string;
+  toolCallId: string;
   path: string;
   format: "jsonl" | "json";
   serialized: string;
   records?: number;
 }): Record<string, unknown> => {
-  const { toolName, path, format, serialized, records } = opts;
+  const { toolName, toolCallId, path, format, serialized, records } = opts;
   const approxTokens = Math.ceil(serialized.length / 4);
-  const isArray = format === "jsonl";
+  // Byte-offset reads are correct for BOTH formats; line tools (`wc -l`,
+  // `grep`, `sed -n`) only behave for JSONL (one record per line). For pretty
+  // JSON the payload is a JSON document whose string fields (e.g. a command's
+  // stdout) carry escaped `\n` on a single line, so `wc -l`/`grep` mislead —
+  // unescape with `jq -r` first. Tailor the hint to the format so the model
+  // doesn't act on wrong line/match counts.
+  const bytesHint =
+    `\`wc -c ${path}\` (size), \`head -c 4000 ${path}\`, ` +
+    `\`tail -c +<N> ${path} | head -c 4000\` (read from byte N)`;
+  const note =
+    format === "jsonl"
+      ? `Result too large to return inline (~${approxTokens.toLocaleString()} tokens, ` +
+        `${records} records, one JSON object per line). Read it with bash: ${bytesHint}, ` +
+        `\`sed -n '1,5p' ${path}\`, \`grep -i <term> ${path}\`, or \`jq -c 'select(...)' ${path}\` ` +
+        `per line. Do NOT cat/read_file the whole file (it re-overflows). Or re-run the tool ` +
+        `with a narrower request.`
+      : `Result too large to return inline (~${approxTokens.toLocaleString()} tokens, JSON). ` +
+        `Its string fields are escaped onto single lines, so \`wc -l\`/\`grep\` MISLEAD — ` +
+        `read by byte offset (${bytesHint}) or unescape first with ` +
+        `\`jq -r '.stdout // .' ${path}\` (then pipe to wc -l / grep). Do NOT cat/read_file the ` +
+        `whole file (it re-overflows). Or re-run the tool with a narrower request.`;
   return {
     __toolResultSpilled: true,
     tool: toolName,
+    // Expose the id explicitly so the model passes the right value if it
+    // reaches for get_tool_result_by_id (the path stem is NOT the id).
+    toolResultId: toolCallId,
+    toolCallId,
     path,
     format,
     ...(records !== undefined ? { records } : {}),
     totalChars: serialized.length,
     approxTokens,
     preview: serialized.slice(0, SPILLED_PREVIEW_CHARS),
-    note:
-      `This result was too large to return inline (~${approxTokens.toLocaleString()} ` +
-      `tokens) and was saved to ${path}. Inspect it with bash — e.g. ` +
-      `\`wc -l ${path}\`, \`head -c 4000 ${path}\`, ` +
-      (isArray
-        ? `\`sed -n '1,5p' ${path}\`, \`grep -i <term> ${path}\`, or \`jq\` per line`
-        : `\`grep -i <term> ${path}\``) +
-      `. Do NOT cat or read_file the whole file (it re-overflows). Or re-run the ` +
-      `tool with a narrower request (fewer items / a filter / metadata only).`,
+    note,
   };
 };
 

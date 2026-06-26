@@ -81,11 +81,12 @@ describe("formatSpillPayload", () => {
 });
 
 describe("buildSpillHandle", () => {
-  it("returns a handle with path, format, records, preview, and bash instructions", () => {
+  it("returns a handle with path, format, records, preview, the call id, and bash instructions", () => {
     const serialized = "x".repeat(SPILLED_PREVIEW_CHARS + 50_000);
     const h = buildSpillHandle({
       toolName: "mcp_gmail_GMAIL_FETCH_EMAILS",
-      path: "/tmp/tool-results/mcp_gmail_GMAIL_FETCH_EMAILS_tool_1.jsonl",
+      toolCallId: "toolu_01Ctij",
+      path: "/tmp/tool-results/mcp_gmail_GMAIL_FETCH_EMAILS_toolu_01Ctij.jsonl",
       format: "jsonl",
       serialized,
       records: 312,
@@ -94,20 +95,31 @@ describe("buildSpillHandle", () => {
     expect(h.records).toBe(312);
     expect(h.totalChars).toBe(serialized.length);
     expect((h.preview as string).length).toBe(SPILLED_PREVIEW_CHARS);
+    // Issue 1: the call id is exposed explicitly (not just embedded in the path).
+    expect(h.toolCallId).toBe("toolu_01Ctij");
+    expect(h.toolResultId).toBe("toolu_01Ctij");
     expect(String(h.note)).toContain("/tmp/tool-results/");
-    expect(String(h.note)).toContain("jq"); // array → jsonl hint
     expect(String(h.note)).toContain("Do NOT cat");
+    // JSONL: line tools are valid (one record per line).
+    expect(String(h.note)).toContain("sed -n");
   });
 
-  it("omits the array-only jq hint and records for json format", () => {
+  it("json format steers AWAY from line tools and toward byte-offset / jq (Issue 3)", () => {
     const h = buildSpillHandle({
-      toolName: "t",
-      path: "/tmp/tool-results/t_x.json",
+      toolName: "run_code",
+      toolCallId: "toolu_2",
+      path: "/tmp/tool-results/run_code_toolu_2.json",
       format: "json",
       serialized: "y".repeat(10),
     });
     expect(h.records).toBeUndefined();
-    expect(String(h.note)).not.toContain("jq");
+    const note = String(h.note);
+    // It must warn that wc -l / grep mislead, and point at byte-offset + jq -r.
+    expect(note).toContain("MISLEAD");
+    expect(note).toContain("tail -c +");
+    expect(note).toContain("jq -r");
+    // It must NOT suggest sed-by-line for escaped-JSON.
+    expect(note).not.toContain("sed -n");
   });
 });
 
