@@ -30,6 +30,14 @@ import {
   createReminderStoreFromEngine,
 } from "./storage/store-adapters.js";
 import { BashEnvironmentManager } from "./vfs/bash-manager.js";
+import {
+  type ToolResultSpillPolicy,
+  readSpillPolicy,
+  isOversizedToolResult,
+  formatSpillPayload,
+  buildSpillHandle,
+  buildInlineTruncation,
+} from "./tool-result-guard.js";
 import type { VirtualMount } from "./vfs/poncho-fs-adapter.js";
 export type { VirtualMount } from "./vfs/poncho-fs-adapter.js";
 import { createBashTool } from "./vfs/bash-tool.js";
@@ -1181,6 +1189,77 @@ export class AgentHarness {
     return merged;
   }
 
+  /**
+   * Guard a single FRESH tool result against overflowing the context window.
+   * `serialized` is the JSON-serialized (media-stripped) output. Returns a
+   * replacement value to put in front of the model (a handle or a truncated
+   * preview) when the result is oversized, or `null` to leave it untouched.
+   * Spilling writes the full payload to a VFS file; on any write failure it
+   * falls back to inline truncation, so this never throws into the run loop.
+   */
+  private async guardOversizedToolResult(opts: {
+    tenantId: string;
+    toolName: string;
+    toolCallId: string;
+    output: unknown;
+    serialized: string;
+    policy: ToolResultSpillPolicy;
+  }): Promise<Record<string, unknown> | null> {
+    const { tenantId, toolName, toolCallId, output, serialized, policy } = opts;
+    if (!isOversizedToolResult(serialized, policy)) return null;
+
+    if (policy.enabled && this.bashManager) {
+      try {
+        const vfs = this.createVfsAccess(tenantId);
+        const { content, format, records } = formatSpillPayload(output);
+        // toolCallId is unique per call and stable across a checkpoint→resume,
+        // so the path is idempotent (a resumed run rewrites the same file).
+        const safeTool = toolName.replace(/[^A-Za-z0-9_-]/g, "_");
+        const path = `${policy.dir}/${safeTool}_${toolCallId}.${format}`;
+        await vfs.mkdir(policy.dir, { recursive: true });
+        await vfs.writeText(path, content);
+        await this.pruneSpillDir(vfs, policy.dir, policy.keepLast);
+        return buildSpillHandle({ toolName, path, format, serialized, records });
+      } catch {
+        // Fall through to inline truncation below.
+      }
+    }
+
+    return buildInlineTruncation(toolName, serialized);
+  }
+
+  /** Best-effort: keep only the newest `keepLast` files in the spill dir. */
+  private async pruneSpillDir(
+    vfs: NonNullable<ToolContext["vfs"]>,
+    dir: string,
+    keepLast: number,
+  ): Promise<void> {
+    try {
+      const entries = await vfs.readdir(dir);
+      const names = (Array.isArray(entries) ? entries : [])
+        .map((e) => (typeof e === "string" ? e : (e as { name?: string }).name))
+        .filter((n): n is string => typeof n === "string");
+      if (names.length <= keepLast) return;
+      const stated = await Promise.all(
+        names.map(async (name) => {
+          try {
+            const s = await vfs.stat(`${dir}/${name}`);
+            return { name, mtime: s.updatedAt ?? 0 };
+          } catch {
+            return { name, mtime: 0 };
+          }
+        }),
+      );
+      stated.sort((a, b) => a.mtime - b.mtime); // oldest first
+      const doomed = stated.slice(0, stated.length - keepLast);
+      for (const d of doomed) {
+        try { await vfs.rm(`${dir}/${d.name}`); } catch { /* best-effort */ }
+      }
+    } catch {
+      // Dir unreadable — nothing to prune.
+    }
+  }
+
   private truncateHistoricalToolResults(
     messages: Message[],
     conversationId: string,
@@ -2212,6 +2291,7 @@ export class AgentHarness {
     const messages: Message[] = [...(input.messages ?? [])];
     const conversationId = input.conversationId ?? "__default__";
     this.seedToolResultArchive(conversationId, input.parameters);
+    const spillPolicy = readSpillPolicy(input.parameters);
     const truncationSummary = this.truncateHistoricalToolResults(messages, conversationId);
     if (truncationSummary.changed) {
       costLog.debug(
@@ -3692,30 +3772,49 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
             span.setStatus({ code: SpanStatusCode.OK });
             span.end();
           }
-          const serialized = JSON.stringify(result.output ?? null);
-          const outputTokenEstimate = Math.ceil(serialized.length / 4);
+          // Separate inline media (images/PDFs) from the textual output, then
+          // guard the textual part against overflowing the window. A single
+          // oversized fresh result is replaced with a handle (spill) or a
+          // preview (inline) BEFORE we emit the event or feed the model — so
+          // neither the WS stream nor the next step ever carries the full
+          // multi-MB payload.
+          const { mediaItems, strippedOutput } = extractMediaFromToolOutput(result.output);
+          const strippedSerialized = JSON.stringify(strippedOutput ?? null);
+          const guarded = await this.guardOversizedToolResult({
+            tenantId: input.tenantId ?? "__default__",
+            toolName: result.tool,
+            toolCallId: result.callId,
+            output: strippedOutput,
+            serialized: strippedSerialized,
+            policy: spillPolicy,
+          });
+          const effectiveOutput: unknown = guarded ?? strippedOutput ?? null;
+          const effectiveSerialized = guarded ? JSON.stringify(guarded) : strippedSerialized;
+          const outputTokenEstimate = Math.ceil(effectiveSerialized.length / 4);
           toolOutputEstimateSinceModel += outputTokenEstimate;
           yield pushEvent({
             type: "tool:completed",
             tool: result.tool,
             toolCallId: result.callId,
             input: callInputMap.get(result.callId),
-            output: result.output,
+            output: effectiveOutput,
             duration: now() - batchStart,
             outputTokenEstimate,
           });
 
-          const { mediaItems, strippedOutput } = extractMediaFromToolOutput(result.output);
           toolResultsForModel.push({
             type: "tool_result",
             tool_use_id: result.callId,
             tool_name: result.tool,
-            content: JSON.stringify(strippedOutput ?? null),
+            content: effectiveSerialized,
           });
           {
             const archive = this.archivedToolResultsByConversation.get(conversationId);
             if (archive && !NON_ARCHIVABLE_TOOL_NAMES.has(result.tool)) {
-              const payload = JSON.stringify(result.output ?? null);
+              // Archive the model-visible payload (handle/preview when guarded).
+              // When spilled, the VFS file is the durable full copy; keeping the
+              // in-memory archive small avoids re-introducing the same bloat.
+              const payload = effectiveSerialized;
               archive[result.callId] = {
                 toolResultId: result.callId,
                 conversationId,
@@ -3737,7 +3836,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
               output: {
                 type: "content",
                 value: [
-                  { type: "text", text: JSON.stringify(strippedOutput ?? null) },
+                  { type: "text", text: effectiveSerialized },
                   ...mediaItems,
                 ],
               },
@@ -3747,7 +3846,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
               type: "tool-result",
               toolCallId: result.callId,
               toolName: result.tool,
-              output: { type: "json", value: result.output ?? null },
+              output: { type: "json", value: effectiveOutput },
             });
           }
         }
