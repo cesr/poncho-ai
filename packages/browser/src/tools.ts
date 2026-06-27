@@ -10,7 +10,10 @@ export function createBrowserTools(
     {
       name: "browser_open",
       description:
-        "Open a URL in a headless browser. Returns the page title. Use this to navigate to websites and web applications. " +
+        "Open a URL in a real browser whose live view the user can watch and interact with. Returns the page title. " +
+        "This is a HEAVY, last-resort tool — prefer cheaper options first: use `web_fetch` to read page content, and use a dedicated API or MCP integration when one exists for the service. " +
+        "Only reach for the browser when those can't do the job: a page `web_fetch` can't render (JS-heavy/SPA), or a task that requires operating a site or web app that has no API and no MCP integration (e.g. logging in and clicking through a UI). " +
+        "When a site needs credentials, navigate to its login page and let the user sign in directly in the live view — never ask for passwords in chat. " +
         "To open files from the virtual filesystem, use /api/vfs/{path} (e.g. /api/vfs/downloads/report.pdf).",
       inputSchema: {
         type: "object",
