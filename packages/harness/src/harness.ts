@@ -2123,11 +2123,18 @@ export class AgentHarness {
     this._browserMod = browserMod;
     const browserCfg: Record<string, unknown> = typeof config.browser === "object" ? { ...config.browser } : {};
     const agentId = this.parsedAgent?.frontmatter.id ?? this.parsedAgent?.frontmatter.name ?? "default";
-    const sessionId = `poncho-${agentId}`;
+    // Let an embedding app override the session id (e.g. to make it per-tenant
+    // when many users share one agent definition). Falls back to the agent id.
+    const sessionName = typeof config.browser === "object" ? config.browser.sessionName : undefined;
+    const sessionId = sessionName ?? `poncho-${agentId}`;
 
-    const storagePersistence = await this.buildBrowserStoragePersistence(config, sessionId);
-    if (storagePersistence) {
-      browserCfg.storagePersistence = storagePersistence;
+    // Only build the built-in file persistence when the host didn't supply its
+    // own. A host-provided `storagePersistence` (e.g. encrypted/DB-backed) wins.
+    if (!browserCfg.storagePersistence) {
+      const storagePersistence = await this.buildBrowserStoragePersistence(config, sessionId);
+      if (storagePersistence) {
+        browserCfg.storagePersistence = storagePersistence;
+      }
     }
 
     const session = new browserMod.BrowserSession(sessionId, browserCfg);
@@ -2577,7 +2584,14 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
           profileDir: string;
           isLaunched: boolean }
       | undefined;
-    if (browserSession) {
+    // When the host owns the live viewport (`browser.hostManagedStreaming`),
+    // it subscribes to onFrame/onStatus directly and streams frames out-of-band.
+    // Skip the during-run wiring so frames don't double-emit into the agent
+    // event stream (and don't flood any host-side event buffer).
+    const hostManagedStreaming =
+      typeof this.loadedConfig?.browser === "object" &&
+      this.loadedConfig.browser.hostManagedStreaming === true;
+    if (browserSession && !hostManagedStreaming) {
       browserCleanups.push(
         browserSession.onFrame(conversationId, makeBrowserFrameListener(browserEventQueue)),
         browserSession.onStatus(conversationId, makeBrowserStatusListener(browserEventQueue)),

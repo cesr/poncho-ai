@@ -294,6 +294,21 @@ export interface PonchoConfig extends McpConfig {
         /** Connect to an existing browser via CDP URL or port.
          *  Mutually exclusive with `provider`. */
         cdpUrl?: string;
+        /** Host-supplied persistence for the browser's storage state
+         *  (cookies + localStorage as a Playwright storageState JSON). When
+         *  provided, the harness uses this instead of its built-in file-based
+         *  persistence — letting an embedding app store session state in its
+         *  own (e.g. encrypted, per-tenant) backend. */
+        storagePersistence?: {
+          save(json: string): Promise<void>;
+          load(): Promise<string | undefined>;
+        };
+        /** When true, the host owns the live viewport: the harness will NOT
+         *  wire frame/status listeners during run() (so no `browser:frame` /
+         *  `browser:status` events are emitted into the agent event stream).
+         *  The host is expected to subscribe to the BrowserSession's
+         *  `onFrame`/`onStatus` directly and stream frames out-of-band. */
+        hostManagedStreaming?: boolean;
       };
 }
 
