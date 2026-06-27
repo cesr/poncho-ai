@@ -365,6 +365,18 @@ export class BrowserSession {
 
     await mgr.launch(launchOpts as Parameters<BrowserManagerInstance["launch"]>[0]);
 
+    // Remote browsers (cloud provider / cdpUrl) ignore launchOpts.viewport —
+    // that's only applied when launching a local context — so the page renders
+    // at the provider's (often huge) default and the screencast shows it shrunk.
+    // Force our configured viewport on the connected page.
+    if (this.isRemote) {
+      try {
+        await mgr.setViewport(viewport.width ?? 1280, viewport.height ?? 720);
+      } catch (e) {
+        console.warn(`[poncho][browser] setViewport failed: ${(e as Error)?.message ?? e}`);
+      }
+    }
+
     // Reset stealth tracking for fresh browser
     this._contextStealthInstalled = false;
     this._uaOverrideApplied.clear();
