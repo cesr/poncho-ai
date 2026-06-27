@@ -1,5 +1,17 @@
 # @poncho-ai/browser
 
+## 0.6.23
+
+### Patch Changes
+
+- [`2d518d1`](https://github.com/cesr/poncho-ai/commit/2d518d1666e69d63a94be8a781d11d0569e6af7b) Thanks [@cesr](https://github.com/cesr)! - Force the configured viewport on remote browsers (cloud provider / cdpUrl).
+  `launchOpts.viewport` is only honored when launching a local context, so a
+  Browserbase/Kernel/CDP session rendered at the provider's large default — the
+  page looked huge, content tiny, scrolling appeared broken, and tap coordinates
+  mismatched the frame after reconnect. After connecting, call
+  `setViewport(width, height)` so the page renders at the intended size and frames
+  - input stay consistent.
+
 ## 0.6.22
 
 ### Patch Changes
