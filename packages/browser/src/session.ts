@@ -903,6 +903,11 @@ export class BrowserSession {
       y: event.y ?? 0,
       deltaX: event.deltaX,
       deltaY: event.deltaY,
+      // A wheel event must NOT carry a pressed button — injectMouse otherwise
+      // defaults to "left", which makes Chrome treat the scroll as a
+      // left-button drag and can leave the button stuck "down", so subsequent
+      // clicks stop registering.
+      button: "none",
     });
   }
 
