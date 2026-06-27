@@ -1,5 +1,15 @@
 # @poncho-ai/browser
 
+## 0.6.24
+
+### Patch Changes
+
+- [`51859a9`](https://github.com/cesr/poncho-ai/commit/51859a94041ade5ec9a9892165099d610c3bc363) Thanks [@cesr](https://github.com/cesr)! - Dispatch wheel/scroll events with no pressed button. `injectScroll` went through
+  `injectMouse`, which defaults the button to `"left"`, so a `mouseWheel` was sent
+  _with the left button_ — Chrome treated scrolling as a left-button drag and could
+  leave the button stuck "down", after which clicks stopped registering. Send
+  `button: "none"` for wheel events.
+
 ## 0.6.23
 
 ### Patch Changes
