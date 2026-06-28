@@ -177,6 +177,55 @@ export function createBrowserTools(
       },
     },
     {
+      name: "browser_download",
+      description:
+        "Download a file from the browser and save it into the user's virtual filesystem (VFS). " +
+        "Fetches the file using the browser's logged-in session, so it works for files behind a login — " +
+        "use it to keep a PDF, CSV, image, or other file the page offers. " +
+        "It fetches `url` (or the current page if you omit it), so for a download link on the page, grab its href from a snapshot first; " +
+        "for a file that opens in the browser, navigate to it and call this with no url. " +
+        "The fetch runs in the page, so the url should be same-origin with the current page (navigate to the file's site first if needed). " +
+        "Returns the saved VFS path and byte size — the bytes go straight to the VFS, not through the chat.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description:
+              "Destination in the VFS. Include a filename (e.g. /downloads/report.pdf); parent folders are created as needed. " +
+              "End with '/' (e.g. /downloads/) to keep the file's own name.",
+          },
+          url: {
+            type: "string",
+            description:
+              "URL of the file to download. Optional — defaults to the current page's URL.",
+          },
+        },
+        required: ["path"],
+      },
+      handler: async (input: BrowserToolInput, context: ToolContext) => {
+        const session = getSession();
+        const vfs = context.vfs;
+        if (!vfs) throw new Error("VFS is not available in this environment");
+        const dest0 = String(input.path ?? "").trim();
+        if (!dest0) throw new Error("path is required");
+        const url = input.url != null ? String(input.url) : undefined;
+        const { data, contentType, filename } = await session.download(
+          context.conversationId ?? "__default__",
+          url,
+        );
+        // A trailing slash (or bare folder) means "use the file's own name".
+        let dest = dest0.startsWith("/") ? dest0 : `/${dest0}`;
+        if (dest.endsWith("/")) dest = `${dest}${filename}`;
+        const slash = dest.lastIndexOf("/");
+        if (slash > 0) {
+          try { await vfs.mkdir(dest.slice(0, slash), { recursive: true }); } catch { /* exists */ }
+        }
+        await vfs.writeFile(dest, new Uint8Array(data), contentType || undefined);
+        return { path: dest, bytes: data.length, ...(contentType ? { contentType } : {}) };
+      },
+    },
+    {
       name: "browser_screenshot",
       description:
         "Take a screenshot of the current page. Returns the image so you can see exactly what the page looks like. " +

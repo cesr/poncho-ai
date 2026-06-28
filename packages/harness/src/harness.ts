@@ -2376,6 +2376,9 @@ Browser sessions (cookies, localStorage, login state) are automatically saved an
 - Use \`browser_screenshot\` only when you need to see visual layout or images. Screenshots consume significantly more tokens.
 - The accessibility tree may be sparse on some pages. If \`browser_snapshot\` returns little or no content, fall back to \`browser_content\` or \`browser_screenshot\`.
 
+### Saving files
+To keep a file the page offers (a PDF, CSV, image, export, etc.), use \`browser_download\` to save it into the user's filesystem. It fetches with the browser's logged-in session, so it works for files behind a login. For a download link, get its href from a snapshot and pass it as \`url\`; for a file that opens in the browser, navigate to it and call \`browser_download\` with no \`url\`. The bytes go straight to the filesystem (not through the chat), so prefer this over screenshotting or copy-pasting file contents.
+
 ### Tabs and resources
 Each conversation gets its own browser tab sharing a single browser instance. Call \`browser_close\` when done to free the tab. If you don't close it, the tab stays open and the user can continue interacting with it.`
       : "";
