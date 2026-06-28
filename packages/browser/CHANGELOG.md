@@ -1,5 +1,21 @@
 # @poncho-ai/browser
 
+## 0.6.26
+
+### Patch Changes
+
+- [#182](https://github.com/cesr/poncho-ai/pull/182) [`5ca3615`](https://github.com/cesr/poncho-ai/commit/5ca361576cbe1a97e6315f550a58a302b4e70aca) Thanks [@cesr](https://github.com/cesr)! - Keep host viewport listeners alive across browser sessions. `onFrame` /
+  `onStatus` listeners were stored inside the per-conversation `ConversationTab`
+  object, so `closeTab` (and LRU eviction) deleted them along with the tab. When
+  an agent closed one browser and opened another in the same conversation, the
+  new tab had empty listener sets — the host's live-viewport subscription was
+  silently orphaned, so the second session's `browser:status` / frames never
+  reached the client until it reconnected (the "pill/sheet doesn't appear, or is
+  left over after close, until I navigate away and back" bug). Listeners now live
+  in session-level maps keyed by conversationId, independent of any tab's
+  lifetime; they persist until the host unsubscribes, and `emitStatus` delivers
+  the final `active:false` on close before the tab is removed.
+
 ## 0.6.25
 
 ### Patch Changes
