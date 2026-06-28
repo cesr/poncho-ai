@@ -144,8 +144,6 @@ interface ConversationTab {
   url?: string;
   active: boolean;
   lastUsed: number;
-  frameListeners: Set<FrameListener>;
-  statusListeners: Set<StatusListener>;
 }
 
 export class BrowserSession {
@@ -155,6 +153,16 @@ export class BrowserSession {
 
   // Tab management: conversationId → tab state
   private readonly tabs = new Map<string, ConversationTab>();
+
+  // Viewport listeners, keyed by conversationId and kept SEPARATE from the
+  // tab. A host (e.g. a live iOS viewport) subscribes once; its listeners must
+  // outlive any individual tab so that closing one browser and opening another
+  // in the same conversation — or an LRU tab eviction — doesn't silently
+  // orphan the subscription (the symptom: the second session's status/frames
+  // never reach the client until it reconnects). Tabs come and go; listeners
+  // persist until the host unsubscribes.
+  private readonly frameListeners = new Map<string, Set<FrameListener>>();
+  private readonly statusListeners = new Map<string, Set<StatusListener>>();
 
   // Whether context-level stealth init script has been installed
   private _contextStealthInstalled = false;
@@ -500,13 +508,10 @@ export class BrowserSession {
       if (realTabs > 0) {
         await mgr.newTab();
       }
-      const existing = tab;
       tab = {
         tabIndex: mgr.getActiveIndex(),
         active: true,
         lastUsed: Date.now(),
-        frameListeners: existing?.frameListeners ?? new Set(),
-        statusListeners: existing?.statusListeners ?? new Set(),
       };
       this.tabs.set(conversationId, tab);
     } else {
@@ -799,15 +804,15 @@ export class BrowserSession {
         (frame) => {
           const cid = this._screencastConversation;
           if (!cid) return;
-          const t = this.tabs.get(cid);
-          if (!t) return;
+          const listeners = this.frameListeners.get(cid);
+          if (!listeners || listeners.size === 0) return;
           const browserFrame: BrowserFrame = {
             data: frame.data,
             width: frame.metadata.deviceWidth,
             height: frame.metadata.deviceHeight,
             timestamp: Date.now(),
           };
-          for (const listener of t.frameListeners) {
+          for (const listener of listeners) {
             try { listener(browserFrame); } catch { /* */ }
           }
         },
@@ -835,28 +840,38 @@ export class BrowserSession {
   // -----------------------------------------------------------------------
 
   onFrame(conversationId: string, listener: FrameListener): () => void {
-    let tab = this.tabs.get(conversationId);
-    if (!tab) {
-      tab = { tabIndex: -1, active: false, lastUsed: Date.now(), frameListeners: new Set(), statusListeners: new Set() };
-      this.tabs.set(conversationId, tab);
+    let set = this.frameListeners.get(conversationId);
+    if (!set) {
+      set = new Set();
+      this.frameListeners.set(conversationId, set);
     }
-    tab.frameListeners.add(listener);
+    set.add(listener);
     return () => {
-      tab!.frameListeners.delete(listener);
-      if (tab!.frameListeners.size === 0 && this._screencastConversation === conversationId) {
-        this.stopScreencast().catch(() => {});
+      const s = this.frameListeners.get(conversationId);
+      if (!s) return;
+      s.delete(listener);
+      if (s.size === 0) {
+        this.frameListeners.delete(conversationId);
+        if (this._screencastConversation === conversationId) {
+          this.stopScreencast().catch(() => {});
+        }
       }
     };
   }
 
   onStatus(conversationId: string, listener: StatusListener): () => void {
-    let tab = this.tabs.get(conversationId);
-    if (!tab) {
-      tab = { tabIndex: -1, active: false, lastUsed: Date.now(), frameListeners: new Set(), statusListeners: new Set() };
-      this.tabs.set(conversationId, tab);
+    let set = this.statusListeners.get(conversationId);
+    if (!set) {
+      set = new Set();
+      this.statusListeners.set(conversationId, set);
     }
-    tab.statusListeners.add(listener);
-    return () => { tab!.statusListeners.delete(listener); };
+    set.add(listener);
+    return () => {
+      const s = this.statusListeners.get(conversationId);
+      if (!s) return;
+      s.delete(listener);
+      if (s.size === 0) this.statusListeners.delete(conversationId);
+    };
   }
 
   // -----------------------------------------------------------------------
@@ -1068,8 +1083,12 @@ export class BrowserSession {
       url: tab?.url,
       interactionAllowed: tab?.active ?? false,
     };
-    if (tab) {
-      for (const listener of tab.statusListeners) {
+    // Listeners live at the session level, so a close (which deletes the tab)
+    // still delivers the final active:false to the host before the tab is
+    // gone — and a later reopen reuses the same subscription.
+    const listeners = this.statusListeners.get(conversationId);
+    if (listeners) {
+      for (const listener of listeners) {
         try { listener(status); } catch { /* */ }
       }
     }
