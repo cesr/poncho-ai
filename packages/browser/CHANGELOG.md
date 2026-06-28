@@ -1,5 +1,18 @@
 # @poncho-ai/browser
 
+## 0.7.0
+
+### Minor Changes
+
+- [#184](https://github.com/cesr/poncho-ai/pull/184) [`12ce2be`](https://github.com/cesr/poncho-ai/commit/12ce2be01c9d98b1d9aa634d4d8051c4c0094a44) Thanks [@cesr](https://github.com/cesr)! - Add `browser_download` so the agent can save files from the browser into the
+  VFS. The tool fetches a file using the page's logged-in session (so it works
+  for files behind a login) and writes the bytes straight to the tenant's VFS via
+  `ToolContext.vfs` — never through the model. `url` defaults to the current page,
+  or pass a same-origin link's href. The fetch runs inside the page (`evaluate`),
+  so it works identically for local and remote/cloud browsers (bytes return over
+  CDP). Capped at 25 MB. The harness browser system prompt now documents it under
+  a "Saving files" section.
+
 ## 0.6.26
 
 ### Patch Changes
