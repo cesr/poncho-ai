@@ -146,6 +146,29 @@ interface ConversationTab {
   lastUsed: number;
 }
 
+/** Strip path separators / nulls so a derived name can't escape its folder. */
+function sanitizeName(name: string): string {
+  const cleaned = name.trim().replace(/[/\\]/g, "_").replace(/\0/g, "");
+  return cleaned || "download";
+}
+
+/** Derive a filename from a Content-Disposition header, falling back to the
+ *  URL's last path segment, then a generic "download". */
+function filenameFromDownload(disposition: string, url: string): string {
+  const star = /filename\*=(?:UTF-8'')?["']?([^"';]+)/i.exec(disposition);
+  if (star?.[1]) {
+    try { return sanitizeName(decodeURIComponent(star[1])); }
+    catch { return sanitizeName(star[1]); }
+  }
+  const plain = /filename=["']?([^"';]+)/i.exec(disposition);
+  if (plain?.[1]) return sanitizeName(plain[1]);
+  try {
+    const base = new URL(url).pathname.split("/").filter(Boolean).pop();
+    if (base) return sanitizeName(decodeURIComponent(base));
+  } catch { /* not a parseable URL */ }
+  return "download";
+}
+
 export class BrowserSession {
   private readonly config: BrowserConfig;
   private readonly sessionId: string;
@@ -650,6 +673,66 @@ export class BrowserSession {
       const text = (await page.evaluate("document.body.innerText")) as string;
       const title = await page.title();
       return { text: text ?? "", url: page.url(), title: title ?? "" };
+    } finally {
+      this.unlock();
+    }
+  }
+
+  /**
+   * Fetch a file using the page's own (logged-in) session and return its
+   * bytes, so the host can persist it (e.g. to a VFS). `url` defaults to the
+   * current page. The fetch runs INSIDE the page via `evaluate`, so it carries
+   * the site's cookies and works the same whether the browser is local or a
+   * remote/cloud provider (the bytes come back over CDP). Because it's a page
+   * `fetch`, same-origin and CORS-permissive URLs work; a cross-origin URL the
+   * site doesn't allow CORS for will fail — navigate to the file first (so it's
+   * same-origin) or pass its direct URL while on that site.
+   */
+  async download(
+    conversationId: string,
+    url?: string,
+  ): Promise<{ data: Buffer; contentType: string; filename: string }> {
+    await this.lock();
+    try {
+      const mgr = await this.ensureManager();
+      await this.switchToConversation(mgr, conversationId);
+      const page = mgr.getPage();
+      const target = url && url.trim() ? url.trim() : page.url();
+      if (!target || target === "about:blank") {
+        throw new Error("no URL to download (open the file's page first, or pass a url)");
+      }
+      const MAX_BYTES = 25 * 1024 * 1024;
+      // Build the in-page fetch. JSON.stringify safely escapes the URL into the
+      // evaluated source. Base64 in-page so the bytes survive the JSON channel.
+      const expr = `(async () => {
+        const res = await fetch(${JSON.stringify(target)}, { credentials: "include" });
+        if (!res.ok) throw new Error("HTTP " + res.status + " " + res.statusText);
+        const buf = new Uint8Array(await res.arrayBuffer());
+        if (buf.length > ${MAX_BYTES}) throw new Error("file too large: " + buf.length + " bytes (max ${MAX_BYTES})");
+        let bin = "";
+        const CH = 0x8000;
+        for (let i = 0; i < buf.length; i += CH) {
+          bin += String.fromCharCode.apply(null, buf.subarray(i, i + CH));
+        }
+        return {
+          base64: btoa(bin),
+          contentType: res.headers.get("content-type") || "",
+          disposition: res.headers.get("content-disposition") || "",
+          finalUrl: res.url || ${JSON.stringify(target)},
+        };
+      })()`;
+      const r = (await page.evaluate(expr)) as {
+        base64: string;
+        contentType: string;
+        disposition: string;
+        finalUrl: string;
+      };
+      const data = Buffer.from(r.base64, "base64");
+      return {
+        data,
+        contentType: r.contentType,
+        filename: filenameFromDownload(r.disposition, r.finalUrl),
+      };
     } finally {
       this.unlock();
     }
