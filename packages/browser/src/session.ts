@@ -163,7 +163,7 @@ export class BrowserSession {
   private readonly _uaOverrideApplied = new Set<string>();
 
   // Serialization lock for tab-switching operations
-  private _lockQueue: Array<() => void> = [];
+  private _lockQueue: Array<{ grant: () => void; settled: boolean }> = [];
   private _locked = false;
 
   // Currently screencast conversation (only one at a time due to CDP)
@@ -189,19 +189,38 @@ export class BrowserSession {
       return;
     }
     return new Promise<void>((resolve, reject) => {
+      const waiter = { settled: false, grant: () => {} };
       const timer = setTimeout(() => {
-        const idx = this._lockQueue.indexOf(resolve);
+        if (waiter.settled) return;
+        waiter.settled = true;
+        const idx = this._lockQueue.indexOf(waiter);
         if (idx !== -1) this._lockQueue.splice(idx, 1);
         reject(new Error("Browser operation timed out waiting for lock (30s)"));
       }, 30_000);
-      this._lockQueue.push(() => { clearTimeout(timer); resolve(); });
+      waiter.grant = () => {
+        if (waiter.settled) return;
+        waiter.settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      this._lockQueue.push(waiter);
     });
   }
 
   private unlock(): void {
-    const next = this._lockQueue.shift();
-    if (next) next();
-    else this._locked = false;
+    // Hand ownership to the next waiter that is still live. A waiter whose
+    // 30s timeout already fired has rejected its promise and marked itself
+    // settled; granting it would silently drop the lock (resolve is a no-op)
+    // and leave `_locked` true forever, wedging every later caller. Skip the
+    // dead ones; if none remain, release the lock.
+    while (this._lockQueue.length > 0) {
+      const next = this._lockQueue.shift()!;
+      if (!next.settled) {
+        next.grant();
+        return;
+      }
+    }
+    this._locked = false;
   }
 
   // -----------------------------------------------------------------------
