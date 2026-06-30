@@ -35,6 +35,7 @@ import {
   createTurnDraftState,
   executeConversationTurn,
   flushTurnDraft,
+  stripPillMetaTokens,
 } from "./turn.js";
 
 const log = createLogger("orchestrator");
@@ -435,7 +436,11 @@ export const runConversationTurn = async (
       const parts: string[] = [];
       if (draft.assistantResponse.length > 0) parts.push(draft.assistantResponse);
       if (draft.toolTimeline.length > 0) {
-        parts.push(`Tool activity before interruption:\n${draft.toolTimeline.join("\n")}`);
+        parts.push(
+          `Tool activity before interruption:\n${draft.toolTimeline
+            .map(stripPillMetaTokens)
+            .join("\n")}`,
+        );
       }
       parts.push(`[This turn was interrupted: ${reason}. The work above may be incomplete.]`);
       return [

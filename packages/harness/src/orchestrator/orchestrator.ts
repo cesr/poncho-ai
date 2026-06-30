@@ -904,7 +904,8 @@ export class AgentOrchestrator {
             for (const a of decidedApprovals) {
               if (a.decision === "approved" && a.toolCallId) {
                 callsToExecute.push({ id: a.toolCallId, name: a.tool, input: a.input });
-                const toolText = `- done \`${a.tool}\``;
+                const toolText =
+                  `- done \`${a.tool}\`` + (a.toolCallId ? ` {tcid:${a.toolCallId}}` : "");
                 draft.toolTimeline.push(toolText);
                 draft.currentTools.push(toolText);
               } else if (a.toolCallId) {

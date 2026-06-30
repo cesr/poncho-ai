@@ -13,6 +13,7 @@ export {
   cloneSections,
   flushTurnDraft,
   buildToolCompletedText,
+  stripPillMetaTokens,
   recordStandardTurnEvent,
   buildAssistantMetadata,
   executeConversationTurn,
