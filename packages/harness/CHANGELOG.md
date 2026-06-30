@@ -1,5 +1,19 @@
 # @poncho-ai/harness
 
+## 0.59.19
+
+### Patch Changes
+
+- [#186](https://github.com/cesr/poncho-ai/pull/186) [`b12ccbf`](https://github.com/cesr/poncho-ai/commit/b12ccbf1de63a5ef996b0896898c2afe7238a271) Thanks [@cesr](https://github.com/cesr)! - Stamp the tool-call id onto completed-tool activity lines (`{tcid:<id>}`
+  appended after any human detail). Display clients can now join a tool pill to
+  its full input/output by id instead of by tool-name + position. The old
+  positional/name match misaligns whenever parallel tool calls in a turn
+  complete out of declaration order, and can never reach a subagent's
+  inner-tool results; id-joining fixes both. The token sits after the first
+  `(...)` detail group, so existing clients that only parse inside it are
+  unaffected, and it is stripped from model-visible interruption text via the
+  new `stripPillMetaTokens` export.
+
 ## 0.59.18
 
 ### Patch Changes
