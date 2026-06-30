@@ -120,8 +120,24 @@ export const buildToolCompletedText = (event: AgentEvent & { type: "tool:complet
     text += ` \u2014 ${(output.results as unknown[]).length} result${(output.results as unknown[]).length !== 1 ? "s" : ""}`;
   }
 
+  // Trailing machine token: the tool-call id this pill corresponds to. Lets a
+  // display client join the pill to its full input/output by id rather than
+  // by tool-name+position (which misaligns whenever parallel tool calls in a
+  // turn complete out of declaration order, and can't reach a subagent's
+  // inner-tool results at all). Appended AFTER any human detail/parens so
+  // older clients \u2014 which only read inside the first `(...)` \u2014 ignore it.
+  // Stripped from model-visible interruption text via stripPillMetaTokens.
+  if (event.toolCallId) text += ` {tcid:${event.toolCallId}}`;
+
   return text;
 };
+
+// Remove machine tokens (e.g. `{tcid:\u2026}`) that buildToolCompletedText appends
+// to activity lines for the display client. Use anywhere a tool-timeline line
+// is folded into MODEL-visible text (e.g. interruption reconstruction) so the
+// internal id never leaks into the prompt.
+export const stripPillMetaTokens = (line: string): string =>
+  line.replace(/\s*\{tcid:[^}]+\}/g, "");
 
 export const recordStandardTurnEvent = (draft: TurnDraftState, event: AgentEvent): void => {
   if (event.type === "model:chunk") {
