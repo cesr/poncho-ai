@@ -77,4 +77,10 @@ export interface BrowserConfig {
   /** Connect to an existing browser via Chrome DevTools Protocol URL or port.
    *  Mutually exclusive with `provider`. */
   cdpUrl?: string;
+  /** Default residential-proxy mode for Browserbase sessions. Datacenter IPs are
+   *  hard-blocked (403) by IP-reputation walls (Reddit, LinkedIn, …) before any
+   *  fingerprint check. Known such domains are always proxied automatically, and
+   *  `browser_open` can force it per-navigation; set this `true` to proxy every
+   *  session by default. Billed per GB by Browserbase. Browserbase provider only. */
+  proxies?: boolean;
 }
