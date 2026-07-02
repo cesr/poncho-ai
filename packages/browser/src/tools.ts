@@ -14,6 +14,7 @@ export function createBrowserTools(
         "This is a HEAVY, last-resort tool — prefer cheaper options first: use `web_fetch` to read page content, and use a dedicated API or MCP integration when one exists for the service. " +
         "Only reach for the browser when those can't do the job: a page `web_fetch` can't render (JS-heavy/SPA), or a task that requires operating a site or web app that has no API and no MCP integration (e.g. logging in and clicking through a UI). " +
         "When a site needs credentials, navigate to its login page and let the user sign in directly in the live view — never ask for passwords in chat. " +
+        "If a page returns a 403 / 'blocked by network security' / 'access denied' (common on Reddit, LinkedIn, Instagram, and similar), retry with `proxy: true` to route through a residential IP. " +
         "To open files from the virtual filesystem, use /api/vfs/{path} (e.g. /api/vfs/downloads/report.pdf).",
       inputSchema: {
         type: "object",
@@ -21,6 +22,11 @@ export function createBrowserTools(
           url: {
             type: "string",
             description: "The URL to navigate to (must include protocol, e.g. https://)",
+          },
+          proxy: {
+            type: "boolean",
+            description:
+              "Route this session through a residential proxy instead of a datacenter IP. Known IP-blocking sites (Reddit, LinkedIn, …) use this automatically; set it explicitly to retry a site that blocked you with a 403/'blocked' page. Slower to start (the session is recreated) and costs proxy bandwidth, so only use it when a normal open was blocked.",
           },
         },
         required: ["url"],
@@ -30,7 +36,8 @@ export function createBrowserTools(
         const cid = context.conversationId ?? "__default__";
         const url = String(input.url ?? "");
         if (!url) throw new Error("url is required");
-        const result = await session.open(cid, url);
+        const proxy = input.proxy === true;
+        const result = await session.open(cid, url, { proxy });
         session.startScreencast(cid).catch((err) => {
           console.error("[poncho][browser] startScreencast failed:", err?.message ?? err);
         });

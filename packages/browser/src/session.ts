@@ -62,6 +62,64 @@ async function getBrowserManagerCtor(): Promise<new () => BrowserManagerInstance
 
 const MAX_TABS = 8;
 
+/**
+ * Sites that hard-block datacenter IPs (a 403 / "blocked by network security"
+ * before any fingerprint check). Navigating to one auto-enables residential
+ * proxies. Matched on the registrable-ish suffix so subdomains
+ * (old.reddit.com, www.linkedin.com) are covered. The agent can also force
+ * proxies on for anything else via `browser_open`'s `proxy` param.
+ */
+const PROXY_DOMAINS = [
+  "reddit.com",
+  "linkedin.com",
+  "instagram.com",
+  "facebook.com",
+  "x.com",
+  "twitter.com",
+  "tiktok.com",
+  "quora.com",
+  "pinterest.com",
+];
+
+/** Whether a URL's host is (a subdomain of) a known IP-blocking domain. */
+function shouldProxyFor(url: string): boolean {
+  let host: string;
+  try { host = new URL(url).hostname.toLowerCase(); }
+  catch { return false; }
+  return PROXY_DOMAINS.some((d) => host === d || host.endsWith(`.${d}`));
+}
+
+/**
+ * Create a Browserbase session with residential proxies enabled and return its
+ * CDP `connectUrl`. Used instead of agent-browser's built-in browserbase path,
+ * which hardcodes the create body to `{ projectId }` and so can't turn proxies
+ * on. Reads the same `BROWSERBASE_API_KEY` / `BROWSERBASE_PROJECT_ID` env vars
+ * agent-browser does.
+ */
+async function createBrowserbaseProxiedSession(): Promise<string> {
+  const apiKey = process.env.BROWSERBASE_API_KEY;
+  const projectId = process.env.BROWSERBASE_PROJECT_ID;
+  if (!apiKey || !projectId) {
+    throw new Error(
+      "BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID are required when using browserbase",
+    );
+  }
+  const res = await fetch("https://api.browserbase.com/v1/sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-BB-API-Key": apiKey },
+    body: JSON.stringify({ projectId, proxies: true }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Failed to create Browserbase session: ${res.status} ${detail}`);
+  }
+  const session = (await res.json()) as { connectUrl?: string };
+  if (!session.connectUrl) {
+    throw new Error("Browserbase session response missing connectUrl");
+  }
+  return session.connectUrl;
+}
+
 const VALID_SAME_SITE = ["Strict", "Lax", "None"];
 
 /**
@@ -199,6 +257,15 @@ export class BrowserSession {
 
   // Currently screencast conversation (only one at a time due to CDP)
   private _screencastConversation: string | undefined;
+
+  // Residential-proxy mode. `launchedProxyMode` is what the currently-launched
+  // remote session was created with; `proxyEnabled` is the mode the NEXT launch
+  // should use. They diverge when a navigation asks for a different mode (a
+  // hard-domain gate hit, or an explicit `proxy` on browser_open) — proxies are
+  // fixed at Browserbase-session creation, so switching means recreating the
+  // session (see ensureProxyMode). Only meaningful for the browserbase provider.
+  private launchedProxyMode = false;
+  private proxyEnabled = false;
 
   constructor(sessionId: string, config: BrowserConfig = {}) {
     this.sessionId = sessionId;
@@ -379,6 +446,16 @@ export class BrowserSession {
     if (this.config.cdpUrl) {
       launchOpts.cdpUrl = this.config.cdpUrl;
       console.log(`[poncho][browser] Connecting via CDP: ${this.config.cdpUrl}`);
+    } else if (this.config.provider === "browserbase" && this.proxyEnabled) {
+      // agent-browser's browserbase path creates the session with only
+      // { projectId } — no proxy option — so it always lands on a datacenter IP
+      // that sites like Reddit block with a 403 before any fingerprint check.
+      // Create the session ourselves with residential proxies enabled and hand
+      // agent-browser the connectUrl via its cdpUrl path, which bypasses
+      // connectToBrowserbase. Stealth, cookie restore, and the screencast are
+      // applied below on the connected context, unchanged.
+      launchOpts.cdpUrl = await createBrowserbaseProxiedSession();
+      console.log("[poncho][browser] Using cloud provider: browserbase (residential proxies)");
     } else if (this.config.provider) {
       launchOpts.provider = this.config.provider;
       console.log(`[poncho][browser] Using cloud provider: ${this.config.provider}`);
@@ -414,6 +491,9 @@ export class BrowserSession {
     }
 
     await mgr.launch(launchOpts as Parameters<BrowserManagerInstance["launch"]>[0]);
+    // Record the proxy mode this session was actually launched with, so
+    // ensureProxyMode knows whether a later navigation needs a recreate.
+    this.launchedProxyMode = this.config.provider === "browserbase" && this.proxyEnabled;
 
     // Remote browsers (cloud provider / cdpUrl) ignore launchOpts.viewport —
     // that's only applied when launching a local context — so the page renders
@@ -565,9 +645,14 @@ export class BrowserSession {
   // Browser operations (all scoped by conversationId)
   // -----------------------------------------------------------------------
 
-  async open(conversationId: string, url: string): Promise<{ title?: string }> {
+  async open(
+    conversationId: string,
+    url: string,
+    opts?: { proxy?: boolean },
+  ): Promise<{ title?: string }> {
     await this.lock();
     try {
+      await this.ensureProxyMode(url, opts?.proxy);
       return await this._doOpen(conversationId, url);
     } catch (err: unknown) {
       const msg = (err as Error)?.message ?? "";
@@ -585,6 +670,33 @@ export class BrowserSession {
       throw err;
     } finally {
       this.unlock();
+    }
+  }
+
+  /**
+   * Reconcile the residential-proxy mode before a navigation. The desired mode
+   * is: an explicit `requested` (the agent's `browser_open` proxy param) OR the
+   * URL hitting a known IP-blocking domain OR the config default. Since proxies
+   * are fixed at Browserbase-session creation, a change tears the live session
+   * down so the next ensureManager relaunches proxied. Cookies/localStorage are
+   * persisted first and restored on relaunch, so login state survives; open
+   * tabs in other conversations of the same session are lost (rare, and only
+   * when the mode actually flips). No-op unless the provider is browserbase.
+   */
+  private async ensureProxyMode(url: string, requested?: boolean): Promise<void> {
+    if (this.config.provider !== "browserbase") return;
+    const want =
+      requested === true || shouldProxyFor(url) || (this.config.proxies ?? false);
+    this.proxyEnabled = want;
+    if (!this.manager || want === this.launchedProxyMode) return;
+    console.log(`[poncho][browser] Switching proxy mode -> ${want}; recreating session`);
+    try { await this.persistStorageState(); } catch { /* best-effort */ }
+    try { await this.manager.close(); } catch { /* */ }
+    this.manager = undefined;
+    this._contextStealthInstalled = false;
+    this._uaOverrideApplied.clear();
+    for (const [, t] of this.tabs) {
+      if (t.tabIndex >= 0) { t.tabIndex = -1; t.active = false; t.url = undefined; }
     }
   }
 
