@@ -4109,6 +4109,13 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
      *  otherwise the continuation falls back to the agent definition's
      *  (possibly concurrently-mutated) frontmatter model. */
     model?: string;
+    /** Same as `RunInput.volatileContext`. Pass it explicitly on resume —
+     *  the per-conversation capture covers same-process continuations, but
+     *  a checkpoint resumed after a restart would otherwise lose the
+     *  embedder's volatile blocks. */
+    volatileContext?: string;
+    /** Same as `RunInput.telemetryAttributes`, for the continuation run. */
+    telemetryAttributes?: Record<string, string>;
   }): AsyncGenerator<AgentEvent> {
     const messages = [...input.messages];
     const lastMsg = messages[messages.length - 1];
@@ -4169,6 +4176,8 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
       abortSignal: input.abortSignal,
       suppressTelemetry: input.suppressTelemetry,
       model: input.model,
+      volatileContext: input.volatileContext,
+      telemetryAttributes: input.telemetryAttributes,
     });
   }
 
