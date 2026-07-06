@@ -1,5 +1,11 @@
 # @poncho-ai/harness
 
+## 0.60.1
+
+### Patch Changes
+
+- [`47d92ba`](https://github.com/cesr/poncho-ai/commit/47d92ba6e0001147423ffda39f9dbeb29b5ca359) Thanks [@cesr](https://github.com/cesr)! - Forward `volatileContext` and `telemetryAttributes` through `continueFromToolResult`. The per-conversation capture already covers same-process continuations, but a checkpoint resumed after a process restart would silently lose the embedder's volatile blocks; resume callers can now pass them explicitly.
+
 ## 0.60.0
 
 ### Minor Changes
