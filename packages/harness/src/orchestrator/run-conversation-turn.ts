@@ -64,17 +64,31 @@ export interface RunConversationTurnOpts {
   abortSignal?: AbortSignal;
   tenantId?: string | null;
   /**
-   * Forwarded to `RunInput.disablePromptCache`. Set true for one-shot
-   * turns with no follow-up coming (cron-fired jobs, etc.) so the
-   * harness skips the Anthropic cache write.
+   * Forwarded to `RunInput.disablePromptCache`. Only worth it for runs
+   * that are both single-step and one-shot — see the RunInput doc; a
+   * multi-step run reads its own growing history through the tail
+   * breakpoint, so disabling it costs more than the write it saves.
    */
   disablePromptCache?: boolean;
+  /**
+   * Forwarded to `RunInput.volatileContext`: per-run context appended to
+   * the uncached dynamic tail of the system prompt. Keep it small — it is
+   * re-sent raw every step. Also captured per conversation so
+   * orchestrator-initiated turns (subagent-callback resumes) reuse the
+   * value from the turn that spawned the subagent.
+   */
+  volatileContext?: string;
   /**
    * Forwarded to `RunInput.suppressTelemetry`. Set true to emit no telemetry
    * for this run (e.g. an incognito / telemetry-off turn) even on a harness
    * built with an OTLP exporter attached.
    */
   suppressTelemetry?: boolean;
+  /**
+   * Forwarded to `RunInput.telemetryAttributes` — extra attributes for the
+   * `invoke_agent` root span (e.g. run kind / job name for segmentation).
+   */
+  telemetryAttributes?: Record<string, string>;
   /**
    * Forwarded to `RunInput.model`. Per-run model override, captured once at
    * run start — safe under concurrent runs on a shared harness, unlike
@@ -238,6 +252,8 @@ export const runConversationTurn = async (
         disablePromptCache: opts.disablePromptCache,
         suppressTelemetry: opts.suppressTelemetry,
         model: opts.model,
+        volatileContext: opts.volatileContext,
+        telemetryAttributes: opts.telemetryAttributes,
       },
       initialContextTokens: conversation.contextTokens ?? 0,
       initialContextWindow: conversation.contextWindow ?? 0,

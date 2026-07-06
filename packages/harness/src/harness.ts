@@ -937,6 +937,12 @@ export class AgentHarness {
   private mcpBridge?: LocalMcpBridge;
   private subagentManager?: SubagentManager;
   private readonly archivedToolResultsByConversation = new Map<string, Record<string, ArchivedToolResult>>();
+  /** Last explicit `RunInput.volatileContext` per conversation, reused by
+   *  orchestrator-initiated turns (continuations, subagent-callback
+   *  resumes) that build their own RunInput and can't know the embedder's
+   *  volatile blocks. Values are small (the field's contract) and entries
+   *  live for the harness instance's lifetime. */
+  private readonly volatileContextByConversation = new Map<string, string>();
 
   /** Unified storage engine (replaces individual KV-backed stores). */
   storageEngine?: StorageEngine;
@@ -2224,6 +2230,9 @@ export class AgentHarness {
             : {}),
           ...(this.telemetryUserId ? { "user.id": this.telemetryUserId } : {}),
           ...(input.tenantId ? { "tenant.id": input.tenantId } : {}),
+          // Embedder-supplied attribution (e.g. run kind, job name) so
+          // observability backends can segment traffic classes directly.
+          ...(input.telemetryAttributes ?? {}),
         },
       });
 
@@ -2337,6 +2346,20 @@ export class AgentHarness {
     // 1-hour static breakpoint on the system prompt is always on — it
     // amortizes across every later turn or job within the hour.
     const skipTailCache = input.disablePromptCache === true;
+    // Effective volatile context for this run. An explicit value (even "")
+    // wins and is remembered per conversation so orchestrator-initiated
+    // turns on the same conversation — continuations, subagent-callback
+    // resumes — reuse the value from the turn that set it instead of
+    // silently dropping it (they build their own RunInput and can't know
+    // the embedder's blocks).
+    let volatileRunContext = input.volatileContext;
+    if (input.conversationId) {
+      if (volatileRunContext !== undefined) {
+        this.volatileContextByConversation.set(input.conversationId, volatileRunContext);
+      } else {
+        volatileRunContext = this.volatileContextByConversation.get(input.conversationId);
+      }
+    }
     if (skipTailCache) {
       costLog.debug(`tail cache breakpoint skipped — disablePromptCache (run=${runId.slice(0, 12)})`);
     } else if (hasFullToolResults) {
@@ -2485,7 +2508,11 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
         return `${weekday} ${d.toISOString().slice(0, 13)}Z`;
       })();
       const timeContext = `\n\nCurrent UTC time (hour precision): ${hourlyTime}`;
-      const dynamicPart = `${todoContext}${timeContext}`;
+      // Embedder-supplied volatile blocks (live VFS tree, connected
+      // integrations, …) land here — uncached by design, so their churn
+      // never busts the 1h static/memory cache entries above.
+      const volatileContext = volatileRunContext ? `\n\n${volatileRunContext.trim()}` : "";
+      const dynamicPart = `${todoContext}${volatileContext}${timeContext}`;
       return { staticPart, memoryPart: memoryContext, dynamicPart };
     };
     let { staticPart: staticSystemPart, memoryPart: memorySystemPart, dynamicPart: dynamicSystemPart } =
@@ -3107,19 +3134,24 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
         // below: omitted from the request when undefined.
         const temperature = agent.frontmatter.model?.temperature;
         const maxTokens = agent.frontmatter.model?.maxTokens;
-        // Place the tail breakpoint before any untruncated tool-result so
-        // we cache only the stable prefix when prior-run tool results are
-        // still full-fidelity. Otherwise cache at the history tail. When
-        // `skipTailCache` is set (per-run override), don't write the tail
-        // breakpoint at all. The 1-hour static-prefix breakpoint is added
-        // separately when assembling the final messages array.
+        // Two history breakpoints: one just before any untruncated
+        // prior-run tool-result (the stable prefix keeps its cross-run
+        // cache entry — truncateHistoricalToolResults rewrites everything
+        // after it next run) AND one pinned at the true tail so the
+        // current run's own steps read the growing history at 0.1x instead
+        // of re-paying it raw every step. Without the tail pin, a
+        // tool-heavy turn with full prior results re-sent everything past
+        // the stable index uncached on all of its (up to maxSteps) steps.
+        // When there are no untruncated results the two collapse to the
+        // tail (addPromptCacheBreakpoints dedupes). When `skipTailCache`
+        // is set (per-run override), write no history breakpoints at all.
         const cachedMessages = skipTailCache
           ? coreMessages
           : addPromptCacheBreakpoints(
               coreMessages,
               modelInstance,
               hasFullToolResults
-                ? findLastStableCacheIndex(coreMessages)
+                ? [findLastStableCacheIndex(coreMessages), coreMessages.length - 1]
                 : coreMessages.length - 1,
             );
 
@@ -3146,7 +3178,10 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
               // an explicit memory write — its own 1h breakpoint means a
               // memory edit busts THIS block forward but a normal turn reads
               // it (plus everything before it) from cache. Breakpoint budget:
-              // Anthropic allows 4; this is #2 of 3 (static, memory, tail).
+              // Anthropic allows 4 and ALL FOUR ARE NOW SPENT (static,
+              // memory, stable-history, tail — the last two collapse to one
+              // when there are no untruncated prior tool results). Adding a
+              // fifth cache_control block anywhere is an API 400.
               ...(memorySystemPart.length > 0
                 ? [{
                     role: "system" as const,

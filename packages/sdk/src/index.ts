@@ -146,12 +146,26 @@ export interface RunInput {
   /** When true, ignores PONCHO_MAX_DURATION soft deadline (used for background subagent runs). */
   disableSoftDeadline?: boolean;
   /**
-   * When true, skip the Anthropic prompt-cache breakpoint for this run.
-   * Use for one-shot runs with no follow-up turn coming (e.g. cron-fired
-   * jobs) — the 1.25× write surcharge is pure waste when no later read
-   * will hit the cache before the 5-min TTL expires.
+   * When true, skip the Anthropic message-history prompt-cache breakpoints
+   * for this run (the 1h static/memory system breakpoints stay on).
+   * Only worth it for runs that are BOTH single-step AND one-shot: the
+   * breakpoint is recomputed every step, so any multi-step run reads its
+   * own growing history through it at 0.1× — disabling that costs far
+   * more than the one wasted 1.25× tail write it saves. (Cron-fired jobs
+   * used to set this; they stopped once job runs grew to dozens of steps.)
    */
   disablePromptCache?: boolean;
+  /**
+   * Volatile per-run context appended to the UNCACHED dynamic tail of the
+   * system prompt (after the agent body / skills / memory blocks, which
+   * carry 1h cache breakpoints). Put content here that changes often and
+   * would otherwise bust the big static cache block if embedded in the
+   * agent definition — e.g. a live file-tree listing or connected-
+   * integrations summary. Re-sent raw on every step, so keep it small.
+   * Orchestrator-initiated turns on the same conversation (subagent
+   * callback resumes) reuse the value captured at parent-turn start.
+   */
+  volatileContext?: string;
   /**
    * Model name override for this run, captured once at run start. Takes
    * precedence over the agent definition's `model.name` for every step of
@@ -173,6 +187,14 @@ export interface RunInput {
    * exporter-less harness instance per mode.
    */
   suppressTelemetry?: boolean;
+  /**
+   * Extra attributes stamped on the `invoke_agent` root telemetry span,
+   * e.g. `{ "poncho.run.kind": "job", "poncho.job.name": "heartbeat" }`.
+   * Lets observability backends segment traffic classes (jobs vs chat)
+   * without timing forensics. String values only; ignored when telemetry
+   * is off or suppressed.
+   */
+  telemetryAttributes?: Record<string, string>;
 }
 
 export interface TokenUsage {
