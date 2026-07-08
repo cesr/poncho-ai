@@ -10,6 +10,9 @@ import {
   applyTurnMetadata,
   normalizeApprovalCheckpoint,
   buildApprovalCheckpoints,
+  assembleCheckpointMessages,
+  buildToolResultMessage,
+  buildResumeCheckpoints,
   createTurnDraftState,
   recordStandardTurnEvent,
   type TurnDraftState,
@@ -421,38 +424,11 @@ export class AgentOrchestrator {
     let latestRunId = conversation.runtimeRunId ?? "";
     let checkpointedRun = false;
 
-    const normalizedCheckpoint = normalizeApprovalCheckpoint(checkpoint, conversation.messages);
-    const baseMessages = normalizedCheckpoint.baseMessageCount != null
-      ? conversation.messages.slice(0, normalizedCheckpoint.baseMessageCount)
-      : [];
-    const fullCheckpointMessages = [...baseMessages, ...normalizedCheckpoint.checkpointMessages!];
-
-    let resumeToolResultMsg: Message | undefined;
-    const lastCpMsg = fullCheckpointMessages[fullCheckpointMessages.length - 1];
-    if (lastCpMsg?.role === "assistant") {
-      try {
-        const parsed = JSON.parse(typeof lastCpMsg.content === "string" ? lastCpMsg.content : "");
-        const cpToolCalls: Array<{ id: string; name: string }> = parsed.tool_calls ?? [];
-        if (cpToolCalls.length > 0) {
-          const providedMap = new Map(toolResults.map(r => [r.callId, r]));
-          resumeToolResultMsg = {
-            role: "tool",
-            content: JSON.stringify(cpToolCalls.map(tc => {
-              const provided = providedMap.get(tc.id);
-              return {
-                type: "tool_result",
-                tool_use_id: tc.id,
-                tool_name: provided?.toolName ?? tc.name,
-                content: provided
-                  ? (provided.error ? `Tool error: ${provided.error}` : JSON.stringify(provided.result ?? null))
-                  : "Tool error: Tool execution deferred (pending approval checkpoint)",
-              };
-            })),
-            metadata: { timestamp: Date.now() },
-          };
-        }
-      } catch { /* last message is not a parseable assistant-with-tools -- skip */ }
-    }
+    const fullCheckpointMessages = assembleCheckpointMessages(conversation, checkpoint);
+    const resumeToolResultMsg = buildToolResultMessage(
+      fullCheckpointMessages[fullCheckpointMessages.length - 1],
+      toolResults,
+    );
     const fullCheckpointWithResults = resumeToolResultMsg
       ? [...fullCheckpointMessages, resumeToolResultMsg]
       : fullCheckpointMessages;
@@ -505,12 +481,10 @@ export class AgentOrchestrator {
             };
             const conv = await this.conversationStore.get(conversationId);
             if (conv) {
-              conv.pendingApprovals = buildApprovalCheckpoints({
-                approvals: cpEvent.approvals,
+              conv.pendingApprovals = buildResumeCheckpoints({
+                priorMessages: fullCheckpointWithResults,
+                checkpointEvent: cpEvent,
                 runId: latestRunId,
-                checkpointMessages: [...fullCheckpointWithResults, ...cpEvent.checkpointMessages],
-                baseMessageCount: 0,
-                pendingToolCalls: cpEvent.pendingToolCalls,
               });
               conv.updatedAt = Date.now();
               await this.conversationStore.update(conv);

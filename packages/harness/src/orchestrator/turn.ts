@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AgentEvent, Message } from "@poncho-ai/sdk";
 import type { Conversation } from "../state.js";
 import type { AgentHarness } from "../harness.js";
@@ -341,6 +342,110 @@ export const buildApprovalCheckpoints = ({
     kind,
   }));
 
+// ── Checkpoint transcript reconstruction (single source of truth) ──
+//
+// Resuming a checkpointed turn requires rebuilding the FULL canonical model
+// transcript from what was stored at the pause. Getting this right — in the
+// canonical message space, not the display one — is subtle, and re-deriving
+// it by hand in each embedder is exactly how the model-facing transcript
+// drifted from the display transcript and silently dropped a turn's user
+// message after an approval. These helpers are that logic, exported so the
+// orchestrator's own resume AND external embedders (e.g. PonchOS, which
+// executes gated tools itself) share one implementation that can't drift.
+
+/** Reconstruct the full canonical transcript a checkpoint resumes from: the
+ *  prior history (before the checkpointed turn) + the checkpoint delta.
+ *  Handles both storage conventions via `normalizeApprovalCheckpoint` — the
+ *  initial checkpoint (base = prior length, delta) and a resume-created one
+ *  (base 0, full canonical). */
+export const assembleCheckpointMessages = (
+  conversation: Conversation,
+  checkpoint: StoredApproval,
+): Message[] => {
+  const n = normalizeApprovalCheckpoint(checkpoint, conversation.messages);
+  const base = n.baseMessageCount != null ? conversation.messages.slice(0, n.baseMessageCount) : [];
+  return [...base, ...(n.checkpointMessages ?? [])];
+};
+
+/** Pair an assistant tool-call message's `tool_calls` with externally-computed
+ *  results into the single `role:"tool"` message a continuation reads.
+ *  Returns undefined when `assistantMsg` isn't an assistant message with
+ *  parseable tool calls. Used to persist the resume's canonical history so it
+ *  matches what `continueFromToolResult` fed the model. Missing results
+ *  default to the deferred-error marker (same text the run uses). */
+export const buildToolResultMessage = (
+  assistantMsg: Message | undefined,
+  toolResults: Array<{ callId: string; toolName: string; result?: unknown; error?: string }>,
+): Message | undefined => {
+  if (assistantMsg?.role !== "assistant") return undefined;
+  let toolCalls: Array<{ id: string; name: string }> = [];
+  try {
+    const parsed = JSON.parse(typeof assistantMsg.content === "string" ? assistantMsg.content : "");
+    toolCalls = parsed.tool_calls ?? [];
+  } catch {
+    return undefined;
+  }
+  if (toolCalls.length === 0) return undefined;
+  const provided = new Map(toolResults.map((r) => [r.callId, r]));
+  return {
+    role: "tool",
+    content: JSON.stringify(
+      toolCalls.map((tc) => {
+        const r = provided.get(tc.id);
+        return {
+          type: "tool_result",
+          tool_use_id: tc.id,
+          tool_name: r?.toolName ?? tc.name,
+          content: r
+            ? (r.error ? `Tool error: ${r.error}` : JSON.stringify(r.result ?? null))
+            : "Tool error: Tool execution deferred (pending approval checkpoint)",
+        };
+      }),
+    ),
+    metadata: { timestamp: Date.now(), id: randomUUID() },
+  };
+};
+
+/** Build the `pendingApprovals` rows for a checkpoint reached DURING a resume
+ *  continuation. Stores the WHOLE canonical history the continuation ran with
+ *  (`priorMessages` = prior + tool result + new delta) with
+ *  `baseMessageCount: 0`. Keeping the full history here — rather than a delta
+ *  + a base count into a different message array — is what lets the next
+ *  resume reconstruct with no index arithmetic. */
+export const buildResumeCheckpoints = ({
+  priorMessages,
+  checkpointEvent,
+  runId,
+  kind = "approval",
+}: {
+  priorMessages: Message[];
+  checkpointEvent: {
+    approvals: ApprovalEventItem[];
+    checkpointMessages: Message[];
+    pendingToolCalls: PendingToolCall[];
+  };
+  runId: string;
+  kind?: "approval" | "device";
+}): NonNullable<Conversation["pendingApprovals"]> =>
+  buildApprovalCheckpoints({
+    approvals: checkpointEvent.approvals,
+    runId,
+    checkpointMessages: [...priorMessages, ...checkpointEvent.checkpointMessages],
+    baseMessageCount: 0,
+    pendingToolCalls: checkpointEvent.pendingToolCalls,
+    kind,
+  });
+
+/** Text of a message for the transcript-integrity guard — flattens the two
+ *  content shapes so a user message can be matched across the display and
+ *  canonical transcripts regardless of how each stored it. */
+const messageText = (m: Message): string =>
+  typeof m.content === "string"
+    ? m.content
+    : Array.isArray(m.content)
+      ? m.content.map((p) => (p as { text?: string }).text ?? "").join("")
+      : "";
+
 // ── Turn metadata persistence ──
 
 export const applyTurnMetadata = (
@@ -371,6 +476,31 @@ export const applyTurnMetadata = (
     conv._harnessMessages = meta.harnessMessages;
   } else if (shouldRebuildCanonical) {
     conv._harnessMessages = conv.messages;
+  }
+
+  // Invariant guard: the model-facing transcript must not drop the current
+  // turn's user message. A resume that reconstructed `_harnessMessages`
+  // incorrectly silently lost it (the display transcript kept it, the model
+  // didn't), so the agent second-guessed an approval it never saw. This is the
+  // one choke point every finalize flows through — assert the latest user
+  // message survived into canonical, and log loudly if not. Matched by content
+  // (robust across the display/canonical shapes) and skipped when compaction
+  // has legitimately summarized history. Log-only; never throws.
+  if (isMessageArray(conv._harnessMessages) && conv._harnessMessages.length > 0) {
+    const canonical = conv._harnessMessages;
+    const summarized = canonical.some((m) => m.metadata?.isCompactionSummary);
+    const lastUser = [...conv.messages].reverse().find((m) => m.role === "user");
+    const lastUserText = lastUser ? messageText(lastUser).trim() : "";
+    if (!summarized && lastUserText) {
+      const present = canonical.some((m) => m.role === "user" && messageText(m).trim() === lastUserText);
+      if (!present) {
+        console.error(
+          `[transcript-guard] conversation ${conv.conversationId}: model-facing transcript ` +
+            `is missing the latest user message — it diverged from the display transcript. ` +
+            `This is a resume/finalize message-assembly bug; the model will not see that turn's input.`,
+        );
+      }
+    }
   }
 
   if (meta.toolResultArchive !== undefined) {
