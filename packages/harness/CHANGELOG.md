@@ -1,5 +1,19 @@
 # @poncho-ai/harness
 
+## 0.61.1
+
+### Patch Changes
+
+- [`a16f4fa`](https://github.com/cesr/poncho-ai/commit/a16f4fa32f0809d6ff73f0041cb0e0a3fb980bb1) Thanks [@cesr](https://github.com/cesr)! - Fix: checkpoint-resume no longer drops a turn's user message from the model
+  transcript. Extract the checkpoint→transcript assembly the orchestrator's
+  `resumeRunFromCheckpoint` used into shared, exported helpers —
+  `assembleCheckpointMessages`, `buildToolResultMessage`, `buildResumeCheckpoints`
+  — so external embedders (which execute gated tools themselves) reconstruct the
+  canonical transcript identically instead of re-deriving the index arithmetic
+  and drifting. Add a transcript-integrity guard in `applyTurnMetadata` that
+  logs when a finalize would leave the latest user message out of the
+  model-facing transcript.
+
 ## 0.61.0
 
 ### Minor Changes
