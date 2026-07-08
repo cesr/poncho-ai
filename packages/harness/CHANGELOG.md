@@ -1,5 +1,39 @@
 # @poncho-ai/harness
 
+## 0.61.0
+
+### Minor Changes
+
+- [#192](https://github.com/cesr/poncho-ai/pull/192) [`bfd8012`](https://github.com/cesr/poncho-ai/commit/bfd80125ad71cd4401221c598faebf71afda2078) Thanks [@cesr](https://github.com/cesr)! - Fix context-compaction correctness so the agent stops losing context and
+  mislabeling failed work after a compaction:
+  - **Turn-based retention.** Compaction now preserves the last N whole _turns_
+    verbatim (new `compaction.keepRecentTurns`, default 4) instead of N messages,
+    which in tool-heavy turns collapsed to just the summary. The preserved side is
+    bounded by a token budget (≤ 50% of the context window) so keeping recent turns
+    can't leave the post-compaction context above the trigger (re-compaction
+    thrash / overflow). Adds exported `findSafeSplitPointByTurns`.
+  - **Faithful summaries.** The summarization output cap is raised 768 → 8192
+    tokens (768 physically truncated summaries mid-content); per-message truncation
+    1200 → 4000 chars, with a total summarizer-input budget that drops the oldest
+    non-error messages first. The prompt now requires a non-omittable "Unresolved
+    errors & failures" section, a "Pending promises" section, forbids claiming
+    unconfirmed completion, and preserves identifiers verbatim.
+  - **Structured subagent task outcome.** New `PendingSubagentResult.taskOutcome`
+    (`succeeded | failed | partial | unknown`) distinct from run status: a subagent
+    that ran but failed its task is no longer recorded as "completed". Subagents
+    self-report a machine-readable verdict; it is parsed deterministically
+    (defaulting to "unknown", never success) and rendered in the callback header
+    and compaction ledger. The subagent digest is enlarged (2000 chars, ungated on
+    status) so the failure reason survives compaction.
+  - **Per-run `maxSteps` override.** New `RunInput.maxSteps` lets a caller raise the
+    step ceiling for foreground turns without raising it for background/job turns
+    that share the same agent definition.
+
+### Patch Changes
+
+- Updated dependencies [[`bfd8012`](https://github.com/cesr/poncho-ai/commit/bfd80125ad71cd4401221c598faebf71afda2078)]:
+  - @poncho-ai/sdk@1.17.0
+
 ## 0.60.1
 
 ### Patch Changes
