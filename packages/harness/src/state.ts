@@ -17,10 +17,23 @@ export interface StateStore {
   delete(runId: string): Promise<void>;
 }
 
+/**
+ * Whether a subagent actually accomplished its task — distinct from the *run*
+ * status (`status` below), which is "completed" whenever the run merely
+ * finished. A subagent that ran to completion but could not do the task (e.g.
+ * lacked the required tools) is `runStatus:"completed"` but `taskOutcome:
+ * "failed"`. Derived at subagent finalize; "unknown" when it can't be
+ * determined. Consumed by the compaction subagent ledger so a failed task can
+ * never be summarized as "completed".
+ */
+export type SubagentTaskOutcome = "succeeded" | "failed" | "partial" | "unknown";
+
 export interface PendingSubagentResult {
   subagentId: string;
   task: string;
   status: "completed" | "error" | "stopped";
+  /** Did the subagent accomplish its task? See {@link SubagentTaskOutcome}. */
+  taskOutcome: SubagentTaskOutcome;
   result?: import("@poncho-ai/sdk").RunResult;
   error?: import("@poncho-ai/sdk").AgentFailure;
   timestamp: number;

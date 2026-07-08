@@ -52,6 +52,16 @@ export interface AgentFrontmatter {
 export interface CompactionConfig {
   enabled: boolean;
   trigger: number;
+  /**
+   * Primary retention unit: number of whole recent *turns* (a user message plus
+   * the assistant/tool messages that follow it) preserved verbatim after the
+   * summary. See `findSafeSplitPointByTurns`.
+   */
+  keepRecentTurns: number;
+  /**
+   * Fallback retention floor, in messages, used only for the single-giant-turn
+   * case where no turn boundary yields a safe split.
+   */
   keepRecentMessages: number;
   instructions?: string;
 }
@@ -306,6 +316,10 @@ export const parseAgentMarkdown = (content: string): ParsedAgent => {
           "Invalid AGENT.md frontmatter compaction.trigger: must be between 0.1 and 1.",
         );
       }
+      const keepRecentTurns =
+        typeof raw.keepRecentTurns === "number"
+          ? Math.max(1, Math.floor(raw.keepRecentTurns))
+          : 4;
       const keepRecentMessages =
         typeof raw.keepRecentMessages === "number"
           ? Math.max(2, Math.floor(raw.keepRecentMessages))
@@ -314,7 +328,7 @@ export const parseAgentMarkdown = (content: string): ParsedAgent => {
         typeof raw.instructions === "string" && raw.instructions.trim()
           ? raw.instructions.trim()
           : undefined;
-      return { enabled, trigger, keepRecentMessages, instructions };
+      return { enabled, trigger, keepRecentTurns, keepRecentMessages, instructions };
     })(),
     cron: parseCronJobs(parsed.cron),
   };

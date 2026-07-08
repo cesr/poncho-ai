@@ -107,6 +107,48 @@ export const abnormalEndResponse = (opts: {
   return opts.gathered ? `${head} ${recover}\n\n${opts.gathered}` : `${head} ${recover}`;
 };
 
+/**
+ * Machine-readable verdict a subagent is asked to append to its final message,
+ * e.g. `[[OUTCOME: failed]] reason`. Parsed deterministically — see
+ * SUBAGENT_OUTCOME_INSTRUCTION and `deriveTaskOutcome`.
+ */
+const SUBAGENT_OUTCOME_RE = /\[\[\s*OUTCOME\s*:\s*(succeeded|failed|partial)\s*\]\]/i;
+
+/** Appended to a subagent's task so it self-reports whether it succeeded. */
+export const SUBAGENT_OUTCOME_INSTRUCTION =
+  "\n\nAt the very end of your final message, on its own line, append a " +
+  "machine-readable outcome verdict for the task you were given: " +
+  "`[[OUTCOME: succeeded]]`, `[[OUTCOME: partial]]`, or `[[OUTCOME: failed]]`, " +
+  "followed by a one-line reason. Judge honestly by whether YOU actually " +
+  "accomplished the task (produced the real result / wrote the files), not by " +
+  "whether the run finished. If a tool or capability you needed was missing, " +
+  "that is `failed`.";
+
+/**
+ * Derive a subagent's task outcome (distinct from run status). Abnormal ends and
+ * empty output are `failed`; otherwise we parse the self-declared verdict and
+ * default to `unknown` when absent (never assume success).
+ */
+export const deriveTaskOutcome = (
+  gathered: string,
+  abnormal: boolean,
+): import("../state.js").SubagentTaskOutcome => {
+  if (abnormal) return "failed";
+  if (!gathered.trim()) return "failed";
+  const m = gathered.match(SUBAGENT_OUTCOME_RE);
+  if (!m) return "unknown";
+  const v = m[1]!.toLowerCase();
+  return v === "succeeded" ? "succeeded" : v === "partial" ? "partial" : "failed";
+};
+
+/**
+ * Remove the machine-readable `[[OUTCOME: …]]` verdict (and its one-line reason)
+ * from the text delivered to the parent — the outcome is carried structurally in
+ * the callback header/metadata, so the marker shouldn't leak into chat UI.
+ */
+export const stripOutcomeVerdict = (text: string): string =>
+  text.replace(/\n*\[\[\s*OUTCOME\s*:\s*(?:succeeded|failed|partial)\s*\]\].*$/is, "").trimEnd();
+
 // ── Types ──
 
 export type ActiveConversationRun = {
@@ -697,6 +739,7 @@ export class AgentOrchestrator {
       subagentId,
       task: conv.subagentMeta?.task ?? conv.title,
       status: "completed",
+      taskOutcome: deriveTaskOutcome(responseText, false),
       result: { status: "completed", response: responseText, steps: 0, tokens: { input: 0, output: 0, cached: 0 }, duration: 0 },
       timestamp: Date.now(),
     };
@@ -829,7 +872,11 @@ export class AgentOrchestrator {
       const recallParams = this.hooks?.buildRecallParams?.({ ownerId, tenantId: conversation.tenantId, excludeConversationId: childConversationId }) ?? {};
 
       for await (const event of childHarness.runWithTelemetry({
-        task,
+        // Ask the subagent to self-report a machine-readable task outcome at the
+        // end of its final message; `deriveTaskOutcome` parses it so a failed
+        // task can never be recorded as "completed". Appended only to the model
+        // input, not the stored/displayed task name.
+        task: `${task}${SUBAGENT_OUTCOME_INSTRUCTION}`,
         conversationId: childConversationId,
         tenantId: conversation.tenantId ?? undefined,
         parameters: withToolResultArchiveParam({
@@ -1040,13 +1087,16 @@ export class AgentOrchestrator {
       // the work — deliver what it gathered, tagged so the parent knows it
       // didn't finish, and build a result so it never renders as "(no result)".
       const abnormal = !runResult;
+      const taskOutcome = deriveTaskOutcome(gathered, abnormal);
+      const cleanedGathered = stripOutcomeVerdict(gathered);
       const subagentResponse = abnormal
-        ? abnormalEndResponse({ subagentId: childConversationId, gathered, runError })
-        : gathered;
+        ? abnormalEndResponse({ subagentId: childConversationId, gathered: cleanedGathered, runError })
+        : cleanedGathered;
       const pendingResult: PendingSubagentResult = {
         subagentId: childConversationId,
         task,
         status: abnormal ? "error" : "completed",
+        taskOutcome,
         result: {
           status: runResult?.status ?? "error",
           response: subagentResponse,
@@ -1096,6 +1146,7 @@ export class AgentOrchestrator {
         subagentId: childConversationId,
         task,
         status: "error",
+        taskOutcome: "failed",
         error: { code: "SUBAGENT_ERROR", message: errMsg },
         timestamp: Date.now(),
       };
@@ -1185,8 +1236,8 @@ export class AgentOrchestrator {
           : "(no result)";
       const injected: Message = {
         role: "user",
-        content: `[Subagent Result] Subagent "${pr.task}" (${pr.subagentId}) ${pr.status}:\n\n${resultBody}`,
-        metadata: { _subagentCallback: true, subagentId: pr.subagentId, task: pr.task, timestamp: pr.timestamp } as Message["metadata"],
+        content: `[Subagent Result] Subagent "${pr.task}" (${pr.subagentId}) ${pr.taskOutcome}:\n\n${resultBody}`,
+        metadata: { _subagentCallback: true, subagentId: pr.subagentId, task: pr.task, taskOutcome: pr.taskOutcome, timestamp: pr.timestamp } as Message["metadata"],
       };
       injectedCallbackMessages.push(injected);
       conversation.messages.push(injected);
@@ -1516,9 +1567,11 @@ export class AgentOrchestrator {
         if (freshSubConv) gathered = realResponseText(lastAssistantText(freshSubConv.messages));
       }
       const abnormal = !runResult;
+      const taskOutcome = deriveTaskOutcome(gathered, abnormal);
+      const cleanedGathered = stripOutcomeVerdict(gathered);
       const subagentResponse = abnormal
-        ? abnormalEndResponse({ subagentId: conversationId, gathered, runError })
-        : gathered;
+        ? abnormalEndResponse({ subagentId: conversationId, gathered: cleanedGathered, runError })
+        : cleanedGathered;
 
       const parentConv = await this.conversationStore.get(parentConversationId);
       if (parentConv) {
@@ -1526,6 +1579,7 @@ export class AgentOrchestrator {
           subagentId: conversationId,
           task,
           status: abnormal ? "error" : "completed",
+          taskOutcome,
           result: { status: runResult?.status ?? "error", response: subagentResponse, steps: runResult?.steps ?? 0, tokens: { input: 0, output: 0, cached: 0 }, duration: runResult?.duration ?? 0 },
           ...(abnormal
             ? { error: { code: runError?.code ?? "SUBAGENT_INCOMPLETE", message: runError?.message ?? "subagent ended without a result" } }
@@ -1576,6 +1630,7 @@ export class AgentOrchestrator {
           subagentId: conversationId,
           task,
           status: "error",
+          taskOutcome: "failed",
           error: { code: "CONTINUATION_ERROR", message: err instanceof Error ? err.message : String(err) },
           timestamp: Date.now(),
         };
@@ -1858,6 +1913,7 @@ export class AgentOrchestrator {
       subagentId: childConversationId,
       task,
       status: "error",
+      taskOutcome: "failed",
       error: { code: "SUBAGENT_SPAWN_FAILED", message },
       timestamp: Date.now(),
     });
@@ -1892,6 +1948,7 @@ export class AgentOrchestrator {
             subagentId: conv.conversationId,
             task: conv.subagentMeta.task,
             status: "error",
+            taskOutcome: "failed",
             error: conv.subagentMeta.error,
             timestamp: Date.now(),
           };

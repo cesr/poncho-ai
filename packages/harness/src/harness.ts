@@ -2286,7 +2286,12 @@ export class AgentHarness {
     const modelName = agent.frontmatter.model?.name ?? "claude-opus-4-5";
     const modelInstance = this.modelProvider(modelName);
     const config = resolveCompactionConfig(agent.frontmatter.compaction);
-    return compactMessages(modelInstance, messages, config, options);
+    const contextWindow =
+      agent.frontmatter.model?.contextWindow ?? getModelContextWindow(modelName);
+    return compactMessages(modelInstance, messages, config, {
+      ...options,
+      contextWindow: options?.contextWindow ?? contextWindow,
+    });
   }
 
   async *run(input: RunInput): AsyncGenerator<AgentEvent> {
@@ -2317,7 +2322,7 @@ export class AgentHarness {
     let agent = this.parsedAgent as ParsedAgent;
     const runId = `run_${randomUUID()}`;
     const start = now();
-    const maxSteps = agent.frontmatter.limits?.maxSteps ?? 20;
+    const maxSteps = input.maxSteps ?? agent.frontmatter.limits?.maxSteps ?? 20;
     // A constructor-level override (e.g. a longer budget for background
     // subagents) takes precedence over the agent definition's limits.timeout.
     const configuredTimeout = this.runTimeoutSecOverride ?? agent.frontmatter.limits?.timeout;
@@ -3082,6 +3087,7 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
               modelInstance,
               messages,
               compactionConfig,
+              { contextWindow },
             );
             if (compactResult.compacted) {
               messages.length = 0;
@@ -3096,6 +3102,16 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
                   emittedMessages.pop();
                 }
               }
+              // MID-RUN COMPACTION (step > 1) intentionally emits
+              // `compactedMessages: undefined`. The live `messages` array is
+              // already rewritten in place above (so the rest of the run and
+              // the end-of-run `continuationMessages` reflect the compaction),
+              // but we do NOT drive the runner's persisted `compactedHistory`
+              // archive mid-turn: that would require a get→mutate→update on the
+              // conversation row while the turn is still in flight, which is the
+              // clobber pattern PonchOS forbids for non-terminal writers. The
+              // compacted content is preserved in the summary; only the raw
+              // pre-compaction transcript archive skips these mid-run events.
               const tokensAfterCompaction = estimateTotalTokens(systemPrompt, messages, toolDefsJsonForEstimate);
               latestContextTokens = tokensAfterCompaction;
               toolOutputEstimateSinceModel = 0;
