@@ -5,8 +5,10 @@ import type { Message } from "@poncho-ai/sdk";
 import {
   compactMessages,
   findSafeSplitPoint,
+  findSafeSplitPointByTurns,
   resolveCompactionConfig,
 } from "../src/compaction.js";
+import { deriveTaskOutcome, stripOutcomeVerdict } from "../src/orchestrator/orchestrator.js";
 
 // ── Fake model ──────────────────────────────────────────────────────────
 // A MockLanguageModelV3 whose doGenerate returns a fixed text and records the
@@ -254,9 +256,9 @@ describe("compactMessages", () => {
     expect(sentPrompt).toContain("MERGE AND UPDATE");
   });
 
-  it("still truncates non-prior-summary long messages to 1200 chars", async () => {
+  it("still truncates non-prior-summary long messages to the per-message cap", async () => {
     const { model, prompts } = fakeModel("S");
-    const longUser = "X".repeat(3000);
+    const longUser = "X".repeat(6000); // > SUMMARIZATION_MESSAGE_TRUNCATION_CHARS (4000)
     const messages: Message[] = [
       userMsg(longUser),
       assistantText("a0"),
@@ -270,5 +272,125 @@ describe("compactMessages", () => {
     expect(sentPrompt).toContain("[truncated]");
     // The first message was NOT a prior summary, so no merge instruction.
     expect(sentPrompt).not.toContain("MERGE AND UPDATE");
+  });
+});
+
+describe("findSafeSplitPointByTurns", () => {
+  const turns = (n: number, assistantText = "a"): Message[] => {
+    const msgs: Message[] = [];
+    for (let i = 0; i < n; i++) {
+      msgs.push(userMsg(`u${i}`));
+      msgs.push({ role: "assistant", content: `${assistantText}${i}` });
+    }
+    return msgs;
+  };
+
+  it("preserves the last N whole turns verbatim", () => {
+    const messages = turns(6); // userIdx = [0,2,4,6,8,10]
+    // keepRecentTurns=4, generous token budget → split before the 4th-from-last
+    // user message (index 4), preserving turns u2..u5.
+    const idx = findSafeSplitPointByTurns(messages, 4, 6, 1_000_000);
+    expect(idx).toBe(4);
+    const preserved = messages.slice(idx);
+    const userCount = preserved.filter((m) => m.role === "user").length;
+    expect(userCount).toBe(4);
+  });
+
+  it("reduces N when N turns exceed the preserved-token budget", () => {
+    // Each assistant turn is large (~460 tokens); 4 turns preserved would blow a
+    // small budget, so it must fall back to fewer turns.
+    const big = "Z".repeat(1600);
+    const messages = turns(6, big); // userIdx=[0,2,4,6,8,10]
+    const idx = findSafeSplitPointByTurns(messages, 4, 6, 1200);
+    // n=4 (~1840 tok) and n=3 (~1380 tok) exceed 1200; n=2 (~920 tok) fits →
+    // split at userIdx[len-2] = index 8, preserving 2 turns.
+    expect(idx).toBe(8);
+    expect(messages.slice(idx).filter((m) => m.role === "user").length).toBe(2);
+  });
+
+  it("returns -1 for a single giant turn with no earlier user boundary", () => {
+    // One user message followed by many tool rounds — no safe boundary to
+    // compact against. (The message-based fallback also finds none.)
+    const messages: Message[] = [userMsg("do a big thing")];
+    for (let i = 0; i < 8; i++) {
+      messages.push(assistantToolCall(`step ${i}`, "run_code"));
+      messages.push(toolResult(`out ${i}`));
+    }
+    expect(findSafeSplitPointByTurns(messages, 4, 6, 1_000_000)).toBe(-1);
+  });
+});
+
+describe("deriveTaskOutcome / stripOutcomeVerdict", () => {
+  it("parses the self-declared verdict", () => {
+    expect(deriveTaskOutcome("did it [[OUTCOME: succeeded]] all good", false)).toBe("succeeded");
+    expect(deriveTaskOutcome("partial [[OUTCOME: partial]] some left", false)).toBe("partial");
+    expect(deriveTaskOutcome("couldn't [[OUTCOME: failed]] no tools", false)).toBe("failed");
+  });
+
+  it("defaults to unknown when no verdict is present (never assumes success)", () => {
+    expect(deriveTaskOutcome("I finished everything.", false)).toBe("unknown");
+  });
+
+  it("treats abnormal ends and empty output as failed", () => {
+    expect(deriveTaskOutcome("whatever", true)).toBe("failed");
+    expect(deriveTaskOutcome("   ", false)).toBe("failed");
+  });
+
+  it("strips the verdict marker from delivered text", () => {
+    expect(stripOutcomeVerdict("Here is the report.\n[[OUTCOME: failed]] missing API key")).toBe(
+      "Here is the report.",
+    );
+    expect(stripOutcomeVerdict("No verdict here")).toBe("No verdict here");
+  });
+});
+
+describe("compactMessages — failure fidelity", () => {
+  const config = resolveCompactionConfig({ keepRecentTurns: 1 });
+
+  it("renders a failed subagent as failed (never 'completed') and keeps its reason", async () => {
+    const { model } = fakeModel("SUMMARY");
+    const messages: Message[] = [
+      userMsg("please read my chats"),
+      assistantText("delegating to a subagent"),
+      userMsg(
+        '[Subagent Result] Subagent "read chats" (sub_fail) failed:\n\nI could not access the LinkedIn tools, so I read nothing.',
+        {
+          _subagentCallback: true,
+          subagentId: "sub_fail",
+          task: "read chats",
+          taskOutcome: "failed",
+        } as Message["metadata"],
+      ),
+      assistantText("continuing"),
+      userMsg("how did it go?"),
+      assistantText("let me check"),
+    ];
+    const res = await compactMessages(model, messages, config);
+    const content = res.messages[0]!.content as string;
+    expect(content).toContain("## Subagents");
+    expect(content).toContain("sub_fail");
+    // Rendered with the failed outcome, not "completed".
+    expect(content).toContain("— failed");
+    expect(content).not.toContain("(sub_fail) — completed");
+    // The failure reason survives verbatim.
+    expect(content).toContain("could not access the LinkedIn tools");
+  });
+
+  it("keeps failure-bearing messages when the input budget forces drops", async () => {
+    const { model, prompts } = fakeModel("S");
+    // Many bulky non-failure messages plus one early failure. The failure must
+    // survive into the summarizer input even if older bulk is dropped.
+    const messages: Message[] = [userMsg("start")];
+    messages.push(toolResult("ERROR: the deploy failed because the token expired"));
+    for (let i = 0; i < 400; i++) {
+      messages.push(assistantText("filler ".repeat(200) + i));
+      messages.push(userMsg(`ok ${i}`));
+    }
+    messages.push(userMsg("final question"));
+    messages.push(assistantText("final answer"));
+    await compactMessages(model, messages, config);
+    const sentPrompt = prompts.join("\n");
+    // The failure line is marked important and never dropped.
+    expect(sentPrompt).toContain("the deploy failed because the token expired");
   });
 });

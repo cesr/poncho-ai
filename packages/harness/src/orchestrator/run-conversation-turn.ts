@@ -85,6 +85,12 @@ export interface RunConversationTurnOpts {
    */
   suppressTelemetry?: boolean;
   /**
+   * Forwarded to `RunInput.maxSteps`: per-run step-ceiling override. Lets the
+   * foreground chat turn run a higher ceiling than background/job turns that
+   * share the same agent definition.
+   */
+  maxSteps?: number;
+  /**
    * Forwarded to `RunInput.telemetryAttributes` — extra attributes for the
    * `invoke_agent` root span (e.g. run kind / job name for segmentation).
    */
@@ -252,6 +258,7 @@ export const runConversationTurn = async (
         disablePromptCache: opts.disablePromptCache,
         suppressTelemetry: opts.suppressTelemetry,
         model: opts.model,
+        maxSteps: opts.maxSteps,
         volatileContext: opts.volatileContext,
         telemetryAttributes: opts.telemetryAttributes,
       },

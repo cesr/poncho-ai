@@ -9,22 +9,36 @@ const MIN_COMPACTABLE_MESSAGES = 4;
 const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
   enabled: true,
   trigger: 0.75,
-  keepRecentMessages: 4,
+  keepRecentTurns: 4,
+  keepRecentMessages: 6,
 };
-const SUMMARIZATION_MESSAGE_TRUNCATION_CHARS = 1200;
-const SUMMARIZATION_MAX_OUTPUT_TOKENS = 768;
+const SUMMARIZATION_MESSAGE_TRUNCATION_CHARS = 4000;
+const SUMMARIZATION_MAX_OUTPUT_TOKENS = 8192;
+/**
+ * Upper bound on the tokens fed INTO the summarization model call. With hundreds
+ * of compacted messages at 4000 chars each the joined transcript can exceed the
+ * summarizer's own window; we drop the oldest non-error, non-prior-summary
+ * messages first so recent context and every failure survive. Held well under a
+ * 200k window to leave room for the prompt + output.
+ */
+const SUMMARIZATION_MAX_INPUT_TOKENS = 120_000;
 
 const SUMMARIZATION_PROMPT = `Summarize the following conversation into a structured working state that allows continuation without re-asking questions. Include:
 
 1. **User intent**: What the user originally asked for and any refinements
-2. **Completed work**: What has been accomplished so far
+2. **Completed work**: What has been accomplished AND CONFIRMED so far
 3. **Key decisions**: Technical decisions made and their rationale
-4. **Errors & fixes**: Errors encountered and how they were resolved
-5. **Referenced resources**: Files, URLs, tools, or data referenced
-6. **Pending next steps**: What remains to be done
+4. **Unresolved errors & failures**: Every error, failed or uncertain tool call, and failed or incomplete subagent — recorded verbatim enough to act on. NEVER drop a failure because it is old. This section is REQUIRED whenever any failure occurred; do not omit it.
+5. **Pending promises**: Anything the assistant said it WOULD do but has not confirmed done.
+6. **Referenced resources**: Files, URLs, tools, or data referenced
+7. **Pending next steps**: What remains to be done
+
+Rules:
+- NEVER describe work as "completed", "done", or "fixed" unless the conversation contains explicit confirmation (a successful tool result or the user acknowledging it). If completion is unverified, record it under "Pending next steps" as unconfirmed.
+- Preserve identifiers verbatim — file paths, URLs, IDs, command names, tool names. Do not paraphrase or truncate them.
 
 Be concise but preserve all information needed to continue the task.
-Omit any section that has no relevant content.`;
+Omit any section that has no relevant content, EXCEPT "Unresolved errors & failures" when a failure occurred.`;
 
 /**
  * Extra instruction appended when the first compacted message is itself a
@@ -34,8 +48,13 @@ Omit any section that has no relevant content.`;
  */
 const CUMULATIVE_SUMMARY_PROMPT = `The FIRST message below (tagged [prior-summary]) is an existing working-state summary produced by an earlier compaction. Treat it as the authoritative prior working state: MERGE AND UPDATE it with the newer messages that follow it, carrying forward all still-relevant detail. Do NOT discard or re-compress information from the prior summary just because it is older — only drop it if the newer messages explicitly supersede it.`;
 
-/** Max chars of a subagent result text kept verbatim in the ledger digest. */
-const SUBAGENT_DIGEST_CHARS = 500;
+/**
+ * Max chars of a subagent result text kept verbatim in the ledger digest. Kept
+ * large (and NOT gated on outcome) so a failed subagent's own explanation
+ * survives compaction — the failing case is exactly the one that must not be
+ * clipped, and it can be mislabeled, so gating on status would be self-defeating.
+ */
+const SUBAGENT_DIGEST_CHARS = 2000;
 
 /** Heading used for the verbatim, model-proof subagent ledger block. */
 const SUBAGENT_LEDGER_HEADING = "## Subagents";
@@ -47,6 +66,8 @@ export const resolveCompactionConfig = (
   return {
     enabled: explicit.enabled ?? DEFAULT_COMPACTION_CONFIG.enabled,
     trigger: explicit.trigger ?? DEFAULT_COMPACTION_CONFIG.trigger,
+    keepRecentTurns:
+      explicit.keepRecentTurns ?? DEFAULT_COMPACTION_CONFIG.keepRecentTurns,
     keepRecentMessages:
       explicit.keepRecentMessages ??
       DEFAULT_COMPACTION_CONFIG.keepRecentMessages,
@@ -163,6 +184,71 @@ export const findSafeSplitPoint = (
 };
 
 /**
+ * Find the split index that preserves the last `keepRecentTurns` whole *turns*
+ * verbatim. A turn begins at a `role:"user"` message and runs until the next
+ * `user` message. Everything before the split is folded into the summary;
+ * everything from the split onward is kept as-is.
+ *
+ * Two guards make a candidate split acceptable:
+ *  1. The compacted side has at least `MIN_COMPACTABLE_MESSAGES` messages.
+ *  2. The preserved side estimates at most `maxPreservedTokens` — so keeping N
+ *     large turns can never leave the post-compaction context above the
+ *     compaction trigger (which caused re-compaction thrash / window overflow).
+ * The tool-call-orphan guard (`splitOrphansToolCalls`) is preserved: a split
+ * that would strand an assistant tool-call on the compacted side steps to an
+ * earlier user boundary (which only preserves more, always safe).
+ *
+ * We try the largest N (up to `keepRecentTurns`) first and decrement, so we
+ * keep as many turns as fit. If no turn boundary yields a safe split (e.g. a
+ * single giant turn near the window), fall back to the message-based
+ * `findSafeSplitPoint` so the middle of that turn still compacts.
+ *
+ * Returns -1 when nothing safe can be compacted.
+ */
+export const findSafeSplitPointByTurns = (
+  messages: Message[],
+  keepRecentTurns: number,
+  keepRecentMessagesFallback: number,
+  maxPreservedTokens: number,
+): number => {
+  // Indices of every user message, in order.
+  const userIdx: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]!.role === "user") userIdx.push(i);
+  }
+
+  const maxN = Math.min(keepRecentTurns, userIdx.length);
+  for (let n = maxN; n >= 1; n--) {
+    // The Nth-from-last user message starts the preserved region.
+    let guardN = n;
+    let split = userIdx[userIdx.length - guardN]!;
+    // Orphan guard: step to an earlier user boundary if the compacted side
+    // would end on an assistant tool-call whose result moved to the preserved
+    // side. Walking earlier only preserves more, so it stays within budget
+    // checks below.
+    while (
+      splitOrphansToolCalls(messages, split) &&
+      guardN < userIdx.length
+    ) {
+      guardN++;
+      split = userIdx[userIdx.length - guardN]!;
+    }
+    if (split < MIN_COMPACTABLE_MESSAGES) continue;
+    const preservedTokens = estimateTokens(
+      messages
+        .slice(split)
+        .map((m) => getTextContent(m))
+        .join("\n"),
+    );
+    if (preservedTokens <= maxPreservedTokens) return split;
+  }
+
+  // No turn boundary fits: fall back to the legacy message-based split so a
+  // single giant turn still gets its middle compacted.
+  return findSafeSplitPoint(messages, keepRecentMessagesFallback);
+};
+
+/**
  * Whether a message is itself a prior compaction summary.
  */
 const isCompactionSummary = (msg: Message): boolean =>
@@ -175,8 +261,17 @@ const isCompactionSummary = (msg: Message): boolean =>
  * compaction summary, it is passed in FULL (not truncated to
  * SUMMARIZATION_MESSAGE_TRUNCATION_CHARS) and tagged `[prior-summary]`, and
  * the prompt instructs the model to merge-and-update rather than
- * re-summarize. All other messages keep the 1200-char truncation.
+ * re-summarize. All other messages keep the per-message truncation.
+ *
+ * Total-input budget: with many messages the joined transcript can exceed the
+ * summarizer's own window, so we cap it at SUMMARIZATION_MAX_INPUT_TOKENS and
+ * drop the OLDEST non-important lines first. A line is "important" (never
+ * dropped) if it is the prior summary or carries a failure/error signal — so
+ * every failure and the most recent context always reach the summarizer.
  */
+const FAILURE_SIGNAL_RE =
+  /\berror\b|\bfailed\b|\bfailure\b|\bexception\b|could ?n[’']?t|cannot\b|unable to|\[subagent result\]/i;
+
 const buildSummarizationMessages = (
   messagesToCompact: Message[],
   instructions?: string,
@@ -184,7 +279,12 @@ const buildSummarizationMessages = (
   const hasPriorSummary =
     messagesToCompact.length > 0 && isCompactionSummary(messagesToCompact[0]!);
 
-  const conversationLines: string[] = [];
+  interface Line {
+    text: string;
+    tokens: number;
+    important: boolean;
+  }
+  const lines: Line[] = [];
   for (let i = 0; i < messagesToCompact.length; i++) {
     const msg = messagesToCompact[i]!;
     const text = getTextContent(msg);
@@ -196,8 +296,28 @@ const buildSummarizationMessages = (
         : text.slice(0, SUMMARIZATION_MESSAGE_TRUNCATION_CHARS) +
           "\n...[truncated]";
     const tag = isPrior ? "prior-summary" : msg.role;
-    conversationLines.push(`[${tag}]: ${rendered}`);
+    const line = `[${tag}]: ${rendered}`;
+    lines.push({
+      text: line,
+      tokens: estimateTokens(line),
+      important: isPrior || FAILURE_SIGNAL_RE.test(text),
+    });
   }
+
+  // Enforce the input budget: while over, drop the oldest non-important line.
+  let total = lines.reduce((sum, l) => sum + l.tokens, 0);
+  if (total > SUMMARIZATION_MAX_INPUT_TOKENS) {
+    for (let i = 0; i < lines.length && total > SUMMARIZATION_MAX_INPUT_TOKENS; ) {
+      if (lines[i]!.important) {
+        i++;
+        continue;
+      }
+      total -= lines[i]!.tokens;
+      lines.splice(i, 1);
+    }
+  }
+
+  const conversationLines = lines.map((l) => l.text);
 
   let prompt = SUMMARIZATION_PROMPT;
   if (hasPriorSummary) prompt = `${prompt}\n\n${CUMULATIVE_SUMMARY_PROMPT}`;
@@ -246,7 +366,15 @@ const parseSubagentCallback = (msg: Message): SubagentLedgerEntry | null => {
     typeof meta.task === "string" && meta.task
       ? meta.task
       : headerMatch?.[1] ?? "";
-  const status = headerMatch?.[3] ?? "completed";
+  // The ledger "status" is the subagent's TASK OUTCOME (succeeded/failed/
+  // partial/unknown), not its run status. Prefer the structured metadata; fall
+  // back to the header token. NEVER default to "completed" — an unparseable
+  // header must not silently assert success. `status` remains the field name
+  // for backward compat with parsePriorLedger's rendered shape.
+  const status =
+    (typeof meta.taskOutcome === "string" && meta.taskOutcome) ||
+    headerMatch?.[3] ||
+    "unknown";
 
   // Digest = the body after the header line (the result text), capped.
   const bodyStart = text.indexOf("\n\n");
@@ -338,7 +466,16 @@ const buildContinuationMessage = (summary: string): Message => ({
 
 export interface CompactMessagesOptions {
   instructions?: string;
+  /**
+   * The model's context window (tokens). Used to bound the preserved side of a
+   * turn-based split so keeping N recent turns can't leave the post-compaction
+   * context above the compaction trigger. Defaults to 200k when omitted.
+   */
+  contextWindow?: number;
 }
+
+/** Fraction of the context window the preserved (verbatim) side may occupy. */
+const MAX_PRESERVED_CONTEXT_FRACTION = 0.5;
 
 export interface CompactResult {
   compacted: boolean;
@@ -363,7 +500,18 @@ export const compactMessages = async (
   config: CompactionConfig,
   options?: CompactMessagesOptions,
 ): Promise<CompactResult> => {
-  const splitIdx = findSafeSplitPoint(messages, config.keepRecentMessages);
+  const contextWindow = options?.contextWindow && options.contextWindow > 0
+    ? options.contextWindow
+    : 200_000;
+  const maxPreservedTokens = Math.floor(
+    contextWindow * MAX_PRESERVED_CONTEXT_FRACTION,
+  );
+  const splitIdx = findSafeSplitPointByTurns(
+    messages,
+    config.keepRecentTurns,
+    config.keepRecentMessages,
+    maxPreservedTokens,
+  );
   if (splitIdx === -1) {
     return {
       compacted: false,

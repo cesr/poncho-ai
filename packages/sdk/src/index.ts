@@ -146,6 +146,13 @@ export interface RunInput {
   /** When true, ignores PONCHO_MAX_DURATION soft deadline (used for background subagent runs). */
   disableSoftDeadline?: boolean;
   /**
+   * Per-run override for the step ceiling. Takes precedence over the agent
+   * definition's `limits.maxSteps` (default 20). Lets one harness instance run
+   * foreground turns with a higher ceiling than background/job turns without a
+   * frontmatter mutation that would affect concurrent runs.
+   */
+  maxSteps?: number;
+  /**
    * When true, skip the Anthropic message-history prompt-cache breakpoints
    * for this run (the 1h static/memory system breakpoints stay on).
    * Only worth it for runs that are BOTH single-step AND one-shot: the
