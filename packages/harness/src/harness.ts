@@ -3115,6 +3115,21 @@ Code is wrapped in an async IIFE — use \`return\` to return a value to the too
               const tokensAfterCompaction = estimateTotalTokens(systemPrompt, messages, toolDefsJsonForEstimate);
               latestContextTokens = tokensAfterCompaction;
               toolOutputEstimateSinceModel = 0;
+              // Stamp the compaction onto the active OTel span (the invoke_agent
+              // root, active here because run() executes inside its context) so
+              // observability backends can find compacted turns and measure the
+              // cost they cause — a compaction rewrites the message prefix, which
+              // wipes the per-model prompt cache and forces the next turn to
+              // re-create a large cached span cold. Without this, "which turns
+              // compacted, and what did it cost" is invisible at the span level.
+              // No-op when telemetry is off (no active span).
+              trace.getActiveSpan()?.setAttributes({
+                "poncho.compaction.occurred": true,
+                "poncho.compaction.tokens_before": effectiveTokens,
+                "poncho.compaction.tokens_after": tokensAfterCompaction,
+                "poncho.compaction.context_window": contextWindow,
+                "poncho.compaction.trigger": compactionConfig.trigger,
+              });
               yield pushEvent({
                 type: "compaction:completed",
                 tokensBefore: effectiveTokens,

@@ -862,6 +862,18 @@ export class AgentOrchestrator {
         abortSignal: childAbortController.signal,
         // Inherit the parent run's telemetry choice (e.g. incognito).
         suppressTelemetry: conversation.subagentMeta?.suppressTelemetry,
+        // Distinguish subagent turns from the parent chat/job on the trace:
+        // `poncho.run.kind` is the queryable attribute PonchOS already sets on
+        // foreground/job runs, and `latitude.tags` (JSON-array string) is what
+        // Latitude reads into its filterable tags field, so subagent spend can
+        // be segmented out. `latitude.metadata` links back to the parent.
+        telemetryAttributes: {
+          "poncho.run.kind": "subagent",
+          "latitude.tags": "[\"subagent\"]",
+          ...(conversation.parentConversationId
+            ? { "latitude.metadata": JSON.stringify({ parentConversationId: conversation.parentConversationId }) }
+            : {}),
+        },
       })) {
         if (event.type === "run:started") {
           latestRunId = event.runId;
@@ -1452,6 +1464,13 @@ export class AgentOrchestrator {
         abortSignal: childAbortController.signal,
         // Inherit the parent run's telemetry choice (e.g. incognito).
         suppressTelemetry: conversation.subagentMeta?.suppressTelemetry,
+        // Tag the subagent continuation the same way as the initial run (see
+        // the fan-out call above) so its spend segments out of the parent's.
+        telemetryAttributes: {
+          "poncho.run.kind": "subagent",
+          "latitude.tags": "[\"subagent\"]",
+          "latitude.metadata": JSON.stringify({ parentConversationId }),
+        },
       })) {
         if (event.type === "run:started") {
           const active = this.activeConversationRuns.get(conversationId);
